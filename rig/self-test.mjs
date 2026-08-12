@@ -13,6 +13,8 @@
  * No docker, no containers, no network: these are decisions, tested as
  * decisions, in about a second.
  */
+import { pathToFileURL } from "node:url";
+
 import { control, probe } from "./lib/harness.mjs";
 import {
   accountFor,
@@ -209,4 +211,12 @@ export async function selfTest(options = {}) {
   }
   if (!options.quiet) console.log(`rig self-test: all ${checks} checks passed`);
   return true;
+}
+
+// Running this file directly used to execute nothing and exit 0 in silence,
+// because the module only exports. A file named self-test.mjs that reports
+// success without running a check is the failure this whole directory exists
+// to prevent, so it runs when invoked directly as well as via run.mjs.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  selfTest().then((passed) => process.exit(passed ? 0 : 2));
 }
