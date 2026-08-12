@@ -11,18 +11,23 @@
  * its cause.
  */
 import { control, probe } from "../lib/harness.mjs";
-import { build } from "../lib/docker.mjs";
-import { runIn } from "../lib/docker.mjs";
-import { tail } from "../lib/exec.mjs";
+import { build, runIn } from "../lib/docker.mjs";
+import { stripAnsi, tail } from "../lib/exec.mjs";
 import { toolchainDockerfile } from "../lib/images.mjs";
 import { inventory } from "./02-toolchain.mjs";
-import { DOCUMENTED_CHECKS } from "../expected.mjs";
-import { parseExitCodes } from "./03-documented-checks.mjs";
+import { DOCUMENTED_CHECKS, NODE_FLOOR } from "../expected.mjs";
+import { parseExitCodes, parseSuiteCounts } from "./03-documented-checks.mjs";
 import { versionAtLeast } from "../lib/version.mjs";
-import { NODE_FLOOR } from "../expected.mjs";
 
-/** Words that would let a reader connect the failure to the Node version. */
-const LOUDNESS = /engine|node.*(20|22)|22\.18|unsupported/i;
+/**
+ * Wording that would let a reader connect a failure to the Node version.
+ *
+ * Deliberately narrow. The first version of this pattern also matched a bare
+ * "node" next to a number, which the suite's ordinary output satisfies on
+ * every run, so the probe reported a legible failure on a run where nothing
+ * had failed at all.
+ */
+const LOUDNESS = /unsupported engine|ERR_PNPM_UNSUPPORTED_ENGINE|engines? (field|requirement)|expected version.*node|requires node/i;
 
 export default {
   id: "node20-floor",
@@ -62,7 +67,8 @@ export default {
 
     const failedSomewhere = !built || Object.values(checks?.codes ?? {}).some((code) => code !== 0);
     const evidenceText = built ? checks.output : buildLog;
-    const loud = LOUDNESS.test(evidenceText);
+    const loud = LOUDNESS.test(stripAnsi(evidenceText));
+    const counts = built ? parseSuiteCounts(checks.output) : null;
     const firstFailure = built
       ? DOCUMENTED_CHECKS.find(({ id }) => checks.codes[id] !== 0)?.id ?? "(none: everything passed)"
       : "image build";
@@ -72,17 +78,27 @@ export default {
         id: "node-20-refused",
         title: "the documented check list does not go green on Node 20",
         ok: failedSomewhere,
-        detail: `first failing step: ${firstFailure}`,
+        detail: failedSomewhere
+          ? `first failing step: ${firstFailure}`
+          : `NOTHING refused it: every documented check exits 0 on node ${nodeVersion}, ` +
+            `deck reporting ${counts?.deck?.passed ?? "no"} passing tests. The ${NODE_FLOOR} ` +
+            "engines floor is a claim in package.json that no command enforces.",
       }),
       probe({
         id: "failure-is-legible",
         title: "the failure text lets a reader connect it to the Node version",
-        // A finding, not a failure: the plan's instruction is to record HOW
-        // Node 20 fails, and an illegible failure is a defect in the product's
-        // ergonomics rather than in the environment under test.
+        // A finding, not a failure: the instruction is to record HOW Node 20
+        // fails, and an illegible failure is a defect in ergonomics rather
+        // than in the environment under test. It is only askable when
+        // something failed: asked about a run where nothing went wrong, a
+        // "was the failure legible" probe answers about noise.
         severity: "finding",
-        ok: loud,
-        detail: loud ? "the output names the engine requirement" : "nothing in the output names Node or the engines floor",
+        ok: failedSomewhere ? loud : true,
+        detail: !failedSomewhere
+          ? "not applicable: nothing failed"
+          : loud
+            ? "the output names the engine requirement"
+            : "OBSCURE: nothing in the output names Node or the engines floor",
       }),
     ];
 
@@ -115,6 +131,7 @@ export default {
         built,
         nodeVersion,
         exitCodes: checks?.codes ?? null,
+        counts,
         verbatim: tail(evidenceText, 40),
       },
     };

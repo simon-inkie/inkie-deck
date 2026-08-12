@@ -22,7 +22,7 @@ import {
   runDeclaredStages,
   STATUS,
 } from "./lib/harness.mjs";
-import { exec, must } from "./lib/exec.mjs";
+import { exec, must, stripAnsi } from "./lib/exec.mjs";
 import { contaminatedEntries, dirtyTreeDecision } from "./lib/source.mjs";
 import { versionAtLeast } from "./lib/version.mjs";
 import { parseExitCodes, parseSuiteCounts } from "./stages/03-documented-checks.mjs";
@@ -142,6 +142,14 @@ export async function selfTest(options = {}) {
     "committed fixture .runtime files are not mistaken for developer state",
     contaminatedEntries(["packages/deck/fixtures/agents/quill/.runtime/pane.txt"]).length === 0,
   );
+  assert(
+    "a real .env is developer state",
+    contaminatedEntries(["packages/deck/.env", "packages/deck/.env.production"]).length === 2,
+  );
+  assert(
+    "the tracked .env.example is not",
+    contaminatedEntries(["packages/deck/.env.example"]).length === 0,
+  );
 
   // -- version arithmetic ----------------------------------------------------
   assert("20.19.5 is below the 22.18.0 floor", versionAtLeast("20.19.5", "22.18.0") === false);
@@ -166,7 +174,33 @@ export async function selfTest(options = {}) {
   const parsed = parseSuiteCounts(combined);
   assert("each workspace's count is attributed to that workspace", parsed.base?.passed === 27 && parsed.deck?.passed === 1770, parsed);
   assert("skipped counts are read", parsed.deck?.skipped === 11 && parsed.base?.skipped === 0, parsed);
+  const withFailures = "> inkie-deck@0.0.0 test\n      Tests  4 failed | 1766 passed | 11 skipped (1781)";
+  assert(
+    "a run with failures still yields its counts",
+    parseSuiteCounts(withFailures).deck?.failed === 4 && parseSuiteCounts(withFailures).deck?.passed === 1766,
+    parseSuiteCounts(withFailures).deck,
+  );
   assert("a run with no summary reports null rather than zero", parseSuiteCounts("nothing here").deck === null);
+  // The regression that mattered: vitest colours its summary, and a parser
+  // written against the plain text reported "the suite did not run" about a
+  // suite that had just run 1770 tests. The count instrument is the whole
+  // point of the checks stage, so it is tested against coloured output.
+  const ESC = String.fromCharCode(27);
+  const coloured = [
+    "> " + "inkie-deck@0.0.0 test",
+    " " + ESC + "[2mTest Files" + ESC + "[22m  " + ESC + "[1m" + ESC + "[32m86 passed" + ESC + "[39m" + ESC + "[22m (86)",
+    " " + ESC + "[2m      Tests" + ESC + "[22m  " + ESC + "[1m" + ESC + "[32m1770 passed" + ESC + "[39m" + ESC + "[22m | " + ESC + "[33m11 skipped" + ESC + "[39m (1781)",
+  ].join("\n");
+  assert(
+    "a coloured vitest summary is still read",
+    parseSuiteCounts(coloured).deck?.passed === 1770 && parseSuiteCounts(coloured).deck?.files === 86,
+    parseSuiteCounts(coloured).deck,
+  );
+  assert(
+    "stripping colour does not eat ordinary bracketed prefixes",
+    stripAnsi("[prod] FATAL: something") === "[prod] FATAL: something",
+    stripAnsi("[prod] FATAL: something"),
+  );
 
   if (failures.length > 0) {
     for (const failure of failures) console.error(`rig self-test: FAILED - ${failure}`);

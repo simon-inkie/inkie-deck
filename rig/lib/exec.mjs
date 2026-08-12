@@ -87,7 +87,25 @@ export function must(file, args, options = {}) {
   return result;
 }
 
+/**
+ * Strip terminal colour codes.
+ *
+ * Not cosmetics: vitest colours its own summary line, so `Tests  1770 passed`
+ * arrives with escape sequences between the words and a regex written against
+ * what a human sees on screen matches nothing. The first run of this rig
+ * reported "the suite did not run" against a suite that had just run 1770
+ * tests, which is the count instrument failing in the safe direction only by
+ * luck. Every parser here works on stripped text.
+ */
+export function stripAnsi(text) {
+  // The escape byte is written as a \u escape rather than embedded literally,
+  // and the bracket is part of the pattern: matching `[0-9;]*[A-Za-z]` without
+  // the escape would eat ordinary bracketed prefixes such as the production
+  // launcher's own [prod] lines, quietly corrupting the evidence.
+  return String(text ?? "").replace(/\u001B\[[0-9;]*[A-Za-z]/g, "");
+}
+
 /** Last `lines` lines of `text`, for reports that must stay readable. */
 export function tail(text, lines = 30) {
-  return text.split("\n").slice(-lines).join("\n").trimEnd();
+  return stripAnsi(text).split("\n").slice(-lines).join("\n").trimEnd();
 }

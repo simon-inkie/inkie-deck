@@ -14,7 +14,7 @@
  */
 import { control, probe } from "../lib/harness.mjs";
 import { runIn } from "../lib/docker.mjs";
-import { tail } from "../lib/exec.mjs";
+import { stripAnsi, tail } from "../lib/exec.mjs";
 import { DOCUMENTED_CHECKS, EXPECTED_TESTS } from "../expected.mjs";
 
 /** Run a list of commands, each with its own exit code, in one container. */
@@ -26,10 +26,11 @@ function checkScript(commands) {
 
 /** @param {string} output @returns {Record<string, number|null>} */
 export function parseExitCodes(output) {
+  const text = stripAnsi(output);
   /** @type {Record<string, number|null>} */
   const codes = {};
   for (const { id } of DOCUMENTED_CHECKS) codes[id] = null; // never ran, until proven otherwise
-  for (const match of output.matchAll(/^###EXIT (\S+) (\d+)$/gm)) {
+  for (const match of text.matchAll(/^###EXIT (\S+) (\d+)$/gm)) {
     codes[match[1]] = Number(match[2]);
   }
   return codes;
@@ -46,7 +47,10 @@ export function parseExitCodes(output) {
  * @param {string} output
  * @returns {Record<string, { passed: number, skipped: number, files: number }|null>}
  */
-export function parseSuiteCounts(output) {
+export function parseSuiteCounts(rawOutput) {
+  // vitest colours the summary, so the counts are only visible once the
+  // escape sequences are gone. See stripAnsi.
+  const output = stripAnsi(rawOutput);
   const markers = [
     { name: "base", marker: "inkie-agents-base@" },
     { name: "deck", marker: "inkie-deck@" },
@@ -59,12 +63,16 @@ export function parseSuiteCounts(output) {
   const counts = { base: null, deck: null };
   positions.forEach((entry, index) => {
     const segment = output.slice(entry.at, positions[index + 1]?.at ?? output.length);
-    const tests = /Tests\s+(\d+) passed(?:\s*\|\s*(\d+) skipped)?/.exec(segment);
+    // The failed count is optional and comes FIRST when present. Matching
+    // only "Tests  N passed" reads nothing at all off a run with failures,
+    // which threw away the very number the README publishes as a diagnostic.
+    const tests = /Tests\s+(?:(\d+) failed\s*\|\s*)?(\d+) passed(?:\s*\|\s*(\d+) skipped)?/.exec(segment);
     const files = /Test Files\s+(\d+) passed/.exec(segment);
     if (tests) {
       counts[entry.name] = {
-        passed: Number(tests[1]),
-        skipped: tests[2] ? Number(tests[2]) : 0,
+        failed: tests[1] ? Number(tests[1]) : 0,
+        passed: Number(tests[2]),
+        skipped: tests[3] ? Number(tests[3]) : 0,
         files: files ? Number(files[1]) : null,
       };
     }
@@ -107,7 +115,7 @@ export default {
         probe({
           id: `count-${suite}`,
           title: `${suite} suite reports ${expected.passed} passing`,
-          ok: actual?.passed === expected.passed && actual?.skipped === expected.skipped,
+          ok: actual?.passed === expected.passed && actual?.skipped === expected.skipped && actual?.failed === 0,
           detail: `passed ${diagnoseCount(actual?.passed ?? null, expected.passed)}; skipped ${actual?.skipped ?? "none reported"} against ${expected.skipped}`,
         }),
         probe({
@@ -129,7 +137,11 @@ export default {
       `cd /src\nrm -f "$(command -v rg)"\npnpm install --frozen-lockfile >/dev/null 2>&1\npnpm test\necho "###EXIT test $?"`,
     );
     const noRipgrepCode = parseExitCodes(noRipgrep.output).test;
-    const noRipgrepNamesIt = /ripgrep|\brg\b/i.test(noRipgrep.output);
+    // Matched against the product's own wording rather than the three letters
+    // "rg", which appear in unrelated output often enough that a loose match
+    // would let this control pass on a failure that had nothing to do with
+    // ripgrep at all.
+    const noRipgrepNamesIt = /requires? ripgrep|ripgrep \(rg\)/i.test(stripAnsi(noRipgrep.output));
 
     // NEGATIVE CONTROL 2. Remove the `.git` directory and require both the
     // suite and the leak gate to go red naming the repository. The tree is
@@ -141,7 +153,7 @@ export default {
       `cd /src\nrm -rf /src/.git\npnpm install --frozen-lockfile >/dev/null 2>&1\npnpm test\necho "###EXIT test $?"\npnpm check:leaks\necho "###EXIT leaks $?"`,
     );
     const noGitCodes = parseExitCodes(noGit.output);
-    const noGitSaysSo = /not a git repository/i.test(noGit.output);
+    const noGitSaysSo = /not a git repository/i.test(stripAnsi(noGit.output));
 
     const controls = [
       control({

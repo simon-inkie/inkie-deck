@@ -78,11 +78,20 @@ export const ALLOWED_HOME_ENTRIES = [".bashrc", ".profile", ".bash_logout"];
  */
 export const ARCHIVE_CONTAMINATION_ALLOWLIST = [/^packages\/deck\/fixtures\/agents\/[^/]+\/\.runtime\//];
 
-/** Patterns that mean developer state, not source. */
+/**
+ * Patterns that mean developer state, not source.
+ *
+ * The `.env` rule excludes `.env.example`, which is a tracked file and is
+ * meant to be in the archive; the first version of this rule flagged it and
+ * the run went red for a reason that had nothing to do with contamination.
+ * A probe that cries wolf on a correct tree gets disabled by the third
+ * reader, so the exclusion is part of the assertion rather than an
+ * afterthought.
+ */
 export const ARCHIVE_CONTAMINATION_PATTERNS = [
   /(^|\/)node_modules\//,
   /(^|\/)\.runtime\//,
   /(^|\/)build\//,
   /(^|\/)\.react-router\//,
-  /(^|\/)\.env(\.|$)/,
+  /(^|\/)\.env(?!\.example)(\.[^/]*)?$/,
 ];
