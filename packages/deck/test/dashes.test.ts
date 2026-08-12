@@ -25,8 +25,20 @@ function runGuardOnFile(filePath: string): { exitCode: number; stdout: string; s
   const result = spawnSync("rg", ["--pcre2", "-n", PATTERN, filePath], {
     encoding: "utf8",
   });
+  // Do NOT coalesce the status with `?? 0`. When rg is not installed spawnSync
+  // returns status null, and 0 is this guard's code for "match found", so a
+  // missing binary was scored as a successful match and two of the assertions
+  // below passed vacuously on a machine with no ripgrep at all. A check that
+  // cannot fail when its own dependency is absent is not a check, so name the
+  // dependency and fail loudly instead.
+  if (result.error || result.status === null) {
+    throw new Error(
+      "check-dashes tests require ripgrep (rg) on PATH; spawning rg failed: " +
+        (result.error ? result.error.message : "no exit status returned")
+    );
+  }
   return {
-    exitCode: result.status ?? 0,
+    exitCode: result.status,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
   };

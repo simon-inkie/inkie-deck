@@ -5,8 +5,11 @@
  *
  * Exit codes:
  *   0 = no banned glyphs found (clean)
- *   1 = banned glyph found, or rg emitted stdout on error
- *   throws = rg binary missing or real rg error (exit code 2)
+ *   1 = banned glyph found, or rg emitted stdout on error, or rg is not
+ *       installed (the message names ripgrep)
+ *   throws = a real rg error (exit code 2)
+ *
+ * Requires ripgrep (rg) on PATH. See the prerequisites in the README.
  *
  * The pattern uses \x{} escapes so this source file never trips the guard itself.
  * Codepoints: U+2014 (em-dash), U+2013 (en-dash)
@@ -44,6 +47,17 @@ try {
     console.error("Banned dash found:\n" + e.stdout);
     process.exit(1);
   }
-  // rg exit 2 or missing binary: real error, re-throw
+  // rg is not installed at all. Name the missing tool, rather than dying with
+  // a bare "spawnSync rg ENOENT" stack that gives the reader no reason to
+  // connect the failure to this guard.
+  if (e.code === "ENOENT") {
+    console.error(
+      "check:dashes requires ripgrep (rg) on PATH and could not find it.\n" +
+        "Install it (Debian/Ubuntu: `apt-get install ripgrep`; macOS: `brew install ripgrep`)\n" +
+        "and re-run. See the prerequisites in the README."
+    );
+    process.exit(1);
+  }
+  // rg exit 2: a real rg error, re-throw
   throw e;
 }

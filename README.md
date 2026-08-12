@@ -49,6 +49,20 @@ A pnpm workspace with two packages:
 
 Node 22.18 or later, and pnpm.
 
+Two further prerequisites, both easy to miss because every machine that has
+run this so far already had them:
+
+- **git**, and the tree has to be a *clone*. An unpacked release tarball or a
+  "Download ZIP" will not do. Two suites shell out to `git status --porcelain`
+  to prove that a test has not written into the repository, and
+  `scripts/leak-gate.mjs` uses `git ls-files` as its file-selection rule. With
+  no `.git` directory the suite reports dozens of failures that have nothing
+  to do with the code.
+- **ripgrep** (`rg`), used by `check:dashes`.
+
+The test count doubles as a diagnostic here: **1770 passing** means both are
+present, **1766** means ripgrep is missing, and **1703** means neither is.
+
 ```sh
 pnpm install
 pnpm typecheck
