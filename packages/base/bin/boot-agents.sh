@@ -48,7 +48,25 @@ while [[ "${1:-}" == --* ]]; do
   esac
   shift
 done
-if [[ $# -gt 0 ]]; then AGENTS=("$@"); else AGENTS=("${ALL_AGENTS[@]}"); fi
+if [[ $# -gt 0 ]]; then
+  AGENTS=("$@")
+else
+  # Check the COUNT before expanding. Under `set -u` the expansion of an empty
+  # array is itself fatal on bash 3.2 (still the /bin/bash on macOS), so this
+  # guard cannot be written as a test on "${ALL_AGENTS[@]}".
+  if [[ ${#ALL_AGENTS[@]} -eq 0 ]]; then
+    echo "boot-agents.sh: no agents found in $AGENTS_HOME" >&2
+    echo >&2
+    echo "An agent is a directory holding a SOUL.md file:" >&2
+    echo "    $AGENTS_HOME/<name>/SOUL.md" >&2
+    echo >&2
+    echo "Persona-file templates for a new agent are in packages/base/templates." >&2
+    echo "If your agents live somewhere else, point AGENTS_HOME at it:" >&2
+    echo "    AGENTS_HOME=/path/to/agents bin/boot-agents.sh" >&2
+    exit 1
+  fi
+  AGENTS=("${ALL_AGENTS[@]}")
+fi
 
 # Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
 get_runtime() {
