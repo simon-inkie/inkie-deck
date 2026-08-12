@@ -1,0 +1,76 @@
+stages:
+  - test
+  - guards
+  - e2e
+
+.rules_template:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Both current LTS lines. The floor is Node 22.18, the first release where
+# native TypeScript type stripping is on by default, which is what lets
+# packages/base run with no build step.
+.test_template:
+  extends: .rules_template
+  stage: test
+  script:
+    # Deliberately BEFORE `npm ci`: the protocol CLI advertises that it runs
+    # from a fresh clone with nothing installed, so prove that on every push
+    # rather than trusting it.
+    - AGENT_NAME=ci node packages/base/bin/inbox.mts unread
+    - npm ci
+    - npm run typecheck
+    # Includes the capability-absence suite in packages/deck: with no hosted
+    # service configured the client must degrade, never break.
+    - npm test
+    - npm run check:boundaries
+
+test:node-22:
+  extends: .test_template
+  image: node:22
+
+test:node-24:
+  extends: .test_template
+  image: node:24
+
+# The self-test proves every denylist rule still fires (against
+# runtime-assembled samples in a temp file, never committed fixtures) before
+# the real scan certifies the tree clean.
+leak-gate:
+  extends: .rules_template
+  stage: guards
+  image: node:22
+  script:
+    - node scripts/leak-gate.mjs --self-test
+    - node scripts/leak-gate.mjs
+
+gitleaks:
+  extends: .rules_template
+  stage: guards
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect --source . --redact --verbose
+
+# Kept as its own job so the red is unmistakably this gate. It FAILS on
+# purpose until the LICENSE placeholder is replaced with the company's exact
+# registered name; see scripts/licence-gate.mjs for the reasoning.
+licence-gate:
+  extends: .rules_template
+  stage: guards
+  image: node:22
+  script:
+    - node scripts/licence-gate.mjs
+
+# One honest smoke test: there is no UI in this slice, so the harness only
+# proves it can launch a browser and assert. Real journeys arrive with the
+# first UI.
+e2e:
+  extends: .rules_template
+  stage: e2e
+  image: mcr.microsoft.com/playwright:v1.53.0-noble
+  script:
+    - npm ci
+    - npm run e2e
