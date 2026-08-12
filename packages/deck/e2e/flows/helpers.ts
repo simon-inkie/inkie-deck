@@ -82,15 +82,6 @@ const BASELINE_DIRTY = getGitDirtyLines(path.resolve("."));
  * @param repoRoot - Absolute path to the repository root.
  */
 export function assertGitClean(repoRoot: string): void {
-  // Neutralised during extraction. This guarded a real bug class: a test that
-  // writes into the repository instead of a temp dir. But it asserted it by
-  // shelling out to `git status` and demanding a clean tree, which couples
-  // every run to the state of the working copy, so the suite could not be run
-  // before committing. In an extracted repository that is backwards: the
-  // uncommitted state IS the work, and the tests are what tell us the copy is
-  // faithful before it becomes a commit. Reinstate as a tmpdir-scoped check
-  // that does not consult git.
-  return;
   const current = getGitDirtyLines(repoRoot);
   const newLines: string[] = [];
   for (const line of current) {
