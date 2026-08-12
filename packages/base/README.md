@@ -26,8 +26,9 @@ filling in.
   This is the document to implement against if you're writing your own client,
   in any language. The application in `packages/deck` is one conforming
   implementation of it, not the definition of it.
-- **`bin/`**: the orchestration scripts that launch a team of agents in tmux
-  (one window each, on boot or on demand).
+- **`bin/`**: `create-agent.sh`, which creates an agent and then proves its
+  persona actually reached the model, plus the orchestration scripts that launch
+  a team of agents in tmux (one window each, on boot or on demand).
 - **`docs/tooling-review.md`**: honest status of what was ported, what was
   ported and then removed, and why.
 
@@ -60,6 +61,39 @@ a library. Clone it, then take what you need:
 git clone <this-repo-url>
 
 # Starting a new agent from scratch:
+AGENTS_HOME=/path/to/agents INBOX_ROOT=/path/to/inboxes \
+  packages/base/bin/create-agent.sh wren --role "keeps the notes"
+```
+
+That writes the persona files, the inbox, and the runtime settings, and then
+asks the new agent, in one non-interactive turn from its own directory, to state
+its name and the boot phrase written into `IDENTITY.md` at creation. It exits 0
+only if the phrase comes back.
+
+Why that last step rather than checking the files landed: **files existing on
+disk is what every way this breaks looks like.** A persona that silently never
+reached the model leaves behind exactly the directory tree of one that did, so
+nothing you can check on the filesystem tells them apart. Only an answer that
+comes back through the mechanism can. And it asks for the boot phrase rather
+than the name because the *name* leaks into the model's context through the
+working directory, so a session carrying no persona at all can answer "what is
+your name" convincingly. The phrase is random at creation and exists nowhere
+but the persona file.
+
+Four outcomes, four exit codes, and deliberately no fifth one meaning "created,
+assume fine": `VERIFIED` (0), `SCAFFOLD ERROR` (1), `FAILED` (3, and it prints
+the reply, because the reply is the diagnostic), `CANNOT VERIFY` (4, when there
+was no runtime to ask, which is not a pass). An empty reply with a zero exit
+status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
+`create-agent.sh --help` has the rest.
+
+There is nothing magic in it. If you would rather do it by hand, the templates
+are just files, and the two things easiest to miss doing it that way are the
+inbox directory (an agent your launcher can see but your control plane cannot)
+and the fact that `--resume`-style launching needs the first session named
+before it can resume:
+
+```bash
 cp packages/base/templates/*.md /path/to/your/new/agent/
 ```
 
@@ -71,18 +105,23 @@ does.
 
 ## Development
 
-This package is markdown and shell only, so it carries no dependencies, no
-build, no typecheck and no test suite of its own: the code that needed those
-(the inbox CLI) has been removed, as described above, and the protocol's
-conformance requirements live in `docs/protocol.md` section 10. The
-repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
+This package is markdown and shell, so it has no build and no typecheck. It does
+have a test suite, covering the one thing in here with behaviour:
+`bin/create-agent.sh`. `pnpm test` runs it. The tests drive the script as a
+subprocess against temporary directories, with `HOME`, the agents home, the
+inbox root and `PATH` all redirected, so they cannot touch a real agent or reach
+a real runtime.
+
+The protocol's conformance requirements live in `docs/protocol.md` section 10,
+and are not covered by that suite. The repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
 workspace-wide checks, including the leak gate that also scans this package,
 on every push.
 
 ## Status
 
-Templates, one worked example, the shared multi-agent conventions, the tmux
-launch scripts, the protocol specification, a licence, and CI all exist now.
+Templates, one worked example, the shared multi-agent conventions, the create
+and tmux launch scripts, the protocol specification, a licence, and CI all
+exist now.
 Still to come: a CONTRIBUTING guide, and a second worked example that shows a
 small team of agents using `SYSTEM.md`/`ROSTER.md` together, not just one
 agent in isolation.

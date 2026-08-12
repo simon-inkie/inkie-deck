@@ -96,7 +96,16 @@ launch_agent() {
     # before launching claude, so anything referencing a live secret via
     # ${VAR} resolves. Secrets should come from a real secret store at boot,
     # never raw in git-tracked config.
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude --resume $a $model_flag" Enter
+    #
+    # `--resume <name>` resolves a session DISPLAY NAME, and a session only
+    # acquires one when someone runs `/rename <name>` inside it. A brand new
+    # agent has none, so its very first boot fails with "No conversations found
+    # to resume", leaving a pane with no agent in it, which the idempotency
+    # check above then re-attempts on every subsequent run. Hence the fallback
+    # to a plain launch: the first boot starts a fresh session, and once that
+    # session has been renamed, every later boot resumes it. Run
+    # `/rename <name>` in a new agent's first session.
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude --resume $a $model_flag || claude $model_flag" Enter
   else
     # Any other runtime: launch it plainly. If it needs env vars set before
     # the process starts rather than after, set them here explicitly -- some
