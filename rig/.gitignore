@@ -1,0 +1,3 @@
+# Run artefacts. The report is evidence about one commit on one machine at one
+# moment; committing it would invite reading a stale one as current.
+/out/
