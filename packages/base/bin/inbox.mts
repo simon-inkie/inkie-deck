@@ -251,32 +251,46 @@ export interface Block {
 /**
  * Parse a thread file into a list of blocks.
  * start/end are character offsets into text.
+ *
+ * Only a candidate line whose header actually parses may bound a block
+ * (protocol section 4). A column-0 "## " line that fails the header grammar
+ * is BODY CONTENT of the preceding block, or leading content if no block has
+ * begun. Treating every "## " line as a boundary regardless (which is what
+ * the Python original did, and what this port did at first) silently
+ * truncates a message from any markdown heading its author typed: the bytes
+ * on disk are fine, the loss happens on every read. So candidates are
+ * validated FIRST, and each block runs to the next VALID header, not to the
+ * next header-shaped line.
  */
 export function parseBlocks(text: string): Block[] {
   const blocks: Block[] = [];
-  const starts: number[] = [];
   const headerStartRe = /^## /gm;
+  const valid: {
+    start: number;
+    headerEnd: number;
+    groups: Record<string, string | undefined>;
+  }[] = [];
   for (let m = headerStartRe.exec(text); m !== null; m = headerStartRe.exec(text)) {
-    starts.push(m.index);
-  }
-  for (let i = 0; i < starts.length; i += 1) {
-    const start = starts[i]!;
-    const end = i + 1 < starts.length ? starts[i + 1]! : text.length;
+    const start = m.index;
     let headerEnd = text.indexOf("\n", start);
     if (headerEnd === -1) {
-      headerEnd = end;
+      headerEnd = text.length;
     }
+    const hm = HEADER_RE.exec(text.slice(start, headerEnd));
+    if (hm && hm.groups) {
+      valid.push({ start, headerEnd, groups: hm.groups });
+    }
+  }
+  for (let i = 0; i < valid.length; i += 1) {
+    const { start, headerEnd, groups } = valid[i]!;
+    const end = i + 1 < valid.length ? valid[i + 1]!.start : text.length;
     const headerLine = text.slice(start, headerEnd);
-    const hm = HEADER_RE.exec(headerLine);
-    if (!hm || !hm.groups) {
-      continue;
-    }
     const rawBody = text.slice(headerEnd, end);
     blocks.push({
-      ts: hm.groups.ts!,
-      sender: hm.groups.sender!.trim(),
-      status: hm.groups.status!.trim().toLowerCase(),
-      subject: hm.groups.subject!.trim(),
+      ts: groups.ts!,
+      sender: groups.sender!.trim(),
+      status: groups.status!.trim().toLowerCase(),
+      subject: groups.subject!.trim(),
       body: cleanBody(rawBody),
       header_line: headerLine,
       start,

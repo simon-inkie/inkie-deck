@@ -265,6 +265,53 @@ describe("parseBlocks", () => {
   it("skips an unparseable block rather than crashing", () => {
     expect(inbox.parseBlocks("\n## garbage line\n\nbody\n")).toEqual([]);
   });
+
+  // Protocol section 4: a "## " line that fails the header grammar does NOT
+  // begin a block. It is body content of the preceding block. The port
+  // originally treated every "## " line as a boundary (parity with the Python
+  // original), which silently truncated a message from any markdown heading
+  // its author typed: the bytes on disk were intact, the loss happened on
+  // every read. These tests pin the specified behaviour.
+  it("keeps a markdown heading inside a body as body content, not a boundary", () => {
+    const text =
+      "\n## 2026-07-29T10:00:00Z - from: bob - status: sent - subject: notes\n" +
+      "\nbefore the heading\n" +
+      "## A markdown heading the author typed\n" +
+      "after the heading, which used to be silently lost on read\n";
+    const blocks = inbox.parseBlocks(text);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.body).toContain("before the heading");
+    expect(blocks[0]!.body).toContain("## A markdown heading the author typed");
+    expect(blocks[0]!.body).toContain("after the heading");
+  });
+
+  it("still starts a new block at the next VALID header after a pseudo header", () => {
+    const text =
+      "\n## 2026-07-29T10:00:00Z - from: bob - status: sent - subject: one\n" +
+      "\nfirst body\n" +
+      "## Not a header, just a heading\n" +
+      "more of the first body\n" +
+      "\n## 2026-07-29T10:05:00Z - from: alice - status: read - subject: two\n" +
+      "\nsecond body\n";
+    const blocks = inbox.parseBlocks(text);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]!.body).toContain("## Not a header, just a heading");
+    expect(blocks[0]!.body).toContain("more of the first body");
+    expect(blocks[0]!.body).not.toContain("second body");
+    expect(blocks[1]!.sender).toBe("alice");
+    expect(blocks[1]!.body).toBe("second body");
+  });
+
+  it("treats a pseudo header before any block as leading content, not a block", () => {
+    const text =
+      "## leading pseudo header\n" +
+      "\n## 2026-07-29T10:00:00Z - from: bob - status: sent - subject: hi\n" +
+      "\nreal body\n";
+    const blocks = inbox.parseBlocks(text);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.sender).toBe("bob");
+    expect(blocks[0]!.body).toBe("real body");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -623,6 +670,52 @@ describe("read and status flip", () => {
     // Nothing invented a missing field to make the pseudo header parse.
     expect(after).not.toContain("subject: no status field - status:");
     expect(after).toContain("## 2026-07-29T10:01:00Z - from: bob - subject: no status field\n");
+  });
+
+  it("prints a body's markdown heading and everything after it on read", () => {
+    // End-to-end form of the section 4 rule: the message is displayed WHOLE.
+    // Before the fix the read stopped at the heading, so the sender's words
+    // after it never reached the recipient even though they were on disk.
+    const p = threadFile(silo.get(), "alice", "bob");
+    seedBlock(
+      p, "2026-07-29T10:00:00Z", "bob", "sent", "plan",
+      "intro line\n## Options\nthe part that used to vanish",
+    );
+
+    const result = runCli(["read", "bob"], silo.env({ agentName: "alice" }));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("intro line");
+    expect(result.stdout).toContain("## Options");
+    expect(result.stdout).toContain("the part that used to vanish");
+
+    // And the flip still landed on the real header, exactly four bytes.
+    const raw = fs.readFileSync(p, "utf8");
+    expect(raw).toContain("status: read");
+    expect(raw).not.toContain("status: sent");
+  });
+
+  it("patches the correct block when a pseudo header sits between two real ones", () => {
+    // The status byte offset is derived from the block's own start, so a
+    // pseudo header absorbed into an earlier body must not shift the patch.
+    const p = threadFile(silo.get(), "alice", "bob");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const original =
+      "\n## 2026-07-29T10:00:00Z - from: alice - status: sent - subject: mine\n" +
+      "\nmy own note\n" +
+      "## Interlude heading, not a header\n" +
+      "\n## 2026-07-29T10:05:00Z - from: bob - status: sent - subject: theirs\n" +
+      "\nbob's note\n";
+    fs.writeFileSync(p, original, "utf8");
+
+    const result = runCli(["ack", "bob"], silo.env({ agentName: "alice" }));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("acked 1 block");
+
+    const after = fs.readFileSync(p, "utf8");
+    expect(after.length, "an in-place patch must not resize the file").toBe(original.length);
+    expect(after).toContain("from: alice - status: sent");
+    expect(after).toContain("from: bob - status: read");
+    expect(after).toContain("## Interlude heading, not a header");
   });
 
   it("DOCUMENTED DEFECT, do not fix: an uppercase SENT can never be flipped to read", () => {

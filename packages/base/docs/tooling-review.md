@@ -145,8 +145,23 @@ other side of the port.
 
 Malformed history is tolerated, never repaired. A column-0 `## ` line that is
 not a valid header (a markdown heading inside a message body, or a
-header-shaped artefact from an older writer) is skipped, exactly as the Python
-skipped it, and is never rewritten, normalised or "fixed". Only the four
-status bytes of a matched block are ever written, and writes always resolve
-`realpath` first and mutate in place, so a symlinked thread file stays a
-symlink.
+header-shaped artefact from an older writer) is never rewritten, normalised or
+"fixed". Only the four status bytes of a matched block are ever written, and
+writes always resolve `realpath` first and mutate in place, so a symlinked
+thread file stays a symlink.
+
+One carried behaviour in this area has since been FIXED, as a deliberate,
+documented divergence from the Python original. The Python (and at first this
+port, for parity) treated EVERY column-0 `## ` line as a block boundary and
+then discarded the ones that failed the header grammar. The effect was that a
+markdown heading typed inside a message body silently truncated that message
+from the heading onward: the bytes on disk were intact, the loss happened on
+every read. `docs/protocol.md` section 4 has always said the opposite, that a
+`## ` line failing the header grammar MUST be treated as body content, so the
+implementation was simply not conforming to its own specification. `parseBlocks`
+now validates each candidate header FIRST and bounds a block only at the next
+line that actually parses; a failed candidate stays inside the preceding
+block's body. One visible consequence, which is the point rather than a side
+effect: those lines now appear inside rendered message bodies, because that is
+what they are. Covered by tests in `tests/inbox.test.ts` (parse-level, and
+end-to-end through `inbox read` and the status flip).
