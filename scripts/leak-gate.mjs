@@ -28,7 +28,8 @@
  * `node scripts/leak-gate.mjs --self-test` to prove the new rule fires.
  *
  * USAGE
- *   node scripts/leak-gate.mjs                  scan all git-tracked files
+ *   node scripts/leak-gate.mjs                  scan every file in the working
+ *                                               tree that is not gitignored
  *   node scripts/leak-gate.mjs <file>...        scan the given files only
  *   node scripts/leak-gate.mjs --self-test      prove every rule catches its
  *                                               own sample, using a temp file
@@ -56,33 +57,55 @@ function rule({ label, why, pattern, flags = "i", sample }) {
 
 const RULES = [
   // -- People ---------------------------------------------------------------
+  // Names in this section are matched as BARE SUBSTRINGS, with no \b on
+  // either side, on purpose. A word-boundary anchor is silently disarmed by
+  // adjacent word characters: the observed case was a name preceded by a
+  // backslash-n ESCAPE in test source, where the "n" of the escape is a word
+  // character and kills the boundary, so a \b-anchored rule read the line and
+  // passed it. These names are distinctive enough that a substring match has
+  // no realistic false positives, so they get the stronger form.
   rule({
     label: "principal-first-name",
-    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach.",
-    pattern: ["\\bsi", "mon\\b"],
+    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment).",
+    pattern: ["si", "mon"],
     sample: ["si", "mon"],
   }),
   rule({
     label: "second-principal-first-name",
-    why: "First name of the second person the internal deployment serves.",
-    pattern: ["\\bsop", "hie\\b"],
+    why: "First name of the second person the internal deployment serves. Substring match: distinctive, no \\b (see section comment).",
+    pattern: ["sop", "hie"],
     sample: ["sop", "hie"],
   }),
 
   // -- Agent names ----------------------------------------------------------
   // The internal fleet's agents have individual names. Any of them appearing
-  // here means internal persona or conversation material crossed over. Names
-  // that are also ordinary English words (and would drown the gate in false
-  // positives) are deliberately NOT listed; the path and hostname rules
-  // below cover the places those names would realistically leak.
+  // here means internal persona or conversation material crossed over. The
+  // list is split by match strength:
+  //   - DISTINCTIVE names match as bare substrings (no \b), so a name fused
+  //     into an identifier or preceded by an escape sequence still fires.
+  //     Observed leak shapes: names fused into camelCase variable names, and
+  //     into repo/worktree names, both invisible to \b-bounded rules.
+  //   - Names that are ordinary English words or too short to be distinctive
+  //     keep \b on both sides, or a substring rule would drown the gate in
+  //     false positives. The trade-off is real: \b can be defeated by
+  //     adjacent word characters, so these three are the gate's weakest
+  //     entries and reviewers should keep that in mind.
   rule({
-    label: "fleet-agent-name",
-    why: "Name of an agent on the internal fleet. Public examples must use invented names (alice, bob, courier, ...).",
+    label: "fleet-agent-name-distinctive",
+    why: "Name of an agent on the internal fleet, distinctive enough for substring matching (fires even fused inside identifiers). Public examples must use invented names (alice, bob, courier, ...).",
     pattern: [
-      "\\b(?:ag", "gy|al", "dus|an", "dor|doc", "tor2|hop",
-      "kins|mon", "tani|mag", "gie|se", "th|p", "ea)\\b",
+      "(?:ag", "gy|al", "dus|doc", "tor2|hop",
+      "kins|mon", "tani|mag", "gie)",
     ],
     sample: ["ag", "gy"],
+  }),
+  rule({
+    label: "fleet-agent-name-wordlike",
+    why: "Name of an agent on the internal fleet that is also an English word or too short for substring matching (se.., p.., an..), so it keeps \\b bounds and is weaker than the distinctive rule; a fused occurrence will NOT fire.",
+    pattern: [
+      "\\b(?:se", "th|p", "ea|an", "dor)\\b",
+    ],
+    sample: ["se", "th"],
   }),
 
   // -- Internal repositories and hosts --------------------------------------
@@ -96,7 +119,36 @@ const RULES = [
     sample: ["mission-", "control"],
   }),
 
+  rule({
+    label: "internal-product-name",
+    why: "The internal deployment's former product name (two words, also seen fused or underscore/hyphen-joined). The open product is Inkie Deck; the old name appearing anywhere means internal UI copy, docs or push text crossed over uncleaned. Substring, case-insensitive, so fused identifiers fire too.",
+    pattern: ["mis", "sion[-_ ]?con", "trol"],
+    sample: ["Mis", "sion Con", "trol"],
+  }),
+  rule({
+    label: "internal-tracker-org-slug",
+    why: "The company's real issue-tracker organisation slug (as in linear.app/<slug>). It links straight back to the private workspace; public examples use the example-org placeholder. Substring, case-insensitive.",
+    pattern: ["ink", "ie-ai"],
+    sample: ["ink", "ie-ai"],
+  }),
+
   // -- Network --------------------------------------------------------------
+  rule({
+    label: "tailnet-host-fragment",
+    why: "Fragment of the internal Tailscale hostname or its tailnet domain (the machine name, the tailnet id, or the tailnet MagicDNS domain suffix). Each fragment alone identifies internal network topology, so all three fire independently and as substrings.",
+    pattern: ["(?:a8", "max|tail", "495df7|\\.ts\\.", "net)"],
+    sample: ["a8", "max"],
+  }),
+  rule({
+    label: "cgnat-ipv4-address",
+    why: "A concrete CGNAT-range address (the 100.64/10 block, the range Tailscale assigns) is internal network topology exactly like an RFC 1918 address, but the private-ipv4-address rule below cannot see it because CGNAT is not RFC 1918.",
+    pattern: [
+      "\\b100\\.(?:6[4-9]|",
+      "[7-9]\\d|1[01]\\d|12[0-7])\\.\\d{1,3}\\.\\d{1,3}\\b",
+    ],
+    flags: "",
+    sample: ["100.64", ".0.1"],
+  }),
   rule({
     label: "private-ipv4-address",
     why: "A concrete RFC 1918 address is internal network topology. Docs that need an address use 203.0.113.x (TEST-NET-3) or a hostname placeholder.",
@@ -127,6 +179,19 @@ const RULES = [
     pattern: ["\\bIN", "K-\\d+\\b"],
     flags: "",
     sample: ["IN", "K-123"],
+  }),
+  rule({
+    label: "internal-ticket-id-nonnumeric",
+    why: "Internal issue-tracker identifiers with a non-numeric suffix (the tracker also mints ids with word suffixes, e.g. ...-ROLLOUT-2), which the numeric rule above cannot see. Case-sensitive, no leading \\b so a fused occurrence still fires.",
+    pattern: ["IN", "K-[A-Z0-9]+"],
+    flags: "",
+    sample: ["IN", "K-FUSED2"],
+  }),
+  rule({
+    label: "internal-ticket-id-fused",
+    why: "Internal ticket id with the hyphen dropped and the prefix fused straight onto the number (seen fused into a test FILENAME). Substring, case-insensitive, so it fires inside identifiers and paths.",
+    pattern: ["in", "k\\d+"],
+    sample: ["in", "k700"],
   }),
 
   // -- Email ----------------------------------------------------------------
@@ -176,15 +241,51 @@ function scanFile(filePath) {
   return findings;
 }
 
-function trackedFiles() {
-  const output = execFileSync("git", ["-C", REPO_ROOT, "ls-files", "-z"], {
-    encoding: "utf8",
-  });
+/**
+ * Denied material can live in a file's NAME with no trace in its content:
+ * the observed case was an internal ticket id fused into a test filename,
+ * where every in-content reference had been cleaned and the path itself was
+ * the only remaining copy. Content scanning cannot see that, so the
+ * repo-relative path is run through the same rule set. Findings are
+ * reported as line 0 to distinguish them from content findings.
+ *
+ * @param {string} filePath @returns {{ file: string, line: number, label: string, why: string }[]}
+ */
+function scanFileName(filePath) {
+  const relative = path.relative(REPO_ROOT, filePath);
+  const findings = [];
+  for (const { label, why, re } of RULES) {
+    if (re.test(relative)) {
+      findings.push({ file: filePath, line: 0, label: `${label} (in filename)`, why });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Every file in the working tree that git would consider part of the
+ * repository: tracked, plus untracked-and-not-ignored.
+ *
+ * The `--others --exclude-standard` half is load-bearing rather than
+ * defensive. Material arrives here by being copied in from the internal
+ * side, and it is untracked for as long as it takes to clean it, which is
+ * exactly the window in which the gate is the only thing standing between
+ * that material and a commit. Enumerating tracked files alone made the gate
+ * report "clean (39 files scanned)" over a working tree holding 291
+ * uncleaned files and 2,763 findings: a pass that meant nothing, printed in
+ * the same words as a pass that means everything.
+ */
+function repositoryFiles() {
+  const output = execFileSync(
+    "git",
+    ["-C", REPO_ROOT, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    { encoding: "utf8" },
+  );
   return output
     .split("\0")
     .filter(Boolean)
     .map((relative) => path.join(REPO_ROOT, relative))
-    .filter((absolute) => fs.existsSync(absolute));
+    .filter((absolute) => fs.existsSync(absolute) && fs.statSync(absolute).isFile());
 }
 
 /**
@@ -208,7 +309,22 @@ function selfTest() {
       }
       process.exit(1);
     }
-    console.log(`leak-gate self-test: all ${RULES.length} rules fire correctly`);
+    // Prove the FILENAME scanning path fires too, not just content scanning:
+    // a check that only exercises content would pass while a denied string
+    // hides in a file's name. One representative rule is enough to prove the
+    // path is alive; the per-rule pattern proofs above cover the rule set.
+    const fusedSample = RULES.find((r) => r.label === "internal-ticket-id-fused");
+    if (!fusedSample) {
+      console.error("leak-gate self-test: internal-ticket-id-fused rule missing");
+      process.exit(1);
+    }
+    const namedFile = path.join(dir, `${fusedSample.sample}.txt`);
+    fs.writeFileSync(namedFile, "clean content\n", "utf8");
+    if (scanFileName(namedFile).length === 0) {
+      console.error("leak-gate self-test: filename scanning failed to catch a denied string in a file name");
+      process.exit(1);
+    }
+    console.log(`leak-gate self-test: all ${RULES.length} rules fire correctly (content and filename paths)`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -220,8 +336,8 @@ function main() {
     selfTest();
     return;
   }
-  const files = args.length > 0 ? args : trackedFiles();
-  const findings = files.flatMap(scanFile);
+  const files = args.length > 0 ? args : repositoryFiles();
+  const findings = files.flatMap((file) => [...scanFileName(file), ...scanFile(file)]);
   if (findings.length > 0) {
     for (const { file, line, label, why } of findings) {
       console.error(`${path.relative(REPO_ROOT, file)}:${line}: [${label}] ${why}`);
