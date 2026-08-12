@@ -11,7 +11,7 @@
     "test": "vitest run",
     "check:dashes": "node scripts/check-dashes.mjs",
     "e2e": "node e2e/setup.mjs && playwright test --config=playwright.config.ts",
-    "dev": "react-router dev"
+    "dev": "node scripts/dev.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^2.0.31",
