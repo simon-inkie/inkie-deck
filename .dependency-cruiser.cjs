@@ -39,6 +39,32 @@ module.exports = {
         pathNot: "^packages/base/(bin/inbox\\.mts|package\\.json)$",
       },
     },
+    {
+      name: "domain-imports-only-domain-and-protocol",
+      severity: "error",
+      comment:
+        "packages/deck/src/domain is the neutral domain model: pure types " +
+        "and transitions. It may import other domain modules and (at most) " +
+        "the protocol package's entry points, nothing else. An import of an " +
+        "adapter, a store, UI code or a third-party library is the first " +
+        "step of the domain quietly becoming one deployment's domain.",
+      from: { path: "^packages/deck/src/domain" },
+      to: {
+        pathNot:
+          "^packages/deck/src/domain|^packages/base/(bin/inbox\\.mts|package\\.json)$",
+      },
+    },
+    {
+      name: "domain-uses-no-node-builtins",
+      severity: "error",
+      comment:
+        "The domain has no filesystem, no I/O and no system clock. Any " +
+        "node: builtin import in packages/deck/src/domain smuggles a " +
+        "runtime dependency into the layer whose whole value is not having " +
+        "one; that code belongs in an adapter (e.g. src/store).",
+      from: { path: "^packages/deck/src/domain" },
+      to: { dependencyTypes: ["core"] },
+    },
   ],
   options: {
     doNotFollow: { path: "node_modules" },
