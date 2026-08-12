@@ -2,7 +2,7 @@
   "name": "inkie-deck",
   "version": "0.0.0",
   "private": true,
-  "description": "Web control plane for a fleet of AI agents speaking the inkie-agents-base protocol. Skeleton slice: package boundary, hosted-capability seam and CI guards only, no features yet",
+  "description": "Web control plane for a fleet of AI agents speaking the inkie-agents-base protocol. Empty pending extraction: the package boundary and CI guards exist, the source is copied in from the working platform, not written here",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
@@ -11,13 +11,7 @@
   "dependencies": {
     "inkie-agents-base": "*"
   },
-  "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "e2e": "playwright test"
-  },
   "devDependencies": {
-    "@playwright/test": "^1.53.0",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.0",
     "vitest": "^3.1.0"

@@ -13,12 +13,11 @@
     "packages/deck"
   ],
   "scripts": {
-    "typecheck": "npm run typecheck --workspaces",
-    "test": "npm test --workspaces",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
     "check:boundaries": "depcruise packages",
     "check:leaks": "node scripts/leak-gate.mjs",
-    "check:licence": "node scripts/licence-gate.mjs",
-    "e2e": "npm run e2e --workspace inkie-deck"
+    "check:licence": "node scripts/licence-gate.mjs"
   },
   "devDependencies": {
     "dependency-cruiser": "^16.10.0",

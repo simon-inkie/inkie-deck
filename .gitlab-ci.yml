@@ -1,7 +1,6 @@
 stages:
   - test
   - guards
-  - e2e
 
 .rules_template:
   rules:
@@ -67,10 +66,3 @@ licence-gate:
 # One honest smoke test: there is no UI in this slice, so the harness only
 # proves it can launch a browser and assert. Real journeys arrive with the
 # first UI.
-e2e:
-  extends: .rules_template
-  stage: e2e
-  image: mcr.microsoft.com/playwright:v1.53.0-noble
-  script:
-    - npm ci
-    - npm run e2e

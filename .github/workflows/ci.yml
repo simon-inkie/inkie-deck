@@ -87,27 +87,3 @@ jobs:
 
       - name: Licence gate
         run: npm run check:licence
-
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.x"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-        working-directory: packages/deck
-
-      # One honest smoke test: there is no UI in this slice, so the harness
-      # only proves it can launch a browser and assert. Real journeys arrive
-      # with the first UI.
-      - name: Playwright smoke
-        run: npm run e2e
