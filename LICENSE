@@ -175,13 +175,7 @@
 
    END OF TERMS AND CONDITIONS
 
-   Copyright 2026 COMPANY-REGISTERED-NAME-PLACEHOLDER
-
-   NOTE: the copyright holder above is a deliberate placeholder. The exact
-   registered name of the limited company that holds copyright has not yet
-   been confirmed, and guessing it (or substituting a person's name) would
-   be worse than blocking. CI fails on purpose while this placeholder is
-   present; see scripts/licence-gate.mjs.
+   Copyright 2026 Inkie Limited
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
