@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // bin/inbox.mts is run by Node's native type stripping, never compiled.
+    // Type stripping erases annotations without evaluating them, so the source
+    // must contain no syntax that has runtime meaning (enums, namespaces,
+    // parameter properties, non-type-only re-exports of types).
+    // erasableSyntaxOnly makes tsc reject that syntax instead of letting it
+    // slip in and break `node bin/inbox.mts` at runtime.
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["bin/**/*.mts", "tests/**/*.ts", "tests/**/*.mts"]
+}

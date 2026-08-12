@@ -1,0 +1,27 @@
+stages:
+  - test
+
+# Both current LTS lines. The floor is Node 22.18, the first release where
+# native TypeScript type stripping is on by default, which is what lets
+# bin/inbox.mts run with no build step.
+.test_template:
+  stage: test
+  script:
+    # Deliberately BEFORE `npm ci`: the tool advertises that it runs from a
+    # fresh clone with nothing installed, so prove that on every push rather
+    # than trusting it.
+    - AGENT_NAME=ci node bin/inbox.mts unread
+    - npm ci
+    - npm run typecheck
+    - npm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+test:node-22:
+  extends: .test_template
+  image: node:22
+
+test:node-24:
+  extends: .test_template
+  image: node:24

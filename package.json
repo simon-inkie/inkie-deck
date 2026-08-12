@@ -1,0 +1,27 @@
+{
+  "name": "inkie-deck-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace root for Inkie Deck, a web control plane for a fleet of AI agents, and the bundled agent protocol package it is built on",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "workspaces": [
+    "packages/base",
+    "packages/deck"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test --workspaces",
+    "check:boundaries": "depcruise packages",
+    "check:leaks": "node scripts/leak-gate.mjs",
+    "check:licence": "node scripts/licence-gate.mjs",
+    "e2e": "npm run e2e --workspace inkie-deck"
+  },
+  "devDependencies": {
+    "dependency-cruiser": "^16.10.0",
+    "typescript": "^5.8.0"
+  }
+}
