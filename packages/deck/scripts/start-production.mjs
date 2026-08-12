@@ -3,7 +3,8 @@
  *
  * The systemd unit's ExecStart. Differences from dev.mjs, deliberately:
  *   - NO fixture seeding, NO .runtime sandbox, NO MC_NOW pin (real clock).
- *   - All four roots come from the EnvironmentFile (.env.production) and are
+ *   - All four roots come from the EnvironmentFile (.env.production) under
+ *     systemd, or from a local .env for a hand-run start, and are
  *     validated HERE, fail-fast, before anything listens - a misconfigured
  *     daemon must crash with the bad root named in the journal, not sit
  *     "active (running)" while 500ing (TASK-434 boot validation, daemon shape).
@@ -19,6 +20,29 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 const root = process.cwd();
+
+// --- Local .env, if there is one (must precede root validation) ------------
+// Under systemd the roots arrive through the unit's EnvironmentFile, so this
+// launcher never needed to load a file of its own. A hand-run production
+// start has no EnvironmentFile, and the documented "copy .env.example to
+// .env" step silently did nothing here (Vite honours .env in dev, so the
+// same file worked in dev and was ignored in production, and the launcher
+// reported a variable the user had just set as "not set").
+//
+// process.loadEnvFile is native to Node (the 22.18 floor), so this adds no
+// dependency. It does NOT overwrite a variable already present in the
+// environment, so under systemd every value still comes from the unit and
+// this is a no-op for that deployment.
+//
+// .env.production is deliberately NOT read here: that file is systemd's
+// input, and reading it too would give one file two owners.
+const envFile = path.join(root, ".env");
+if (existsSync(envFile)) {
+  process.loadEnvFile(envFile);
+  console.log(`[prod] .env loaded from ${envFile} (process environment wins)`);
+} else {
+  console.log(`[prod] .env absent at ${envFile} - using the process environment only`);
+}
 
 // --- Fail-fast root validation (journal names the offender) ---------------
 const REQUIRED_ROOTS = [
@@ -61,6 +85,17 @@ console.log(`[prod] PROJECTS_ROOT=${process.env["PROJECTS_ROOT"]}`);
 console.log(`[prod] DATA_ROOT=${process.env["DATA_ROOT"]}`);
 console.log(`[prod] MC_NOW=${process.env["MC_NOW"] || "(unset - real clock)"}`);
 console.log(`[prod] app on http://${appHost}:${appPort}`);
+// A loopback bind is the right default behind a proxy, and it is silent: a
+// published container port or a request from another machine simply gets
+// nothing, while this banner still reads like a healthy start. Say so.
+if (appHost === "127.0.0.1" || appHost === "localhost" || appHost === "::1") {
+  console.log(
+    `[prod] HOST=${appHost} is loopback, so ONLY this machine can reach the app.` +
+      ` That is the default on purpose (this deployment sits behind a proxy).` +
+      ` To reach it from a container port map or another machine set HOST=0.0.0.0,` +
+      ` in .env or in the environment, and put access control in front of it.`
+  );
+}
 console.log(
   `[prod] DEEPGRAM_API_KEY ${process.env["DEEPGRAM_API_KEY"] ? "present" : "ABSENT - voice disabled"}`
 );
@@ -96,17 +131,32 @@ pushWatcher.on("exit", (code) => {
 });
 
 // --- The app server ---------------------------------------------------------
-// Run react-router-serve's REAL JS entry with the SAME node binary as this
-// process (process.execPath) - never the `.bin/react-router-serve` shell shim
-// (node would try to parse the shim as JS) and never a PATH-resolved `node`
-// (systemd's login shell resolved system node v18, not nvm v22; RR7 needs 20+).
+// Run react-router-serve's declared `bin` entry with the SAME node binary as
+// this process (process.execPath). Both original hazards are still avoided:
+// never `node_modules/.bin/react-router-serve`, which really is a /bin/sh
+// shim that node cannot parse as JS, and never a PATH-resolved `node`
+// (systemd's login shell resolved system node v18, not nvm v22; RR7 needs
+// 20+).
+//
+// bin.js is NOT that shim. It is plain JavaScript, it is the package's
+// declared `bin` entry, and `node bin.js` runs fine. Its entire job is to set
+// NODE_ENV=production when nothing else has, BEFORE it requires ./dist/cli.
+// Targeting dist/cli.js directly skipped exactly that: dist/cli.js sets
+// NODE_ENV only after its own requires, one of which pulls in React, whose
+// conditional exports then resolve against an unset NODE_ENV. The render ends
+// up mixing react.development.js with react-dom-server.node.production.js and
+// every request 500s with "dispatcher.getOwner is not a function", which
+// names nothing that leads back to NODE_ENV.
+//
+// No change for the systemd deployment: the unit sets NODE_ENV explicitly, so
+// bin.js's `??` is dead code there, and bin.js requires the very same
+// dist/cli.js this line used to name.
 const serveCli = path.join(
   root,
   "node_modules",
   "@react-router",
   "serve",
-  "dist",
-  "cli.js"
+  "bin.js"
 );
 if (!existsSync(serveCli)) {
   console.error(`[prod] FATAL: ${serveCli} missing - reinstall dependencies.`);
