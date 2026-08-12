@@ -4,9 +4,10 @@
 **Status:** proposed. Not yet frozen. Breaking changes are still possible until 1.0.
 
 This document is normative. It defines the on-disk format and the behaviour an
-implementation must exhibit to interoperate. `bin/inbox.mts` in this repository
-is *a* conforming implementation and is not itself the specification: where the
-two disagree, one of them is a bug, and this document says which.
+implementation must exhibit to interoperate. The application in `packages/deck`
+of this repository is *a* conforming implementation and is not itself the
+specification: where the two disagree, one of them is a bug, and this document
+says which.
 
 `SYSTEM.md` describes conventions for a team of agents and is not normative.
 It is an example of a document that happens to use this protocol.
@@ -284,8 +285,8 @@ informational.
 ## 10. Conformance
 
 An implementation is conforming if it satisfies every MUST in this document.
-The suite in `tests/` exercises the following, and an implementation claiming
-conformance SHOULD pass an equivalent set:
+An implementation claiming conformance SHOULD pass a test suite exercising at
+least the following:
 
 1. header parsing across all three separator forms, case insensitively
 2. a dash character inside a sender name or subject parsing correctly

@@ -1,0 +1,55 @@
+[
+  {
+    "content_plan_id": "may-2026-bramble",
+    "client_id": "bramble",
+    "status": "scheduled",
+    "type": "month",
+    "month": 5,
+    "year": 2026,
+    "items": [
+      { "date": "2026-05-12" },
+      { "date": "2026-05-19" },
+      { "date": "2026-05-28" },
+      { "date": "2026-06-01" },
+      { "date": "2026-06-03" }
+    ]
+  },
+  {
+    "content_plan_id": "june-2026-bramble",
+    "client_id": "bramble",
+    "status": "scheduled",
+    "type": "month",
+    "month": 6,
+    "year": 2026,
+    "items": [
+      { "date": "2026-06-02" },
+      { "date": "2026-06-10" },
+      { "date": "2026-06-17" },
+      { "date": "2026-06-24" }
+    ]
+  },
+  {
+    "content_plan_id": "june-2026-bramble-draft",
+    "client_id": "bramble",
+    "status": "draft",
+    "type": "month",
+    "month": 6,
+    "year": 2026,
+    "items": [
+      { "date": "2026-06-05" },
+      { "date": "2026-06-12" }
+    ]
+  },
+  {
+    "content_plan_id": "july-2026-acme",
+    "client_id": "acme",
+    "status": "scheduled",
+    "type": "date-range",
+    "start": "2026-07-01",
+    "end": "2026-07-31",
+    "items": [
+      { "date": "2026-07-07" },
+      { "date": "2026-07-14" }
+    ]
+  }
+]

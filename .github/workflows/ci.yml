@@ -13,37 +13,36 @@ jobs:
       fail-fast: false
       matrix:
         # Both current LTS lines. The floor is Node 22.18, the first release
-        # where native TypeScript type stripping is on by default, which is
-        # what lets packages/base run with no build step.
+        # where native TypeScript type stripping is on by default.
         node-version: ["22.x", "24.x"]
     steps:
       - uses: actions/checkout@v4
+
+      # Reads the pinned version from the "packageManager" field in
+      # package.json, so CI and local installs use the same pnpm.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
 
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
+          cache: pnpm
 
-      # Deliberately BEFORE `npm ci`: the protocol CLI advertises that it
-      # runs from a fresh clone with nothing installed, so prove that on
-      # every push rather than trusting it.
-      - name: Run the protocol CLI with no dependencies installed
-        run: AGENT_NAME=ci node packages/base/bin/inbox.mts unread
-
+      # This job runs exactly the command list in the root README's
+      # Development section, in the same order, so CI can never report
+      # greener than a developer's local run.
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: npm run typecheck
+        run: pnpm typecheck
 
-      # Includes the capability-absence suite in packages/deck: with no
-      # hosted service configured the client must degrade, never break.
       - name: Unit tests
-        run: npm test
+        run: pnpm test
 
       - name: Dependency boundary check
-        run: npm run check:boundaries
+        run: pnpm check:boundaries
 
   guards:
     runs-on: ubuntu-latest
@@ -86,4 +85,4 @@ jobs:
           node-version: "22.x"
 
       - name: Licence gate
-        run: npm run check:licence
+        run: node scripts/licence-gate.mjs

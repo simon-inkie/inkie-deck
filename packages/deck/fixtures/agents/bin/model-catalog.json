@@ -1,0 +1,10 @@
+{
+  "_doc": "E2E fixture copy of packages/base/bin/model-catalog.json (selector contract). Keyed by runtime; entries { id, label }.",
+  "claude": [
+    { "id": "opus", "label": "Opus 4.8" },
+    { "id": "sonnet", "label": "Sonnet 4.6" },
+    { "id": "haiku", "label": "Haiku 4.5" }
+  ],
+  "agy": [],
+  "codex": []
+}

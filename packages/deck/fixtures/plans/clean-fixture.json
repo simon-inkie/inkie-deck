@@ -1,0 +1,52 @@
+[
+  {
+    "content_plan_id": "q2-2026-widgets",
+    "client_id": "widgets-inc",
+    "status": "scheduled",
+    "type": "date-range",
+    "start": "2026-04-01",
+    "end": "2026-06-30",
+    "items": [
+      { "date": "2026-04-08" },
+      { "date": "2026-04-22" },
+      { "date": "2026-05-06" }
+    ]
+  },
+  {
+    "content_plan_id": "q3-2026-widgets",
+    "client_id": "widgets-inc",
+    "status": "scheduled",
+    "type": "date-range",
+    "start": "2026-07-01",
+    "end": "2026-09-30",
+    "items": [
+      { "date": "2026-07-08" },
+      { "date": "2026-07-22" },
+      { "date": "2026-08-05" }
+    ]
+  },
+  {
+    "content_plan_id": "june-2026-globex",
+    "client_id": "globex",
+    "status": "scheduled",
+    "type": "month",
+    "month": 6,
+    "year": 2026,
+    "items": [
+      { "date": "2026-06-03" },
+      { "date": "2026-06-17" }
+    ]
+  },
+  {
+    "content_plan_id": "june-2026-initech",
+    "client_id": "initech",
+    "status": "scheduled",
+    "type": "month",
+    "month": 6,
+    "year": 2026,
+    "items": [
+      { "date": "2026-06-10" },
+      { "date": "2026-06-24" }
+    ]
+  }
+]

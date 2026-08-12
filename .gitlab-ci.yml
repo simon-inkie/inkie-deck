@@ -8,22 +8,24 @@ stages:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 # Both current LTS lines. The floor is Node 22.18, the first release where
-# native TypeScript type stripping is on by default, which is what lets
-# packages/base run with no build step.
+# native TypeScript type stripping is on by default.
+#
+# corepack activates the exact pnpm pinned in package.json's "packageManager"
+# field, so CI and local installs use the same package manager version. The
+# script then runs exactly the command list in the root README's Development
+# section, in the same order, so CI can never report greener than a
+# developer's local run.
 .test_template:
   extends: .rules_template
   stage: test
+  before_script:
+    - corepack enable
+    - corepack prepare --activate
   script:
-    # Deliberately BEFORE `npm ci`: the protocol CLI advertises that it runs
-    # from a fresh clone with nothing installed, so prove that on every push
-    # rather than trusting it.
-    - AGENT_NAME=ci node packages/base/bin/inbox.mts unread
-    - npm ci
-    - npm run typecheck
-    # Includes the capability-absence suite in packages/deck: with no hosted
-    # service configured the client must degrade, never break.
-    - npm test
-    - npm run check:boundaries
+    - pnpm install --frozen-lockfile
+    - pnpm typecheck
+    - pnpm test
+    - pnpm check:boundaries
 
 test:node-22:
   extends: .test_template
@@ -62,7 +64,3 @@ licence-gate:
   image: node:22
   script:
     - node scripts/licence-gate.mjs
-
-# One honest smoke test: there is no UI in this slice, so the harness only
-# proves it can launch a browser and assert. Real journeys arrive with the
-# first UI.

@@ -9,7 +9,7 @@
  *   - deck MAY depend on base, but only through base's published entry
  *     points, never by reaching into its internals
  *
- * These rules run in CI on every push (`npm run check:boundaries`) so a
+ * These rules run in CI on every push (`pnpm check:boundaries`) so a
  * violation fails the pipeline rather than surviving as a note in a README.
  */
 module.exports = {
@@ -36,7 +36,7 @@ module.exports = {
       from: { path: "^packages/deck" },
       to: {
         path: "^packages/base",
-        pathNot: "^packages/base/(bin/inbox\\.mts|package\\.json)$",
+        pathNot: "^packages/base/package\\.json$",
       },
     },
   ],

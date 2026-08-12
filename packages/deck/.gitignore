@@ -1,0 +1,31 @@
+.DS_Store
+.env
+# Daemon config + age-encrypted secrets (TASK-435) - machine-local, never committed
+.env.production
+.mc-secrets.age
+/node_modules/
+node_modules
+
+# React Router
+/.react-router/
+/build/
+
+# Atomic write temp files
+*.tmp-*
+
+# Orchestration run logs (not project artifacts)
+.gsd-*.log
+
+# App-owned runtime queue state
+data/
+
+# Local dev inbox (copied from fixtures/demo-inbox by scripts/dev.mjs so manual
+# clicking/answering never dirties committed fixtures)
+/.runtime/
+
+# Playwright test artifacts
+/test-results/
+/playwright-report/
+/.playwright/
+/blob-report/
+e2e/.e2e-env

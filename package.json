@@ -8,13 +8,10 @@
   "engines": {
     "node": ">=22.18.0"
   },
-  "workspaces": [
-    "packages/base",
-    "packages/deck"
-  ],
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm test --workspaces --if-present",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
     "check:boundaries": "depcruise packages",
     "check:leaks": "node scripts/leak-gate.mjs",
     "check:licence": "node scripts/licence-gate.mjs"

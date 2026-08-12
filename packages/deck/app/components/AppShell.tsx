@@ -1,0 +1,565 @@
+/**
+ * AppShell.tsx - the two-pane chat frame: top bar + sidebar + centre Outlet.
+ *
+ * Top bar carries the Inkie Deck wordmark, a reserved (stubbed) Projects
+ * tab, and the needs-you bell - a notifications dropdown listing the open
+ * decisions to action now, each deep-linking to its message (Alex's
+ * brain-dump requirement). The body is transparent so the cream + halftone
+ * paper texture from app.css whispers through the centre pane.
+ *
+ * Responsive layout (RESPONSIVE-RETROFIT-PLAN):
+ *   - Under md: sidebar hidden; horizontal agent strip appears below the top bar.
+ *   - md+: sidebar visible as before; agent strip hidden.
+ *
+ * Presentational only - data arrives via props from the shell layout loader.
+ * ASCII only - no em-dashes (FND-05).
+ */
+import { useEffect, useState } from "react";
+import { Outlet, Link, NavLink, useLocation, useParams } from "react-router";
+import { Bell, CalendarClock, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, X } from "lucide-react";
+import { Sidebar, type SidebarAgent } from "./Sidebar";
+import {
+  ResizablePanelGroup,
+  ResizablePanel,
+  ResizableHandle,
+} from "./ui/resizable";
+import { WorkStrip } from "./WorkStrip";
+import { PushToggle } from "./PushToggle";
+import { ModelSelector, type ModelSelectorData } from "./ModelSelector";
+import { FilesPanelToggle } from "./FilesPanel";
+import type { MiniCard } from "~/lib/projects.shared";
+import { Avatar } from "./ui/avatar";
+import { Badge } from "./ui/badge";
+import { cn } from "~/lib/utils";
+import { formatRelative } from "~/lib/time";
+import { useLiveRevalidate } from "~/lib/use-live-revalidate";
+import { useMessageChime } from "~/lib/message-chime";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "./ui/dropdown-menu";
+
+/**
+ * One needs-you item (drives the bell dropdown). COUNT SEMANTICS (peer
+ * review, Atlas TASK-438): the bell badge and the home list consume the SAME
+ * deriveNeedsYou output - the badge count IS the list length. One source of
+ * truth; a badge of 2 over a list of 5 would read as the bug it would be.
+ */
+export interface NeedsItem {
+  /** Stable id from deriveNeedsYou (React key). */
+  id: string;
+  kind: "decision" | "action" | "blocked";
+  agent: string;
+  subject: string;
+  createdAt: string;
+  overdue: boolean;
+  /** Deep link: decisions/actions -> thread anchor; blocked -> /projects. */
+  deepLink: string;
+}
+
+/**
+ * Rebuild a search string with the view param set or removed, preserving
+ * every other param (doc panel, debug, etc). TASK-437 amendment helper.
+ */
+function threadViewSearch(search: string, view: string | undefined): string {
+  const params = new URLSearchParams(search);
+  if (view === undefined) params.delete("view");
+  else params.set("view", view);
+  const s = params.toString();
+  return s === "" ? "" : `?${s}`;
+}
+
+interface AppShellProps {
+  agents: SidebarAgent[];
+  needsItems: NeedsItem[];
+  needsCount: number;
+  /**
+   * TASK-454: the active thread agent's live (non-done) cards. Empty on
+   * non-thread routes. Drives the top-bar work-panel trigger + slide-out.
+   */
+  workCards: MiniCard[];
+  /**
+   * TASK-462: whether this instance exposes the tmux surface (Team tab +
+   * thread terminal toggle). Robin's instance runs with this off - typing
+   * into agent sessions stays Alex's consent surface. Default true.
+   */
+  tmuxOn?: boolean;
+  /**
+   * TASK-460: whether the cron admin page is accessible on this instance.
+   * Alex-instance-only for v1. Shows a nav link when true.
+   */
+  cronAdminOn?: boolean;
+  /**
+   * TASK-462: workspace label chip next to the wordmark ("Robin's
+   * workspace") so it is unmistakable whose instance this is. Absent on
+   * Alex's instance.
+   */
+  instanceLabel?: string;
+  /**
+   * M5: the active thread agent's configured model + catalog options.
+   * Present only on operator instances (modelSelectorEnabled) when a thread
+   * is open and the agent's runtime has options - absence renders nothing,
+   * so Robin's instance never sees the control.
+   */
+  modelSelector?: ModelSelectorData;
+  /**
+   * TASK-691: whether this instance has an activity root configured. Gates a
+   * nav link to /tmux (the activity-panel home, see tmux.tsx) - re-added
+   * 2026-07-31 after Alex found the page unreachable (the standalone Team
+   * nav link was removed 2026-06-11, before this feature existed).
+   * Relabelled "Activity" since the page's job is now the overview panel,
+   * not the old duplicate terminal-browsing surface that link used to open.
+   */
+  activityNavOn?: boolean;
+}
+
+export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false }: AppShellProps) {
+  const params = useParams();
+  const active = params.agent;
+  const location = useLocation();
+
+  // TASK-437 amendment: per-thread terminal mode is URL state (?view=tmux).
+  const threadTmuxView =
+    active !== undefined &&
+    new URLSearchParams(location.search).get("view") === "tmux";
+
+  // TASK-455: one polling mount makes every active loader live (shell, home,
+  // thread, projects, lens). Paused on hidden tab; never overlaps itself.
+  // TASK-437: route-aware interval - terminal surfaces (Team tab or a thread
+  // in tmux view) want a ~1s live feel; everything else stays at the 3s
+  // default. Still exactly ONE timer.
+  useLiveRevalidate(
+    location.pathname.startsWith("/tmux") || threadTmuxView ? 1000 : undefined
+  );
+  // TASK-470 follow-up: soft in-app ping when a new unread message lands
+  // (covers the open-tab case push notifications do not need to).
+  useMessageChime(agents);
+  // TASK-457: the active agent's avatar for the app-bar identity fold.
+  const activeAgent = active ? agents.find((a) => a.name === active) : undefined;
+  const activeAvatarUrl = activeAgent?.avatarUrl;
+  const activeHasUnread = activeAgent?.hasUnread === true;
+
+  // TASK-454: slide-out work panel ("properties" column). Ephemeral UI state -
+  // no URL param. Closes on any navigation (card rows navigate to /projects).
+  const [workOpen, setWorkOpen] = useState(false);
+  useEffect(() => {
+    setWorkOpen(false);
+  }, [location.pathname]);
+
+  return (
+    <div className="flex h-screen flex-col">
+      {/* Top bar */}
+      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/60 px-4 backdrop-blur-sm">
+        <div className="flex min-w-0 items-center gap-4">
+          <Link
+            to="/"
+            aria-label="Inkie Deck home"
+            className="font-display text-lg font-black uppercase tracking-tight text-foreground hover:opacity-80 transition-opacity"
+          >
+            {/* Mobile UX (Alex 2026-06-11): the full wordmark squeezed the
+                thread identity + view toggle off-screen on phones. */}
+            <span className="md:hidden">MC</span>
+            <span className="hidden md:inline">Inkie Deck</span>
+          </Link>
+          {instanceLabel ? (
+            <span
+              data-testid="instance-label"
+              className="label-mono rounded-full border-2 border-accent/40 bg-accent/10 px-3 py-1 text-xs text-foreground"
+            >
+              {instanceLabel}
+            </span>
+          ) : null}
+          {/* Thread C: Decisions + Actions tab - always shown (unlike the
+              cron-gated Nudges link). Additive second surface; the homepage
+              and bell count are unchanged. */}
+          <NavLink
+            to="/cards"
+            className={({ isActive }) =>
+              isActive
+                ? "label-mono min-h-[44px] hidden md:flex items-center text-foreground underline underline-offset-4"
+                : "label-mono min-h-[44px] hidden md:flex items-center text-muted-foreground transition-colors hover:text-foreground"
+            }
+          >
+            Cards
+          </NavLink>
+          {/* Projects board NavLink - TASK-432. Mobile: lives in the agent
+              strip instead (the top bar cannot fit nav + identity + toggle). */}
+          <NavLink
+            to="/projects"
+            className={({ isActive }) =>
+              isActive
+                ? "label-mono min-h-[44px] hidden md:flex items-center text-foreground underline underline-offset-4"
+                : "label-mono min-h-[44px] hidden md:flex items-center text-muted-foreground transition-colors hover:text-foreground"
+            }
+          >
+            Projects
+          </NavLink>
+          {/* TASK-460: scheduler admin link - operator-only, shown only when cronAdminOn. */}
+          {cronAdminOn ? (
+            <NavLink
+              to="/scheduler"
+              className={({ isActive }) =>
+                isActive
+                  ? "label-mono min-h-[44px] hidden md:flex items-center text-foreground underline underline-offset-4"
+                  : "label-mono min-h-[44px] hidden md:flex items-center text-muted-foreground transition-colors hover:text-foreground"
+              }
+            >
+              Nudges
+            </NavLink>
+          ) : null}
+          {/* TASK-437's Team tab removed (Alex 2026-06-11: "we can remove
+              team") - the per-thread chat/terminal toggle superseded it. The
+              /tmux route stayed functional for old bookmarks, just unlinked,
+              until TASK-691's activity panel landed there and had nothing
+              pointing to it. Re-added 2026-07-31, relabelled "Activity" -
+              gated on activityNavOn (this instance has an activity root
+              configured) so an instance without one shows no dead link. */}
+          {activityNavOn ? (
+            <NavLink
+              to="/tmux"
+              className={({ isActive }) =>
+                isActive
+                  ? "label-mono min-h-[44px] hidden md:flex items-center text-foreground underline underline-offset-4"
+                  : "label-mono min-h-[44px] hidden md:flex items-center text-muted-foreground transition-colors hover:text-foreground"
+              }
+            >
+              Activity
+            </NavLink>
+          ) : null}
+          {/* TASK-454: active thread's identity folds into the app bar - the
+              standalone thread header row is gone, messages start at the top.
+              thread-header testid migrates WITH the element so the 12 e2e
+              toContainText pins survive unedited. */}
+          {active ? (
+            <span className="flex min-w-0 items-center gap-2">
+              <span aria-hidden="true" className="h-6 w-px shrink-0 bg-border" />
+              <Avatar name={active} src={activeAvatarUrl} className="h-7 w-7 text-[10px]" />
+              <h1
+                data-testid="thread-header"
+                className="font-display truncate text-lg font-black uppercase tracking-tight text-foreground"
+              >
+                {active}
+              </h1>
+              {/* TASK-437 amendment: chat/terminal segmented toggle. The chat
+                  half carries an unread dot while terminal mode holds back
+                  read receipts (Atlas complement - the toggle carries the
+                  signal the honest receipt creates). */}
+              {tmuxOn ? (
+              <span
+                role="group"
+                aria-label="Thread view"
+                className="ml-1 inline-flex shrink-0 items-center rounded-md border border-border bg-card p-0.5"
+              >
+                <Link
+                  to={`${location.pathname}${threadViewSearch(location.search, undefined)}`}
+                  data-testid="thread-view-chat"
+                  aria-label="Show messages"
+                  aria-current={!threadTmuxView ? "true" : undefined}
+                  className={cn(
+                    "relative inline-flex min-h-9 min-w-9 items-center justify-center rounded transition-colors",
+                    !threadTmuxView
+                      ? "bg-primary/10 text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <MessageSquare className="size-4" />
+                  {threadTmuxView && activeHasUnread ? (
+                    <span
+                      data-testid="thread-view-chat-unread"
+                      className="absolute right-0.5 top-0.5 size-2 rounded-full bg-accent"
+                      aria-label="Unread messages"
+                    />
+                  ) : null}
+                </Link>
+                <Link
+                  to={`${location.pathname}${threadViewSearch(location.search, "tmux")}`}
+                  data-testid="thread-view-tmux"
+                  aria-label="Show live terminal"
+                  aria-current={threadTmuxView ? "true" : undefined}
+                  className={cn(
+                    "inline-flex min-h-9 min-w-9 items-center justify-center rounded transition-colors",
+                    threadTmuxView
+                      ? "bg-primary/10 text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <TerminalSquare className="size-4" />
+                </Link>
+              </span>
+              ) : null}
+              {/* M5: configured-model chip + dropdown. Operator-only by
+                  construction - the shell loader passes the prop only when
+                  modelSelectorEnabled, so a principal instance mounts
+                  nothing here. */}
+              {modelSelector !== undefined ? (
+                <ModelSelector data={modelSelector} />
+              ) : null}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex items-center gap-1">
+          {/* File pinner: per-thread Files panel toggle. Chat view only (the
+              manifest is built from chat messages, not the tmux pane). Pure
+              URL-state (?files=1) - no shell prop needed. */}
+          {active && !threadTmuxView ? <FilesPanelToggle /> : null}
+          {/* TASK-454: work-panel trigger - left of the bell, present only when
+              the open thread's agent has live cards. Same badge grammar as
+              the bell. */}
+          {active && workCards.length > 0 ? (
+            <button
+              type="button"
+              data-testid="work-strip-trigger"
+              aria-label={`${active}'s cards (${workCards.length})`}
+              aria-expanded={workOpen}
+              onClick={() => setWorkOpen((open) => !open)}
+              className={cn(
+                "relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                workOpen ? "bg-muted text-foreground" : "text-muted-foreground"
+              )}
+            >
+              <KanbanSquare className="size-5" />
+              <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 font-mono text-[10px] font-bold leading-none text-primary-foreground">
+                {workCards.length}
+              </span>
+            </button>
+          ) : null}
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            {/* Bell tap target: min 44px per tap-target sweep */}
+            <button
+              type="button"
+              aria-label={`Needs you${needsCount > 0 ? ` (${needsCount})` : ""}`}
+              className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Bell className="size-5" />
+              {needsCount > 0 ? (
+                <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 font-mono text-[10px] font-bold leading-none text-accent-foreground">
+                  {needsCount}
+                </span>
+              ) : null}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-80">
+            <DropdownMenuLabel>
+              Needs you{needsCount > 0 ? ` (${needsCount})` : ""}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {needsItems.length === 0 ? (
+              <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                You are all caught up.
+              </div>
+            ) : (
+              (() => {
+                const decisions = needsItems.filter(i => i.kind === "decision");
+                const todos = needsItems.filter(i => i.kind === "action");
+                const blocked = needsItems.filter(i => i.kind === "blocked");
+                const sections: Array<{ label: string; items: typeof needsItems }> = [
+                  { label: "Decisions", items: decisions },
+                  { label: "Todos", items: todos },
+                  { label: "Blocked", items: blocked },
+                ];
+                return sections.flatMap(({ label, items }) => {
+                  if (items.length === 0) return [];
+                  return [
+                    <DropdownMenuSeparator key={`sep-${label}`} />,
+                    <DropdownMenuLabel key={`label-${label}`} className="label-mono text-[10px] text-muted-foreground px-2 py-1">
+                      {label} ({items.length})
+                    </DropdownMenuLabel>,
+                    ...items.map((item) => (
+                      <DropdownMenuItem key={item.id} asChild>
+                        <Link
+                          to={item.deepLink}
+                          className="flex flex-col items-start gap-0.5"
+                        >
+                          <span className="flex w-full items-center gap-2">
+                            <span className="font-display text-xs font-bold uppercase tracking-tight text-foreground">
+                              {item.agent}
+                            </span>
+                            {item.overdue ? (
+                              <Badge variant="destructive" className="ml-auto text-[10px]">
+                                Overdue
+                              </Badge>
+                            ) : null}
+                            <time
+                              dateTime={item.createdAt}
+                              title={item.createdAt}
+                              className="label-mono text-[10px] text-muted-foreground ml-auto"
+                            >
+                              {formatRelative(item.createdAt)}
+                            </time>
+                          </span>
+                          <span className="line-clamp-2 text-sm text-foreground/80">
+                            {item.subject}
+                          </span>
+                        </Link>
+                      </DropdownMenuItem>
+                    )),
+                  ];
+                });
+              })()
+            )}
+            {/* TASK-470: per-device push enrolment lives where notifications
+                live. The toggle renders nothing on unsupported browsers. */}
+            <DropdownMenuSeparator />
+            <PushToggle />
+            {/* Build stamp (2026-06-12): proves which CLIENT bundle this
+                device is running - the no-404 deploy keeps old assets alive,
+                so a long-lived phone tab can hold yesterday's JS. Reachable
+                from any viewport via the bell. */}
+            <DropdownMenuSeparator />
+            <div
+              data-testid="build-stamp"
+              title="The build this device is running - if it differs from the latest deploy, force-refresh"
+              className="label-mono px-2 py-1 text-right text-[10px] text-muted-foreground/60"
+            >
+              build {typeof __MC_BUILD_SHA__ === "string" ? __MC_BUILD_SHA__ : "unknown"}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        </div>
+      </header>
+
+      {/*
+        Mobile agent strip (visible only under md).
+        One scrollable row of avatar buttons, each min 44px tall, snap scrolling.
+        Reuses the same view-model (agents prop) as the sidebar.
+      */}
+      <div
+        data-testid="agent-strip"
+        className="flex shrink-0 overflow-x-auto border-b border-border bg-card/40 px-2 py-1 md:hidden"
+        style={{ scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch" }}
+      >
+        {/* Thread C: Cards tab (mobile). Always shown. */}
+        <Link
+          to="/cards"
+          data-testid="agent-strip-cards"
+          aria-label="Cards"
+          className="relative mx-0.5 flex min-h-11 min-w-11 shrink-0 flex-col items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted"
+          style={{ scrollSnapAlign: "start" }}
+        >
+          <SquareStack className="size-5" />
+          <span className="text-[8px] font-bold uppercase tracking-wider">Cards</span>
+        </Link>
+        {/* Mobile UX (Alex 2026-06-11): Projects + Team moved here from the
+            top bar so the bar fits the thread identity + view toggle. */}
+        <Link
+          to="/projects"
+          data-testid="agent-strip-projects"
+          aria-label="Projects board"
+          className="relative mx-0.5 flex min-h-11 min-w-11 shrink-0 flex-col items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted"
+          style={{ scrollSnapAlign: "start" }}
+        >
+          <KanbanSquare className="size-5" />
+          <span className="text-[8px] font-bold uppercase tracking-wider">Board</span>
+        </Link>
+        {cronAdminOn ? (
+          <Link
+            to="/scheduler"
+            data-testid="agent-strip-crons"
+            aria-label="Nudges"
+            className="relative mx-0.5 flex min-h-11 min-w-11 shrink-0 flex-col items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted"
+            style={{ scrollSnapAlign: "start" }}
+          >
+            <CalendarClock className="size-5" />
+            <span className="text-[8px] font-bold uppercase tracking-wider">Nudges</span>
+          </Link>
+        ) : null}
+        <span aria-hidden="true" className="mx-1 h-8 w-px shrink-0 self-center bg-border" />
+        {agents.map((a) => (
+          <Link
+            key={a.name}
+            to={`/threads/${a.name}`}
+            prefetch="intent"
+            data-testid={`agent-strip-btn-${a.name}`}
+            title={a.name}
+            aria-label={a.name}
+            className={cn(
+              "relative mx-0.5 flex min-h-11 min-w-11 shrink-0 flex-col items-center justify-center rounded-lg p-1.5 transition-colors",
+              active === a.name
+                ? "ring-2 ring-primary ring-offset-1"
+                : "hover:bg-muted"
+            )}
+            style={{ scrollSnapAlign: "start" }}
+          >
+            <Avatar name={a.name} src={a.avatarUrl} className="h-8 w-8 text-xs" />
+            {/* Two dots (2026-06-12): magenta = unread message, burnt-orange =
+                open decision. Stacked top-right; both can show. */}
+            <span className="absolute right-0.5 top-0.5 flex items-center gap-0.5">
+              {a.hasUnread ? (
+                <span
+                  data-testid={`strip-dot-message-${a.name}`}
+                  className="size-2 rounded-full bg-accent-message"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {a.hasUnhandled ? (
+                <span
+                  data-testid={`strip-dot-decision-${a.name}`}
+                  className="size-2 rounded-full bg-accent"
+                  aria-hidden="true"
+                />
+              ) : null}
+            </span>
+          </Link>
+        ))}
+      </div>
+
+      {/* Two-pane body: sidebar hidden under md, visible md+.
+          TASK-456: resizable split. The sidebar panel + handle are display:none
+          under md, so they leave flex layout entirely and the main panel
+          fills 100% - desktop-only by construction, no conditional render,
+          no double Outlet. autoSaveId persists the split (localStorage). */}
+      <div className="relative flex min-h-0 flex-1">
+        <ResizablePanelGroup direction="horizontal" autoSaveId="mc-shell-split">
+          <ResizablePanel
+            defaultSize={22}
+            minSize={14}
+            maxSize={38}
+            className="hidden md:flex"
+          >
+            <Sidebar agents={agents} />
+          </ResizablePanel>
+          <ResizableHandle withHandle className="hidden md:flex" />
+          <ResizablePanel minSize={50}>
+            <main className="h-full w-full min-w-0 overflow-y-auto">
+              <Outlet />
+            </main>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+
+        {/* TASK-454: slide-out work panel - properties-style right column.
+            Overlays below the top bar; closes on X or any navigation. */}
+        {workOpen && active ? (
+          <aside
+            data-testid="work-strip-panel"
+            aria-label={`${active}'s live cards`}
+            className="absolute inset-y-0 right-0 z-20 flex w-80 max-w-[85vw] flex-col border-l border-border bg-card shadow-lg"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
+              <span className="label-mono text-xs text-muted-foreground">
+                {active}'s cards ({workCards.length})
+              </span>
+              <button
+                type="button"
+                aria-label="Close cards panel"
+                onClick={() => setWorkOpen(false)}
+                className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3">
+              <WorkStrip cards={workCards} onNavigate={() => setWorkOpen(false)} />
+            </div>
+          </aside>
+        ) : null}
+      </div>
+    </div>
+  );
+}

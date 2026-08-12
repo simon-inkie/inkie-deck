@@ -1,0 +1,381 @@
+@import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=League+Spartan:wght@500;700;900&family=Work+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Space+Grotesk:wght@400;500;700&display=swap");
+
+/*
+ * Inkie Deck theme - the canonical Inkie design language (retro2, teal-led).
+ * The custom properties below are the source of truth for it: there is no
+ * upstream token file to reconcile against and no generator step. Change a
+ * value here and nowhere else.
+ * Light mode only in v1 (warm cream is the brand identity). Retro is a seasoning:
+ * clean shadcn base, halftone whisper on the app bg, hard-offset shadow reserved
+ * for the decision card. No em-dashes in this file (check:dashes gate).
+ */
+
+:root {
+  --radius: 0.75rem; /* 12px */
+
+  --background: #fffdf5; /* warm cream */
+  --foreground: #1a1a1a; /* near-black */
+
+  --card: #f5edd6; /* warm tan surface-low */
+  --card-foreground: #1a1a1a;
+  --popover: #fffdf5;
+  --popover-foreground: #1a1a1a;
+
+  --primary: #1a7a7a; /* teal */
+  --primary-foreground: #fffdf5;
+
+  --secondary: #e8dfc8; /* surface-high (neutral) */
+  --secondary-foreground: #1a1a1a;
+
+  --muted: #efe7d0;
+  --muted-foreground: #6b6b6b;
+
+  --accent: #e8752a; /* burnt-orange pop */
+  --accent-foreground: #fffdf5;
+
+  /* New-message dot (2026-06-12): VHS magenta pulled from alex-inkie-ink
+     (summit's agent colour there). Distinct from the burnt-orange decision
+     dot so "you have a message" reads differently from "you have a decision"
+     at a glance. Same hex as --destructive but named by meaning. */
+  --accent-message: #c2356b;
+
+  --destructive: #c2356b; /* magenta */
+  --destructive-foreground: #fffdf5;
+
+  --border: #d4ccb5; /* warm border */
+  --input: #d4ccb5;
+  --ring: #1a7a7a;
+
+  /* retro seasoning */
+  --shadow-retro: 4px 4px 0 rgba(26, 26, 26, 0.1);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-message: var(--accent-message);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: "Work Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "League Spartan", "Work Sans", ui-sans-serif, sans-serif;
+  --font-mono: "Space Grotesk", ui-monospace, "SF Mono", monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+  /* halftone whisper on the app background (retro seasoning, ~3%) */
+  body {
+    background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
+    background-size: 4px 4px;
+    background-attachment: fixed;
+  }
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer utilities {
+  /* metadata labels: uppercase, tracked, tiny mono (timestamps, NEEDS YOU, status) */
+  .label-mono {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 0.6875rem; /* 11px */
+  }
+  /* reserved for the decision card so a "needs you" card feels physical */
+  .shadow-retro {
+    box-shadow: var(--shadow-retro);
+  }
+
+  /* lightweight prose styling for sanitized agent markdown (message bodies,
+     decision-card bodies). Not Tailwind Typography - just enough to read well. */
+  .prose-mc > :first-child {
+    margin-top: 0;
+  }
+  .prose-mc > :last-child {
+    margin-bottom: 0;
+  }
+  .prose-mc p {
+    margin: 0.5em 0;
+    line-height: 1.6;
+  }
+  .prose-mc ul,
+  .prose-mc ol {
+    margin: 0.5em 0;
+    padding-left: 1.25em;
+  }
+  .prose-mc ul {
+    list-style: disc;
+  }
+  .prose-mc ol {
+    list-style: decimal;
+  }
+  .prose-mc li {
+    margin: 0.15em 0;
+  }
+  .prose-mc strong {
+    font-weight: 700;
+  }
+  .prose-mc em {
+    font-style: italic;
+  }
+  .prose-mc a {
+    color: var(--primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  /* Own (primary-teal) bubbles: the default teal link colour is invisible on
+     them. Higher specificity (0,2,1) beats .prose-mc a in the same layer. */
+  .prose-mc.bubble-own a {
+    color: var(--primary-foreground);
+  }
+  .prose-mc code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+  .prose-mc pre {
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
+    padding: 0.75em;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+  }
+  .prose-mc pre code {
+    background: transparent;
+    padding: 0;
+  }
+  .prose-mc h1,
+  .prose-mc h2,
+  .prose-mc h3 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    margin: 0.6em 0 0.3em;
+    letter-spacing: -0.01em;
+  }
+  .prose-mc blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 0.75em;
+    color: var(--muted-foreground);
+    margin: 0.5em 0;
+  }
+
+  /* GFM tables (2026-06-12): remark-gfm already parses them, but without
+     these rules they render as unstyled rows that read as "collapsed prose"
+     in the review panel. Bordered, padded, tinted header - matches the
+     restrained card/code aesthetic. */
+  .prose-mc table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.75em 0;
+    font-size: 0.95em;
+    display: block;
+    overflow-x: auto;
+  }
+  .prose-mc th,
+  .prose-mc td {
+    border: 1px solid var(--border);
+    padding: 0.4em 0.6em;
+    text-align: left;
+    vertical-align: top;
+  }
+  .prose-mc thead th {
+    background: color-mix(in oklab, var(--foreground) 6%, transparent);
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .prose-mc tbody tr:nth-child(even) {
+    background: color-mix(in oklab, var(--foreground) 3%, transparent);
+  }
+
+  /* GFM strikethrough + task lists (2026-06-12). Task-list items lose their
+     disc bullet and align the checkbox inline; the checkbox attributes are
+     allowed through the sanitize schema in Markdown.tsx. */
+  .prose-mc del {
+    text-decoration: line-through;
+    color: var(--muted-foreground);
+  }
+  .prose-mc li:has(> input[type="checkbox"]) {
+    list-style: none;
+    margin-left: -1.1em;
+  }
+  .prose-mc li > input[type="checkbox"] {
+    margin-right: 0.45em;
+    vertical-align: middle;
+  }
+
+  /* TASK-431: rehype-highlight syntax theme scoped to .prose-mc.
+     Uses the Inkie palette: cream bg, teal keywords, burnt-orange strings/numbers,
+     magenta types. Low-contrast-noise - tasteful, not a terminal rainbow. */
+  .prose-mc .hljs {
+    background: color-mix(in oklab, var(--foreground) 6%, transparent);
+    color: var(--foreground);
+  }
+  .prose-mc .hljs-keyword,
+  .prose-mc .hljs-selector-tag,
+  .prose-mc .hljs-built_in,
+  .prose-mc .hljs-name,
+  .prose-mc .hljs-tag {
+    color: #1a7a7a; /* teal */
+    font-weight: 500;
+  }
+  .prose-mc .hljs-string,
+  .prose-mc .hljs-attr,
+  .prose-mc .hljs-template-variable,
+  .prose-mc .hljs-variable,
+  .prose-mc .hljs-regexp {
+    color: #e8752a; /* burnt-orange */
+  }
+  .prose-mc .hljs-number,
+  .prose-mc .hljs-literal,
+  .prose-mc .hljs-boolean {
+    color: #e8752a; /* burnt-orange */
+  }
+  .prose-mc .hljs-type,
+  .prose-mc .hljs-class,
+  .prose-mc .hljs-title {
+    color: #c2356b; /* magenta */
+  }
+  .prose-mc .hljs-comment,
+  .prose-mc .hljs-quote {
+    color: var(--muted-foreground);
+    font-style: italic;
+  }
+  .prose-mc .hljs-meta,
+  .prose-mc .hljs-addition,
+  .prose-mc .hljs-deletion {
+    color: var(--muted-foreground);
+  }
+  .prose-mc .hljs-emphasis {
+    font-style: italic;
+  }
+  .prose-mc .hljs-strong {
+    font-weight: 700;
+  }
+
+  /* VS Code Dark Modern syntax theme for code file views (TASK-562 follow-up).
+     Scoped exclusively to .code-view so markdown fenced blocks keep the
+     Inkie cream-and-teal palette above. Hex values match VS Code's
+     dark-modern token registry (Aug 2025). */
+  .code-view .hljs {
+    background: #1f1f1f;
+    color: #d4d4d4;
+  }
+  .code-view .hljs-comment,
+  .code-view .hljs-quote {
+    color: #6A9955;
+    font-style: italic;
+  }
+  .code-view .hljs-keyword,
+  .code-view .hljs-selector-tag,
+  .code-view .hljs-section,
+  .code-view .hljs-doctag,
+  .code-view .hljs-name,
+  .code-view .hljs-meta .hljs-keyword {
+    color: #569CD6;
+  }
+  .code-view .hljs-string {
+    color: #CE9178;
+  }
+  .code-view .hljs-regexp {
+    color: #D16969;
+  }
+  .code-view .hljs-number,
+  .code-view .hljs-literal {
+    color: #B5CEA8;
+  }
+  .code-view .hljs-title,
+  .code-view .hljs-built_in {
+    color: #DCDCAA;
+  }
+  /* More specific (3 classes) so it wins over .code-view .hljs-title above. */
+  .code-view .hljs-title.class_,
+  .code-view .hljs-type,
+  .code-view .hljs-class {
+    color: #4EC9B0;
+  }
+  .code-view .hljs-attr,
+  .code-view .hljs-attribute,
+  .code-view .hljs-variable,
+  .code-view .hljs-template-variable,
+  .code-view .hljs-property,
+  .code-view .hljs-params,
+  .code-view .hljs-selector-attr,
+  .code-view .hljs-selector-pseudo {
+    color: #9CDCFE;
+  }
+  /* Tags: outer hljs-tag is punctuation colour; inner hljs-name overrides. */
+  .code-view .hljs-tag {
+    color: #808080;
+  }
+  .code-view .hljs-symbol,
+  .code-view .hljs-bullet,
+  .code-view .hljs-link {
+    color: #D7BA7D;
+  }
+  .code-view .hljs-addition {
+    color: #B5CEA8;
+  }
+  .code-view .hljs-deletion {
+    color: #CE9178;
+  }
+  .code-view .hljs-emphasis {
+    font-style: italic;
+  }
+  .code-view .hljs-strong {
+    font-weight: 700;
+  }
+
+  /* restrained motion: a calm pop on the needs-you dropdown (open only) */
+  .mc-pop {
+    animation: mc-pop-in 120ms ease-out;
+  }
+}
+
+@keyframes mc-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}

@@ -1,7 +1,7 @@
 # Tooling review
 
 Status of the scripts behind the pattern this repo describes: which are
-ported, which are reviewed-only, and why.
+ported, which were ported and then removed, and why.
 
 ## Ported: `bin/workspace.sh`, `bin/boot-agents.sh`
 
@@ -24,144 +24,36 @@ a generic "any other runtime" branch with a comment on the general principle
 hook-declared). If you need one of those integrations, treat it as a
 runtime-specific extension, not core.
 
-## Ported, with tests: `bin/inbox`
+## Ported, then removed: the `inbox` CLI
 
-This is the actual inbox DM protocol implementation, the concrete counterpart
-to the description in `SYSTEM.md`. It carries real concurrency-correctness
-properties: a cross-process advisory lock (so a CLI send and a concurrent
-rewrite from elsewhere don't clobber each other) and an in-place byte-offset
-patch for flipping a message's status without rewriting the whole file.
-Porting that kind of code without a test suite landing in the same pass would
-be the same mistake as shipping a redacted copy of a live document: it looks
-finished and might not be. So the port and `tests/` shipped together, not one
-before the other.
+The inbox DM protocol implementation, the concrete counterpart to the
+description in `SYSTEM.md`, was ported into this package as `bin/inbox.mts`
+(a Python-to-TypeScript port, checked against the original byte for byte on
+the same inputs) together with a real test suite, including a concurrency
+stress test using real OS subprocesses against its cross-process lock.
 
-What changed from the internal source, concretely:
+Both the CLI and its tests have since been **removed, deliberately**. The
+application in `packages/deck` landed carrying its own implementation of the
+same protocol, the one the internal platform actually runs, and two readers
+of one on-disk format in one repository drift apart: every fix or tolerance
+added to one and not the other becomes a silent interoperability bug. The
+protocol has exactly one normative artefact here, `docs/protocol.md`, and
+exactly one implementation, the application.
 
-1. **Two hardcoded paths that assumed a specific team's other
-   infrastructure are now configurable.** The inbox root is `$SILO_HOME/<name>/inbox`
-   (`SILO_HOME` defaults to `~/.agent-silo`). The attachments-root feature
-   (below) is now purely `ATTACHMENTS_ROOT`-env-driven, no file-parsing
-   fallback that assumed a specific sibling product's config file existed.
-2. **The attachment-path rewrite is still here but fully optional.** It
-   rewrites a web-relative `/attachments/...` image link to a real filesystem
-   path, useful if you build a companion app that serves images over HTTP and
-   also want a terminal-pane push to be able to open them locally. Off by
-   default (no-op unless `ATTACHMENTS_ROOT` is set); its path-traversal
-   containment guard is preserved exactly, since that's a real security
-   property worth keeping regardless of whether you use the feature.
-3. **Every comment was rewritten to keep the technical rationale and drop
-   the names, dates, and specific incidents** that motivated a given design
-   choice internally. The reasoning survives; the internal history doesn't.
-4. **The companion live-wake script (`inbox-push`) is still out of scope.**
-   The CLI already degrades gracefully without it (checks the configured
-   binary exists via `INBOX_PUSH_BIN`, no-ops if not), so sending and reading
-   messages works with just this file. A way to nudge a long-running
-   recipient process the moment a message lands is a real, separate piece of
-   work, not required for the protocol itself.
-5. **Tests**: `tests/inbox.test.ts` covers identity resolution, header
-   parsing across all three accepted separator forms, em-dash rejection, the
-   card-metadata blank-line logic, and the attachment rewrite (including the
-   path-traversal rejection). `tests/concurrency.test.ts` is a genuine stress
-   test: real OS subprocesses, not worker threads in one process, hammering
-   the same thread file concurrently, verifying every message survives intact
-   with none lost, corrupted, or duplicated. Vitest, a dev dependency only.
+The port was not wasted. Its conformance findings were folded into the spec
+before the code went:
 
-### Language: Python to TypeScript
+- the requirement that the status flip locate the `sent` token via the header
+  grammar's own `status` capture group, never a loose first-match search (a
+  loose search can match inside a sender name shaped like `status:sentinel`
+  and corrupt the file);
+- the rule that a column-0 `## ` line failing the header grammar MUST be
+  treated as body content, never as a block boundary (the original silently
+  truncated messages at markdown headings typed inside a body);
+- code points, not UTF-16 code units, as the reference definition for
+  character counts;
+- the known read-then-flip atomicity deviations, recorded in
+  `docs/protocol.md` section 11 so no implementer copies them as behaviour.
 
-The original was Python 3, stdlib only. It is now `bin/inbox.mts`: TypeScript
-with no runtime dependencies, run directly by Node's native type stripping
-with no build step. The on-disk format, the header regex, the lock protocol
-and every command's output are unchanged, and the port was checked against the
-Python original byte for byte on the same inputs, including the file contents
-after a status flip.
-
-Node's standard library covers everything Python's did, but four places needed
-a deliberate equivalent rather than a translation. Each is commented in the
-source at the point it matters:
-
-- **The lock's backoff sleep.** Python's `time.sleep` has no synchronous
-  equivalent in Node. `Atomics.wait` on a throwaway `SharedArrayBuffer` is the
-  only stdlib way to block the thread, and blocking is required here: an
-  `await` would let other work interleave inside the critical section.
-- **Path containment for the attachment rewrite.** `node:path`'s `posix.join`
-  does NOT match `posixpath.join`: an absolute second argument replaces the
-  first in Python but is appended in Node. A body containing
-  `/attachments//etc/passwd` would therefore have been judged "inside the
-  root" and rewritten, defeating the traversal guard. Python's `join` and
-  `normpath` are reimplemented rather than approximated.
-- **Character counts.** The "message too long" notice reports a length. Python
-  counted code points; `String.length` counts UTF-16 code units, which is one
-  higher per emoji. The port counts code points, so the number a recipient
-  sees is unchanged. Code points is now stated in the source as the reference
-  definition for anyone building a second implementation of this protocol.
-- **Writing to stdout before exiting.** Node's `process.stdout` is
-  asynchronous when it is a pipe, so a `console.log` immediately followed by
-  `process.exit` can vanish. Every write goes through `fs.writeSync` on the
-  raw file descriptor instead, which is synchronous everywhere.
-
-One behaviour was deliberately NOT preserved, because it was a bug. The status
-flip located the `sent` token with a loose `status:\s*(sent)` search of the
-header line. That takes the FIRST match, and `from:` precedes `status:` in the
-grammar, so a correspondent named `status:sentinel` matched inside the SENDER
-field. Verifying the four bytes before overwriting did not catch it: those
-bytes genuinely spell `sent`, so the check passed on the wrong occurrence. The
-flip rewrote the sender to `status:readinel` and left the real status at
-`sent`, corrupting the file and leaving the message permanently unread. The
-port derives the offset from the header grammar's own `status` capture group
-instead, which makes the whole class impossible rather than unlikely. Every
-other input, well-formed or malformed, behaves exactly as before.
-
-Worth being precise about how bad that was, because the honest version is a
-better argument than the alarming one: it was not reachable in practice.
-Senders are written from `AGENT_NAME`, which is constrained to lowercase
-alphanumerics and hyphens, so no valid agent name could contain a colon. The
-reason to fix it anyway is that the only thing standing between the loose
-pattern and a corrupted file was a naming convention enforced in a different
-system from the one doing the write, and a header written by any other tool
-against this format is under no obligation to honour it.
-
-### Known behaviour carried across deliberately, bugs included
-
-Parity was the brief, and a port that quietly improves semantics is a port you
-can no longer differential-test against the original. Two known defects were
-therefore reproduced rather than fixed, and are recorded here rather than left
-to be rediscovered:
-
-- **`read` prints, then flips.** The status flip re-reads the file under the
-  lock and re-derives which blocks are unread, so a block that arrives between
-  the print loop and the flip is marked read without ever being displayed. The
-  message is not lost, which is what makes it nasty: it looks like it was
-  already handled.
-- **The initial read takes no lock at all,** so a concurrent append can be
-  parsed mid-write. Same function, second way in.
-
-These compound: the window is the whole print loop, so it widens with the
-unread backlog, and a large catch-up read is exactly when someone else is most
-likely to be writing. Fixing the first is cheap (flip by the identity of what
-was actually printed rather than by re-deriving the predicate), but it is a
-behaviour change and belongs in its own commit, with its own tests, on the
-other side of the port.
-
-Malformed history is tolerated, never repaired. A column-0 `## ` line that is
-not a valid header (a markdown heading inside a message body, or a
-header-shaped artefact from an older writer) is never rewritten, normalised or
-"fixed". Only the four status bytes of a matched block are ever written, and
-writes always resolve `realpath` first and mutate in place, so a symlinked
-thread file stays a symlink.
-
-One carried behaviour in this area has since been FIXED, as a deliberate,
-documented divergence from the Python original. The Python (and at first this
-port, for parity) treated EVERY column-0 `## ` line as a block boundary and
-then discarded the ones that failed the header grammar. The effect was that a
-markdown heading typed inside a message body silently truncated that message
-from the heading onward: the bytes on disk were intact, the loss happened on
-every read. `docs/protocol.md` section 4 has always said the opposite, that a
-`## ` line failing the header grammar MUST be treated as body content, so the
-implementation was simply not conforming to its own specification. `parseBlocks`
-now validates each candidate header FIRST and bounds a block only at the next
-line that actually parses; a failed candidate stays inside the preceding
-block's body. One visible consequence, which is the point rather than a side
-effect: those lines now appear inside rendered message bodies, because that is
-what they are. Covered by tests in `tests/inbox.test.ts` (parse-level, and
-end-to-end through `inbox read` and the status flip).
+If you need a standalone CLI for the protocol, implement `docs/protocol.md`;
+its section 10 lists the conformance properties a test suite should exercise.

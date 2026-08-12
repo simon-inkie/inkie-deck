@@ -24,17 +24,19 @@ filling in.
   than one agent; a solo setup doesn't need either yet.
 - **`docs/protocol.md`**: the normative specification of the message format.
   This is the document to implement against if you're writing your own client,
-  in any language. `bin/inbox.mts` is one conforming implementation of it, not
-  the definition of it.
+  in any language. The application in `packages/deck` is one conforming
+  implementation of it, not the definition of it.
 - **`bin/`**: the orchestration scripts that launch a team of agents in tmux
-  (one window each, on boot or on demand), and `inbox`, the CLI that
-  implements the message protocol: append a block, flip its status, never
-  corrupt a concurrent writer.
-- **`tests/`**: a real test suite for `inbox`, including a concurrency stress
-  test for its cross-process lock, run with `npm test`. Vitest is a dev
-  dependency and the only one; the tool itself has no runtime dependencies.
-- **`docs/tooling-review.md`**: honest status of what's ported versus
-  reviewed-only, and why.
+  (one window each, on boot or on demand).
+- **`docs/tooling-review.md`**: honest status of what was ported, what was
+  ported and then removed, and why.
+
+There is deliberately no CLI in this package. An `inbox` CLI implementing the
+protocol was ported here, tested, and then removed once the application in
+`packages/deck` landed: the application already reads and writes the same
+format, and two implementations of one protocol in one repository drift apart.
+The spec is the artefact this package ships; `docs/tooling-review.md` records
+what happened to the code.
 
 ## The idea
 
@@ -55,61 +57,36 @@ There's no package to install, this is a pattern and a handful of scripts, not
 a library. Clone it, then take what you need:
 
 ```bash
-git clone <this-repo-url> inkie-agents-base
-cd inkie-agents-base
+git clone <this-repo-url>
 
 # Starting a new agent from scratch:
-cp templates/*.md /path/to/your/new/agent/
-
-# Using bin/inbox.mts as-is (Node 22.18+, no install step, no build step):
-AGENT_NAME=yourname node bin/inbox.mts unread
+cp packages/base/templates/*.md /path/to/your/new/agent/
 ```
 
-`bin/inbox.mts` is a single file with no runtime dependencies. Node runs it
-directly: `.mts` is TypeScript, and Node strips the types natively at load
-time (on by default since Node 22.18, and in every Node 24+ release), so there
-is nothing to compile, install or generate first. Copy the one file wherever
-you like, or call it with an explicit path as above. It reads `AGENT_NAME` and
-`SILO_HOME` from the environment (see `SYSTEM.md` for the conventions both
-assume) and needs nothing beyond Node itself.
-
-To get the bare command name on your `PATH`, symlink rather than copy, so the
-`.mts` extension survives (Node decides whether to strip types from the
-resolved filename, and an extensionless copy would fail to parse):
-
-```bash
-ln -s "$PWD/bin/inbox.mts" ~/.local/bin/inbox
-AGENT_NAME=yourname inbox unread
-```
-
-The file is `.mts` rather than `.ts` on purpose: `.mts` is always treated as
-an ES module, so it keeps working wherever you drop it, regardless of the
-`"type"` field of whatever `package.json` happens to be nearest.
+The templates and docs are plain markdown and the `bin/` scripts are plain
+shell; nothing in this package needs an install step. If you want machinery
+that speaks the message protocol, implement `docs/protocol.md` in your
+language of choice, or use the application in `packages/deck`, which already
+does.
 
 ## Development
 
-```bash
-npm install     # dev dependencies only: vitest and typescript
-npm test        # run the suite
-npm run typecheck
-```
-
-The tool has zero runtime dependencies on purpose: a small, portable pattern
-shouldn't make you install anything to use it. The test suite does need
-vitest, which is why `npm install` appears here and nowhere in the Install
-section above. CI (`.gitlab-ci.yml`, `.github/workflows/test.yml`) runs the
-typecheck and the suite across the current Node LTS lines on every push, and
-runs the CLI once *before* installing anything, so the no-install claim above
-is checked rather than assumed.
+This package is markdown and shell only, so it carries no dependencies, no
+build, no typecheck and no test suite of its own: the code that needed those
+(the inbox CLI) has been removed, as described above, and the protocol's
+conformance requirements live in `docs/protocol.md` section 10. The
+repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
+workspace-wide checks, including the leak gate that also scans this package,
+on every push.
 
 ## Status
 
 Templates, one worked example, the shared multi-agent conventions, the tmux
-launch scripts, the inbox protocol with its own test suite, a licence, and CI
-all exist now. Still to come: a CONTRIBUTING guide, and a second worked
-example that shows a small team of agents using `SYSTEM.md`/`ROSTER.md`
-together, not just one agent in isolation.
+launch scripts, the protocol specification, a licence, and CI all exist now.
+Still to come: a CONTRIBUTING guide, and a second worked example that shows a
+small team of agents using `SYSTEM.md`/`ROSTER.md` together, not just one
+agent in isolation.
 
 ## License
 
-MIT, see `LICENSE`.
+Apache-2.0, see the `LICENSE` file at the repository root.
