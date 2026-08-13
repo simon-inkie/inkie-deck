@@ -240,7 +240,7 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
     root = r;
   });
 
-  it("(a) open card present: the free text resolves it as the custom (option C) answer", async () => {
+  it("(a) open card present: the free text resolves it as the custom answer", async () => {
     seedInbox(
       root,
       "scribe",
@@ -258,10 +258,10 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
 
     const file = readInbox(root, "scribe", "alex");
     // The original card flipped to the custom-answer terminal state...
-    expect(file).toContain("answered: C");
+    expect(file).toContain("answered: custom");
     expect(file).toContain(`custom-answer: "hold it for now"`);
     // ...and the free text landed as the card's reply block.
-    expect(file).toContain("answer: C");
+    expect(file).toContain("answer: custom");
     expect(file).toContain("subject: Re: ad spend");
     expect(file).toContain("from: alex");
   });
@@ -299,7 +299,7 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
     const file = readInbox(root, "atlas", "alex");
     expect(file).toContain("subject: Re: atlas topic");
     expect(file).toContain("just a message");
-    expect(file).not.toContain("answer: C");
+    expect(file).not.toContain("answer: custom");
     expect(file).not.toContain("answered:");
     expect(blockCount(file)).toBe(2);
   });
@@ -329,10 +329,10 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
 
     const file = readInbox(root, "scribe", "alex");
     // Split at the newer card's decision-id so each card's meta is checked in
-    // isolation: a file-wide toContain("answered: C") cannot tell them apart.
+    // isolation: a file-wide toContain("answered: custom") cannot tell them apart.
     const [oldSection, newSection] = file.split("decision-id: TASK-475-new");
-    expect(oldSection).not.toContain("answered: C");
-    expect(newSection).toContain("answered: C");
+    expect(oldSection).not.toContain("answered: custom");
+    expect(newSection).toContain("answered: custom");
     expect(newSection).toContain(`custom-answer: "go with the second one"`);
     // Reply subject proves the newer card was the target.
     expect(file).toContain("subject: Re: newer ask");
@@ -365,11 +365,11 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
 
     const file = readInbox(root, "scribe", "alex");
     const [openSection, doneSection] = file.split("decision-id: TASK-475-done");
-    expect(openSection).toContain("answered: C");
+    expect(openSection).toContain("answered: custom");
     expect(openSection).toContain(`custom-answer: "resolving the open one"`);
     // The already-answered card keeps its original answer, untouched.
     expect(doneSection).toContain("answered: A");
-    expect(doneSection).not.toContain("answered: C");
+    expect(doneSection).not.toContain("answered: custom");
     expect(file).toContain("subject: Re: still open");
   });
 
@@ -401,9 +401,9 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
       expect(result).toEqual({ ok: true });
 
       const file = readInbox(root, "scribe", "alex");
-      expect(file).not.toContain("answered: C");
+      expect(file).not.toContain("answered: custom");
       expect(file).not.toContain("custom-answer:");
-      expect(file).not.toContain("answer: C");
+      expect(file).not.toContain("answer: custom");
       // Plain reply, subject derived from the last agent block as before.
       expect(file).toContain("subject: Re: closed ask");
       expect(file).toContain("a later thought");
@@ -430,7 +430,7 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
     expect(result).toEqual({ ok: true });
 
     const file = readInbox(root, "quill", "alex");
-    expect(file).not.toContain("answer: C");
+    expect(file).not.toContain("answer: custom");
     expect(file).not.toContain("answered:");
     expect(file).toContain("subject: Re: review the spec");
     expect(file).toContain("will do later");
@@ -469,11 +469,11 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
     });
 
     const scribeFile = readInbox(root, "scribe", "alex");
-    expect(scribeFile).toContain("answered: C");
+    expect(scribeFile).toContain("answered: custom");
     expect(scribeFile).toContain(`custom-answer: "answering scribe"`);
 
     const atlasFile = readInbox(root, "atlas", "alex");
-    expect(atlasFile).not.toContain("answered: C");
+    expect(atlasFile).not.toContain("answered: custom");
     expect(atlasFile).not.toContain("answering scribe");
   });
 
@@ -503,7 +503,7 @@ describe.skip("threads compose auto-resolves an open decision card (TASK-475)", 
     expect(result).toEqual({ ok: true, alreadyAnswered: false });
 
     const file = readInbox(root, "scribe", "alex");
-    expect(file).toContain("answered: C");
+    expect(file).toContain("answered: custom");
     expect(file).toContain(`custom-answer: "spoken answer"`);
     expect(bodyLineCount(file, "spoken answer")).toBe(1);
   });

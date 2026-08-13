@@ -25,7 +25,7 @@ import { useState } from "react";
 import { useFetcher } from "react-router";
 import { Check, CheckCircle2, ChevronDown, Pencil, Replace, Undo2, X, XCircle } from "lucide-react";
 import type { MessageBlock } from "~/lib/blocks/model";
-import { PUSHBACK_RESOLUTION } from "~/lib/blocks/answer";
+import { PUSHBACK_RESOLUTION, isCustomAnswer } from "~/lib/blocks/answer";
 import { cn } from "~/lib/utils";
 import { Markdown } from "./Markdown";
 import { Timestamp } from "./Timestamp";
@@ -69,9 +69,10 @@ interface DecisionCardProps {
  * an "OR write something..." row that lifts route state (onWriteOwn callback).
  * When a draft is active (draftCustomAnswer set), a live C-row preview appears.
  *
- * When the card is already answered with key C and customAnswer is set, renders
- * a C option row in the chosen/filled state (user text as detail), A/B dimmed.
- * Other answered states (A, B, pushback) use the existing badge rendering.
+ * When the card was answered with the user's own text, renders an extra row in
+ * the chosen/filled state (user text as detail) and dims every option, since
+ * none of them was picked. Tapped answers and pushback use the existing badge
+ * rendering.
  *
  * The PUSHBACK_RESOLUTION const distinguishes a pushed-back badge from an
  * answered badge so the UI can show different copy for each state.
@@ -92,7 +93,9 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
 
   const isAnswered = card.answered !== undefined;
   const isPushedBack = card.answered === PUSHBACK_RESOLUTION;
-  const isAnsweredC = card.answered === "C";
+  // Not "answered === C": that letter is a real option key on any card with
+  // three or more of them, so the reader has to weigh the custom text too.
+  const isCustom = isCustomAnswer(card);
   // Thread C: decisions gained dismiss + superseded terminal states.
   const lastIntent = fetcher.formData?.get("intent");
   const isDismissed = card.dismissed !== undefined || lastIntent === "dismissDecision";
@@ -107,7 +110,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
     // the bare letter means nothing without expanding. Fall back to the
     // letter when the label is long (or for custom answers beyond a glance).
     const chosenOption = card.options.find((o) => o.key === card.answered);
-    const chosenLabel = isAnsweredC ? card.customAnswer : chosenOption?.label;
+    const chosenLabel = isCustom ? card.customAnswer : chosenOption?.label;
     const answeredChipText =
       chosenLabel && chosenLabel.length <= 24
         ? `Answered: ${chosenLabel}`
@@ -222,7 +225,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
             {/* The record: chosen option filled, others dimmed (CARD-06) */}
             <div className="mt-2 flex flex-col gap-2">
               {card.options.map((opt) => {
-                const chosen = !isPushedBack && !isAnsweredC && opt.key === card.answered;
+                const chosen = !isPushedBack && !isCustom && opt.key === card.answered;
                 return (
                   <div
                     key={opt.key}
@@ -252,11 +255,13 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
                 );
               })}
 
-              {isAnsweredC && card.customAnswer !== undefined ? (
+              {isCustom && card.customAnswer !== undefined ? (
                 <div className="flex items-start gap-2 rounded-md border border-primary bg-primary px-3 py-2 text-left text-primary-foreground">
                   <Check className="mt-0.5 size-4 shrink-0" />
                   <span className="flex-1">
-                    <span className="font-medium">C</span>
+                    {/* Not "C": a card with three or more options has a real
+                        option C sitting dimmed right above this row. */}
+                    <span className="font-medium">Your answer</span>
                     <span className="mt-0.5 block text-xs font-normal opacity-90">
                       {card.customAnswer}
                     </span>

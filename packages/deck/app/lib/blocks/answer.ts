@@ -52,6 +52,55 @@ export const PUSHBACK_RESOLUTION = "pushback";
 export const PUSHBACK_REPLY_MARKER = "push-back: true";
 
 // ---------------------------------------------------------------------------
+// Custom-answer token constants (single source of truth)
+// ---------------------------------------------------------------------------
+
+/**
+ * The resolution value written to the original card's rawMeta when the user
+ * writes their own answer instead of tapping an option.
+ * Written as: "answered: custom"
+ *
+ * A letter key cannot carry this: it used to be hardcoded "C", which collides
+ * with a real option C on any card offering three or more options. The
+ * collision ran both ways - a written answer was indistinguishable from a tap
+ * on C, and a genuine tap on C rendered as a custom answer with no text, so
+ * the record showed no option chosen at all. "answered: pushback" already
+ * proved a non-letter resolution is the established shape here, and the parser
+ * accepts any non-empty string, so nothing schema-side moves.
+ */
+export const CUSTOM_ANSWER_RESOLUTION = "custom";
+
+/**
+ * The pre-fix resolution value. Historical records are never rewritten, so the
+ * reader below still has to recognise them - but only in company with a
+ * custom-answer: field, which is what keeps a genuine historical tap on option
+ * C out of the custom arm.
+ */
+const LEGACY_CUSTOM_ANSWER_RESOLUTION = "C";
+
+/**
+ * Does this card's answered state mean "the user wrote their own answer"?
+ *
+ * Both forms count, because the fix changed the value written from here on and
+ * did NOT migrate what is already on disk:
+ * - "answered: custom" - written since the collision fix.
+ * - "answered: C" WITH a custom-answer: value - the legacy form. The custom
+ *   text is the evidence: a real tap on option C never writes that field, so
+ *   keying on its presence rather than on the letter distinguishes the two
+ *   cases that the old sentinel had merged.
+ */
+export function isCustomAnswer(card: {
+  answered?: string;
+  customAnswer?: string;
+}): boolean {
+  if (card.answered === CUSTOM_ANSWER_RESOLUTION) return true;
+  return (
+    card.answered === LEGACY_CUSTOM_ANSWER_RESOLUTION &&
+    card.customAnswer !== undefined
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Meta-line helpers (2026-06-11 "clicking doesn't work" fix)
 // ---------------------------------------------------------------------------
 
@@ -258,17 +307,17 @@ export function applyPushBack(originalBlock: MessageBlock, note?: string, from: 
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a user-authored custom answer (option C) to a decision card block.
+ * Apply a user-authored custom answer to a decision card block.
  *
  * If the block's rawMeta already has an "answered:" line, returns the existing answer
  * without modification (CARD-04 idempotency). This gives symmetric mutual-exclusion
  * with applyAnswer and applyPushBack: an already-resolved card is a no-op.
  *
  * Otherwise, returns:
- * - answeredOriginal: the original block with "answered: C" and "custom-answer: <json>"
+ * - answeredOriginal: the original block with "answered: custom" and "custom-answer: <json>"
  *   appended to rawMeta. The text is JSON-encoded so arbitrary content (colons, quotes,
  *   newlines) stays valid YAML and round-trips cleanly.
- * - replyBlock: a new MessageBlock with "answer: C" in its metadata region and the
+ * - replyBlock: a new MessageBlock with "answer: custom" in its metadata region and the
  *   user-authored text as the body.
  */
 export function applyCustomAnswer(originalBlock: MessageBlock, text: string, from: string = "alex"): CustomAnswerResult {
@@ -296,12 +345,12 @@ export function applyCustomAnswer(originalBlock: MessageBlock, text: string, fro
   }
 
   // Not yet answered - apply the custom answer.
-  // Write "answered: C" and "custom-answer: <json>" via targeted line edits
+  // Write "answered: custom" and "custom-answer: <json>" via targeted line edits
   // (placeholders filled in place, else appended). JSON.stringify ensures
   // colons, quotes, newlines, and backslashes are safe in YAML.
   const jsonText = JSON.stringify(text);
   const newRawMeta = setMetaLine(
-    setMetaLine(rawMeta, "answered", "C"),
+    setMetaLine(rawMeta, "answered", CUSTOM_ANSWER_RESOLUTION),
     "custom-answer",
     jsonText
   );
@@ -312,7 +361,7 @@ export function applyCustomAnswer(originalBlock: MessageBlock, text: string, fro
   };
 
   // Construct the reply block.
-  // The reply carries "answer: C" in its metadata region and the user text as body.
+  // The reply carries "answer: custom" in its metadata region and the user text as body.
   const replySubject = originalBlock.header.subject
     ? `Re: ${originalBlock.header.subject}`
     : "Re: decision";
@@ -328,7 +377,7 @@ export function applyCustomAnswer(originalBlock: MessageBlock, text: string, fro
       subject: replySubject,
     },
     body: text,
-    rawMeta: "answer: C",
+    rawMeta: `answer: ${CUSTOM_ANSWER_RESOLUTION}`,
     card: undefined,
   };
 

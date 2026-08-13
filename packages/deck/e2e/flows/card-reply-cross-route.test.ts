@@ -9,8 +9,8 @@
  * the thread component mounts FRESH with respondingToDecisionId back at
  * undefined. Only ?anchor survived, and nothing read it for anything but
  * scrolling. The user landed on the thread with an ORDINARY composer, typed
- * their answer, and it went out as a plain chat message: no "answered: C" on
- * the card, no "answer: C" receipt block, and the card still sitting open.
+ * their answer, and it went out as a plain chat message: no "answered: custom" on
+ * the card, no "answer: custom" receipt block, and the card still sitting open.
  *
  * THE LOAD-BEARING DETAIL IN TEST 1: it CLICKS the write-own button on /cards
  * rather than page.goto-ing the thread URL. The click is the whole bug - it is
@@ -23,7 +23,7 @@
  * arriving by full document load is the honest reproduction.
  *
  * The discriminating assertion throughout is the WRITEBACK, not the UI: a card
- * answer writes "answered: C" onto the card and an "answer: C" reply block. A
+ * answer writes "answered: custom" onto the card and an "answer: custom" reply block. A
  * plain chat reply - the bug - writes neither. The two are indistinguishable on
  * screen for a moment and never indistinguishable on disk.
  *
@@ -110,8 +110,8 @@ test("a card answered from the Cards tab is tied to that card, not sent as chat"
   // The writeback is the real proof. Under the bug this file gained a plain
   // reply block and the card kept no answer at all.
   const content = inboxContent(CARD_AGENT);
-  expect(content).toContain("answered: C");
-  expect(content).toContain("answer: C");
+  expect(content).toContain("answered: custom");
+  expect(content).toContain("answer: custom");
   expect(content).toContain(answer);
 });
 

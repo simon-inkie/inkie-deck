@@ -11,7 +11,7 @@
  *   thread has an open decision card (TASK-475: free text resolves it)
  * - answer: inbox.answerCard (CARD-02, CARD-04)
  * - pushback: inbox.pushBackCard (CARD-03, CARD-04)
- * - custom: inbox.customAnswerCard (MC-02, option C user-authored answer)
+ * - custom: inbox.customAnswerCard (MC-02, user-authored answer)
  *
  * SEAM RULE (FND-02, T-01-12): this file imports ONLY makeStores from
  * ~/lib/stores.server. It does NOT import node:fs, fs, or any direct
@@ -455,7 +455,7 @@ export async function action({ request, params }: Route.ActionArgs) {
 
     if (openCard?.card) {
       // customAnswerCard does the whole writeback itself (locks the file, flips
-      // the original to "answered: C" + "custom-answer:", AND appends the reply
+      // the original to "answered: custom" + "custom-answer:", AND appends the reply
       // block carrying the free text) - so no writeReply on this path, or the
       // text would land twice. Same seam the "Or say something else" affordance
       // uses via intent === "custom" below.
@@ -478,7 +478,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       //
       // The LIVE voice-answers-a-card case is `intent === "custom"` further
       // down, which calls wakeTarget (a generic nudge, no text) and stores only
-      // `answer: C`, so it loses dictation provenance in the RECORD as well as
+      // `answer: custom`, so it loses dictation provenance in the RECORD as well as
       // the push. Deliberately out of scope here: fixing it means threading the
       // flag through the schema and applyCustomAnswer's locked write path, and
       // swapping a nudge for a text push is a behaviour change that does not

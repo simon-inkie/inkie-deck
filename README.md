@@ -63,8 +63,8 @@ run this so far already had them:
   to do with the code.
 - **ripgrep** (`rg`), used by `check:dashes`.
 
-The test count doubles as a diagnostic here: **1770 passing** means both are
-present, **1766** means ripgrep is missing, and **1703** means neither is.
+The test count doubles as a diagnostic here: **1790 passing** means both are
+present, **1786** means ripgrep is missing, and **1723** means neither is.
 
 ```sh
 pnpm install

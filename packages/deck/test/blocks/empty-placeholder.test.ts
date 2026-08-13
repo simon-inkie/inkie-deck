@@ -24,6 +24,7 @@ import {
   applyPushBack,
   applyDone,
   applyDismiss,
+  CUSTOM_ANSWER_RESOLUTION,
 } from "~/lib/blocks/answer.js";
 
 /** Card block in the placeholder-template shape (Quill's 2026-06-10 cards). */
@@ -96,13 +97,13 @@ describe("empty answered: placeholder does not block resolution", () => {
     if (!("answeredOriginal" in result)) throw new Error("unexpected no-op");
     const meta = result.answeredOriginal.rawMeta;
     expect(meta.split("\n").filter((l) => l.startsWith("answered:"))).toEqual([
-      "answered: C",
+      `answered: ${CUSTOM_ANSWER_RESOLUTION}`,
     ]);
     expect(
       meta.split("\n").filter((l) => l.startsWith("custom-answer:"))
     ).toHaveLength(1);
     const reparsed = parseBlock(serializeBlock(result.answeredOriginal));
-    expect(reparsed.card?.answered).toBe("C");
+    expect(reparsed.card?.answered).toBe(CUSTOM_ANSWER_RESOLUTION);
     expect(reparsed.card?.customAnswer).toBe("my own take: ship it");
   });
 

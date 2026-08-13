@@ -599,8 +599,8 @@ export interface InboxRepository {
   ): Promise<AnswerResult>;
 
   /**
-   * Apply a user-authored custom answer (option C) to a decision card in an inbox file.
-   * Appends "answered: C" and "custom-answer: <json>" to the card's rawMeta, and writes
+   * Apply a user-authored custom answer to a decision card in an inbox file.
+   * Appends "answered: custom" and "custom-answer: <json>" to the card's rawMeta, and writes
    * a reply block carrying the user text. Idempotent: if the card is already resolved,
    * returns the existing answer without writing anything.
    *
