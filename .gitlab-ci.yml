@@ -19,10 +19,28 @@ stages:
 # script then runs exactly the command list in the root README's Development
 # section, in the same order, so CI can never report greener than a
 # developer's local run.
+#
+# The apt line and the locale are the same two prerequisites, for the same
+# reasons, that rig/lib/images.mjs puts into its toolchain image. Without them
+# these jobs could not go green whatever the tree looked like, which is what
+# they were until this commit: node:22 and node:24 are Debian bookworm with
+# git, curl and python3 in them already, but with no ripgrep (four suites name
+# it and go red), no xxd (the base package's inbox suite stops dead with `xxd:
+# command not found`) and no locale at all (ten of the seventy
+# delivery-classification cases fail in C, and the same break at runtime is a
+# message never typed into a pane that was ready for it). Verified by running
+# this exact sequence by hand in both images, there being no pipeline to push
+# to.
 .test_template:
   extends: .rules_template
   stage: test
+  variables:
+    # An environment variable for the whole job, matching the rig's `ENV
+    # LANG=C.UTF-8` rather than a shell export, so it holds for anything the job
+    # runs and not only for whatever follows it in one script.
+    LANG: C.UTF-8
   before_script:
+    - apt-get update && apt-get install -y --no-install-recommends ripgrep xxd
     - corepack enable
     - corepack prepare --activate
   script:
