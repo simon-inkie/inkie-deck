@@ -27,6 +27,8 @@ import {
 } from "./lib/harness.mjs";
 import { exec, must, stripAnsi } from "./lib/exec.mjs";
 import { contaminatedEntries, dirtyTreeDecision } from "./lib/source.mjs";
+import { coverage, extractFencedBlocks, proseAfter, selectInDocumentOrder } from "./lib/fenced.mjs";
+import { parseBlockMarkers } from "./lib/docrun.mjs";
 import { satisfiesRange, versionAtLeast } from "./lib/version.mjs";
 import { parseExitCodes, parseSuiteCounts } from "./stages/03-documented-checks.mjs";
 import { extractRefusal } from "./stages/04-node20-floor.mjs";
@@ -279,6 +281,114 @@ export async function selfTest(options = {}) {
     "stripping colour does not eat ordinary bracketed prefixes",
     stripAnsi("[prod] FATAL: something") === "[prod] FATAL: something",
     stripAnsi("[prod] FATAL: something"),
+  );
+
+  // -- fenced-block extraction -----------------------------------------------
+  // The mechanism that makes a document testable, tested as decisions. Every
+  // one of these is a way the extraction could quietly execute something other
+  // than what the document says, which is the only way this approach fails
+  // without anyone noticing.
+  const doc = [
+    "# Title",
+    "",
+    "## First section",
+    "",
+    "```sh",
+    "echo one",
+    "```",
+    "",
+    "```text",
+    "one",
+    "```",
+    "",
+    "prose that follows the block",
+    "",
+    "## Second section",
+    "",
+    "```sh",
+    "# this hash is a shell comment, not a heading",
+    "echo two",
+    "```",
+    "",
+  ].join("\n");
+  const docBlocks = extractFencedBlocks(doc);
+  assert("every fenced block is found", docBlocks.length === 3, docBlocks.length);
+  assert(
+    "block text is verbatim, with no added or trimmed lines",
+    docBlocks[0].text === "echo one\n",
+    docBlocks[0].text,
+  );
+  assert(
+    "ids are per heading and per language, so adding an output block does not renumber the executable one",
+    docBlocks[0].id === "first-section/sh#1" && docBlocks[1].id === "first-section/text#1" && docBlocks[2].id === "second-section/sh#1",
+    docBlocks.map((block) => block.id),
+  );
+  assert(
+    "a # comment inside a block is not read as a heading",
+    docBlocks[2].heading === "Second section",
+    docBlocks[2].heading,
+  );
+  assert(
+    "the prose after a block is what the drift check reads",
+    proseAfter(doc, docBlocks[1]) === "prose that follows the block",
+    proseAfter(doc, docBlocks[1]),
+  );
+  let fenceThrew = false;
+  try {
+    extractFencedBlocks("```sh\necho unterminated\n");
+  } catch {
+    fenceThrew = true;
+  }
+  assert("an unterminated fence raises rather than yielding a partial list", fenceThrew);
+  let tildeThrew = false;
+  try {
+    extractFencedBlocks("~~~sh\necho hidden\n~~~\n");
+  } catch {
+    tildeThrew = true;
+  }
+  assert("a fence style the extractor cannot read raises rather than being skipped", tildeThrew);
+  const cover = coverage(docBlocks, {
+    executableLangs: ["sh"],
+    knownLangs: ["sh", "text"],
+    runs: { only: ["first-section/sh#1"] },
+  });
+  assert("an executable block no run claims is reported", cover.unclaimed.includes("second-section/sh#1"), cover.unclaimed);
+  assert("a claim on a block that does not exist is reported separately", coverage(docBlocks, {
+    executableLangs: ["sh"],
+    knownLangs: ["sh", "text"],
+    runs: { only: ["first-section/sh#9"] },
+  }).unknownIds.length === 1);
+  assert(
+    "a language the plan does not handle is reported rather than ignored",
+    coverage(docBlocks, { executableLangs: ["sh"], knownLangs: ["sh"], runs: {} }).unknownLangs.length === 1,
+  );
+  let orderThrew = false;
+  try {
+    selectInDocumentOrder(docBlocks, ["first-section/sh#1", "nope#1"]);
+  } catch {
+    orderThrew = true;
+  }
+  assert("selecting a block that is not in the document raises", orderThrew);
+  assert(
+    "blocks are selected in DOCUMENT order, never the order the declaration lists",
+    selectInDocumentOrder(docBlocks, ["second-section/sh#1", "first-section/sh#1"]).map((block) => block.id).join(",") ===
+      "first-section/sh#1,second-section/sh#1",
+  );
+
+  // -- block markers ---------------------------------------------------------
+  // The `?? 0` shape once more, in the runner that reads a document's results.
+  const markers = parseBlockMarkers(
+    ["###BEGIN a/sh#1", "hello", "###EXIT a/sh#1 0", "###BEGIN b/sh#1", "###BG b/sh#1 4242", "###DRIVER-END"].join("\n"),
+    [{ id: "a/sh#1" }, { id: "b/sh#1" }, { id: "c/sh#1" }],
+  );
+  assert("a completed block reports its code", markers.exits["a/sh#1"] === 0, markers.exits);
+  assert("a block that never ran reports null, not 0", markers.exits["c/sh#1"] === null, markers.exits);
+  assert("a backgrounded block reports its pid and no exit", markers.backgrounded["b/sh#1"] === "4242" && markers.exits["b/sh#1"] === null);
+  assert("a block's own output is attributed to it", markers.blockOutput["a/sh#1"] === "hello", markers.blockOutput);
+  assert("the driver's completion is recorded", markers.completed === true);
+  assert(
+    "a truncated driver log is not read as complete",
+    parseBlockMarkers("###BEGIN a/sh#1\n", [{ id: "a/sh#1" }]).completed === false,
   );
 
   if (failures.length > 0) {

@@ -65,6 +65,25 @@ thing this suite has actually done on an unprepared machine. The rig asserts
 the exact published figure and, on a shortfall, names the dependency the gap
 implies.
 
+**The installation document is executed, not read.** `INSTALL.md`'s fenced
+shell blocks are extracted by `rig/lib/fenced.mjs` and sourced, in document
+order, byte for byte, in containers built from a base with none of the tools
+the document tells a reader to install. Nothing in `rig/` reimplements an
+instruction in its own words: a verification script that runs `pnpm install`
+because the document says `pnpm install` is a second artefact that agrees with
+the document exactly once, and from the next edit onwards the document is
+unverified while the script stays green. The runs are declared in
+`rig/install-plan.mjs`, every executable block must be claimed by one, and a
+block no run claims fails the rig, because an example nobody executes is an
+example that has quietly stopped being true.
+
+The runner does hold two pieces of knowledge the document's text cannot supply
+on its own: which blocks never return, and which block's correct outcome is a
+non-zero exit. Both are declared beside the sentence in the document that says
+the same thing, and a probe requires that sentence to still be there. Reword
+the paragraph and the rig goes red rather than carrying on against a private
+assumption.
+
 ## Stages
 
 | id | asserts | negative controls |
@@ -74,11 +93,20 @@ implies.
 | `toolchain` | Node inside the `engines` range, corepack, pnpm at the `packageManager` pin, git, ripgrep, curl, tmux | a binary that does not exist must read as absent, never as success; the range evaluator must put 20.19.5, 22.9.0 and 23.11.1 outside the range and 22.13.0, 22.23.2 and 24.0.0 inside it |
 | `documented-checks` | the README's own check list, green, with the published test count | the suite with ripgrep removed must go red naming it; the suite and leak gate with `.git` removed must go red naming the repository |
 | `node20-floor` | `pnpm install` REFUSES Node 20, the refusal names the engine and quotes the range, and the message is recorded verbatim | the Node 20 image must be provably Node 20 with every other tool present, so the refusal cannot be blamed on a missing tool; and the same install must exit 0 on a permitted Node, so it cannot be blamed on the product being broken |
+| `install-doc` | INSTALL.md parses unambiguously, every executable block is claimed by a declared run, and the sentences the runner's behaviour depends on are still in the document | an unclosed fence must raise rather than yield a partial list; a planted undeclared block must be reported unclaimed; removing the sentence that documents a long-running block must turn that check red |
+| `install-try-it` | tier 1, executed from the document on a base with no node, pnpm, git, ripgrep, python3 or tmux: the toolchain installs, `pnpm dev` starts, and the page carries fixture data | the document's own verification command run against `dev:raw`, which starts and answers 500, must print no fixture agent at all; and the outside-the-namespace fetch must reach a server on the same port map that binds every interface, so the dev server's refusal is a statement about the bind |
+| `install-run-it` | tier 2, executed twice from the same document: the four roots, the `.env`, `MC_USER` end to end, the build, the launcher, and the empty-state screen | the run WITHOUT the document's publish block must be refused from outside while answering 200 inside its own namespace; and the launcher with one required root emptied must exit non-zero naming it |
+| `install-agents` | tier 3 as far as a machine with no model CLI goes: both of an agent's homes, the application listing it with no restart, a tmux window, the pane's contents rendered in the page, and a message round-tripping application to file to CLI and back | the launcher pointed at a home with no agents must exit non-zero naming it; the CLI with `AGENT_NAME` unset must refuse rather than guess an identity |
 
-Phases 3 to 7 of the setup plan (the demo path, the production path, the live
-agent path, INSTALL.md, the outputs) are not implemented. They are absent from
-the declaration rather than present and skipped: a skip is a colour, and this
-rig has no colour for "we did not look".
+What tier 3 cannot do is install, authenticate and pay for a model CLI, so it
+does not claim to. The stage asserts the two places the tooling declines to
+overclaim instead: `create-agent.sh` exits 4 CANNOT VERIFY, and the live push
+into a pane is skipped rather than typed. A run in which either of those
+quietly succeeded would be the finding.
+
+Phase 7 of the setup plan (the finished outputs) is not implemented. It is
+absent from the declaration rather than present and skipped: a skip is a
+colour, and this rig has no colour for "we did not look".
 
 ## Two things worth knowing before you read a report
 
