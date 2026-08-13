@@ -148,9 +148,20 @@ pushWatcher.on("exit", (code) => {
 // every request 500s with "dispatcher.getOwner is not a function", which
 // names nothing that leads back to NODE_ENV.
 //
-// No change for the systemd deployment: the unit sets NODE_ENV explicitly, so
-// bin.js's `??` is dead code there, and bin.js requires the very same
-// dist/cli.js this line used to name.
+// bin.js requires the very same dist/cli.js this line used to name, so nothing
+// downstream changes. What changes is where NODE_ENV comes from, and the `??`
+// fallback is the POINT of this line rather than a formality: nothing in this
+// repository sets NODE_ENV. Not deploy.mjs, not any unit file, and it is absent
+// from .env.example deliberately, because after this fix nothing needs it. So
+// for anyone running outside a process manager that happens to export it,
+// bin.js is the only thing setting it at all.
+//
+// An earlier version of this comment claimed a systemd unit set it and that the
+// fallback was therefore dead code. That was asserted about a unit nobody had
+// read. It is false here, where no unit exists, and it was false on the
+// deployment the line was copied from, where the value reached the process only
+// through a gitignored EnvironmentFile. Do not reinstate the claim without
+// reading the unit.
 const serveCli = path.join(
   root,
   "node_modules",
