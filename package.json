@@ -11,6 +11,10 @@
   },
   "packageManager": "pnpm@10.34.5",
   "scripts": {
+    "_comment:run": "A bare-machine run stopped dead here. A reader finishes the README, has every check green, and has no next line to type: the runnable scripts live in packages/deck, and `pnpm dev` at the root answered `Command \"dev\" not found`. Knowing that a pnpm workspace means `cd` into a subdirectory is developer knowledge, and this project's readers are not all developers. These three forward the naive guesses to where they actually live.",
+    "dev": "pnpm -C packages/deck dev",
+    "build": "pnpm -C packages/deck build",
+    "start": "pnpm -C packages/deck start",
     "typecheck": "pnpm -r run typecheck",
     "_comment:test": "One workspace at a time, deliberately. pnpm -r defaults to running package scripts in parallel, and the base suite drives bin/create-agent.sh as real subprocesses. Run alongside deck's suite, that load alone pushed a dozen of deck's 5-second per-test timeouts over the line: 64 failures, none of them a real defect, on a tree that is green when the two run in sequence. A suite that fails for load reasons is no more use than one that passes for environmental ones.",
     "test": "pnpm -r --workspace-concurrency=1 run test",
