@@ -62,6 +62,10 @@ run this so far already had them:
   no `.git` directory the suite reports dozens of failures that have nothing
   to do with the code.
 - **ripgrep** (`rg`), used by `check:dashes`.
+- **python3**, if you want your agents to talk to each other. The `inbox` CLI in
+  `packages/base` is Python. Nothing in the web application needs it, so Deck
+  runs fine without it and you will not find out you are missing it until an
+  agent tries to reply and cannot. A bare Ubuntu 24.04 image does not have it.
 
 The test count doubles as a diagnostic here: **1790 passing** means both are
 present, **1786** means ripgrep is missing, and **1723** means neither is.
