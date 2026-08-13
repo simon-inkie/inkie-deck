@@ -66,6 +66,14 @@ run this so far already had them:
 The test count doubles as a diagnostic here: **1790 passing** means both are
 present, **1786** means ripgrep is missing, and **1723** means neither is.
 
+One more thing about those two suites, because it looks like your bug and is
+not: **they report the state of the tree, not the state of your change.** They
+fail on any modification, including the uncommitted edits you are currently
+testing. So a run against a dirty tree returns dozens of failures that have
+nothing to do with what you wrote. Commit first, or stash, then run the suite.
+Two people lost time to this on the same day, each reading it as their own
+breakage.
+
 ```sh
 pnpm install
 pnpm typecheck
