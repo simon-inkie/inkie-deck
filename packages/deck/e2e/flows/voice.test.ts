@@ -24,7 +24,7 @@
  */
 import { test, expect } from "@playwright/test";
 import path from "node:path";
-import { assertGitClean, resetFixtureInbox } from "./helpers.js";
+import { assertGitClean, resetFixtureInbox, sendButton } from "./helpers.js";
 
 test.beforeEach(() => resetFixtureInbox());
 test.afterAll(() => assertGitClean(path.resolve(".")));
@@ -60,7 +60,7 @@ test("TASK-433: mic shows unavailable when proxy not running; compose still send
   const replyText = "Voice-unavailable compose test - TASK-433";
   await textarea.fill(replyText);
 
-  const sendBtn = page.getByRole("button", { name: "Send" });
+  const sendBtn = sendButton(page);
   await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 

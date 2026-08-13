@@ -8,11 +8,31 @@
  * (VALID-03 backstop: proves the live inbox and committed fixtures are untouched).
  * Uses a baseline snapshot captured at module load time to filter pre-existing dirt.
  *
+ * sendButton: the composer's submit button, disambiguated from the gear beside it.
+ *
  * ASCII only - no em-dashes per FND-05.
  */
+import type { Locator, Page } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+
+/**
+ * The composer's submit button.
+ *
+ * WHY THIS EXISTS RATHER THAN AN INLINE getByRole. Playwright's role-name
+ * matching is substring-based by default, and the composer renders a gear
+ * button next to Send whose accessible name is "Batch send settings" - which
+ * CONTAINS "send". A bare { name: "Send" } therefore resolves to two elements
+ * and every use dies on strict mode, which is exactly how this suite was red.
+ * `exact: true` is the whole fix; the helper is so the next spec inherits it
+ * instead of rediscovering it.
+ *
+ * @param page - The Playwright page under test.
+ */
+export function sendButton(page: Page): Locator {
+  return page.getByRole("button", { name: "Send", exact: true });
+}
 
 /**
  * Reset the E2E temp inbox to a clean copy of fixtures/inbox.

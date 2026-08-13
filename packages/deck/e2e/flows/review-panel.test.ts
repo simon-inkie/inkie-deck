@@ -17,7 +17,7 @@
  * ASCII only - no em-dashes (FND-05).
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean } from "./helpers.js";
+import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
 import path from "node:path";
 
 const FIXTURES_DIR = path.resolve("e2e/fixtures");
@@ -48,7 +48,7 @@ test("TASK-431 chip click: upload .md, chip opens panel, URL carries ?doc=, refr
   expect(draftBeforeSend).not.toMatch(/\[.*\]\(\/attachments\/.*\.md\)/);
 
   // Send the message.
-  await page.getByRole("button", { name: "Send" }).click();
+  await sendButton(page).click();
 
   // After send, the pending chip should be cleared.
   await expect(page.getByTestId("pending-attachment-chip")).toHaveCount(0, { timeout: 5_000 });

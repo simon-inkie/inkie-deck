@@ -7,7 +7,7 @@
  * ASCII only - no em-dashes per FND-05.
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean } from "./helpers.js";
+import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -28,7 +28,7 @@ test("THRD-04: sending a reply appends to temp fixture inbox and appears in thre
   await page.getByPlaceholder("Write a reply...").fill(replyBody);
 
   // Submit the reply
-  await page.getByRole("button", { name: "Send" }).click();
+  await sendButton(page).click();
 
   // Wait for the reply to appear in the thread (RR7 revalidates after action).
   // Scope to <main>: in the two-pane shell the left sidebar also shows the

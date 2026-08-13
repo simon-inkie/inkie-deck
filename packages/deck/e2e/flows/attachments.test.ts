@@ -19,7 +19,7 @@
  * ASCII only - no em-dashes (FND-05).
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean } from "./helpers.js";
+import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
 import path from "node:path";
 
 const FIXTURES_DIR = path.resolve("e2e/fixtures");
@@ -51,7 +51,7 @@ test("TASK-450 picker: upload png, chip visible, textarea clean, send renders im
   expect(draftValue).toBe("");
 
   // Submit the composed message (attachment-only send - textarea may be empty).
-  await page.getByRole("button", { name: "Send" }).click();
+  await sendButton(page).click();
 
   // Wait for the inline image to appear in the thread.
   const img = page.getByRole("main").locator('img[src^="/attachments/"]');
@@ -90,7 +90,7 @@ test("TASK-450 chip-remove: remove chip before send, text send has no attachment
   // Send a plain text message.
   const textarea = page.getByTestId("compose-textarea");
   await textarea.fill("No attachment here");
-  await page.getByRole("button", { name: "Send" }).click();
+  await sendButton(page).click();
 
   // Wait for the "No attachment here" text to appear in the thread.
   await expect(page.getByRole("main").getByText("No attachment here")).toBeVisible({ timeout: 10_000 });
@@ -122,7 +122,7 @@ test("TASK-450 md-chip: upload .md file, chip renders, GET returns 200 + nosniff
   expect(draftValue).not.toMatch(/\[.*\]\(\/attachments\/.*\.md\)/);
 
   // Send the message.
-  await page.getByRole("button", { name: "Send" }).click();
+  await sendButton(page).click();
 
   // TASK-431: .md chips render as a ReviewableChip (button, aria-label contains
   // "Open in review panel") or AttachmentChip (anchor, aria-label "Attachment: ...").

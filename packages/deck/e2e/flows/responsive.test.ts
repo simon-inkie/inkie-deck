@@ -11,7 +11,7 @@
  * ASCII only - no em-dashes (FND-05).
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean } from "./helpers.js";
+import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
 import path from "node:path";
 
 const MOBILE = { width: 390, height: 844 };
@@ -65,7 +65,7 @@ test("RESP-02: mobile thread - compose visible, send works, last message not hid
   await expect(textarea).toBeVisible();
 
   // Send button is visible and has a usable tap target.
-  const sendBtn = page.getByRole("button", { name: "Send" });
+  const sendBtn = sendButton(page);
   await expect(sendBtn).toBeVisible();
 
   // Send a reply.
