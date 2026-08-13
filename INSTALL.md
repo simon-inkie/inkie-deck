@@ -171,10 +171,11 @@ atlas
 scribe
 ```
 
-That is the check worth running, and a bare HTTP 200 is not. The dev server
-answers 200 with an error page when the roots are unset, so "something is
-listening" and "Deck is working" are different questions and only the second
-one matters.
+That is the check worth running, and a status code on its own is not. A dev
+server started without the sandbox wiring also starts and also answers, with a
+500 and an error page, and a 200 would still not tell you whether the fixtures
+were seeded. "Something is listening" and "Deck is working" are different
+questions, and only the second one matters.
 
 Two things this tier does not do. It is reachable only from the machine it
 runs on (the dev server binds loopback, and a container port map published
@@ -273,8 +274,8 @@ listens. A missing or relative or nonexistent root is fatal at that point and
 names itself, rather than starting and returning errors for every request.
 
 ```text
-[prod] .env loaded from /src/packages/deck/.env (process environment wins)
-[prod] INBOX_ROOT=/root/deck/inbox
+[prod] .env loaded from /home/you/inkie-deck/packages/deck/.env (process environment wins)
+[prod] INBOX_ROOT=/home/you/deck/inbox
 [prod] app on http://127.0.0.1:4242
 [prod] HOST=127.0.0.1 is loopback, so ONLY this machine can reach the app.
 ```
@@ -293,8 +294,8 @@ Nothing needs you
 An empty Deck is the correct first screen here, and those two lines are it.
 Agents appear once something writes into `INBOX_ROOT`, which is tier 3.
 
-**Do not use `pnpm start` for this.** It exists, it starts, and it serves an
-error page for every request until you configure it, because it goes straight
+**Do not use `pnpm start` for this.** It exists, it starts, and it then answers
+500 for every request until you configure it, because it goes straight
 to the web server and skips the launcher that validates the roots and loads
 the `.env`. `node scripts/start-production.mjs` is the supported way in.
 
@@ -329,8 +330,8 @@ the script says so and exits 4:
 
 ```text
 create-agent: CREATED wren
-  persona files  /root/agents/wren
-  inbox          /root/deck/inbox/wren/inbox
+  persona files  /home/you/agents/wren
+  inbox          /home/you/deck/inbox/wren/inbox
   boot phrase    boot-6ed9a08da2961594
 
 create-agent: CANNOT VERIFY wren
@@ -376,10 +377,10 @@ tmux capture-pane -t agents:wren -p | grep -v '^$' | tail -5
 ```
 
 ```text
-[user@host wren]$ printf '\033]0;wren\007'; claude --resume wren  || claude
+you@host:~/agents/wren$ printf '\033]0;wren\007'; [ -f /home/you/agents/wren/.env.secrets ] && . /home/you/agents/wren/.env.secrets; claude --resume wren  || claude
 -bash: claude: command not found
 -bash: claude: command not found
-[user@host wren]$
+you@host:~/agents/wren$
 ```
 
 (The blank lines are dropped because a tmux pane is padded to its full height,
@@ -387,10 +388,11 @@ and `tail` on the raw capture returns the padding rather than the text.)
 
 Deck reads that pane live. Open the agent's thread and switch to the terminal
 view, or `curl -sS "http://localhost:4242/threads/wren?view=tmux"`, and the
-contents of the pane are in the page. This is the one check in this area worth
-trusting: Deck's tmux flag is on by default and does not probe for tmux, so
-the navigation offers the terminal view on a machine that has no tmux at all,
-and the page still returns 200. A pane's contents cannot be faked that way.
+contents of the pane are in the page. That is the one check in this area worth
+trusting. Deck's tmux surface is switched on by an environment variable that
+defaults to on and never looks for the binary, so the terminal view being
+offered in the navigation is not evidence that tmux exists on the machine. The
+contents of a pane cannot be produced that way.
 
 ### Send a message, and answer it as the agent
 
