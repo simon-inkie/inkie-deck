@@ -56,19 +56,24 @@ export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", 
 /**
  * Test-count instrument.
  *
- * The README documents these as a diagnostic for the reader: 1770 means git
- * and ripgrep are both present, and a lower number names the missing one. The
- * rig asserts the exact figure, because "the suite passed" is satisfied by a
- * suite that quietly stopped running 67 of its tests, and that is not a
- * hypothetical here - it is what an unprepared machine measured in the
- * baseline run.
+ * The README documents these as a diagnostic for the reader: the full figure
+ * means git and ripgrep are both present, and a lower number names the missing
+ * one. The rig asserts the exact figure, because "the suite passed" is
+ * satisfied by a suite that quietly stopped running 67 of its tests, and that
+ * is not a hypothetical here - it is what an unprepared machine measured in
+ * the baseline run.
+ *
+ * These numbers are also the reason to distrust a published count that nothing
+ * asserts: the README carried 1790 for a tree that measured 1810, and this
+ * file carried 1770 for the same tree, each stale from a different day. A
+ * number in prose rots silently; a number a stage compares against goes red.
  *
  * `base` is measured rather than documented: the README's number is deck's
  * alone and does not mention the base package's suite at all.
  */
 export const EXPECTED_TESTS = {
-  deck: { passed: 1770, skipped: 11, files: 86 },
-  base: { passed: 27, skipped: 0, files: 1 },
+  deck: { passed: 1810, skipped: 11, files: 88 },
+  base: { passed: 38, skipped: 0, files: 4 },
 };
 
 /**
