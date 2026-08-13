@@ -19,7 +19,13 @@
  * ASCII only - no em-dashes (FND-05).
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
+import {
+  resetFixtureInbox,
+  assertGitClean,
+  sendButton,
+  expectDelivered,
+  readInbox,
+} from "./helpers.js";
 import path from "node:path";
 
 const FIXTURES_DIR = path.resolve("e2e/fixtures");
@@ -92,11 +98,23 @@ test("TASK-450 chip-remove: remove chip before send, text send has no attachment
   await textarea.fill("No attachment here");
   await sendButton(page).click();
 
-  // Wait for the "No attachment here" text to appear in the thread.
-  await expect(page.getByRole("main").getByText("No attachment here")).toBeVisible({ timeout: 10_000 });
+  // The DELIVERED block is the assertion. "the text appears in main" was
+  // satisfied by the local pending bubble, which renders the typed words with
+  // no send at all - so this test passed whether or not anything was sent, and
+  // could not have caught a removed chip that went out anyway.
+  await expectDelivered("scribe", "No attachment here");
 
-  // The message should NOT contain an image.
-  const img = page.getByRole("main").locator('img[src^="/attachments/"]');
+  // What was delivered carries no attachment: the removed chip's markdown is
+  // absent from the written body, not merely absent from the screen.
+  expect(readInbox("scribe")).not.toContain("/attachments/");
+
+  // Rendered form of the same fact. Scoped to the message list rather than
+  // <main>: the pending bubble renders outside the scroll area, so this scope
+  // cannot be satisfied by held text.
+  await expect(
+    page.getByTestId("thread-scroll").getByText("No attachment here")
+  ).toBeVisible({ timeout: 10_000 });
+  const img = page.getByTestId("thread-scroll").locator('img[src^="/attachments/"]');
   await expect(img).toHaveCount(0, { timeout: 5_000 });
 });
 
@@ -124,16 +142,26 @@ test("TASK-450 md-chip: upload .md file, chip renders, GET returns 200 + nosniff
   // Send the message.
   await sendButton(page).click();
 
+  // Delivery first, on disk. The old assertion looked for the text
+  // "test-notes.md" anywhere in <main>, and the pending bubble renders the
+  // attachment's raw markdown - filename included - while holding it. So the
+  // filename was on screen whether or not the message was ever sent.
+  await expectDelivered("scribe", "](/attachments/");
+  expect(readInbox("scribe")).toMatch(
+    /\[test-notes\.md\]\(\/attachments\/[^)]+\.md\)/
+  );
+
   // TASK-431: .md chips render as a ReviewableChip (button, aria-label contains
   // "Open in review panel") or AttachmentChip (anchor, aria-label "Attachment: ...").
-  // Wait for any element whose text content includes "test-notes.md".
-  const chipLocator = page.getByRole("main").getByText("test-notes.md");
+  // Scoped to the message list: a chip is only rendered from a delivered block,
+  // and held text can never reach this scope.
+  const chipLocator = page.getByTestId("thread-scroll").getByText("test-notes.md");
   await expect(chipLocator.first()).toBeVisible({ timeout: 10_000 });
 
   // GET the attachment URL directly when we can find an anchor href.
   // If a ReviewableChip (button) is rendered instead, skip the GET assertion -
   // the chip's presence already proves the file was uploaded and stored.
-  const attachmentAnchor = page.getByRole("main").locator('a[aria-label*="Attachment"]').first();
+  const attachmentAnchor = page.getByTestId("thread-scroll").locator('a[aria-label*="Attachment"]').first();
   const attachmentHref = await attachmentAnchor.getAttribute("href", { timeout: 2_000 }).catch(() => null);
 
   if (attachmentHref) {

@@ -20,6 +20,7 @@
  * ASCII only - no em-dashes per FND-05 (check:dashes gate).
  */
 import { defineConfig } from "@playwright/test";
+import { BASE_URL, batchPrefsStorageState } from "./e2e/batch-prefs-state";
 
 export default defineConfig({
   testDir: "./e2e/flows",
@@ -29,7 +30,15 @@ export default defineConfig({
   // Parallel workers would cause beforeEach resets to race with write operations.
   workers: 1,
   use: {
-    baseURL: "http://localhost:3917",
+    baseURL: BASE_URL,
+    // Sending is effectively immediate for the whole suite. The composer's 18s
+    // hold is a per-browser localStorage preference, so seeding it to the
+    // minimum the app allows is a test-environment setting, not a product
+    // change - batching stays on by default for users. It lives here rather
+    // than in each spec so a new composer test inherits it instead of quietly
+    // re-acquiring the 18s wait. See e2e/batch-prefs-state.ts for the
+    // reasoning and for the E2E_HOLD_SECONDS revert-to-red knob.
+    storageState: batchPrefsStorageState(),
   },
   timeout: 30_000,
   webServer: {

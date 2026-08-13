@@ -7,7 +7,12 @@
  * ASCII only - no em-dashes per FND-05.
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
+import {
+  resetFixtureInbox,
+  assertGitClean,
+  sendButton,
+  expectDelivered,
+} from "./helpers.js";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -30,19 +35,18 @@ test("THRD-04: sending a reply appends to temp fixture inbox and appears in thre
   // Submit the reply
   await sendButton(page).click();
 
-  // Wait for the reply to appear in the thread (RR7 revalidates after action).
-  // Scope to <main>: in the two-pane shell the left sidebar also shows the
-  // agent's last-message preview, so the reply text legitimately appears twice
-  // in the DOM. We assert it landed in the conversation pane specifically.
-  await expect(
-    page.getByRole("main").getByText(replyBody)
-  ).toBeVisible({ timeout: 10_000 });
+  // VALID-03: the reply landed in the TEMP fixture file. Polled, because a
+  // submit is not a send - the composer holds the text for the settle window
+  // first, so a synchronous read here races the delivery it is asserting.
+  await expectDelivered("scribe", replyBody);
 
-  // VALID-03: verify the reply landed in the TEMP fixture file.
-  const inboxRoot = process.env["INBOX_ROOT"];
-  const inboxFile = path.join(inboxRoot!, "scribe", "inbox", "alex.md");
-  const content = fs.readFileSync(inboxFile, "utf8");
-  expect(content).toContain(replyBody);
+  // And it appears in the thread (RR7 revalidates after the action). Scope to
+  // the message list: <main> would also match the pending bubble, which shows
+  // the typed words while they are still held, and the sidebar's last-message
+  // preview repeats them again.
+  await expect(
+    page.getByTestId("thread-scroll").getByText(replyBody)
+  ).toBeVisible({ timeout: 10_000 });
 
   // Confirm the committed fixture does NOT contain our reply.
   const committedFile = path.resolve("fixtures/inbox/scribe/inbox/alex.md");

@@ -24,7 +24,12 @@
  */
 import { test, expect } from "@playwright/test";
 import path from "node:path";
-import { assertGitClean, resetFixtureInbox, sendButton } from "./helpers.js";
+import {
+  assertGitClean,
+  resetFixtureInbox,
+  sendButton,
+  expectDelivered,
+} from "./helpers.js";
 
 test.beforeEach(() => resetFixtureInbox());
 test.afterAll(() => assertGitClean(path.resolve(".")));
@@ -64,8 +69,15 @@ test("TASK-433: mic shows unavailable when proxy not running; compose still send
   await expect(sendBtn).toBeEnabled();
   await sendBtn.click();
 
-  // The reply appears in the thread after the action + revalidation.
-  await expect(page.getByRole("main").getByText(replyText)).toBeVisible({
+  // The claim in this test's name is "compose still sends text", so the proof
+  // must be a send. The old assertion looked for the text in <main>, which the
+  // local pending bubble satisfies with nothing sent - a mic outage could have
+  // broken sending outright and this would still have been green.
+  await expectDelivered("scribe", replyText);
+
+  // The reply appears in the thread after the action + revalidation. Scoped to
+  // the message list: the pending bubble renders outside the scroll area.
+  await expect(page.getByTestId("thread-scroll").getByText(replyText)).toBeVisible({
     timeout: 10_000,
   });
 });

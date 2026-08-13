@@ -11,7 +11,12 @@
  * ASCII only - no em-dashes (FND-05).
  */
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
+import {
+  resetFixtureInbox,
+  assertGitClean,
+  sendButton,
+  expectDelivered,
+} from "./helpers.js";
 import path from "node:path";
 
 const MOBILE = { width: 390, height: 844 };
@@ -73,16 +78,24 @@ test("RESP-02: mobile thread - compose visible, send works, last message not hid
   await textarea.fill(uniqueBody);
   await sendBtn.click();
 
-  // The reply appears in the thread (scoped to main to avoid sidebar preview).
+  // "send works" has to mean the message SENT. The old assertion looked for the
+  // text in <main>, which the local pending bubble satisfies without any POST -
+  // so this test would have stayed green on a composer that never sent at all.
+  await expectDelivered("scribe", uniqueBody);
+
+  // The reply appears in the thread. Scoped to the message list, not <main>:
+  // the pending bubble renders outside the scroll area, so only a delivered
+  // block can satisfy this - and the occlusion check below then measures a real
+  // message bubble rather than the pending indicator.
   await expect(
-    page.getByRole("main").getByText(uniqueBody)
+    page.getByTestId("thread-scroll").getByText(uniqueBody)
   ).toBeVisible({ timeout: 10_000 });
 
   // Last message is not obscured by the sticky compose bar.
   // The message should be visible in the viewport - Playwright's isVisible() checks
   // the element is within the visible area (not clipped by overflow or behind another
   // element with pointer-events:none). The sticky compose must not fully occlude it.
-  const msgEl = page.getByRole("main").getByText(uniqueBody);
+  const msgEl = page.getByTestId("thread-scroll").getByText(uniqueBody);
   await expect(msgEl).toBeVisible();
 
   // Additional check: scroll into view and confirm it becomes visible even if
