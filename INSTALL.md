@@ -61,14 +61,15 @@ Deck needs Node on a current LTS line, pnpm (via corepack), and a **git
 clone**. A downloaded ZIP or a release tarball is not enough: two of the test
 suites and the leak gate shell out to git against the repository root.
 
-Three more tools matter for one thing each, and are easy to miss because every
+Four more tools matter for one thing each, and are easy to miss because every
 machine that has run this so far already had them:
 
 | tool | needed for | without it |
 | --- | --- | --- |
-| ripgrep (`rg`) | `pnpm check:dashes`, and the test suite | four test failures that name nothing useful |
+| ripgrep (`rg`) | `pnpm check:dashes`, and the test suite | four test failures, which do at least name ripgrep |
 | python3 | the `inbox` CLI, which is how an agent replies | Deck runs fine; your agents cannot answer |
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
+| xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
 
 On Ubuntu or Debian, as root (prefix each line with `sudo` if you are not):
 
@@ -353,8 +354,10 @@ packages/base/bin/boot-agents.sh
 ```
 
 That starts a tmux session named `agents` with one window per agent home,
-named after the agent, and launches each agent's runtime in its window. It is
-idempotent: an agent already running is left alone.
+named after the agent, and launches each agent's runtime in its window. Run it
+again and an agent whose pane already has its runtime running in it is left
+alone; one whose runtime has exited is relaunched, which is what makes this
+safe to fire on boot.
 
 ```sh
 tmux list-windows -t agents -F '#{window_name}'
@@ -477,6 +480,19 @@ in `packages/base/conformance/corpus.json` (`body-markdown-heading`), so the
 conformance suite asserts the exact wrong answer today and will fail the
 moment it is fixed, forcing the record to be deleted. The fix is owned by the
 protocol implementation and is not applied here.
+
+**Sending to an agent with the CLI does not reach the file Deck reads.** The
+CLI is symmetric: `inbox reply <them>` writes into the SENDER's own thread
+file, `$INBOX_ROOT/<you>/inbox/<them>.md`, on the assumption that each pair's
+two files are one file with two names. Nothing here creates that pairing. So
+the agent-to-human direction works, because an agent writes into its own inbox
+which is exactly where Deck looks, and the human-to-agent direction with the
+CLI writes a file Deck never reads and the agent never sees. It fails silently
+in both halves: your `inbox reply` reports success, and the agent's `inbox
+unread` says there is nothing. That is why the walkthrough above sends from
+Deck and replies from the terminal rather than the other way round. Pairing the
+two files, at creation or on first contact, is an open design question rather
+than a setting.
 
 **The browser test suite is not a guarantee.** `pnpm -C packages/deck e2e`
 runs Playwright journeys that have real, currently un-diagnosed flakes. It is
