@@ -209,13 +209,22 @@ describe("creation", () => {
     expect(bootPhraseOf(box, "wren")).not.toBe(bootPhraseOf(box, "basalt"));
   });
 
-  it("writes nothing outside the two agent directories", () => {
+  it("writes nothing outside the two agent directories, bar the one PATH symlink", () => {
     const box = sandbox();
-    run(box, ["wren", "--no-verify"]);
+    run(box, ["wren", "--no-install-path", "--no-verify"]);
     // Nothing under HOME. The recipe this generalises touches a user-level
     // settings file; this script must not, because that file belongs to
     // whatever else the user is running.
     expect(fs.readdirSync(box.home)).toEqual([]);
+
+    // The single carve-out, opted out of above and exercised here: a symlink at
+    // ~/.local/bin/inbox, because the bare command name `inbox` has to resolve
+    // for the reply hint the application pushes into a pane to be true. It is
+    // one link and nothing else, and it is never a write over an existing file.
+    const other = sandbox();
+    run(other, ["wren", "--no-verify"]);
+    expect(fs.readdirSync(other.home)).toEqual([".local"]);
+    expect(fs.readdirSync(path.join(other.home, ".local", "bin"))).toEqual(["inbox"]);
   });
 
   it("refuses to overwrite, and names BOTH paths when either is occupied", () => {
@@ -358,13 +367,45 @@ describe("settings merge", () => {
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8")).env.AGENT_NAME).toBe("already-set");
   });
 
-  it("writes AGENT_NAME and AGENT_ROLE when there is no settings file yet", () => {
+  it("writes AGENT_NAME, INBOX_ROOT and AGENT_ROLE when there is no settings file yet", () => {
     const box = sandbox();
     run(box, ["wren", "--role", "keeps the notes", "--no-verify"]);
     const settings = JSON.parse(
       fs.readFileSync(path.join(box.agentsHome, "wren", ".claude", "settings.json"), "utf8"),
     );
-    expect(settings).toEqual({ env: { AGENT_NAME: "wren", AGENT_ROLE: "keeps the notes" } });
+    expect(settings).toEqual({
+      env: { AGENT_NAME: "wren", INBOX_ROOT: box.inboxRoot, AGENT_ROLE: "keeps the notes" },
+    });
+  });
+
+  /**
+   * The env block is the only channel that reaches the environment of the
+   * commands the agent runs, and the inbox CLI hard-errors without INBOX_ROOT.
+   * An agent created without this line can address no one at all.
+   */
+  it("stamps the resolved inbox root, so the CLI and the application agree", () => {
+    const box = sandbox();
+    const elsewhere = path.join(box.home, "elsewhere-inbox");
+    run(box, ["wren", "--inbox-root", elsewhere, "--no-verify"]);
+
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(box.agentsHome, "wren", ".claude", "settings.json"), "utf8"),
+    );
+    // The value the run actually used, not the ambient one it was overridden with.
+    expect(settings.env.INBOX_ROOT).toBe(elsewhere);
+    expect(path.isAbsolute(settings.env.INBOX_ROOT)).toBe(true);
+    expect(fs.existsSync(path.join(elsewhere, "wren", "inbox"))).toBe(true);
+  });
+
+  it("does not overwrite an inbox root that is already there", () => {
+    const box = sandbox();
+    const settingsPath = path.join(box.agentsHome, "wren", ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify({ env: { INBOX_ROOT: "/already/set" } }));
+
+    run(box, ["wren", "--no-verify"]);
+
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8")).env.INBOX_ROOT).toBe("/already/set");
   });
 
   it("refuses rather than clobbering a settings file it cannot parse", () => {
@@ -379,6 +420,70 @@ describe("settings merge", () => {
     // A file we cannot parse is a file whose contents we cannot promise to
     // preserve, so it is left exactly as found.
     expect(fs.readFileSync(settingsPath, "utf8")).toBe("{ this is not json");
+  });
+});
+
+/**
+ * Whether a created agent can actually USE the inbox CLI, which is three
+ * separate facts: the root reaches its environment (above), the commands reach
+ * its context (TOOLS.md), and the bare name resolves (the symlink).
+ *
+ * Every case here runs against the redirected HOME the sandbox provides, so
+ * nothing in this file ever reads or writes the real ~/.local/bin.
+ */
+describe("inbox CLI reach", () => {
+  const CLI = path.join(PACKAGE_ROOT, "bin", "inbox");
+  const localBin = (box: Sandbox) => path.join(box.home, ".local", "bin", "inbox");
+
+  it("stamps the CLI path and the agent's own name into TOOLS.md", () => {
+    const box = sandbox();
+    run(box, ["wren", "--no-verify"]);
+    const tools = fs.readFileSync(path.join(box.agentsHome, "wren", "TOOLS.md"), "utf8");
+
+    // The absolute path is the fallback that survives every way the symlink
+    // install can be skipped, so it has to be in the file, not implied by it.
+    expect(tools).toContain(CLI);
+    expect(tools).toContain("wren");
+    expect(tools).toContain("inbox reply");
+    // And the placeholder is gone: a leftover marker means no substitution ran.
+    expect(tools).not.toContain("stamped at creation");
+  });
+
+  it("installs the symlink by default, resolving to this package's CLI", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(fs.lstatSync(localBin(box)).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(localBin(box))).toBe(fs.realpathSync(CLI));
+    expect(result.output).toContain("linked");
+  });
+
+  it("installs nothing at all under --no-install-path", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-install-path", "--no-verify"]);
+
+    expect(fs.existsSync(localBin(box))).toBe(false);
+    expect(fs.existsSync(path.join(box.home, ".local", "bin"))).toBe(false);
+    expect(result.output).toContain("--no-install-path");
+    // The agent is still fully created; the flag skips one convenience.
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(true);
+  });
+
+  // Somebody else's file is not ours to replace. The run carries on, because a
+  // missing symlink costs the agent a shorthand and not the tool.
+  it("leaves a foreign inbox at that path untouched and still creates the agent", () => {
+    const box = sandbox();
+    const target = localBin(box);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "#!/bin/sh\necho not ours\n", { mode: 0o755 });
+
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status, result.output).toBe(EXIT.CANNOT_VERIFY); // created, not verified
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(target, "utf8")).toBe("#!/bin/sh\necho not ours\n");
+    expect(result.output).toContain("left exactly as found");
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
   });
 });
 

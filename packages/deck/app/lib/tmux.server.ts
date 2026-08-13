@@ -541,9 +541,23 @@ export type WakeResult = { woke: boolean; reason: "sent" | "active" | "send-fail
  * auto-submits it when the current turn ends (verified live, TASK-537).
  *
  * A reply-hint is appended to the pane text so the recipient knows how to
- * respond via their inbox rather than replying in the terminal (TASK-532).
- * The hint format matches the agent-to-agent CLI push in packages/base
- * so both push paths look identical to the recipient.
+ * respond via their inbox rather than replying in the terminal.
+ *
+ * The hint format matches the agent-to-agent CLI push (packages/base/bin/inbox,
+ * maybe_push) so both push paths look identical to the recipient. That claim was
+ * false for a while and nothing noticed: this side emitted ONE leading space and
+ * the CLI two, while this comment asserted they matched. This side moved, not
+ * the CLI: that file is a copy of a proven implementation and is held
+ * byte-identical to it except where a hardcoded path could not survive the move,
+ * so when the two disagree cosmetically, the copy is the fixed point and this is
+ * what changes. Both suites now assert the pane payload exactly, so a future
+ * divergence fails a test rather than surviving as a comment that is quietly
+ * wrong.
+ *
+ * The hint names a BARE `inbox` command, which is only true if the recipient can
+ * resolve it on PATH. bin/create-agent.sh installs that symlink when it creates
+ * an agent, and stamps the absolute path into the agent's TOOLS.md as the
+ * fallback.
  *
  * Callers should NOT await this (fire-and-forget): sendKeysToWindow sleeps
  * ~1s between text and Enter, and the operator's send must not block on it.
@@ -556,7 +570,7 @@ export async function wakeIdleAgent(
 ): Promise<WakeResult> {
   if (!paneAcceptsSendLive(env, window)) return { woke: false, reason: "active" };
   const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
-  const text = `[inbox from ${tag}] new message in Inkie Deck, check your inbox [reply via inbox: inbox reply ${tag}]`;
+  const text = `[inbox from ${tag}] new message in Inkie Deck, check your inbox  [reply via inbox: inbox reply ${tag}]`;
   const res = await sendKeysToWindow(env, window, text);
   return res.ok ? { woke: true, reason: "sent" } : { woke: false, reason: "send-failed" };
 }
@@ -759,7 +773,7 @@ export function buildPanePayload(
   // whereas clamping a BODY is the exact data loss this function exists to
   // prevent. Truncating identifiers is not the same act as truncating content.
   const tag = rawTag.length > MAX_TAG_LEN ? rawTag.slice(0, MAX_TAG_LEN) : rawTag;
-  const hint = ` [reply via inbox: inbox reply ${tag}]`;
+  const hint = `  [reply via inbox: inbox reply ${tag}]`;
   // DICTATION PROVENANCE (2026-08-11). The stored block already carries
   // "dictated: true" via rawMeta; this is the pane-side half, which was missing.
   // Dictation mangles words, and knowing text is transcribed changes both how a

@@ -1,7 +1,8 @@
 # Tooling review
 
 Status of the scripts behind the pattern this repo describes: which are
-ported, which were ported and then removed, and why.
+ported, which were written here, which were removed and then restored, and
+why.
 
 ## Ported: `bin/workspace.sh`, `bin/boot-agents.sh`
 
@@ -65,7 +66,7 @@ reaches the model anyway through the working directory, so a session carrying no
 persona at all answers a name question correctly, and a check built on the name
 would report success in exactly the case it exists to catch.
 
-## Ported, then removed: the `inbox` CLI
+## Ported, removed, restored: the `inbox` CLI
 
 The inbox DM protocol implementation, the concrete counterpart to the
 description in `SYSTEM.md`, was ported into this package as `bin/inbox.mts`
@@ -73,16 +74,56 @@ description in `SYSTEM.md`, was ported into this package as `bin/inbox.mts`
 the same inputs) together with a real test suite, including a concurrency
 stress test using real OS subprocesses against its cross-process lock.
 
-Both the CLI and its tests have since been **removed, deliberately**. The
+Both the CLI and its tests were then **removed, deliberately**. The
 application in `packages/deck` landed carrying its own implementation of the
 same protocol, the one the internal platform actually runs, and two readers
 of one on-disk format in one repository drift apart: every fix or tolerance
 added to one and not the other becomes a silent interoperability bug. The
-protocol has exactly one normative artefact here, `docs/protocol.md`, and
-exactly one implementation, the application.
+protocol would have exactly one normative artefact here, `docs/protocol.md`,
+and exactly one implementation, the application.
 
-The port was not wasted. Its conformance findings were folded into the spec
-before the code went:
+**That was wrong, and the CLI is back**, now as `bin/inbox`, python3, copied
+and cleaned from the internal fleet's working implementation rather than
+reimplemented, with `bin/inbox-push` (the live tmux delivery half),
+`bin/pane-idle` (the one definition of "is this pane busy", which `inbox-push`
+cannot run without) and the ported suites in `test/inbox.test.sh` and
+`test/inbox-push.test.sh`.
+
+The removal reasoning was right about the risk and wrong about the
+requirement. The application is a web server, and an agent lives in a tmux
+pane with no browser: "the application already implements the protocol"
+described a surface the agents themselves cannot reach, so removing the CLI
+did not remove a redundant second implementation, it removed the only tool
+they had. A live end-to-end test settled it. A newly created agent could
+receive messages and had no way to reply, while every message the application
+pushes into a pane ends with the hint `[reply via inbox: inbox reply <name>]`,
+naming a command that did not exist in this repository.
+
+The drift concern was not silly, and it still has to be answered. The answer
+is `conformance/corpus.json`: one body of shared test data keyed to
+`docs/protocol.md`, with a thin adapter per implementation (`run_cli.py` here,
+`test/blocks/conformance.test.ts` in `packages/deck`), and a deviation record
+for each known departure. A recorded deviation must still reproduce exactly,
+so one that changes shape fails; and the runner also asserts the implementation
+does not produce the right answer, so a deviation that gets FIXED fails until
+its record is deleted. The corpus holds both to the specification, never to
+each other.
+
+Running it produced the finding worth having: **both implementations already
+deviate from the spec**, the CLI on three of the nineteen cases and the
+application on seven, and three of those are the same defect in both. Both
+take block boundaries from every `## ` line and only afterwards discard the
+ones whose header fails the grammar, where section 4 requires the opposite
+order, so a message body containing a markdown heading is truncated at that
+heading on every read. The two agree with each other and disagree with the
+document. The application's other four are its own: a header in another case
+does not parse, an empty subject with no trailing space does not parse, an
+unparseable timestamp loses the block rather than tolerating it, and an
+indented header-shaped line wrongly starts a block. `corpus.json` carries the
+reason for each.
+
+The original port was not wasted either. Its conformance findings were folded
+into the spec before the code went:
 
 - the requirement that the status flip locate the `sent` token via the header
   grammar's own `status` capture group, never a loose first-match search (a
@@ -96,5 +137,9 @@ before the code went:
 - the known read-then-flip atomicity deviations, recorded in
   `docs/protocol.md` section 11 so no implementer copies them as behaviour.
 
-If you need a standalone CLI for the protocol, implement `docs/protocol.md`;
-its section 10 lists the conformance properties a test suite should exercise.
+If you are writing your own client, implement `docs/protocol.md`; its section
+10 lists the conformance properties a test suite should exercise, and
+`conformance/corpus.json` is the data to run them against.
+[`docs/conformance.md`](conformance.md) explains how that corpus is structured,
+what it deliberately does not cover, and the rules for adding a case or
+recording a deviation.

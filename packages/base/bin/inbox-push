@@ -1,0 +1,691 @@
+#!/usr/bin/env bash
+# inbox-push -- the single tested path for delivering a LIVE tmux notification
+# to an agent's pane on a DM send. Centralises the send-keys footgun class so no
+# caller hand-rolls send-keys again:
+#   - runtime gate     (only poke confirmed claude-runtime panes)
+#   - idle gate        (never type into a mid-turn pane)
+#   - clean-composer   (never concatenate onto staged/ghost text)
+#   - separate keys    (text, then a sleep, then Enter -- no text+Enter race)
+#   - capture-VERIFY   (re-read the pane and confirm the paste landed)
+#
+# PERSIST vs PUSH: this script ONLY does the best-effort live PUSH. The caller
+# (inbox reply) has ALREADY persisted the inbox block -- that is the source of
+# truth and always happens. This push is best-effort over that guaranteed base:
+# it NEVER fails the caller's send, it just reports a status and exits.
+#
+# Usage: inbox-push <recipient> <message>
+#
+# Exit codes (caller maps these to a status line):
+#   0  -- delivered. stdout is one of:
+#         "pushed"            -- positively landed (a new turn started).
+#         "queued"            -- pane was BUSY at the gate; CC (Claude Code) queued
+#                                our message and auto-submits it when the turn ends
+#                                (verified live 2026-06-23). We never clear it. NOT
+#                                trusted for Codex (see below) -- a Codex recipient
+#                                busy at the gate instead falls through to the same
+#                                identify-and-retry logic as an idle-at-gate send.
+#         "pushed-unverified" -- sent, transition not positively confirmed (or our
+#                                text is still staged on a pane whose busy state we
+#                                missed). Left in place, NOT cleared -- the inbox
+#                                block is the floor. (Standing rule: never Ctrl-U
+#                                a possible CC-queued message.)
+#
+# CODEX PASTE-COLLAPSE (a 2026-07 fix, twice-reproduced live off a real
+# Codex pane): send-keys -l of a message long enough lands in Codex's
+# composer as a collapsed placeholder ("[Pasted Content 1024 chars]"), not
+# the literal text. The retry-Enter identity check below cannot prefix-match
+# against that (the composer genuinely does not contain our characters, only
+# Codex's own summary of them), so it always read "not ours" and declined to
+# retry -- a confirmed-ours message sat stuck forever, with no error, until a
+# human noticed and sent a bare Enter by hand. Recovered a second way: parse
+# the char count Codex reports in the placeholder and compare it to the length
+# of the message we just sent (see the "codex paste identity" block below).
+# The same underlying assumption -- "Codex has no verified queue-and-
+# autosubmit the way Claude Code does" -- is why a Codex pane busy at the gate
+# no longer takes the trust-and-walk-away "queued" shortcut either.
+#   2  -- skip:<reason>  not pushed; caller treats as persist-only. Reasons:
+#         self, no-window, unknown-runtime (runtime is not claude or agy), staged
+#         (real text in the composer at the gate), unknown-format,
+#         no-pane-idle-lib (the shared bin/pane-idle library is missing/unreadable,
+#         so there is no idle gate -- skip rather than type blind). NB: a BUSY pane
+#         no longer skips -- we deliver and it queues.
+#   1  -- error (bad invocation).
+#
+# Test seams (no live tmux needed for full-flow coverage):
+#   PANE_OVERRIDE=<text>  TEST MODE. Use this string as the FIRST (pre-send) pane
+#                         capture instead of `tmux capture-pane`. Setting it also
+#                         skips the window-exists probe and suppresses every real
+#                         send-keys, so the whole flow (gates -> deliver-logic ->
+#                         verify branches) runs purely off injected pane text.
+#                         Use '' for an explicitly-empty pane (unset means live tmux).
+#   RUNTIME_OVERRIDE=<v>  In TEST MODE, exercise the runtime gate with this value
+#                         (e.g. "agy", "codex"). Without this var, TEST MODE skips
+#                         the gate (compatible with all pre-existing tests). Has no
+#                         effect outside TEST MODE.
+#   PANE_OVERRIDE_2=<text> The pane text returned for the POST-send (verify)
+#                         captures. Defaults to PANE_OVERRIDE. Lets a test drive
+#                         the verify branches (busy / staged / clean) deterministically.
+#   PANE_OVERRIDE_3=<text> ...and the capture after retry-Enter #2 (POST2).
+#   PANE_OVERRIDE_4=<text> ...and the capture after the codex-only Enter #3
+#                         (POST3). Each seam falls back to the previous one, so a
+#                         test sets only the states that differ.
+#   PUSH_DRY_RUN=1        Run all gates + classify, print the verdict, stop BEFORE
+#                         deliver. With PANE_OVERRIDE this is a pure classifier.
+#   PUSH_VERIFY_SLEEP=<s> override the post-Enter settle (default 0.8).
+#   PUSH_VERIFY_SLEEP_3=<s> override the settle after the codex-only third
+#                         Enter (default 1.6 -- see that branch for why it is
+#                         deliberately longer than the first two).
+
+set +e
+
+TMUX_SESSION="${INBOX_PUSH_TMUX_SESSION:-agents}"
+# Where the agent homes live. bin/create-agent.sh and bin/boot-agents.sh in this
+# same package already read AGENTS_HOME for exactly this directory, so reuse the
+# name the package has rather than hardcoding one deployment's layout.
+AGENTS_HOME="${AGENTS_HOME:-$HOME/agents}"
+VERIFY_SLEEP="${PUSH_VERIFY_SLEEP:-0.8}"
+# Settle for the codex-only THIRD Enter (2026-07-29). Deliberately longer than
+# VERIFY_SLEEP, not a reuse of it -- reasoning at the branch that uses it.
+# A literal default rather than arithmetic on VERIFY_SLEEP: these are fractional
+# seconds and bash has no float arithmetic.
+VERIFY_SLEEP_3="${PUSH_VERIFY_SLEEP_3:-1.6}"
+
+RECIPIENT="${1:-}"
+MESSAGE="${2:-}"
+
+if [ -z "$RECIPIENT" ] || [ -z "$MESSAGE" ]; then
+  echo "usage: inbox-push <recipient> <message>" >&2
+  exit 1
+fi
+
+# Collapse any newlines/CRs to spaces: the push is a single-line notification and
+# a stray newline inside `send-keys -l` would inject a mid-message Enter (submit
+# early / corrupt the composer). Defence in depth -- the caller passes one line.
+MESSAGE="${MESSAGE//$'\n'/ }"
+MESSAGE="${MESSAGE//$'\r'/ }"
+
+SELF="${AGENT_NAME:-}"
+
+# Test mode: PANE_OVERRIDE set (even to empty) => inject pane text + suppress
+# every live tmux side effect (window probe, runtime probe, send-keys).
+if [ -n "${PANE_OVERRIDE+x}" ]; then TEST_MODE=1; else TEST_MODE=0; fi
+# capture() runs inside $(...) command substitutions (subshells), so an in-memory
+# counter would never propagate back. In test mode, persist the capture count in
+# a temp file so the gate(1)/POST(2)/POST2(3) captures resolve to the right seam.
+if [ "$TEST_MODE" = "1" ]; then
+  CAPTURE_COUNT_FILE="$(mktemp)"
+  printf '0' > "$CAPTURE_COUNT_FILE"
+  trap 'rm -f "$CAPTURE_COUNT_FILE"' EXIT
+fi
+
+# tx <tmux-args...>  -- a live tmux side effect; a no-op in test mode.
+tx() {
+  [ "$TEST_MODE" = "1" ] && return 0
+  tmux "$@" 2>/dev/null || true
+}
+
+# --------------------------------------------------------------------------
+# emit <verdict>  -- print the verdict and exit with the mapped code.
+# --------------------------------------------------------------------------
+emit() {
+  local verdict="$1"
+  echo "$verdict"
+  case "$verdict" in
+    pushed|pushed-unverified|queued) exit 0 ;;
+    skip:*) exit 2 ;;
+    *) exit 1 ;;
+  esac
+}
+
+# --------------------------------------------------------------------------
+# check_idle <pane>  -- return 0 (busy) / 1 (idle).
+#
+# MOVED to the shared bin/pane-idle library in an earlier revision. It used to be
+# copy-pasted here and in inbox-poke-all, and the copies drifted: every busy-signal
+# fix from 2026-07-26 onwards landed in THIS file only, so inbox-poke-all has
+# been poking mid-turn panes it misread as idle. One copy now, sourced by both,
+# plus stuck-pane-sweep.sh. All the reasoning for each marker lives there.
+#
+# Resolved by BASH_SOURCE, not PATH: this script runs from cron and from the
+# Monitor tool, both of which have a minimal PATH. The fallback goes through
+# AGENTS_HOME (see the config block above) so a deployment that keeps its agent
+# homes somewhere other than ~/agents still finds the library.
+# --------------------------------------------------------------------------
+PANE_IDLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/pane-idle"
+[ -r "$PANE_IDLE_LIB" ] || PANE_IDLE_LIB="$AGENTS_HOME/bin/pane-idle"
+# shellcheck source=./pane-idle
+. "$PANE_IDLE_LIB" 2>/dev/null
+if [ -z "${PANE_IDLE_LIB_VERSION:-}" ]; then
+  # Fail SAFE, not silent: with no busy-detection there is no idle gate, and an
+  # undefined check_idle returns non-zero (= "idle") -- which would type into
+  # every busy pane. The inbox block is already persisted, so skipping the live
+  # push costs a notification, not a message.
+  echo "inbox-push: cannot source pane-idle lib ($PANE_IDLE_LIB)" >&2
+  emit "skip:no-pane-idle-lib"
+fi
+
+# --------------------------------------------------------------------------
+# find_composer_line <pane>  -- print the pane line carrying the REAL composer
+# prompt, or nothing if the pane has no prompt line at all.
+#
+# WHY NOT `grep '^[[:space:]]*(❯|›|>)' | tail -1` (the bug fixed 2026-07-29):
+# Claude Code renders its background-task list BELOW the composer and prefixes
+# the selected entry with the SAME ❯ glyph. Real capture off a live pane:
+#
+#   ──────────────────────────────────────────── alice ──
+#   ❯                                    <- the REAL composer, genuinely empty
+#   ─────────────────────────────────────────────────────
+#     alice │ Sonnet 5 │ ~/agents/alice │ ██░░░░░░░░ 29%
+#     ● main
+#   ❯ ◯ general-purpose  MR opener   32m 4s   <- LAST ❯ line in the capture
+#
+# so `tail -1` read the task entry, treated its text as staged, and the push was
+# skipped for as long as that subagent stayed visible -- confirmed live on one
+# agent's pane TWICE on 2026-07-29 (three human DMs persisted to that agent's
+# inbox but never pushed, unstuck by hand). The failure was silent and total,
+# not intermittent:
+# any agent with a visible subagent was unreachable by live push.
+#
+# The composer sits directly under its own horizontal-rule border; nothing below
+# it does. Anchor on that: the composer is the LAST prompt line whose PRECEDING
+# line contains a box-drawing rule. A run of U+2500 is chrome, never content --
+# ASCII "-----" separators in ordinary tool output do not match it -- which is
+# what makes it usable as a structural anchor rather than a word list.
+#
+# Agy (Gemini) shares the convention: its bare ">" sits between two rules (see
+# AGY_IDLE in the test suite), so ONE rule covers both runtimes. Codex does NOT
+# render rules around its composer (CODEX_IDLE), and neither does a plain "> "
+# pane, so when no rule-anchored candidate exists we FALL BACK to the old
+# whole-pane tail -1 -- those panes keep their exact previous behaviour instead
+# of newly failing closed on an unknown format.
+# --------------------------------------------------------------------------
+find_composer_line() {
+  local pane="$1"
+  # 8x U+2500 BOX DRAWINGS LIGHT HORIZONTAL. Short enough to match a narrow
+  # pane's border (agy's rule is 20 wide) and to match a rule with text embedded
+  # in it (Claude's carries the agent name: "──── alice ──"); long enough that
+  # only chrome can produce it.
+  local rule='────────'
+  local line trimmed is_prompt prev_rule=0 anchored='' last=''
+  while IFS= read -r line; do
+    is_prompt=0
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    case "$trimmed" in '❯'*|'›'*|'>'*) is_prompt=1 ;; esac
+    if [ "$is_prompt" = 1 ]; then
+      last="$line"
+      if [ "$prev_rule" = 1 ]; then anchored="$line"; fi
+    fi
+    case "$line" in *"$rule"*) prev_rule=1 ;; *) prev_rule=0 ;; esac
+  done <<< "$pane"
+  if [ -n "$anchored" ]; then printf '%s' "$anchored"; else printf '%s' "$last"; fi
+}
+
+# --------------------------------------------------------------------------
+# raw_line_for <pane_raw> <plain_line>  -- print the raw (-e) capture's own
+# rendering of a line we have ALREADY identified in the plain (-p) capture,
+# matched by CONTENT: strip the ANSI escapes from each raw line and compare.
+# Prints nothing if no raw line corresponds; callers must then apply no
+# raw-only exemption (fail towards "staged", never towards "clean").
+#
+# WHY NOT `grep '(❯|›|>)' | tail -1` (what this replaces): that returns the last
+# glyph-bearing raw line, which need not be the composer at all. Claude renders
+# background-task entries DIM and BELOW the composer, and the caller reads dim as
+# "not real text" -- so a genuinely staged composer answered CLEAN and the push
+# would have typed onto a human's half-written line.
+#
+# WHY NOT the rule-anchoring find_composer_line uses: in the raw capture the SGR
+# codes come BEFORE the glyph, so a start-anchored glyph match cannot fire and
+# the glyph has to be matched anywhere in the line -- which makes every boxed
+# line a candidate. Measured live off a real Codex pane: Codex's banner box
+# "│ >_ OpenAI Codex (v0.145.0) │" sits directly under a rule, so it won the
+# anchor, and being dim chrome it declared that pane's genuinely-staged composer
+# clean. Anchoring found a DIFFERENT WRONG LINE than tail -1 did, in the
+# dangerous direction. Correspondence with the line already identified in the
+# plain capture is the only form of this lookup that cannot pick another line.
+# --------------------------------------------------------------------------
+raw_line_for() {
+  local pane_raw="$1" want="$2"
+  local -a raw_lines=() bare_lines=()
+  local i s found=''
+  # -p trims trailing whitespace per line; -e leaves whatever the SGR run puts
+  # after the text, so the two captures differ on the tail. Compare trimmed.
+  want="${want%"${want##*[![:space:]]}"}"
+  [ -z "$want" ] && return 0
+  mapfile -t raw_lines <<< "$pane_raw"
+  # One sed pass, so the strip costs a single fork rather than one per line, and
+  # sed never adds or drops a line -- the two arrays stay index-aligned.
+  mapfile -t bare_lines < <(printf '%s\n' "$pane_raw" \
+    | sed -E $'s/\033\\[[0-9;?]*[a-zA-Z]//g; s/\033\\][^\007]*\007//g' 2>/dev/null)
+  for i in "${!raw_lines[@]}"; do
+    s="${bare_lines[i]-}"
+    s="${s%"${s##*[![:space:]]}"}"
+    if [ "$s" = "$want" ]; then found="${raw_lines[i]}"; fi
+  done
+  printf '%s' "$found"
+}
+
+# --------------------------------------------------------------------------
+# check_composer_clean <pane>
+#   0 = staged text present (dirty) -- skip / our text is sitting unsubmitted
+#   1 = empty composer (clean) -- safe
+#   2 = no composer line found (unknown format, e.g. non-claude) -- skip
+# Lifted from inbox-poke-all, since diverged (this copy has the ›/NBSP/dim-hint
+# and rule-anchoring work; that one has only the rule-anchoring backport).
+# --------------------------------------------------------------------------
+check_composer_clean() {
+  local pane="$1"
+  local pane_raw="${2:-}"
+  local composer_line
+  composer_line=$(find_composer_line "$pane")
+  if [ -z "$composer_line" ]; then return 2; fi
+  local after_prompt
+  after_prompt=$(echo "$composer_line" | sed -E 's/^[[:space:]]*(❯|›|>)[[:space:]]*//' 2>/dev/null) || true
+  # The bare idle composer rests at the prompt glyph + a NO-BREAK SPACE (U+00A0,
+  # bytes C2 A0). [[:space:]] does NOT reliably match the NBSP (locale-dependent;
+  # under C it reads as two non-space bytes), so a genuinely-empty composer was
+  # misclassified as staged -> a false skip:staged that silently suppressed the
+  # push to every idle Claude pane. Strip NBSPs explicitly (byte match, locale-
+  # independent) before the has-content test so only REAL typed text counts.
+  after_prompt=$(printf '%s' "$after_prompt" | sed 's/\xc2\xa0//g' 2>/dev/null) || true
+  # Publish the captured composer text so callers can ask WHOSE it is. This
+  # function only ever answers "is there text"; the retry path needs "is it
+  # ours", and without this it cannot tell the difference.
+  COMPOSER_TEXT="$after_prompt"
+  # Known-literal fallback for one specific Codex hint (kept for callers that
+  # don't pass pane_raw, e.g. older test seams). Superseded below by the
+  # general ANSI-dim check for anyone who does.
+  if [ "$after_prompt" = "Implement {feature}" ]; then return 1; fi
+  if echo "$after_prompt" | grep -qE '[^[:space:]]' 2>/dev/null; then
+    # Codex's idle composer is never bare -- it rotates through several
+    # placeholder example prompts ("Implement {feature}", "Run /review on my
+    # current changes", etc, confirmed live off a real Codex pane: an
+    # exact-string allowlist for one of these missed the others and false-
+    # skipped a genuine idle pane as staged). Codex renders every one of
+    # these hints wrapped in the ANSI "dim" SGR code (ESC[2m); real
+    # user-typed text never is. Check the raw (-e) capture for that marker
+    # on the composer line before declaring staged -- this covers ANY
+    # rotating hint text, not just one literal, and generalises to any other
+    # runtime that uses the same dim-hint convention.
+    if [ -n "$pane_raw" ]; then
+      local raw_composer_line
+      # The raw counterpart of the composer line we just read, matched by
+      # content (see raw_line_for) -- NOT "the last glyph line in the raw
+      # capture", which is a different line whenever anything glyph-bearing
+      # renders below the composer.
+      raw_composer_line=$(raw_line_for "$pane_raw" "$composer_line")
+      if printf '%s' "$raw_composer_line" | grep -qF "$(printf '\033[2m')" 2>/dev/null; then
+        return 1  # dim placeholder hint, not real staged text
+      fi
+    fi
+    return 0
+  fi
+  return 1  # clean
+}
+
+# --------------------------------------------------------------------------
+# capture <agent>  -- pane text, honouring PANE_OVERRIDE for tests.
+# --------------------------------------------------------------------------
+capture() {
+  if [ "$TEST_MODE" = "1" ]; then
+    # The verify path captures up to 4 times: gate(1), POST(2), POST2(3), and
+    # POST3(4) for the codex-only third Enter. Each seam falls back to the
+    # previous so a test need only set the ones that differ -- which also means
+    # a test written before POST3 existed sees the same text at capture 4 as it
+    # did at capture 3, i.e. its scripted end-state is unchanged.
+    # Counter persists via temp file (we run inside subshells).
+    local n
+    n=$(cat "$CAPTURE_COUNT_FILE" 2>/dev/null || printf '0')
+    n=$((n + 1))
+    printf '%s' "$n" > "$CAPTURE_COUNT_FILE"
+    case "$n" in
+      1) printf '%s' "$PANE_OVERRIDE" ;;
+      2) printf '%s' "${PANE_OVERRIDE_2-$PANE_OVERRIDE}" ;;
+      3) printf '%s' "${PANE_OVERRIDE_3-${PANE_OVERRIDE_2-$PANE_OVERRIDE}}" ;;
+      *) printf '%s' "${PANE_OVERRIDE_4-${PANE_OVERRIDE_3-${PANE_OVERRIDE_2-$PANE_OVERRIDE}}}" ;;
+    esac
+    return 0
+  fi
+  tmux capture-pane -t "${TMUX_SESSION}:${1}" -p 2>/dev/null || true
+}
+
+# --------------------------------------------------------------------------
+# capture_raw <agent>  -- pane text WITH ANSI escape codes (-e), used only to
+# disambiguate a Codex dim-hint placeholder from real staged text (see
+# check_composer_clean). Honours PANE_RAW_OVERRIDE for tests; unset/empty
+# means "no raw capture available" and callers fall back to plain-text logic.
+# --------------------------------------------------------------------------
+capture_raw() {
+  if [ "$TEST_MODE" = "1" ]; then
+    printf '%s' "${PANE_RAW_OVERRIDE:-}"
+    return 0
+  fi
+  tmux capture-pane -t "${TMUX_SESSION}:${1}" -p -e 2>/dev/null || true
+}
+
+# ==========================================================================
+# GATES
+# ==========================================================================
+
+# 0. Never push to self (a reply mirrored into our own thread is not an inbound).
+if [ -n "$SELF" ] && [ "$RECIPIENT" = "$SELF" ]; then
+  emit "skip:self"
+fi
+
+# 1. Window must exist (recipient is live in tmux). Skipped in test mode.
+if [ "$TEST_MODE" != "1" ]; then
+  if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
+       | grep -qxF "$RECIPIENT"; then
+    emit "skip:no-window"
+  fi
+fi
+
+# 2. Runtime gate: only claude, agy, and codex runtime panes take a text+Enter
+#    poke. Unknown runtimes have different pane formats and must not be poked.
+#    In test mode, RUNTIME_OVERRIDE (if set) drives the gate so the runtime
+#    branch is testable; unset = allow through (all pre-existing tests intact).
+RT_FILE="$AGENTS_HOME/$RECIPIENT/.runtime"
+if [ "$TEST_MODE" != "1" ] || [ -n "${RUNTIME_OVERRIDE+x}" ]; then
+  if [ "$TEST_MODE" = "1" ]; then
+    _RUNTIME="$RUNTIME_OVERRIDE"
+  else
+    _RUNTIME="$(cat "$RT_FILE" 2>/dev/null)"
+  fi
+  if [ "$_RUNTIME" != "claude" ] && [ "$_RUNTIME" != "agy" ] && [ "$_RUNTIME" != "codex" ]; then
+    emit "skip:unknown-runtime"
+  fi
+fi
+
+# 3. Capture the pane.
+PANE="$(capture "$RECIPIENT")"
+if [ -z "$PANE" ]; then
+  emit "skip:no-window"
+fi
+PANE_RAW="$(capture_raw "$RECIPIENT")"
+
+# 3b. CONTEXT gate: stop pushing at an agent that is nearly full.
+#
+#     The requirement, as stated by the operator: "we need to stop the tmux sender
+#     sending messages to any agent when they are over, like, say, 60% usage.
+#     Because it gets to the point where the agents are just so busy that they do
+#     not compact." Then, on the carve-out: "Block tmux pushes at 80 as long as
+#     it's not a compaction and handover message. Handover and compaction should
+#     always be allowed through, no blocking."
+#
+#     THE CARVE-OUT IS THE WHOLE POINT. Without it this gate blocks the one message
+#     that would fix the condition it is gating on, and a full agent can never be
+#     told to compact. The exemption is CALLER-SIDE (a flag), never a regex on the
+#     body: sniffing for "handover" would both miss a rephrasing and let any message
+#     mentioning the word through.
+#
+#     FAILS OPEN, deliberately, and this is the one place that is right. If the ctx%
+#     cannot be read (no pane_ctx_pct, unparseable statusline, non-Claude runtime
+#     with no bar) we deliver as before. Failing closed would strand every message
+#     fleet-wide the moment a statusline changed -- and this gate is a protective
+#     THROTTLE, not a safety gate: failing open restores today's behaviour, while
+#     failing closed is an outage. Pinned by its own test.
+CTX_BLOCK_AT="${INBOX_PUSH_CTX_BLOCK:-80}"
+if [ "${INBOX_PUSH_ALLOW_CTX_OVER:-0}" != "1" ] && [ "$CTX_BLOCK_AT" != "off" ]; then
+  if type pane_ctx_pct >/dev/null 2>&1; then
+    if _CTX_PCT="$(pane_ctx_pct "$PANE")"; then
+      if [ "$_CTX_PCT" -ge "$CTX_BLOCK_AT" ] 2>/dev/null; then
+        emit "skip:ctx-over"
+      fi
+    fi
+  fi
+fi
+
+# 4. BUSY pane -> deliver-and-QUEUE (2026-06-23). A busy CC pane queues
+#    typed input and runs it when the current turn ends, so we no longer skip a
+#    busy pane -- we deliver and report "queued". The composer-clean gate (5)
+#    below still guards against concatenating into a real half-typed/ghost
+#    composer (it fires for busy AND idle panes that have staged text).
+PANE_WAS_BUSY=0
+if check_idle "$PANE"; then
+  PANE_WAS_BUSY=1
+fi
+
+# 5. CLEAN-COMPOSER gate.
+check_composer_clean "$PANE" "$PANE_RAW"
+case $? in
+  0) emit "skip:staged" ;;
+  2) emit "skip:unknown-format" ;;
+esac
+
+# All gates passed. In dry-run, stop here with the would-push verdict.
+if [ "${PUSH_DRY_RUN:-}" = "1" ]; then
+  emit "pushed"   # classifier verdict: gates pass, would deliver
+fi
+
+# ==========================================================================
+# DELIVER  (separate text / sleep / Enter -- the proven anti-race sequence)
+# ==========================================================================
+# -l sends the message LITERALLY (no key-name lookup), so a word like "Enter"
+# or "Space" inside the subject can never be reinterpreted as a keypress.
+tx send-keys -t "${TMUX_SESSION}:${RECIPIENT}" -l "$MESSAGE"
+[ "$TEST_MODE" = "1" ] || sleep 0.4
+tx send-keys -t "${TMUX_SESSION}:${RECIPIENT}" Enter
+
+# ==========================================================================
+# VERIFY  (synchronous -- so the sender never has to poll)
+# ==========================================================================
+[ "$TEST_MODE" = "1" ] || sleep "$VERIFY_SLEEP"
+POST="$(capture "$RECIPIENT")"
+POST_RAW="$(capture_raw "$RECIPIENT")"
+
+# Positive signal: the pane is busy after delivery. If it was IDLE at the gate,
+# the Enter started a NEW turn (delivered + running now = "pushed"). If it was
+# already BUSY at the gate, our message is QUEUED behind the current turn and
+# runs when that turn ends ("queued").
+if check_idle "$POST"; then
+  [ "$PANE_WAS_BUSY" = "1" ] && emit "queued"
+  emit "pushed"
+fi
+
+# Still idle. Did our text fail to submit and get left staged?
+check_composer_clean "$POST" "$POST_RAW"
+case $? in
+  0)
+    # Composer holds our text. If the pane was BUSY at the gate, CC has QUEUED
+    # it and auto-submits when the turn ends -- VERIFIED LIVE 2026-06-23 (a
+    # mid-turn send queued behind the active turn and delivered after it). Do
+    # NOT retry/clear: the old Ctrl-U was destroying CC's queued message (the
+    # root cause of the spurious skip:could-not-submit). Leave it queued.
+    #
+    # Codex exception (from the paste-collapse work described in the header):
+    # that auto-submit-on-queue behaviour is
+    # verified for Claude only. Trusting the same assumption for Codex would
+    # silently strand a message with the sender told "queued" (success)
+    # instead of actually stuck -- so a Codex pane busy at the gate falls
+    # through to the identify-and-retry logic below instead of trusting the
+    # queue. Harmless if Codex DOES auto-submit: by the time we are in this
+    # branch its turn has already ended (the check above already ruled out
+    # still-busy), so if it had auto-submitted the composer would be clean,
+    # not staged, and we would never have reached here.
+    if [ "$PANE_WAS_BUSY" = "1" ] && [ "$_RUNTIME" != "codex" ]; then
+      emit "queued"
+    fi
+    # Pane was IDLE at the gate (or PANE_WAS_BUSY + codex, just above): a
+    # genuine text-then-Enter race, or a Codex turn that ended without
+    # actually submitting our queued text. Retry once, but ONLY if the
+    # staged text is actually OURS.
+    #
+    # check_composer_clean answers "is there text", never "is it our text" --
+    # it has no access to $MESSAGE and never compares against it. The comment
+    # above claimed identity; the code tested presence. So this branch would
+    # fire an Enter at ANY staged text, and if a human had started typing into
+    # the pane during the ~1.6s window (send, settle, capture, settle) it would
+    # submit their half-written line believing it was completing its own
+    # delivery.
+    #
+    # Normalised PREFIX compare, deliberately not an exact match: a long
+    # message wraps across several rendered lines and check_composer_clean only
+    # reads the LAST prompt line, so an exact compare would never match a real
+    # message and this guard would sit here permanently inert -- safe, and
+    # indistinguishable from working. That is the same defect as the spinner
+    # literals with the sign flipped, so the test suite proves this can go
+    # GREEN on a real wrapped message as well as red on foreign text.
+    _norm() { printf '%s' "$1" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
+    staged_norm="$(_norm "${COMPOSER_TEXT:-}")"
+    message_norm="$(_norm "$MESSAGE")"
+    ident_len=24
+    if [ "${#staged_norm}" -lt "$ident_len" ]; then ident_len="${#staged_norm}"; fi
+    IDENTITY_CONFIRMED=0
+    if [ "$ident_len" -ge 8 ] \
+       && [ "$(printf '%s' "$message_norm" | cut -c1-"$ident_len")" \
+            = "$(printf '%s' "$staged_norm" | cut -c1-"$ident_len")" ]; then
+      IDENTITY_CONFIRMED=1
+    fi
+    # codex paste identity (the 2026-07 paste-collapse fix): the prefix compare
+    # above can never
+    # match a Codex paste-collapse placeholder, because the composer holds
+    # Codex's own summary of our text, not our text. Recover identity from the
+    # char count Codex reports ("[Pasted Content N chars]", tolerant of the
+    # exact wording per the dim-hint precedent above): if it is within a few
+    # characters of the length of the message we just sent, this is almost
+    # certainly our own just-collapsed paste, not a coincidence. A stray
+    # unrelated paste landing in this exact ~1.2s post-send window, on a pane
+    # humans rarely type into directly (channel fidelity: they use the inbox), AND
+    # happening to match our sent length within tolerance, is not a real risk
+    # this guard needs to defend against.
+    if [ "$IDENTITY_CONFIRMED" = "0" ] && [ "$_RUNTIME" = "codex" ]; then
+      staged_paste_chars="$(printf '%s' "$staged_norm" \
+        | sed -nE 's/.*\[Pasted [A-Za-z]+ ([0-9]+) chars?\].*/\1/p')"
+      if [ -n "$staged_paste_chars" ]; then
+        sent_len="${#MESSAGE}"
+        paste_diff=$((staged_paste_chars - sent_len))
+        [ "$paste_diff" -lt 0 ] && paste_diff=$((-paste_diff))
+        if [ "$paste_diff" -le 3 ]; then
+          IDENTITY_CONFIRMED=1
+        fi
+      fi
+    fi
+    # CODEX CAPS THE NUMBER IT REPORTS, so the count compare above is inert for
+    # every message that actually collapses (found live, 2026-08).
+    #
+    # Measured, not inferred: four real messages of 1234, 1795, 2142 and 4072
+    # chars all rendered as "[Pasted Content 1024 chars]". 1024 is a CEILING
+    # wearing the costume of a measurement. So `paste_diff` is the overshoot,
+    # never <= 3, and identity is never confirmed.
+    #
+    # THE CONSEQUENCE WAS THE WHOLE FEATURE BEING DEAD CODE. `emit` calls exit,
+    # so the not-ours branch below terminated the script BEFORE Enter #1 -- not
+    # merely before the third Enter the paste-collapse fix added. Codex only collapses
+    # LONG pastes, and long is exactly what the cap hides, so the guard failed
+    # precisely and only in the case it was written for. Verified live in both
+    # directions on the same pane minutes apart: an 829-char message emitted
+    # `pushed` with a clean composer, a 1234-char one emitted
+    # `pushed-unverified` and sat unsubmitted.
+    #
+    # This is the failure mode the prefix-compare comment names 30 lines up --
+    # "permanently inert, safe, and indistinguishable from working" -- shipped
+    # again in the guard written to fix it. Hence the test below asserts a
+    # DELIVERY, not a code path.
+    #
+    # THE VISIBLE REMAINDER IS THE SIGNAL. Codex collapses the FIRST 1024
+    # characters into the placeholder and renders everything after them inline.
+    # Verified byte-exactly against a live pane: the text following "chars]" is
+    # our message from offset 1024, starting MID-WORD and with no separating
+    # space.
+    #
+    # So this is a SUBSTRING test, not a suffix test. My first attempt asserted
+    # the composer ends with the end of the message, which is false twice over:
+    # check_composer_clean reads only the LAST PROMPT LINE, and that line holds
+    # the START of the remainder, with the rest wrapping below it. It passed its
+    # own test because I built the fixture from what I assumed the pane looked
+    # like instead of from a capture -- the identical defect to the 26-char
+    # fixture this commit exists to correct, committed one iteration later. The
+    # fixture below is now copied from a real pane, mid-word break and missing
+    # space included.
+    #
+    # Safe: a foreign paste would have to contain 24+ consecutive characters of
+    # the message we just sent. That is a strictly stronger claim than the count
+    # compare it backs up, which only ever matched a length.
+    #
+    # Deliberately NOT keyed on the number 1024. That would enumerate today's
+    # ceiling, which is the same defect one layer over (see the spinner-glyph
+    # history in bin/pane-idle, three revisions of exactly this). The condition
+    # is "a placeholder is present and identity is still unconfirmed", whatever
+    # the number says.
+    if [ "$IDENTITY_CONFIRMED" = "0" ] && [ "$_RUNTIME" = "codex" ] \
+       && [ -n "${staged_paste_chars:-}" ]; then
+      # Everything the composer shows AFTER the placeholder. The space is
+      # optional because the live pane has none.
+      staged_rest="$(printf '%s' "$staged_norm" \
+        | sed -E 's/.*\[Pasted [A-Za-z]+ [0-9]+ chars?\] ?//')"
+      # 24 chars, the same floor the prefix compare uses: long enough that a
+      # coincidental match is not a real risk, short enough to survive a narrow
+      # pane showing only a fragment of the remainder.
+      if [ "${#staged_rest}" -ge 24 ] && [ "$message_norm" != "${message_norm/"$staged_rest"/}" ]; then
+        IDENTITY_CONFIRMED=1
+      fi
+    fi
+    if [ "$IDENTITY_CONFIRMED" = "0" ]; then
+      # Not ours (or too little to tell). Do NOT press Enter on someone else's
+      # composer. The inbox block is already persisted, so the floor holds.
+      emit "pushed-unverified"
+    fi
+    tx send-keys -t "${TMUX_SESSION}:${RECIPIENT}" Enter
+    [ "$TEST_MODE" = "1" ] || sleep "$VERIFY_SLEEP"
+    POST2="$(capture "$RECIPIENT")"
+    if check_idle "$POST2"; then
+      emit "pushed"
+    fi
+    # THIRD AND FINAL Enter -- codex only (2026-07-29 live incident). A real DM
+    # to an agent on the codex runtime sat paste-collapsed and genuinely
+    # unsubmitted in
+    # its composer for ~46 minutes: BOTH Enters above failed to register, and a
+    # human eventually unstuck it with one more bare Enter -- the same keypress
+    # this script had already sent twice. So the two-try ceiling was empirically
+    # one short for Codex, and the give-up below was reporting
+    # "pushed-unverified" for a message that one more try would have delivered.
+    #
+    # This is NOT a new risk class, and specifically NOT a new place where we
+    # might press Enter on someone else's composer:
+    #   - it is reachable ONLY with IDENTITY_CONFIRMED=1. The not-ours branch
+    #     above has already exited with pushed-unverified before Enter #2, so by
+    #     the time control gets here the staged text has been positively
+    #     identified as our own (prefix compare, or the paste-char count from
+    #     the paste-collapse fix). We do not re-derive that -- we inherit it.
+    #   - the pane is still idle (check_idle just said so) and still holding
+    #     that same staged text.
+    #   - it adds no clearing behaviour. Ctrl-U remains never (see below).
+    # Bounded at exactly one extra attempt: if it misses, we fall straight
+    # through to the unchanged give-up. Three tries then stop is the ceiling.
+    #
+    # Claude is deliberately excluded. Its queue-and-autosubmit IS verified
+    # (2026-06-23), so a Claude pane in this state is more likely holding a
+    # queued message than a stuck one, and the reasoning below about not
+    # fighting CC's queue still governs. Same gating precedent as the
+    # codex-only paste-identity recovery above.
+    #
+    # The settle is deliberately LONGER than VERIFY_SLEEP (1.6s vs 0.8s). Two
+    # attempts have now failed to show a transition within 0.8s, which has two
+    # candidate explanations: the Enter is not registering at all, or 0.8s is
+    # too short to observe the transition on this pane. A third 0.8s window can
+    # only re-test the first; a longer one also tests the second, so it is the
+    # only attempt of the three carrying new information. The cost is paid only
+    # on this already-degraded path -- a normal send never reaches here.
+    if [ "$_RUNTIME" = "codex" ]; then
+      tx send-keys -t "${TMUX_SESSION}:${RECIPIENT}" Enter
+      [ "$TEST_MODE" = "1" ] || sleep "$VERIFY_SLEEP_3"
+      POST3="$(capture "$RECIPIENT")"
+      if check_idle "$POST3"; then
+        emit "pushed"
+      fi
+    fi
+    # Not busy after the retries. Do NOT Ctrl-U clear, even if our text is still
+    # staged (standing rule, 2026-06-23): clearing risks destroying a CC-QUEUED message
+    # on a pane whose busy state check_idle missed -- its busy-detection is
+    # unreliable (e.g. the `…` / `✽` spinner glyphs it does not match). If the
+    # text is queued, CC auto-submits it; if it is a genuine idle stall, the
+    # inbox block is already persisted as the floor. Either way, leaving it beats
+    # sabotaging the queue. Delivered, unconfirmed.
+    emit "pushed-unverified"
+    ;;
+  *)
+    # Composer is clean (empty) and no busy marker. Either the agent already
+    # finished a trivial turn, or the message landed without us catching the
+    # transition. Nothing is staged, so this is safe -- delivered, unconfirmed.
+    emit "pushed-unverified"
+    ;;
+esac

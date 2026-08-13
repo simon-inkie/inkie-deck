@@ -1,0 +1,781 @@
+#!/usr/bin/env python3
+"""
+inbox -- agent inbox helper CLI.
+
+Commands:
+  inbox read [correspondent]         Print unread blocks, flip sent->read.
+  inbox reply <correspondent> ...    Append a block, flip their last sent->read.
+  inbox ack <correspondent>          Flip-only: mark their unread blocks read.
+  inbox unread                       List correspondents with unread counts.
+
+Identity:   AGENT_NAME env var (hard-error if unset).
+Inbox root: $INBOX_ROOT/<AGENT_NAME>/inbox/  (required, absolute, no default).
+
+The normative description of the on-disk format this implements is
+docs/protocol.md. Where this file and that document disagree, the document
+says which one is the bug; section 11 lists the deviations known at the time
+of writing.
+"""
+import sys
+import os
+import re
+import posixpath
+import time
+import errno
+import secrets
+import argparse
+import subprocess
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+# U+2014 / U+2013 are written as escapes rather than literally. The character
+# is protocol SYNTAX here (a header field separator), not prose, and a literal
+# one in source is both a parsing hazard and denied repo-wide by the leak gate.
+# A non-raw string literal, so the bytes at runtime are the real characters.
+EM_DASH = "\u2014"
+EN_DASH = "\u2013"
+
+SEP_PATTERN = "(?:\u2014|\u2013| - )"
+
+# Built by concatenation from SEP_PATTERN rather than spelling the separators
+# out three more times: the alternation is the same object the rest of the file
+# reasons about, so it cannot drift from EM_DASH/EN_DASH above.
+HEADER_RE = re.compile(
+    r"^## (?P<ts>[^\s]+)\s*" + SEP_PATTERN
+    + r"\s*from:\s*(?P<sender>[^\s]+)\s*" + SEP_PATTERN
+    + r"\s*status:\s*(?P<status>sent|read)\s*" + SEP_PATTERN
+    + r"\s*subject:(?P<subject>.*)",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Cross-process inbox lock (disappearing-message P1 fix)
+# ---------------------------------------------------------------------------
+# Inbox thread files are written by several uncoordinated processes: this CLI,
+# and any companion application sharing the same root. An application that
+# writes via a full-file read-modify-write plus temp+rename swaps the inode and
+# orphans any concurrent append, so a send here interleaving with such a
+# rewrite is silently lost. Fix: every writer takes a SHARED advisory lock on
+# "<file>.lock" via O_EXCL.
+#
+# Any other writer of these files MUST implement this identical lock protocol,
+# or the two sides will not mutually exclude. Keep the critical section TINY
+# (just the mutation): the reply append is high-frequency and bursts when
+# several agents compact at once.
+_LOCK_STALE_SECONDS = 10.0   # legit holds are ms; >10s => holder died (steal it)
+_LOCK_CEILING = 30.0         # past this, raise LOUDLY -- never silently drop a write
+_LOCK_BACKOFF = 0.004
+_LOCK_JITTER = 0.004
+
+
+class InboxLockTimeout(Exception):
+    """Raised if the lock can't be acquired within the ceiling. Loud by design:
+    a dropped write is the very data loss this fix exists to stop."""
+
+
+@contextmanager
+def inbox_lock(target_path):
+    lockpath = target_path + ".lock"
+    token = f"{os.getpid()}:{time.time_ns()}:{secrets.token_hex(4)}"
+    deadline = time.monotonic() + _LOCK_CEILING
+    while True:
+        try:
+            fd = os.open(lockpath, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.write(fd, (token + "\n").encode())
+            os.close(fd)
+            break
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+        try:
+            age = time.time() - os.stat(lockpath).st_mtime
+        except FileNotFoundError:
+            continue  # released between our open and stat -> retry create
+        if age > _LOCK_STALE_SECONDS:
+            steal = f"{lockpath}.steal.{token}"
+            try:
+                os.rename(lockpath, steal)   # ATOMIC: only one winner can steal
+            except OSError:
+                continue
+            try:
+                os.unlink(steal)
+            except FileNotFoundError:
+                pass
+            continue
+        if time.monotonic() >= deadline:
+            raise InboxLockTimeout(f"inbox lock {lockpath} not acquired in {_LOCK_CEILING}s")
+        time.sleep(_LOCK_BACKOFF + secrets.randbelow(int(_LOCK_JITTER * 1000)) / 1000.0)
+    try:
+        yield
+    finally:
+        # Release ONLY if the lock still holds our token (a slow holder that was
+        # stolen from must not unlink the stealer's lock).
+        try:
+            with open(lockpath, "r", encoding="utf-8") as f:
+                held = f.read().strip()
+            if held == token:
+                os.unlink(lockpath)
+        except FileNotFoundError:
+            pass
+
+
+def agent_name():
+    name = os.environ.get("AGENT_NAME", "").strip()
+    if not name:
+        print("ERROR: AGENT_NAME environment variable is not set.", file=sys.stderr)
+        sys.exit(1)
+    return name
+
+
+def inbox_root(me):
+    """Resolve <INBOX_ROOT>/<me>/inbox.
+
+    PORT EDIT. The implementation this was copied from hardcoded a root under
+    a specific deployment's home directory with no env override. INBOX_ROOT is
+    the name the rest of this repository already uses (the application requires
+    it, and bin/create-agent.sh creates <INBOX_ROOT>/<name>/inbox), so this
+    aligns with that rather than inventing a third name.
+
+    REQUIRED, with no default, deliberately. A default here would be worse than
+    an error: the CLI would silently write to a root the application never
+    reads, each side would look like it was working, and the split would only
+    surface as "my messages never arrive". The application makes the same
+    choice for the same reason.
+    """
+    root = os.environ.get("INBOX_ROOT", "").strip()
+    if not root:
+        print(
+            "ERROR: INBOX_ROOT environment variable is not set.\n"
+            "Set it to the absolute path of the inbox root, the same value the\n"
+            "application uses. There is deliberately no default: writing to a\n"
+            "guessed root would silently split your messages away from it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    root = os.path.expanduser(root)
+    if not os.path.isabs(root):
+        print(
+            f"ERROR: INBOX_ROOT must be an absolute path, got: {root}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return os.path.join(root, me, "inbox")
+
+
+def thread_path(me, correspondent):
+    return os.path.join(inbox_root(me), f"{correspondent}.md")
+
+
+def realpath(path):
+    return os.path.realpath(path)
+
+
+def parse_blocks(text):
+    """
+    Parse a thread file into a list of block dicts:
+      { 'ts', 'sender', 'status', 'subject', 'body', 'header_line', 'start', 'end' }
+    start/end are character offsets into text.
+    """
+    blocks = []
+    matches = list(re.finditer(r"^## ", text, re.MULTILINE))
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        header_end = text.find("\n", start)
+        if header_end == -1:
+            header_end = end
+        header_line = text[start:header_end]
+        hm = HEADER_RE.match(header_line)
+        if not hm:
+            continue
+        raw_body = text[header_end:end]
+        body = clean_body(raw_body)
+        blocks.append({
+            "ts": hm.group("ts"),
+            "sender": hm.group("sender").strip(),
+            "status": hm.group("status").strip().lower(),
+            "subject": hm.group("subject").strip(),
+            "body": body,
+            "header_line": header_line,
+            "start": start,
+            "end": end,
+        })
+    return blocks
+
+
+def clean_body(raw):
+    """
+    Strip leading/trailing blank lines and standalone '---' delimiter lines.
+    """
+    lines = raw.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "---":
+            continue
+        cleaned.append(line)
+    text = "\n".join(cleaned)
+    return text.strip()
+
+
+def flip_blocks_in_file(real_path, predicate):
+    """
+    Flip status: sent -> read for every block matching predicate(block).
+
+    Uses a same-length in-place byte patch (4 bytes: "sent" -> "read") so that
+    concurrent appends at EOF are never clobbered and there is no text.replace()
+    ambiguity when two headers are identical.
+
+    Steps:
+    1. Read the file as text; parse blocks; select those matching the predicate.
+    2. For each matched block, locate the "sent" token in its header line using a
+       regex match on the header substring.  Compute the token's character index in
+       the full text, then convert to a UTF-8 byte offset.
+    3. Open the REAL file in binary read-plus mode ("r+b") and overwrite each
+       located "sent" (4 bytes) with "read" after verifying the bytes are correct.
+    4. Never truncate or rewrite the whole file.
+
+    Returns count of blocks actually patched.
+    """
+    # Hold the lock across the READ and the r+b patch: the byte offsets are computed
+    # from `text`, so a concurrent rewrite between read and patch must be excluded
+    # (the same lock every other writer takes).
+    with inbox_lock(real_path):
+        with open(real_path, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        blocks = parse_blocks(text)
+
+        # KNOWN DEVIATION, ported deliberately unchanged -- see docs/protocol.md
+        # section 8.3 and the conformance corpus case "flip-sender-lookalike".
+        # This loose search takes the FIRST match in the header line, and
+        # `from:` precedes `status:` in the grammar, so a sender name
+        # containing the text "status:sent" matches inside the SENDER field.
+        # Verify-before-write below does NOT catch it: those four bytes
+        # genuinely spell "sent". It is the wrong "sent", not a corrupted one.
+        # The fix is to derive the offset from HEADER_RE's own `status` group;
+        # it is not applied here because this port is a copy of a proven
+        # implementation, and changing behaviour is a separate, reviewable
+        # decision rather than something to slip in during a port.
+        STATUS_SENT_RE = re.compile(r"status:\s*(sent)", re.IGNORECASE)
+
+        byte_offsets = []
+        for block in blocks:
+            if not predicate(block):
+                continue
+            header_line = block["header_line"]
+            m = STATUS_SENT_RE.search(header_line)
+            if not m:
+                continue
+            # char index of "sent" within header_line
+            sent_in_header = m.start(1)
+            # char index of "sent" within the full text
+            sent_char_idx = block["start"] + sent_in_header
+            # convert to UTF-8 byte offset (header may contain multi-byte chars)
+            byte_off = len(text[:sent_char_idx].encode("utf-8"))
+            byte_offsets.append(byte_off)
+
+        if not byte_offsets:
+            return 0
+
+        patched = 0
+        with open(real_path, "r+b") as fh:
+            for off in byte_offsets:
+                fh.seek(off)
+                existing = fh.read(4)
+                if existing != b"sent":
+                    # Safety: bytes not what we expected; skip rather than corrupt.
+                    continue
+                fh.seek(off)
+                fh.write(b"read")
+                patched += 1
+
+        return patched
+
+
+def cmd_read(me, args):
+    root = inbox_root(me)
+    if not os.path.isdir(root):
+        print("no new messages")
+        return
+
+    if args.correspondent:
+        correspondents = [args.correspondent]
+    else:
+        correspondents = [
+            f[:-3]
+            for f in os.listdir(root)
+            if f.endswith(".md") and os.path.isfile(os.path.join(root, f))
+        ]
+
+    any_printed = False
+    for corr in sorted(correspondents):
+        path = thread_path(me, corr)
+        if not os.path.exists(path):
+            continue
+        real = realpath(path)
+        with open(real, "r", encoding="utf-8") as f:
+            text = f.read()
+        blocks = parse_blocks(text)
+        unread = [b for b in blocks if b["status"] == "sent" and b["sender"] != me]
+        if not unread:
+            continue
+        for block in unread:
+            print(f"from {block['sender']} @ {block['ts']} - {block['subject']}")
+            if block["body"]:
+                print(block["body"])
+            print()
+            any_printed = True
+        flip_blocks_in_file(real, lambda b, c=corr, m=me: b["status"] == "sent" and b["sender"] != m)
+
+    if not any_printed:
+        print("no new messages")
+
+
+def cmd_reply(me, args):
+    correspondent = args.correspondent
+
+    if args.body:
+        body_text = args.body
+    elif args.body_file:
+        # "-" reads the body from stdin (standard Unix idiom), so callers can
+        # heredoc a multi-line message straight in -- no scratch temp file.
+        if args.body_file == "-":
+            body_text = sys.stdin.read()
+        else:
+            with open(args.body_file, "r", encoding="utf-8") as f:
+                body_text = f.read()
+    else:
+        print("ERROR: supply --body or --body-file", file=sys.stderr)
+        sys.exit(1)
+
+    subject = args.subject if args.subject else ""
+
+    if EM_DASH in subject:
+        print(
+            "ERROR: subject contains an em-dash (U+2014). Remove it before sending.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if EM_DASH in body_text:
+        print(
+            "ERROR: body contains an em-dash (U+2014). Remove it before sending.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = f"## {ts} - from: {me} - status: sent - subject: {subject}"
+    # Card metadata (decision-id:/action-id: as first body line) must be flush
+    # to the header; a blank separator empties the metadata region.
+    body_text = body_text.lstrip("\n")
+    is_card = body_text.startswith(("decision-id:", "action-id:"))
+    sep = "" if is_card else "\n"
+
+    # For card bodies, guarantee the metadata region is terminated by a blank
+    # line.  A renderer over these files defines the metadata region as lines
+    # from (header+1) up to the FIRST blank line.  If prose runs straight on
+    # from the last metadata key (no preceding blank), the block renders as
+    # plain prose and the re-serialiser locks it there permanently.
+    #
+    # Rule: scan the leading contiguous metadata run.  A metadata line is:
+    #   - a top-level YAML key at column 0: ^[a-z][a-z0-9_-]*:
+    #   - an indented continuation/list line: ^\s+\S
+    # The run ends at the first line that is either blank or a column-0 line
+    # that is NOT a top-level key (i.e. prose).
+    # If the line immediately after the run is not blank, insert one blank line
+    # there so the metadata region is correctly terminated.
+    # Pure-metadata bodies (end_idx >= len(lines)) need no insertion here;
+    # the block construction below adds the trailing blank for is_card.
+    # CONSERVATISM: only ever INSERT a single blank; never remove, reorder, or
+    # merge lines.  Ambiguous detection degrades to "renders as prose" (same as
+    # today's worst case), never to corrupted content.
+    if is_card:
+        _TOP_KEY_RE = re.compile(r"^[a-z][a-z0-9_-]*:")
+        _INDENT_RE = re.compile(r"^\s+\S")
+        lines = body_text.split("\n")
+        end_idx = 0
+        for end_idx, line in enumerate(lines):
+            is_blank = not line.strip()
+            is_top_key = bool(_TOP_KEY_RE.match(line))
+            is_indented = bool(_INDENT_RE.match(line))
+            if is_blank or (not is_top_key and not is_indented):
+                # This line is outside the metadata run; stop here.
+                break
+        else:
+            # Loop exhausted without break: all lines are metadata.
+            end_idx = len(lines)
+
+        # end_idx is either:
+        #   - the index of the first blank/prose line (loop broke), or
+        #   - len(lines) (all metadata, loop exhausted).
+        if end_idx < len(lines):
+            if lines[end_idx].strip() != "":
+                # Prose line immediately after metadata run -- insert blank.
+                lines.insert(end_idx, "")
+                body_text = "\n".join(lines)
+        # If end_idx >= len(lines): pure metadata; block construction handles it.
+
+    # For is_card bodies, end the block with "\n\n" (guaranteed terminating
+    # blank line) rather than relying on rstrip() which would eat it.
+    # For non-card bodies, behaviour is identical to before (rstrip + "\n").
+    if is_card:
+        block = f"\n{header}\n{body_text.rstrip()}\n\n"
+    else:
+        block = f"\n{header}\n{sep}{body_text.rstrip()}\n"
+
+    path = thread_path(me, correspondent)
+    real = realpath(path)
+    # Parent must exist before we create the "<real>.lock" sibling.
+    os.makedirs(os.path.dirname(real), exist_ok=True)
+
+    # Lock the create + append as ONE critical section: serialises against a
+    # companion application's full-file rewrites (no orphaned-by-rename loss)
+    # AND against a second concurrent reply racing the create (a plain
+    # truncating open("w") would wipe the first writer's file).
+    with inbox_lock(real):
+        if not os.path.exists(real):
+            with open(real, "w", encoding="utf-8") as f:
+                f.write("")
+        with open(real, "a", encoding="utf-8") as f:
+            f.write(block)
+
+    # flip_blocks_in_file takes the same lock internally (own tiny critical section).
+    flip_blocks_in_file(
+        real,
+        lambda b, c=correspondent, m=me: b["sender"] == c and b["status"] == "sent",
+    )
+
+    print(f"replied to {correspondent}")
+
+    # PERSIST BEFORE PUSH, AND REGARDLESS OF IT. Everything above has already
+    # written the block to disk and printed. This call is best-effort live
+    # delivery layered on top of that guaranteed base and NEVER fails the send.
+    # Reversing these two statements would break the guarantee silently, and
+    # only under failure conditions, which is why the order is called out here
+    # and pinned by a test rather than left to be inferred from the layout.
+    # It hands off to inbox-push, the single tested send path (runtime / idle /
+    # clean-composer gates + capture-verify). Reports a status so the sender
+    # never has to poll. Receipt flips (read/ack) deliberately do NOT push.
+    maybe_push(
+        me, correspondent, subject, body_text,
+        allow_when_full=getattr(args, "allow_when_full", False),
+    )
+
+
+def push_enabled():
+    """Resolve whether `inbox reply` should fire a live push.
+
+    INBOX_NO_PUSH=1 is an absolute off (scripted/bulk sends that must stay
+    silent). The default is ON. INBOX_PUSH=0 is the per-send opt-out;
+    INBOX_NO_PUSH=1 remains the hard off for scripted/bulk runs.
+    """
+    if os.environ.get("INBOX_NO_PUSH") == "1":
+        return False
+    return os.environ.get("INBOX_PUSH", "1") == "1"
+
+
+def default_push_bin():
+    """Path to the inbox-push binary shipped alongside this script.
+
+    PORT EDIT. The implementation this was copied from defaulted to a fixed
+    path under a specific deployment's home directory. Resolving it relative to
+    this file keeps the pair together wherever the package is installed, and
+    keeps working when `inbox` is reached through a PATH symlink (realpath
+    resolves the link before taking the directory). INBOX_PUSH_BIN still
+    overrides, which is what the test suite drives.
+    """
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "inbox-push")
+
+
+# ---------------------------------------------------------------------------
+# Attachment path rewrite for LIVE pane delivery
+# ---------------------------------------------------------------------------
+# A message body may carry a markdown image ref like
+#   ![x.png](/attachments/2026-08/x.png)
+# The URL is a WEB-relative HTTP route that the application serves against
+# ATTACHMENTS_ROOT. A browser resolves it over HTTP, but an agent reading the
+# raw text pushed into its pane has no HTTP client - it needs a real local
+# filesystem path for its file/image-view tool. Rewrite /attachments/<relPath>
+# -> <root>/<relPath> for the pushed text ONLY (the inbox record stays
+# web-relative, that is what the browser needs). Conservative: only rewrites
+# inside an actual ![...](...) image link, never bare prose nor a non-image
+# [...](...) link.
+ATTACHMENT_IMG_RE = re.compile(r"(!\[[^\]]*\]\()/attachments/([^)\s]+)")
+
+
+def resolve_attachments_root():
+    """Resolve ATTACHMENTS_ROOT for the live-push rewrite.
+
+    PORT EDIT. The implementation this was copied from read the env var and
+    then fell back to parsing an ATTACHMENTS_ROOT= line out of a specific
+    application deployment's .env.production file. That fallback is coupled to
+    one deployment's filesystem layout and is the piece least likely to be
+    right anywhere else, so it is dropped: env var only. The application in
+    this repository already requires ATTACHMENTS_ROOT in its own environment,
+    so there is one contract rather than two.
+
+    Returns the path string, or None when unset - the caller degrades to
+    leaving the text unchanged, never crashing the push.
+    """
+    env = os.environ.get("ATTACHMENTS_ROOT", "").strip()
+    return env or None
+
+
+def rewrite_attachment_paths(body, attachments_root):
+    """Rewrite web-relative /attachments/ image refs to real fs paths.
+
+    No-op (returns body unchanged) when attachments_root is falsy or the body
+    carries no matching markdown image link. Handles multiple refs.
+
+    CONTAINMENT INVARIANT: the rewritten path is guaranteed to stay inside
+    attachments_root. Each match's relPath is resolved against the root and
+    normalised (lexically, no filesystem I/O); a candidate that escapes the
+    root (via ../ traversal or an absolute-looking segment) is REJECTED - that
+    specific match is left COMPLETELY UNCHANGED (its original /attachments/...
+    text is preserved), never rewritten to an escaping fs path. Rejection is
+    per-match, so a traversal attempt does not suppress rewriting of other
+    legitimate refs in the same body. This blocks a crafted body from steering
+    a recipient agent's file/image-view tool at an arbitrary file on disk.
+    """
+    if not attachments_root:
+        return body
+    root = attachments_root.rstrip("/")
+
+    def _sub(m):
+        candidate = posixpath.normpath(posixpath.join(root, m.group(2)))
+        # Contained iff the resolved candidate is the root itself or sits under
+        # it (trailing "/" kills a sibling-prefix escape like /root-evil).
+        if candidate == root or candidate.startswith(root + "/"):
+            return f"{m.group(1)}{candidate}"
+        return m.group(0)
+
+    return ATTACHMENT_IMG_RE.sub(_sub, body)
+
+
+def maybe_push(me, correspondent, subject, body_text, allow_when_full=False):
+    if not push_enabled():
+        return
+    # INBOX_PUSH_BIN overrides the send path (test seam; defaults to the
+    # sibling binary, see default_push_bin).
+    push_bin = os.environ.get("INBOX_PUSH_BIN") or default_push_bin()
+    if not os.path.isfile(push_bin):
+        return
+    # Single-line notification. Prefixed so the recipient knows it is an inbox
+    # DM -> reply via inbox (channel fidelity). Subject if present, else the
+    # first non-empty body line.
+    # Pane payload. Full-text-to-pane is the DEFAULT: deliver the actual
+    # subject + body to the recipient's composer so they act on it directly,
+    # killing the notification -> go-read-inbox -> act round trip.
+    # INBOX_PUSH_FULLTEXT=0 forces the subject-only notification.
+    #
+    # Two cases degrade to a subject NUDGE (the full body is always in the inbox
+    # regardless, so nothing is lost):
+    #   - over the send-keys cap: a truncated pane dump could drop the important
+    #     part, so nudge-to-read rather than deliver a partial message.
+    #   - structured cards (decision-id:/action-id:): metadata for a card
+    #     renderer, not pane prose -- a send-keys line would mangle the card.
+    PANE_PAYLOAD_CAP = 1900  # under inbox-push's send-keys ceiling (tunable)
+    note = subject.strip()
+    fulltext = os.environ.get("INBOX_PUSH_FULLTEXT", "1") != "0"
+    is_card = body_text.lstrip("\n").startswith(("decision-id:", "action-id:"))
+    # Subject nudge (the fallback): subject, else the first non-empty body line.
+    notif_note = note or next(
+        (ln.strip() for ln in body_text.splitlines() if ln.strip()), ""
+    )
+    nudge = f"[inbox from {me}] {notif_note}".replace("\n", " ").strip()
+    # Pane-only reply hint: the recipient reads the push in their pane and tends
+    # to reply in-terminal, so the sender never gets the answer. Ride a short
+    # hint that points them back to the inbox thread. Skipped for cards
+    # (answered by a tap in the application, not `inbox reply`). Its length is
+    # reserved against the cap so full+hint never exceeds the send-keys ceiling.
+    # Pane-only: the inbox record is unchanged.
+    reply_hint = "" if is_card else f"  [reply via inbox: inbox reply {me}]"
+    if fulltext and not is_card:
+        # Collapse ALL whitespace/newlines to single spaces: a raw newline in
+        # send-keys -l would inject a mid-message Enter and submit the partial
+        # line early. The full body always lives in the inbox as the record.
+        flat_body = " ".join(body_text.split())
+        # Rewrite web-relative /attachments/ image refs to real fs paths so the
+        # recipient's file/image-view tool can open them. Applied BEFORE the
+        # PANE_PAYLOAD_CAP check below (the absolute path is longer than the URL,
+        # so it must be counted against the cap). Degrades to unchanged text if
+        # ATTACHMENTS_ROOT cannot be resolved - never crashes the push.
+        flat_body = rewrite_attachment_paths(flat_body, resolve_attachments_root())
+        parts = [p for p in (note, flat_body) if p]
+        full = f"[inbox from {me}] " + " | ".join(parts)
+        if len(full) <= PANE_PAYLOAD_CAP - len(reply_hint):
+            msg = full
+        else:
+            # OVER THE CAP: say so explicitly rather than sending a bare subject.
+            # The plain `nudge` is indistinguishable from a genuinely SHORT
+            # message whose body just is that line, because notif_note falls back
+            # to the first body line when there is no subject. So the recipient
+            # could not tell "that is all they wrote" from "there is more", an
+            # ambiguity that silently cost one agent 2974 characters of a brief.
+            #
+            # Report the length of the STORED body, which is what `inbox read`
+            # will show them, NOT the flattened/rewritten pane text: a count that
+            # does not reconcile with the file teaches the reader to distrust the
+            # mechanism. The application's own nudge says the same thing, so both
+            # body-carrying paths agree in substance and not merely in behaviour.
+            #
+            # EXACTLY WHICH CHARACTERS THE NUMBER COUNTS, because a precise
+            # number invites re-measurement and a mismatch reads as a bug (a
+            # reader recounted 3025 as 3024 and nearly filed one):
+            #   - len() of the stored body, so Unicode CODE POINTS.
+            #   - INCLUDES a trailing newline if the stored body has one. That
+            #     newline is invisible on screen, so counting the characters you
+            #     can SEE gives one less. No single number satisfies both "what
+            #     is stored" and "what a human counts"; this is the former.
+            #   - EXCLUDES the subject, the "[inbox from x]" prefix and the hint.
+            #
+            # The two implementations briefly reported DIFFERENT numbers for
+            # identical text, because python len() counts code points and JS
+            # String.length counts UTF-16 code units, so any emoji made them
+            # disagree by one per character. The resolution: the CAP and the
+            # REPORTED COUNT are two different numbers that only shared a unit
+            # because they shared a variable. The cap wants a safe
+            # over-estimate; the reported count wants to reconcile with what the
+            # reader finds. Both paths now report CODE POINTS. Keep it that way:
+            # this file's len() is the reference.
+            flat_note = " ".join(note.split())
+            marker = (
+                f"MESSAGE TOO LONG TO DELIVER IN FULL ({len(body_text)} chars)."
+                f" Full text: inbox read {me}"
+            )
+            msg = (
+                f"[inbox from {me}] {flat_note} | {marker}"
+                if flat_note
+                else f"[inbox from {me}] {marker}"
+            )
+            if len(msg) > PANE_PAYLOAD_CAP - len(reply_hint):
+                # Never sacrifice the marker to keep a long subject. The subject
+                # is a label; the marker is the thing preventing silent loss.
+                msg = f"[inbox from {me}] {marker}"
+    else:
+        msg = nudge
+    msg = msg + reply_hint
+    try:
+        env = dict(os.environ, AGENT_NAME=me)
+        if allow_when_full:
+            env["INBOX_PUSH_ALLOW_CTX_OVER"] = "1"
+        result = subprocess.run(
+            [push_bin, correspondent, msg],
+            capture_output=True, text=True, timeout=15, env=env,
+        )
+        out = (result.stdout or "").strip()
+        verdict = out.splitlines()[-1] if out else ""
+        if result.returncode == 0:
+            print(f"  push: {verdict or 'pushed'}")
+        else:
+            print(f"  push: {verdict or 'skip'} (persisted, not pushed)")
+    except Exception:
+        # A push failure must never fail the send -- the block is already persisted.
+        print("  push: skip:error (persisted, not pushed)")
+
+
+def cmd_ack(me, args):
+    correspondent = args.correspondent
+    path = thread_path(me, correspondent)
+    if not os.path.exists(path):
+        print(f"no thread with {correspondent}")
+        return
+    real = realpath(path)
+    flipped = flip_blocks_in_file(
+        real,
+        lambda b, c=correspondent, m=me: b["sender"] == c and b["status"] == "sent",
+    )
+    if flipped == 0:
+        print(f"nothing to ack from {correspondent}")
+    else:
+        print(f"acked {flipped} block(s) from {correspondent}")
+
+
+def cmd_unread(me, args):
+    root = inbox_root(me)
+    if not os.path.isdir(root):
+        print("no unread")
+        return
+
+    found = False
+    for fname in sorted(os.listdir(root)):
+        if not fname.endswith(".md"):
+            continue
+        corr = fname[:-3]
+        path = os.path.join(root, fname)
+        if not os.path.isfile(path):
+            continue
+        real = realpath(path)
+        with open(real, "r", encoding="utf-8") as f:
+            text = f.read()
+        blocks = parse_blocks(text)
+        count = sum(1 for b in blocks if b["status"] == "sent" and b["sender"] != me)
+        if count > 0:
+            print(f"{corr}: {count} unread")
+            found = True
+
+    if not found:
+        print("no unread")
+
+
+def main():
+    me = agent_name()
+
+    parser = argparse.ArgumentParser(
+        prog="inbox",
+        description="Agent inbox helper",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_read = sub.add_parser("read", help="Print and ack unread blocks")
+    p_read.add_argument("correspondent", nargs="?", default=None)
+
+    p_reply = sub.add_parser("reply", help="Append a block to a thread")
+    p_reply.add_argument("correspondent")
+    p_reply.add_argument("--subject", default="")
+    p_reply.add_argument("--body", default=None)
+    p_reply.add_argument(
+        "--body-file", default=None, help='path to body file, or "-" for stdin'
+    )
+    # The context gate in inbox-push blocks delivery to an agent at or above its
+    # ctx ceiling, so it is not kept too busy to compact. This is the CARVE-OUT:
+    # handover and compaction messages must always be allowed through. Without a
+    # caller that can set it, that exemption is a claim rather than a feature,
+    # and the gate blocks the one message that resolves the condition it gates
+    # on.
+    #
+    # It is an EXPLICIT caller decision, never inferred from the body text:
+    # matching on the word "handover" would both miss a rephrasing and let through
+    # anything that merely mentions it.
+    p_reply.add_argument(
+        "--allow-when-full",
+        action="store_true",
+        help="deliver even if the recipient is over its context ceiling "
+             "(for handover / compaction messages only)",
+    )
+
+    p_ack = sub.add_parser("ack", help="Flip-only read receipt")
+    p_ack.add_argument("correspondent")
+
+    sub.add_parser("unread", help="List correspondents with unread counts")
+
+    args = parser.parse_args()
+
+    if args.command == "read":
+        cmd_read(me, args)
+    elif args.command == "reply":
+        cmd_reply(me, args)
+    elif args.command == "ack":
+        cmd_ack(me, args)
+    elif args.command == "unread":
+        cmd_unread(me, args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -36,7 +36,16 @@ module.exports = {
       from: { path: "^packages/deck" },
       to: {
         path: "^packages/base",
-        pathNot: "^packages/base/package\\.json$",
+        // This allowlist IS base's `exports` map, spelled out a second time.
+        // When the rule was written package.json was the only entry point, so
+        // "an export" and "package.json" were indistinguishable;
+        // conformance/corpus.json is now the second. The application reads
+        // that corpus to prove itself against the shared protocol, which is
+        // the one thing the two packages must agree on, and reaching it by
+        // package name rather than relative path is what keeps it working if
+        // base is spun out. Adding an entry here WITHOUT adding it to base's
+        // `exports` would be a deep import wearing a permission slip.
+        pathNot: "^packages/base/(?:package\\.json|conformance/corpus\\.json)$",
       },
     },
   ],

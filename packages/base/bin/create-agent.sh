@@ -34,9 +34,12 @@
 # Usage:
 #   bin/create-agent.sh <name> [--role "<tagline>"] [--runtime <runtime>]
 #                              [--verify | --no-verify] [--inbox-root <path>]
-#                              [--agents-home <path>]
+#                              [--agents-home <path>] [--no-install-path]
 #   bin/create-agent.sh --verify-only <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
+#
+#   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
+#                                makes `inbox` resolve as a bare command name.
 #
 # Exit codes. Four terminal states, never collapsed into one another:
 #
@@ -114,9 +117,9 @@ process.stdout.write("boot-" + randomBytes(8).toString("hex"));
 JS
 }
 
-# Substitute the two marked placeholders the templates carry, and nothing else.
-# Self-authoring placeholders are left exactly as they are: they are the new
-# agent's first piece of work, not this script's.
+# Substitute the three marked placeholders the templates carry, and nothing
+# else. Self-authoring placeholders are left exactly as they are: they are the
+# new agent's first piece of work, not this script's.
 stamp_templates() {
   node_run <<'JS'
 import * as fs from "node:fs";
@@ -126,6 +129,7 @@ const home = process.env.CA_HOME;
 const name = process.env.CA_NAME;
 const role = process.env.CA_ROLE;
 const nonce = process.env.CA_NONCE;
+const inboxCli = process.env.CA_INBOX_CLI;
 
 const identityPath = path.join(home, "IDENTITY.md");
 let identity = fs.readFileSync(identityPath, "utf8");
@@ -149,6 +153,41 @@ claude = claude.replace(
   role ? `# ${name}, ${role}` : `# ${name}`,
 );
 fs.writeFileSync(claudePath, claude);
+
+// The inbox section of TOOLS.md. Stamped rather than shipped verbatim because
+// every line of it is per-agent: the CLI lives at an absolute path that depends
+// on where this package was checked out, and the agent has to see its OWN name
+// to know which side of a thread it is writing.
+const toolsPath = path.join(home, "TOOLS.md");
+let tools = fs.readFileSync(toolsPath, "utf8");
+tools = tools.replace(
+  "<inbox commands: stamped at creation>",
+  [
+    `You are **${name}**. Teammates reach you by that name, and the CLI that reads`,
+    "and writes those messages is:",
+    "",
+    "```",
+    inboxCli,
+    "```",
+    "",
+    "It is also on your PATH as plain `inbox` unless the symlink install was",
+    "skipped, which is why message hints elsewhere say `inbox reply <name>` with",
+    "no path in front of it.",
+    "",
+    "```bash",
+    "inbox unread                    # who is waiting on you, and how many",
+    "inbox read                      # print unread messages, mark them read",
+    "inbox read basalt               # only that correspondent's thread",
+    'inbox reply basalt --subject "re: the migration" --body "Done, on main."',
+    "inbox ack basalt                # mark read without printing",
+    "```",
+    "",
+    "`AGENT_NAME` says who you are and `INBOX_ROOT` says where the messages live.",
+    "Both are set for you in `.claude/settings.json`; the CLI hard-errors without",
+    "them rather than guessing.",
+  ].join("\n"),
+);
+fs.writeFileSync(toolsPath, tools);
 JS
 }
 
@@ -163,8 +202,16 @@ import * as fs from "node:fs";
 const file = process.env.CA_SETTINGS;
 const name = process.env.CA_NAME;
 const role = process.env.CA_ROLE;
+const inboxRoot = process.env.CA_INBOX_ROOT;
 
-const additions = { env: { AGENT_NAME: name } };
+// INBOX_ROOT rides along with AGENT_NAME because the settings env block is the
+// one channel proven to reach the environment of the commands the agent runs,
+// and the inbox CLI refuses to start without it. It is stamped rather than
+// defaulted for the same reason the CLI has no default: the CLI and the
+// application must resolve the SAME root, and a default on either side would
+// quietly split an agent's messages away from the application while both halves
+// carried on looking like they worked.
+const additions = { env: { AGENT_NAME: name, INBOX_ROOT: inboxRoot } };
 if (role) additions.env.AGENT_ROLE = role;
 
 let existing = {};
@@ -258,6 +305,91 @@ JS
 }
 
 # ---------------------------------------------------------------------------
+# the PATH install
+#
+# THE ONLY THING THIS SCRIPT WRITES OUTSIDE $AGENTS_HOME AND $INBOX_ROOT.
+#
+# Why it writes anything there at all: the notification the application pushes
+# into an agent's terminal reads "[reply via inbox: inbox reply <name>]", a BARE
+# command name. That instruction is only true if `inbox` resolves on PATH, and
+# boot-agents.sh already prepends $HOME/.local/bin, so one symlink there makes
+# the hint honest for every agent on the machine.
+#
+# Never destructive. Anything already sitting at that path was put there by
+# something else, and something else's file is not ours to replace. Every skip
+# is a warning and never fatal: the absolute path is stamped into TOOLS.md, so
+# an agent whose symlink was skipped can still use the CLI.
+# ---------------------------------------------------------------------------
+
+PATH_INSTALL_REPORT="not attempted"
+
+resolve_path() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
+
+install_inbox_on_path() {
+  local source="$SCRIPT_DIR/inbox"
+  local target_dir="$HOME/.local/bin"
+  local target="$target_dir/inbox"
+  local source_real; source_real="$(resolve_path "$source")"
+
+  if [[ ! -f "$source" ]]; then
+    PATH_INSTALL_REPORT="skipped (no CLI at $source)"
+    warn "no inbox CLI at $source, so nothing was linked onto PATH."
+    warn "  The agent can still run it by absolute path once one exists."
+    return
+  fi
+
+  # An `inbox` that already answers on PATH and is not this one wins by
+  # possession. Replacing whatever it is would be the same clobber as
+  # overwriting the file, one indirection further away.
+  local found found_real
+  found="$(command -v inbox 2>/dev/null)"
+  if [[ -n "$found" ]]; then
+    found_real="$(resolve_path "$found")"
+    if [[ "$found_real" == "$source_real" ]]; then
+      PATH_INSTALL_REPORT="already on PATH at $found"
+      return
+    fi
+    PATH_INSTALL_REPORT="skipped (a different inbox is already on PATH at $found)"
+    warn "a different \`inbox\` already resolves on PATH:"
+    warn "    $found  ->  $found_real"
+    warn "  Nothing was linked or replaced. Use the absolute path in TOOLS.md,"
+    warn "  or resolve the clash yourself:"
+    warn "    $source"
+    return
+  fi
+
+  if [[ -e "$target" || -L "$target" ]]; then
+    local target_real; target_real="$(resolve_path "$target")"
+    if [[ -L "$target" && "$target_real" == "$source_real" ]]; then
+      PATH_INSTALL_REPORT="already linked  $target"
+      return
+    fi
+    PATH_INSTALL_REPORT="skipped (something else already occupies $target)"
+    warn "$target already exists and is not a link to this package's CLI."
+    warn "  It was left exactly as found; this script never removes or"
+    warn "  overwrites a file it did not create. The agent can still run:"
+    warn "    $source"
+    return
+  fi
+
+  if ! mkdir -p "$target_dir" 2>/dev/null; then
+    PATH_INSTALL_REPORT="skipped (could not create $target_dir)"
+    warn "could not create $target_dir, so \`inbox\` is not on PATH."
+    warn "  The absolute path stamped into TOOLS.md still works: $source"
+    return
+  fi
+
+  if ! ln -s "$source" "$target" 2>/dev/null; then
+    PATH_INSTALL_REPORT="skipped (could not link $target)"
+    warn "could not create the symlink $target, so \`inbox\` is not on PATH."
+    warn "  The absolute path stamped into TOOLS.md still works: $source"
+    return
+  fi
+
+  PATH_INSTALL_REPORT="linked  $target  ->  $source"
+}
+
+# ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
 
@@ -268,6 +400,7 @@ VERIFY="auto"      # auto | yes | no
 VERIFY_ONLY=0
 INBOX_ROOT_ARG=""
 AGENTS_HOME_ARG=""
+INSTALL_PATH=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -276,6 +409,7 @@ while [[ $# -gt 0 ]]; do
     --runtime)      [[ $# -ge 2 ]] || die_scaffold "--runtime needs a value";     RUNTIME="$2";         shift 2 ;;
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
+    --no-install-path) INSTALL_PATH=0; shift ;;
     --verify)       VERIFY="yes"; shift ;;
     --no-verify)    VERIFY="no"; shift ;;
     --verify-only)  VERIFY_ONLY=1; VERIFY="yes"; shift ;;
@@ -465,7 +599,8 @@ else
   NONCE="$(gen_nonce)" || die_scaffold "could not generate a boot phrase (is node on PATH?)"
   [[ -n "$NONCE" ]] || die_scaffold "could not generate a boot phrase"
 
-  CA_HOME="$AGENT_HOME" CA_NAME="$NAME" CA_ROLE="$ROLE" CA_NONCE="$NONCE" stamp_templates \
+  CA_HOME="$AGENT_HOME" CA_NAME="$NAME" CA_ROLE="$ROLE" CA_NONCE="$NONCE" \
+    CA_INBOX_CLI="$SCRIPT_DIR/inbox" stamp_templates \
     || die_scaffold "could not write the persona files in $AGENT_HOME"
 
   # .runtime is written explicitly even though the launcher defaults it. The
@@ -475,16 +610,24 @@ else
     || die_scaffold "could not write $AGENT_HOME/.runtime"
 
   mkdir -p "$AGENT_HOME/.claude" || die_scaffold "could not create $AGENT_HOME/.claude"
-  CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_NAME="$NAME" CA_ROLE="$ROLE" merge_settings \
+  CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_NAME="$NAME" CA_ROLE="$ROLE" \
+    CA_INBOX_ROOT="$INBOX_ROOT" merge_settings \
     || die_scaffold "could not write $AGENT_HOME/.claude/settings.json"
 
   mkdir -p "$AGENT_INBOX" || die_scaffold "could not create $AGENT_INBOX"
+
+  if [[ $INSTALL_PATH -eq 1 ]]; then
+    install_inbox_on_path
+  else
+    PATH_INSTALL_REPORT="skipped (--no-install-path)"
+  fi
 
   say
   say "create-agent: CREATED $NAME"
   say "  persona files  $AGENT_HOME"
   say "  inbox          $AGENT_INBOX"
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
+  say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
   say "  boot phrase    $NONCE"
   say

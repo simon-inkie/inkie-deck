@@ -28,16 +28,46 @@ filling in.
   implementation of it, not the definition of it.
 - **`bin/`**: `create-agent.sh`, which creates an agent and then proves its
   persona actually reached the model, plus the orchestration scripts that launch
-  a team of agents in tmux (one window each, on boot or on demand).
+  a team of agents in tmux (one window each, on boot or on demand), plus
+  `inbox`, `inbox-push` and `pane-idle`, the message-protocol tooling below.
+- **`docs/conformance.md`**: how the two implementations of the protocol in
+  this repository are kept from drifting apart, and how a known deviation is
+  recorded so that fixing it forces its own record to be deleted.
+- **`conformance/`**: `corpus.json`, shared test data keyed to
+  `docs/protocol.md`, and `run_cli.py`, the adapter that runs it against the
+  CLI. `packages/deck` runs the same corpus against the application.
 - **`docs/tooling-review.md`**: honest status of what was ported, what was
   ported and then removed, and why.
 
-There is deliberately no CLI in this package. An `inbox` CLI implementing the
-protocol was ported here, tested, and then removed once the application in
-`packages/deck` landed: the application already reads and writes the same
-format, and two implementations of one protocol in one repository drift apart.
-The spec is the artefact this package ships; `docs/tooling-review.md` records
-what happened to the code.
+`bin/inbox` is the CLI for the protocol: `unread`, `read`, `reply`, `ack`. It
+was ported here, then deleted on the reasoning that the application in
+`packages/deck` already reads and writes the same format and two
+implementations of one protocol in one repository drift apart, and it is now
+back. The reasoning was right about the risk and wrong about the requirement.
+The application is a web server; an agent lives in a terminal pane with no
+browser, so "the application already implements the protocol" gave the agents
+themselves no way to write a message. Every notification the application pushes
+into a pane ends with the hint `[reply via inbox: inbox reply <name>]`, naming
+a command this repository did not contain. The drift risk is real, and is
+answered by `conformance/` rather than by having one implementation.
+
+It needs python3, and two environment variables, both required with no
+defaults:
+
+```bash
+export AGENT_NAME=wren                  # who you are
+export INBOX_ROOT=/path/to/inboxes      # absolute path, no tilde
+
+packages/base/bin/inbox unread
+packages/base/bin/inbox read alice
+packages/base/bin/inbox reply alice --subject "notes" --body "on it"
+```
+
+`inbox reply` writes the block to disk first and only then calls `bin/inbox-push`
+for best-effort live delivery into the recipient's tmux pane, so a push that is
+refused or fails is never a lost message. `bin/pane-idle` is a sourced library
+holding the one definition of "is this pane busy"; `inbox-push` cannot run
+without it.
 
 ## The idea
 
@@ -65,10 +95,17 @@ AGENTS_HOME=/path/to/agents INBOX_ROOT=/path/to/inboxes \
   packages/base/bin/create-agent.sh wren --role "keeps the notes"
 ```
 
-That writes the persona files, the inbox, and the runtime settings, and then
-asks the new agent, in one non-interactive turn from its own directory, to state
-its name and the boot phrase written into `IDENTITY.md` at creation. It exits 0
-only if the phrase comes back.
+That writes the persona files, the inbox, and the runtime settings (including
+the `AGENT_NAME` and `INBOX_ROOT` the inbox CLI refuses to run without), stamps
+that CLI's path and commands into the agent's own `TOOLS.md`, and links
+`bin/inbox` into `~/.local/bin` so plain `inbox` resolves for it. That symlink
+is the one thing written outside the agents home and the inbox root; it is
+skipped rather than overwritten if anything already holds that path, and
+`--no-install-path` turns it off.
+
+It then asks the new agent, in one non-interactive turn from its own directory,
+to state its name and the boot phrase written into `IDENTITY.md` at creation. It
+exits 0 only if the phrase comes back.
 
 Why that last step rather than checking the files landed: **files existing on
 disk is what every way this breaks looks like.** A persona that silently never
@@ -98,29 +135,36 @@ cp packages/base/templates/*.md /path/to/your/new/agent/
 ```
 
 The templates and docs are plain markdown and the `bin/` scripts are plain
-shell; nothing in this package needs an install step. If you want machinery
-that speaks the message protocol, implement `docs/protocol.md` in your
-language of choice, or use the application in `packages/deck`, which already
-does.
+shell and python3; nothing in this package needs an install step. If you want
+machinery that speaks the message protocol, use `bin/inbox`, or the application
+in `packages/deck`, or implement `docs/protocol.md` in your language of choice
+and check it against `conformance/corpus.json`.
 
 ## Development
 
-This package is markdown and shell, so it has no build and no typecheck. It does
-have a test suite, covering the one thing in here with behaviour:
-`bin/create-agent.sh`. `pnpm test` runs it. The tests drive the script as a
-subprocess against temporary directories, with `HOME`, the agents home, the
-inbox root and `PATH` all redirected, so they cannot touch a real agent or reach
-a real runtime.
+This package is markdown, shell and python3, so it has no build and no
+typecheck. It does have tests, covering the things in here with behaviour.
+`pnpm test` runs the vitest suites: `bin/create-agent.sh`, and the CLI half of
+the conformance corpus. Both drive the code as a subprocess against temporary
+directories, with `HOME`, the agents home, the inbox root and `PATH` all
+redirected, so they cannot touch a real agent or reach a real runtime.
 
-The protocol's conformance requirements live in `docs/protocol.md` section 10,
-and are not covered by that suite. The repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
+The `bin/inbox` and `bin/inbox-push` suites are shell, and are run directly:
+
+```bash
+bash packages/base/test/inbox.test.sh
+bash packages/base/test/inbox-push.test.sh
+```
+
+The repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
 workspace-wide checks, including the leak gate that also scans this package,
 on every push.
 
 ## Status
 
 Templates, one worked example, the shared multi-agent conventions, the create
-and tmux launch scripts, the protocol specification, a licence, and CI all
+and tmux launch scripts, the protocol specification, the `inbox` CLI and its
+live-delivery half, the shared conformance corpus, a licence, and CI all
 exist now.
 Still to come: a CONTRIBUTING guide, and a second worked example that shows a
 small team of agents using `SYSTEM.md`/`ROSTER.md` together, not just one

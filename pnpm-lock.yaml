@@ -123,6 +123,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      inkie-agents-base:
+        specifier: workspace:*
+        version: link:../base
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1

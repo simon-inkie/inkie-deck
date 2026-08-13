@@ -2,6 +2,10 @@
 
 Skills define _how_ tools work. This file is for _your_ specifics: the stuff that's unique to your setup.
 
+## Your inbox
+
+<inbox commands: stamped at creation>
+
 ## What Goes Here
 
 Things like:

@@ -46,7 +46,7 @@ describe("buildPanePayload", () => {
   });
 
   it("boundary: a body exactly at the limit is still delivered whole", () => {
-    const hint = ` [reply via inbox: inbox reply ${tag}]`;
+    const hint = `  [reply via inbox: inbox reply ${tag}]`;
     const prefix = `[inbox from ${tag}] `;
     const exact = "a".repeat(SEND_KEYS_MAX_LEN - hint.length - prefix.length);
     const out = buildPanePayload(tag, exact);
@@ -55,7 +55,7 @@ describe("buildPanePayload", () => {
   });
 
   it("boundary: one char over the limit flips to the nudge", () => {
-    const hint = ` [reply via inbox: inbox reply ${tag}]`;
+    const hint = `  [reply via inbox: inbox reply ${tag}]`;
     const prefix = `[inbox from ${tag}] `;
     const over = "a".repeat(SEND_KEYS_MAX_LEN - hint.length - prefix.length + 1);
     const out = buildPanePayload(tag, over);

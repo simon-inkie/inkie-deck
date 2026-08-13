@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# pane-idle -- the ONE definition of "is this tmux pane busy or idle".
+#
+# WHY THIS FILE EXISTS: check_idle() was copy-pasted into two callers, and the
+# two copies DRIFTED. One gained a general busy signal after the enumerated
+# literals stopped matching; the other never did, so it was reading genuinely
+# busy panes as idle and typing into mid-turn sessions. Two copies of a safety
+# gate means the fix lands in one of them; there is now one copy, and this is
+# it.
+#
+# CONTRACT (do not "improve" the polarity -- both call sites depend on it):
+#   check_idle <pane_text>
+#     return 0 = BUSY   (mid-turn: do not type into this pane)
+#     return 1 = IDLE   (the positive case for proceeding)
+#   Callers read naturally as:  if check_idle "$pane"; then skip; fi
+#
+# USE AS A LIBRARY (bin/ has no other sourceable file, so the shape is set
+# here: no extension like its executable siblings, sourced by a
+# BASH_SOURCE-relative path because schedulers and supervisors run with a
+# minimal PATH):
+#   PANE_IDLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pane-idle"
+#   . "$PANE_IDLE_LIB"
+#
+# USE AS A CLI (self-contained, for tests and for eyeballing a live pane):
+#   tmux capture-pane -t agents:alice -p | pane-idle  # exit 0 = busy, 1 = idle
+#   pane-idle < some-capture.txt
+#   pane-idle --verbose < some-capture.txt            # also prints busy/idle
+#
+# Deliberately NOT moved here: check_composer_clean(). It has diverged on
+# PURPOSE, not by accident (inbox-push's copy takes a second raw-capture arg
+# and publishes COMPOSER_TEXT for its identity check), so folding the variants
+# together would be a behaviour change, not a de-duplication.
+
+# --------------------------------------------------------------------------
+# check_idle <pane>  -- return 0 (busy) / 1 (idle).
+#
+# "esc to interrupt" is the robust busy signal for Claude-family runtimes;
+# "Brewed for"/"Crunched for"/"Worked for" are COMPLETION markers (idle),
+# deliberately NOT matched. The composer-clean gate is the real net. Gemini
+# busy markers: "esc to cancel" in the footer, and a braille-spinner line
+# immediately followed by "Generating" -- matched on the word alone to be
+# robust to which braille glyph is displayed. "Compacting conversation" is a
+# distinct busy state during a context compaction: it shows neither "esc to
+# interrupt" nor a spinner_re-shaped line (two words, then a UNICODE ellipsis
+# U+2026, not a single word + three ASCII dots), so it fell through every
+# marker and read as idle -- the root cause of a "message dropped during
+# compaction" bug. Matched on the literal words, not the ellipsis glyph, so it
+# is robust either way.
+# --------------------------------------------------------------------------
+check_idle() {
+  local pane="$1"
+  local spinner_re='^[·✻✶✢\*][[:space:]]*[A-Za-z]+\.\.\.'
+  # Claude-family busy markers
+  if echo "$pane" | grep -qF 'esc to interrupt' 2>/dev/null; then return 0; fi
+  if echo "$pane" | grep -qF 'Cerebrating' 2>/dev/null; then return 0; fi
+  if echo "$pane" | grep -qF 'Compacting conversation' 2>/dev/null; then return 0; fi
+  if echo "$pane" | grep -qP "$spinner_re" 2>/dev/null; then return 0; fi
+  # LIVE ELAPSED COUNTER -- the general busy signal.
+  #
+  # Every marker above is an enumerated LITERAL, and the UI moved out from
+  # under them. Measured live against a genuinely-busy pane, the status line
+  # was several words long, carried a hyphen inside the first token, and
+  # terminated in U+2026. spinner_re demands ONE word then THREE ASCII DOTS,
+  # so there were two independent reasons it could not match, which is why the
+  # miss was every time rather than sometimes. "esc to interrupt" is not
+  # rendered in that viewport at all.
+  #
+  # A busy pane therefore read as IDLE, which broke BOTH gates that use this
+  # function: the idle gate (so queued-vs-pushed was wrong in both directions
+  # and the retry branch fired on mid-turn panes) and the verify gate (the
+  # positive signal was unobservable, so nearly every send reported
+  # pushed-unverified -- a guard training its users to ignore it).
+  #
+  # The counter is the signal that actually survives: while a turn runs, the
+  # runtime renders "(<elapsed> · <something>)". It is structural rather than a
+  # word list, so a copy change cannot silently blind it. Completion markers
+  # ("Worked for 2m 24s") carry no parenthesised counter and are correctly NOT
+  # matched, which preserves the deliberate idle-on-completion behaviour above.
+  #
+  # The counter may end at ")" as well as " · ". An earlier version required
+  # the middot INSIDE the parens, so it matched "(59s · thought for 2s)" but
+  # missed "(12s)" and "(1m 26s)" -- and no enumerated literal catches those,
+  # so a genuinely busy pane read as IDLE. That fix widened the WORDING and
+  # kept the SEPARATOR, i.e. it closed the shape the incident produced rather
+  # than the category it belonged to.
+  #
+  # ANCHORED to end of line on purpose. A bare-parens pattern matches any
+  # visible prose containing a duration -- and panes are full of message text,
+  # so a message quoting "(1m 26s)" would read as busy forever, wedging
+  # delivery to a genuinely idle agent.
+  #
+  # ENUMERATE NOTHING. An earlier anchored version led with a glyph class
+  # [·✻✶✢*], which replaced an enumerated WORDING with an enumerated GLYPH SET,
+  # i.e. the same defect one layer over: a spinner glyph outside the class read
+  # IDLE the same evening it shipped. Surveying eight live panes turned up
+  # ( - < … ⎿ ⏵ ─ ● ◻ ◼ ☐ ✶ ✻ ✽ ❯ as leading characters, so the set is open and
+  # enumerating it fails again. A spinner status line ENDS with its counter;
+  # prose that happens to mention a duration continues past it. Anchoring to
+  # end-of-line is a structural property of the rendering, not a list of
+  # symbols someone can add to. Completion markers ("Brewed for 39s") carry no
+  # parens and are excluded for free.
+  if echo "$pane" | grep -qE '\(([0-9]+m )?[0-9]+s( ·[^)]*)?\)[[:space:]]*$' 2>/dev/null; then return 0; fi
+  # Gemini busy markers
+  if echo "$pane" | grep -qF 'esc to cancel' 2>/dev/null; then return 0; fi
+  if echo "$pane" | grep -qF 'Generating' 2>/dev/null; then return 0; fi
+  # Codex busy marker: reuses the same literal "esc to interrupt" text as the
+  # Claude family (verified live, "Working (Ns * esc to interrupt)"), so no
+  # separate branch is needed -- the match above already covers it.
+  return 1  # idle
+}
+
+# --------------------------------------------------------------------------
+# pane_ctx_pct <pane>  -- echo the context-window percentage, or return 1.
+#
+# ONE definition, here, for the same reason check_idle lives here: a context
+# sweep grew its own copy of this parser and inbox-push needs it too, and two
+# copies of a parser means the fix lands in one of them.
+#
+# MODEL-AGNOSTIC: anchor on the ctx BAR glyph, never the model name. An earlier
+# copy matched on one model's name and went blind to every agent running a
+# different model the moment the model mix changed -- they render "<name> |
+# <other model> | ... NN%" with no match -- so those agents silently had no ctx
+# reading at all for weeks.
+#
+# Two live statusline formats, both real:
+#   bar:  "alice | <model> | ~/agents/alice  ###...  46%"
+#   ctx:  "~/agents/alice  <model>  ctx:42%"
+# Take the LAST match: the footer is the live state, earlier hits are
+# scrollback.
+pane_ctx_pct() {
+  local pane="$1" line
+  line=$(printf '%s\n' "$pane" | grep -E 'ctx:[0-9]+%|(█|░)[^│]*[0-9]+%' | tail -1)
+  [ -z "$line" ] && return 1
+  printf '%s\n' "$line" | grep -oE '[0-9]+%' | tail -1 | tr -d '%'
+}
+
+# Loaded-marker: callers assert this rather than trusting that `.` succeeded, so
+# a half-read or wrong-path source fails loudly at the call site instead of
+# silently leaving check_idle undefined (which bash reports as "command not
+# found" -> non-zero -> reads as IDLE -> types into a busy pane).
+PANE_IDLE_LIB_VERSION=1
+
+# --------------------------------------------------------------------------
+# CLI mode. Only runs when executed directly, never when sourced.
+# --------------------------------------------------------------------------
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  _pane_idle_input=$(cat)
+  if check_idle "$_pane_idle_input"; then
+    [ "${1:-}" = "--verbose" ] && echo "busy"
+    exit 0
+  else
+    [ "${1:-}" = "--verbose" ] && echo "idle"
+    exit 1
+  fi
+fi

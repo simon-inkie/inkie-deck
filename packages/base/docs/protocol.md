@@ -285,8 +285,25 @@ informational.
 ## 10. Conformance
 
 An implementation is conforming if it satisfies every MUST in this document.
+
+The read side of that claim is mechanised. `conformance/corpus.json` is a
+language-neutral body of inputs and expected outputs derived from this
+document, and both implementations in this repository are run against it
+through a thin adapter in their own language. The corpus is normative, and it
+is keyed to THIS DOCUMENT rather than to agreement between implementations,
+because two implementations can share a defect and several here do. See
+[conformance.md](conformance.md) for the design, the rules for adding a case,
+and how a known deviation is recorded such that fixing it forces its own record
+to be deleted.
+
+Both implementations in this repository currently deviate from this document in
+ways recorded there. That is a statement of fact about the tree rather than a
+licence: each deviation is listed, reasoned, and individually reproducible.
+
 An implementation claiming conformance SHOULD pass a test suite exercising at
-least the following:
+least the following. Points 1, 2 and 10 are carried by the shared corpus;
+points 5 to 9 are mutations rather than projections, so they stay in each
+implementation's own suite:
 
 1. header parsing across all three separator forms, case insensitively
 2. a dash character inside a sender name or subject parsing correctly

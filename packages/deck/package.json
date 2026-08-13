@@ -49,6 +49,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.1",
+    "inkie-agents-base": "workspace:*",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.0",
     "tsx": "^4.22.4",

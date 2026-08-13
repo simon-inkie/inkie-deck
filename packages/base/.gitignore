@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+
+# bin/inbox is a python3 script, and anything that IMPORTS it rather than
+# running it as a subprocess (the conformance runner, the test suite) makes
+# CPython drop a bytecode cache next to it. It is build output, not source.
+__pycache__/
+*.pyc

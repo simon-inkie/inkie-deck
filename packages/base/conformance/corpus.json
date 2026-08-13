@@ -1,0 +1,470 @@
+{
+  "$comment": [
+    "The shared conformance corpus for the agent inbox protocol.",
+    "",
+    "This file is DATA, not code, and that is the whole point. The two",
+    "implementations of docs/protocol.md in this repository are a Python CLI",
+    "(packages/base/bin/inbox) and a TypeScript application (packages/deck).",
+    "There is no code they can share, so the only thing that can hold them",
+    "together is a body of inputs and expected outputs that both must satisfy,",
+    "each through a thin adapter in its own language.",
+    "",
+    "Read docs/conformance.md before adding a case. The short version:",
+    "",
+    "  expect      what docs/protocol.md REQUIRES. Normative. Never edit it to",
+    "              match an implementation; that is the failure this file",
+    "              exists to prevent.",
+    "  deviations  a per-implementation record of a KNOWN, REVIEWED departure",
+    "              from `expect`. A deviation is a defect with a name, not a",
+    "              permission slip. The runner asserts the implementation still",
+    "              produces exactly the recorded wrong answer, so a deviation",
+    "              that changes shape fails, AND it asserts the implementation",
+    "              does NOT produce the right answer, so a deviation that gets",
+    "              FIXED also fails, forcing its own record to be deleted.",
+    "              A waiver cannot outlive the thing it documents.",
+    "",
+    "Canonical block shape, which both adapters project onto:",
+    "  ts, sender, status, subject   the four header fields",
+    "  bodyRaw                       everything after the header line, up to the",
+    "                                start of the next block, trimmed",
+    "",
+    "bodyRaw rather than each implementation's presentation body, deliberately.",
+    "The two clean bodies for display in legitimately different ways (the CLI",
+    "strips every standalone '---' line; the application preserves body-internal",
+    "ones and lifts a YAML metadata region out of the body). Comparing display",
+    "bodies would bury real boundary drift under differences that are intended.",
+    "bodyRaw is derivable from both without touching either's cleaning, and it is",
+    "exactly the value that moves when block boundaries drift.",
+    "",
+    "A block whose header line does not parse is not a block: both adapters drop",
+    "it, matching protocol section 4."
+  ],
+  "version": 1,
+  "implementations": {
+    "cli": "packages/base/bin/inbox (python3), via conformance/run_cli.py",
+    "deck": "packages/deck/app/lib/blocks (TypeScript), via its conformance test"
+  },
+  "cases": [
+    {
+      "id": "sep-hyphen",
+      "protocol": "5",
+      "why": "The plain 'space hyphen space' separator form.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: hello there\n\nfirst body\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "hello there",
+          "bodyRaw": "first body"
+        }
+      ]
+    },
+    {
+      "id": "sep-em-dash",
+      "protocol": "5",
+      "why": "The em-dash separator form, U+2014. Written as a JSON \\u escape so this file holds no literal em-dash; the parsed value is the real character.",
+      "input": "## 2026-08-13T10:00:00Z \u2014 from: bob \u2014 status: sent \u2014 subject: hello\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "hello",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
+      "id": "sep-en-dash",
+      "protocol": "5",
+      "why": "The en-dash separator form, U+2013.",
+      "input": "## 2026-08-13T10:00:00Z \u2013 from: bob \u2013 status: sent \u2013 subject: hello\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "hello",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
+      "id": "case-insensitive-header",
+      "protocol": "5.2",
+      "why": "Section 5 says matching MUST be case insensitive, and 5.2 says a reader SHOULD lower case the status for comparison. An all-caps header is written by other tools and must still parse.",
+      "input": "## 2026-08-13T10:00:00Z - FROM: bob - STATUS: SENT - SUBJECT: shouty\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "shouty",
+          "bodyRaw": "body"
+        }
+      ],
+      "deviations": {
+        "deck": {
+          "reason": "The application's HEADER_RE carries no `i` flag, so an all-caps header does not parse at all and the block is dropped. Protocol section 5 says matching MUST be case insensitive. A header written in another case by any other tool is invisible to the application: the message is on disk and never renders.",
+          "expect": []
+        }
+      }
+    },
+    {
+      "id": "dash-inside-sender",
+      "protocol": "5.1",
+      "why": "Conformance point 2. The sender is a run of non-whitespace, so a dash inside the NAME is in the same character class as the separator after it. The field labels are what disambiguate on backtracking. Section 5.1 claims this was verified empirically rather than assumed; this case is that verification.",
+      "input": "## 2026-08-13T10:00:00Z - from: al\u2013ice - status: sent - subject: hi\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "al\u2013ice",
+          "status": "sent",
+          "subject": "hi",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
+      "id": "dash-inside-subject",
+      "protocol": "5.1",
+      "why": "The subject is the remainder of the line, so any dash in it must never be re-read as a separator and truncate the value.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: a \u2013 b - c\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "a \u2013 b - c",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
+      "id": "empty-subject",
+      "protocol": "5",
+      "why": "The subject MAY be empty, and section 5 makes whitespace after the label optional.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject:\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "",
+          "bodyRaw": "body"
+        }
+      ],
+      "deviations": {
+        "deck": {
+          "reason": "The application's HEADER_RE requires at least one space after `subject:` (`subject:\\s+`). Protocol section 5 makes the whitespace after a field label OPTIONAL and the subject MAY be empty, so a header ending in a bare `subject:` is valid and the application drops it. The CLI writes a trailing space for an empty subject, which is why this has not bitten in practice; any other writer that does not is invisible.",
+          "expect": []
+        }
+      }
+    },
+    {
+      "id": "status-read",
+      "protocol": "6",
+      "why": "Both delivery states parse. Section 6: status has exactly two values.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: read - subject: seen\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "read",
+          "subject": "seen",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
+      "id": "two-blocks",
+      "protocol": "4",
+      "why": "Ordering is by position in the file, never by timestamp (section 9.2). The second block here is deliberately older than the first.",
+      "input": "## 2026-08-13T10:05:00Z - from: bob - status: sent - subject: two\n\nsecond body\n\n## 2026-08-13T10:00:00Z - from: alice - status: read - subject: one\n\nfirst body\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:05:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "two",
+          "bodyRaw": "second body"
+        },
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "alice",
+          "status": "read",
+          "subject": "one",
+          "bodyRaw": "first body"
+        }
+      ]
+    },
+    {
+      "id": "body-markdown-heading",
+      "protocol": "4",
+      "why": "THE ONE THAT LOSES MESSAGES. A column-0 '## ' line that fails the header grammar does NOT begin a block: it is body content of the preceding block. An implementation that treats every '## ' line as a boundary silently truncates any message whose author typed a markdown heading. The bytes on disk are intact; the loss happens on every read.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: plan\n\nintro line\n## Options\nthe part that must not vanish\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "plan",
+          "bodyRaw": "intro line\n## Options\nthe part that must not vanish"
+        }
+      ],
+      "deviations": {
+        "cli": {
+          "reason": "PORTED DEFECT, deliberately unchanged. bin/inbox derives block boundaries from every column-0 '## ' line (parse_blocks: re.finditer(r'^## ')) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. The consequence is silent data loss on READ, not on disk: a message body containing a markdown heading is truncated at that heading on every read, and any prose after the last pseudo header is dropped entirely. The fix is to validate candidate headers first and run each block to the next VALID header. It is not applied here because this is a copy of a proven implementation and changing its behaviour is a separate, reviewable decision. Recorded rather than silently tolerated so it cannot be forgotten, and so that fixing it fails this suite until the record is deleted.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "plan",
+              "bodyRaw": "intro line"
+            }
+          ]
+        },
+        "deck": {
+          "reason": "The application derives block boundaries from every '## ' line (splitBlocks) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. NOTE, and this is the reason the case is worth its weight: the Python CLI has the SAME defect from the same cause, so both readers of this format truncate a message body at any markdown heading its author typed. The two agree with each other and disagree with the specification, which is exactly the failure a corpus keyed to the SPECIFICATION catches and a corpus keyed to 'do the two agree' would not.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "plan",
+              "bodyRaw": "intro line"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "pseudo-header-between-blocks",
+      "protocol": "4",
+      "why": "A pseudo header absorbed into one body must not shift or split the block that follows it.",
+      "input": "## 2026-08-13T10:00:00Z - from: alice - status: sent - subject: mine\n\nmy own note\n## Interlude heading, not a header\n\n## 2026-08-13T10:05:00Z - from: bob - status: sent - subject: theirs\n\nbob's note\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "alice",
+          "status": "sent",
+          "subject": "mine",
+          "bodyRaw": "my own note\n## Interlude heading, not a header"
+        },
+        {
+          "ts": "2026-08-13T10:05:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "theirs",
+          "bodyRaw": "bob's note"
+        }
+      ],
+      "deviations": {
+        "cli": {
+          "reason": "PORTED DEFECT, deliberately unchanged. bin/inbox derives block boundaries from every column-0 '## ' line (parse_blocks: re.finditer(r'^## ')) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. The consequence is silent data loss on READ, not on disk: a message body containing a markdown heading is truncated at that heading on every read, and any prose after the last pseudo header is dropped entirely. The fix is to validate candidate headers first and run each block to the next VALID header. It is not applied here because this is a copy of a proven implementation and changing its behaviour is a separate, reviewable decision. Recorded rather than silently tolerated so it cannot be forgotten, and so that fixing it fails this suite until the record is deleted.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "alice",
+              "status": "sent",
+              "subject": "mine",
+              "bodyRaw": "my own note"
+            },
+            {
+              "ts": "2026-08-13T10:05:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "theirs",
+              "bodyRaw": "bob's note"
+            }
+          ]
+        },
+        "deck": {
+          "reason": "The application derives block boundaries from every '## ' line (splitBlocks) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. NOTE, and this is the reason the case is worth its weight: the Python CLI has the SAME defect from the same cause, so both readers of this format truncate a message body at any markdown heading its author typed. The two agree with each other and disagree with the specification, which is exactly the failure a corpus keyed to the SPECIFICATION catches and a corpus keyed to 'do the two agree' would not.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "alice",
+              "status": "sent",
+              "subject": "mine",
+              "bodyRaw": "my own note"
+            },
+            {
+              "ts": "2026-08-13T10:05:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "theirs",
+              "bodyRaw": "bob's note"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "leading-pseudo-header",
+      "protocol": "4",
+      "why": "A pseudo header before any real block is leading content, not a block.",
+      "input": "## leading pseudo header\n\n## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: hi\n\nreal body\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "hi",
+          "bodyRaw": "real body"
+        }
+      ]
+    },
+    {
+      "id": "malformed-block-tolerated",
+      "protocol": "9.1",
+      "why": "Conformance point 10. A reader MUST tolerate malformed content and MUST NOT repair it. The status-less header here is header-shaped but ungrammatical, so it is body content, and the surrounding prose survives.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: real\n\nreal body line\n## 2026-08-13T10:01:00Z - from: bob - subject: no status field\nprose sitting after the pseudo header\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "real",
+          "bodyRaw": "real body line\n## 2026-08-13T10:01:00Z - from: bob - subject: no status field\nprose sitting after the pseudo header"
+        }
+      ],
+      "deviations": {
+        "cli": {
+          "reason": "PORTED DEFECT, deliberately unchanged. bin/inbox derives block boundaries from every column-0 '## ' line (parse_blocks: re.finditer(r'^## ')) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. The consequence is silent data loss on READ, not on disk: a message body containing a markdown heading is truncated at that heading on every read, and any prose after the last pseudo header is dropped entirely. The fix is to validate candidate headers first and run each block to the next VALID header. It is not applied here because this is a copy of a proven implementation and changing its behaviour is a separate, reviewable decision. Recorded rather than silently tolerated so it cannot be forgotten, and so that fixing it fails this suite until the record is deleted.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "real",
+              "bodyRaw": "real body line"
+            }
+          ]
+        },
+        "deck": {
+          "reason": "The application derives block boundaries from every '## ' line (splitBlocks) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. NOTE, and this is the reason the case is worth its weight: the Python CLI has the SAME defect from the same cause, so both readers of this format truncate a message body at any markdown heading its author typed. The two agree with each other and disagree with the specification, which is exactly the failure a corpus keyed to the SPECIFICATION catches and a corpus keyed to 'do the two agree' would not.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "real",
+              "bodyRaw": "real body line"
+            },
+            {
+              "ts": "2026-08-13T10:01:00Z",
+              "sender": "bob",
+              "status": "read",
+              "subject": "no status field",
+              "bodyRaw": "prose sitting after the pseudo header"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "unparseable-timestamp-still-a-block",
+      "protocol": "9.1",
+      "why": "Section 5 defines the timestamp as a run of non-whitespace characters and only SHOULD it be ISO 8601. Section 9.1 states plainly that a block with an unparseable timestamp is still a block. An implementation that validates the timestamp and rejects the block loses the message.",
+      "input": "## not-a-timestamp - from: bob - status: sent - subject: odd clock\n\nbody\n",
+      "expect": [
+        {
+          "ts": "not-a-timestamp",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "odd clock",
+          "bodyRaw": "body"
+        }
+      ],
+      "deviations": {
+        "deck": {
+          "reason": "The application validates the timestamp with Date.parse and returns ok:false when it fails. Protocol section 5 defines the timestamp as a run of non-whitespace characters and only SHOULD it be ISO 8601, and section 9.1 states plainly that a block with an unparseable timestamp is still a block. The application loses the message rather than rendering it with an odd timestamp.",
+          "expect": []
+        }
+      }
+    },
+    {
+      "id": "sender-containing-status-sent",
+      "protocol": "8.3",
+      "why": "The header the whole of section 8.3 is about. It must PARSE correctly here (the write-side hazard is tested separately, in each implementation's own suite, because it is a mutation rather than a projection).",
+      "input": "## 2026-08-13T10:00:00Z - from: status:sentinel - status: sent - subject: hi\n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "status:sentinel",
+          "status": "sent",
+          "subject": "hi",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
+      "id": "indented-pseudo-header",
+      "protocol": "4",
+      "why": "Section 4 says a block begins at a line that starts with '## ' AT COLUMN 0. An indented one is body content.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: hi\n\nbody line\n  ## 2026-08-13T10:05:00Z - from: alice - status: sent - subject: indented\nmore body\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "hi",
+          "bodyRaw": "body line\n  ## 2026-08-13T10:05:00Z - from: alice - status: sent - subject: indented\nmore body"
+        }
+      ],
+      "deviations": {
+        "deck": {
+          "reason": "The application tests `line.trim().startsWith('## ')`, so an INDENTED header-shaped line begins a block. Protocol section 4 anchors a block at column 0. This is the opposite direction from the CLI, which correctly ignores the indented line, so the two implementations disagree with each other here as well as with the specification.",
+          "expect": [
+            {
+              "ts": "2026-08-13T10:00:00Z",
+              "sender": "bob",
+              "status": "sent",
+              "subject": "hi",
+              "bodyRaw": "body line"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "multibyte-before-block",
+      "protocol": "8.5",
+      "why": "An earlier block carrying multi-byte UTF-8 must not disturb the parse of a later one. Accented characters (two UTF-8 bytes, one UTF-16 unit) and an emoji (four UTF-8 bytes, two UTF-16 units) drift by different amounts, so both are present.",
+      "input": "## 2026-08-13T10:00:00Z - from: alice - status: sent - subject: café naïve 🚀\n\nrésumé 🎯 first body\n\n## 2026-08-13T10:05:00Z - from: bob - status: sent - subject: second\n\nplain body\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "alice",
+          "status": "sent",
+          "subject": "café naïve 🚀",
+          "bodyRaw": "résumé 🎯 first body"
+        },
+        {
+          "ts": "2026-08-13T10:05:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "second",
+          "bodyRaw": "plain body"
+        }
+      ]
+    },
+    {
+      "id": "empty-file",
+      "protocol": "4",
+      "why": "A thread file with no blocks parses to no blocks, rather than erroring.",
+      "input": "",
+      "expect": []
+    },
+    {
+      "id": "no-header-at-all",
+      "protocol": "4",
+      "why": "Leading content with no block header at all is not a block.",
+      "input": "just some prose\nwith no header line\n",
+      "expect": []
+    }
+  ]
+}

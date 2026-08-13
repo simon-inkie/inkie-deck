@@ -2,14 +2,15 @@
   "name": "inkie-agents-base",
   "version": "0.0.0",
   "private": true,
-  "description": "Portable persona-file pattern for a team of AI agents, plus the normative specification of their file-based message protocol",
+  "description": "Portable persona-file pattern for a team of AI agents, the inbox CLI that implements their message protocol, and the normative specification and conformance corpus for that protocol",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": "^22.13.0 || >=24.0.0"
   },
   "exports": {
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./conformance/corpus.json": "./conformance/corpus.json"
   },
   "scripts": {
     "test": "vitest run"

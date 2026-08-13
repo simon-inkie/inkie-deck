@@ -1,9 +1,12 @@
 import { defineConfig } from "vitest/config";
 
-// This package is markdown and shell. The only thing in it with behaviour is
-// bin/create-agent.sh, and the tests run it as a subprocess against temporary
-// directories rather than importing anything, so there is nothing to transform
-// and no environment to set up.
+// This package is markdown, shell and one python3 CLI. Nothing here is
+// imported by the tests: bin/create-agent.sh, bin/inbox and the two ported
+// bash suites are all driven as subprocesses against temporary directories, so
+// there is nothing to transform and no environment to set up.
+//
+// That is also why the timeout below is generous rather than tuned: a vitest
+// case here is a wrapper around a process tree, not an in-process assertion.
 //
 // The timeout is generous on purpose: every case spawns the script, which in
 // turn spawns node several times and, in the verification cases, a stub
