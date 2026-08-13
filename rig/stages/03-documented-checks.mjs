@@ -7,10 +7,10 @@
  * failures that have nothing to do with the code, and the fix for that class
  * of failure is environmental. The inverse is the dangerous one: a suite that
  * exits 0 having quietly run fewer tests than it has. So the count is the
- * instrument. The README publishes 1770 as the whole-and-healthy figure and
- * documents 1766 and 1703 as the signatures of a missing ripgrep and a
- * missing git respectively; a stage that measures the count can therefore
- * name its own missing dependency instead of reporting a colour.
+ * instrument. The README publishes the whole-and-healthy figure and documents
+ * the signatures of a missing ripgrep and a missing git repository, so a stage
+ * that measures the count can name its own missing dependency instead of
+ * reporting a colour.
  */
 import { control, probe } from "../lib/harness.mjs";
 import { runIn } from "../lib/docker.mjs";
@@ -84,7 +84,9 @@ export function parseSuiteCounts(rawOutput) {
 function diagnoseCount(actual, expected) {
   if (actual === null) return "no suite summary was printed at all: the suite did not run";
   if (actual === expected) return `${actual}`;
-  const known = { 1766: "ripgrep is missing", 1703: "neither git nor ripgrep is present" };
+  // Measured in this rig's own containers, not arithmetic: removing ripgrep
+  // costs four tests and removing the git repository costs sixty-three more.
+  const known = { 1806: "ripgrep is missing", 1743: "neither git nor ripgrep is present" };
   const named = known[actual] ? `, the README's signature for: ${known[actual]}` : "";
   return `${actual} against ${expected} (${actual - expected > 0 ? "+" : ""}${actual - expected})${named}`;
 }

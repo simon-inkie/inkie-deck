@@ -110,6 +110,22 @@ corepack fetches that exact version the first time you run it whatever you
 have installed globally. The first `pnpm --version` is therefore slower than
 it looks like it should be.
 
+One last thing, and only if your shell has no locale set, which is normal
+inside a container and on some minimal server images:
+
+```sh
+export LANG=C.UTF-8
+```
+
+That is not cosmetic. Live delivery into an agent's terminal decides whether
+the model is busy by reading the spinner and counter glyphs in its pane, and
+in the C locale that classification breaks: ten of the seventy cases in the
+delivery suite fail there, and what a failure means at runtime is a message
+that was never typed into a pane which was perfectly ready for it. Put it in
+your shell profile rather than in one terminal, since the agents inherit the
+environment of whatever launched them. A desktop machine almost certainly
+already has this and can skip it.
+
 ## 2. Install the dependencies
 
 Everything from here runs from the root of your clone.

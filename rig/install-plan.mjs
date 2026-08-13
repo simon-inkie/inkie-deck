@@ -31,7 +31,7 @@ export const EXECUTABLE_LANGS = ["sh"];
  */
 export const KNOWN_LANGS = ["sh", "text", "zsh"];
 
-const PREREQUISITES = ["1-prerequisites/sh#1", "1-prerequisites/sh#2"];
+const PREREQUISITES = ["1-prerequisites/sh#1", "1-prerequisites/sh#2", "1-prerequisites/sh#3"];
 const DEPENDENCIES = ["2-install-the-dependencies/sh#1"];
 const TRY_IT = ["3-try-it/sh#1", "3-try-it/sh#2"];
 const CONFIGURE = [

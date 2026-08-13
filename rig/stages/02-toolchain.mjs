@@ -42,6 +42,8 @@ const VERSION_COMMANDS = {
   curl: "curl --version | head -1",
   tmux: "tmux -V",
   python3: "python3 --version",
+  // xxd writes its banner to stderr, so the redirect is load-bearing.
+  xxd: "xxd -v 2>&1 | head -1",
   [ABSENT_SENTINEL]: `${ABSENT_SENTINEL} --version`,
 };
 

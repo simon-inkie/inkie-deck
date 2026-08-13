@@ -58,8 +58,8 @@ and not the odd-numbered ones in between: 23 was never an LTS line and is
 already out of support. `pnpm install` refuses to run on anything else and
 tells you so, rather than letting you find out later or not at all.
 
-Two further prerequisites, both easy to miss because every machine that has
-run this so far already had them:
+Further prerequisites, all easy to miss because every machine that has run this
+so far already had them:
 
 - **git**, and the tree has to be a *clone*. An unpacked release tarball or a
   "Download ZIP" will not do. Two suites shell out to `git status --porcelain`
@@ -72,9 +72,23 @@ run this so far already had them:
   `packages/base` is Python. Nothing in the web application needs it, so Deck
   runs fine without it and you will not find out you are missing it until an
   agent tries to reply and cannot. A bare Ubuntu 24.04 image does not have it.
+- **xxd**, for the `inbox` suite alone, which compares the bytes of a thread
+  file before and after an in-place status patch. On Ubuntu 24.04 it is its own
+  package rather than part of `vim-common`, so it is absent by default and the
+  suite stops with `xxd: command not found` and no other explanation.
+- **a UTF-8 locale**. Not only for the suite: live delivery decides whether an
+  agent is busy by reading the spinner and counter glyphs in its terminal pane,
+  and in the C locale that classification breaks. Ten of the seventy delivery
+  cases fail there, and at runtime the same break is a message that was never
+  typed into a pane which was ready for it. A container inherits no locale at
+  all, so `LANG=C.UTF-8` belongs in any deployment that is not a desktop.
 
-The test count doubles as a diagnostic here: **1790 passing** means both are
-present, **1786** means ripgrep is missing, and **1723** means neither is.
+The test count doubles as a diagnostic here, with git and ripgrep the two that
+move it: **1810 passing** means everything above is present, **1806** means
+ripgrep is missing, and **1743** means neither ripgrep nor a git repository is.
+All three are measured in a container on every rig run rather than remembered;
+the numbers in this paragraph were wrong by twenty for two days before anything
+asserted them.
 
 One more thing about those two suites, because it looks like your bug and is
 not: **they report the state of the tree, not the state of your change.** They

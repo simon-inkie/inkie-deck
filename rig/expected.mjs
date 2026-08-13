@@ -57,7 +57,7 @@ export const ENGINE_STRICT_SETTING = "engine-strict=true";
  * and no mention anywhere of what was missing. The instrument was a day behind
  * the thing it measures.
  */
-export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", "tmux", "python3"];
+export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", "tmux", "python3", "xxd"];
 
 /**
  * Test-count instrument.
@@ -108,7 +108,7 @@ export const BASE_IMAGE = "ubuntu:24.04";
  * downstream distinguishes "the product works from a clean install" from "the
  * base image happened to carry the missing piece".
  */
-export const MUST_BE_ABSENT = ["node", "npm", "pnpm", "corepack", "yarn", "tmux", "git", "curl", "rg", "python3"];
+export const MUST_BE_ABSENT = ["node", "npm", "pnpm", "corepack", "yarn", "tmux", "git", "curl", "rg", "python3", "xxd"];
 
 /**
  * Entries the image's own skeleton puts in $HOME. Anything else means the

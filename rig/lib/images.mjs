@@ -15,10 +15,22 @@ export function toolchainDockerfile({ nodeMajor, pnpmSpec, withRipgrep = true })
   // python3 is not decoration: the base package's inbox CLI is python3, and
   // its two shell suites run under `pnpm test`, so without it the README's own
   // check list goes red in a container that was supposed to be measuring it.
-  const apt = ["ca-certificates", "curl", "git", "tmux", "python3", ...(withRipgrep ? ["ripgrep"] : [])];
+  // xxd is the base package's inbox suite comparing the bytes of a thread file
+  // before and after an in-place status patch. On Ubuntu 24.04 it is its own
+  // package rather than part of vim-common, so it is absent by default and the
+  // suite fails with `xxd: command not found` at line 422 and nothing else.
+  const apt = ["ca-certificates", "curl", "git", "tmux", "python3", "xxd", ...(withRipgrep ? ["ripgrep"] : [])];
   return [
     `FROM ${BASE_IMAGE}`,
     "ENV DEBIAN_FRONTEND=noninteractive",
+    // A UTF-8 locale, and NOT decoration either. The live-delivery gate reads a
+    // pane and decides whether a model is busy from the spinner and counter
+    // glyphs it finds there. In the C locale that classification breaks: ten of
+    // the seventy inbox-push cases turn into `skip:unknown-format`, which at
+    // runtime means a message silently not delivered into a pane that was
+    // perfectly ready for it. A container inherits no locale at all, so this is
+    // the environment a fresh deployment gets unless someone sets it.
+    "ENV LANG=C.UTF-8",
     // curl is installed first and separately because it is what fetches the
     // node repository script: on a bare Ubuntu the documented Node install
     // has a prerequisite the documentation does not mention.
