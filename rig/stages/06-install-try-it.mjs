@@ -26,8 +26,16 @@ import { LONG_RUNNING, RUNS } from "../install-plan.mjs";
 /** Fixture agents the dev sandbox seeds. Absent from an unseeded dev server. */
 const FIXTURE_AGENTS = ["scribe", "atlas"];
 
-/** Binaries the install base must NOT have: each is something the doc installs. */
-const MUST_INSTALL_ITSELF = ["node", "pnpm", "corepack", "git", "rg", "curl", "tmux", "python3"];
+/**
+ * Binaries the install base must NOT have: each is something the doc installs.
+ *
+ * This list tracks the document's own apt block, and it has to: xxd joined it
+ * the day the document started installing xxd, and if the two ever disagree
+ * again the disagreement is silent in the direction that matters. A tool the
+ * document forgets but the base carries is a prerequisite that passes here and
+ * fails on a reader's machine.
+ */
+const MUST_INSTALL_ITSELF = ["node", "pnpm", "corepack", "git", "rg", "curl", "tmux", "python3", "xxd"];
 
 export default {
   id: "install-try-it",

@@ -75,7 +75,7 @@ On Ubuntu or Debian, as root (prefix each line with `sudo` if you are not):
 
 ```sh
 apt-get update
-apt-get install -y ca-certificates curl git ripgrep python3 tmux
+apt-get install -y ca-certificates curl git ripgrep python3 tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
@@ -91,6 +91,11 @@ On macOS, unverified here, the equivalent is roughly:
 brew install node@22 ripgrep python3 tmux
 corepack enable
 ```
+
+`xxd` is missing from that line because macOS already ships it in `/usr/bin`,
+and Homebrew has no formula for it. If yours has somehow gone, `brew install
+vim` brings it back. This is the belief half of the document, not the observed
+half.
 
 Check what you got. Anything on the `22.13` line or above, or 24 and above, is
 inside the supported range; pnpm refuses to install on anything else and tells
@@ -235,9 +240,12 @@ you have used Deck leaves the old thread files behind under the old name, and
 the agents keep writing to them.
 
 ```sh
-export ME=$(id -un)
-echo "MC_USER=$ME" >> packages/deck/.env
+echo "MC_USER=$(id -un)" >> packages/deck/.env
 ```
+
+That writes the name into the file rather than into your shell, on purpose.
+The next tier has you opening terminals, and a name that only exists as a
+shell variable does not survive one.
 
 ### Reaching it from another machine
 
@@ -410,12 +418,15 @@ curl -sS -X POST http://localhost:4242/threads/wren \
 200
 ```
 
-That writes a block into `$INBOX_ROOT/wren/inbox/$ME.md`. An agent reads and
-answers with the `inbox` CLI, which is the half of the protocol that lives in
-the terminal, where the agent is. Standing in for the agent by hand:
+That writes a block into `$INBOX_ROOT/wren/inbox/<your MC_USER>.md`. An agent
+reads and answers with the `inbox` CLI, which is the half of the protocol that
+lives in the terminal, where the agent is. Standing in for the agent by hand:
 
 ```sh
 export AGENT_NAME=wren
+export INBOX_ROOT=$HOME/deck/inbox
+ME=$(sed -n 's/^MC_USER=//p' packages/deck/.env | tail -1)
+: "${ME:?is empty. No MC_USER in packages/deck/.env; set it in tier 2 first.}"
 packages/base/bin/inbox unread
 packages/base/bin/inbox read
 packages/base/bin/inbox reply "$ME" --subject "re: welcome" --body "Read it. The block header is the whole protocol."
@@ -436,6 +447,15 @@ replied to <you>
 real agent gets both from the `.claude/settings.json` that `create-agent.sh`
 wrote for it. You are setting them by hand only because you are typing on its
 behalf.
+
+The name is read back out of `packages/deck/.env` for a reason worth stating,
+because it is the one step here that fails quietly. This tier is followed
+across several terminals, and a variable exported in tier 2 is gone in a new
+one. `inbox reply` with an empty correspondent does not complain: it exits 0,
+prints `replied to ` with nothing after it, and writes a thread file that
+belongs to no one, which Deck then never shows you. Deriving the name from the
+file that Deck itself reads is the only version of this step that cannot be
+half-done.
 
 That `push: skip` line is the live-delivery half declining, and declining
 correctly. `inbox reply` writes the message to disk first and only then tries

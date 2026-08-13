@@ -32,6 +32,8 @@ import { EXPECTED_EXITS, LONG_RUNNING, RUNS } from "../install-plan.mjs";
 const AGENT = "wren";
 /** The reply the document's own block sends, which must survive the round trip. */
 const REPLY_MARKER = "the whole protocol";
+/** The block that stands in for the agent, and the one this tier's fresh-terminal control re-runs. */
+const CLI_BLOCK = "send-a-message-and-answer-it-as-the-agent/sh#2";
 
 export default {
   id: "install-agents",
@@ -51,6 +53,7 @@ export default {
     let agentListed;
     let bootControl;
     let cliControl;
+    let freshTerminal;
     try {
       run = runBlocks({ name: container.name, blocks, longRunning: LONG_RUNNING });
 
@@ -91,6 +94,37 @@ export default {
         container.name,
         "cd /src && env -u AGENT_NAME packages/base/bin/inbox unread 2>&1; echo \"###CONTROL-EXIT $?\"",
       );
+
+      // NEGATIVE CONTROL 3, and the only one here aimed at the RUNNER rather
+      // than at the product. This whole file executes the document in one
+      // shell, which is more forgiving than a reader: tier 3 has them opening
+      // tmux panes, so anything an earlier block only exported is gone by the
+      // time they arrive, while in here it is still set. That gap hid a real
+      // defect for a day. The two halves below are run in shells that share
+      // nothing with the driver's, which is what a new pane actually is:
+      //
+      //   OLD: the shape this block used to have, `inbox reply "$ME"` with the
+      //        variable never set. It must be seen to exit 0 and write a file
+      //        called `.md` belonging to nobody, because a control that has
+      //        only ever watched the fixed version prove nothing about the trap.
+      //   NEW: the block's own bytes, from the file the runner staged, so this
+      //        re-runs the DOCUMENT and not a retyped copy of it.
+      freshTerminal = execIn(
+        container.name,
+        [
+          "cd /src",
+          "echo '###OLD-SHAPE'",
+          `env -u ME AGENT_NAME=${AGENT} INBOX_ROOT=$HOME/deck/inbox bash -c 'packages/base/bin/inbox reply "$ME" --subject "re: welcome" --body "typed in a terminal with no ME in it"' 2>&1`,
+          'echo "###OLD-EXIT $?"',
+          "echo '###OLD-FILES'",
+          `ls -1a $HOME/deck/inbox/${AGENT}/inbox`,
+          "echo '###NEW-SHAPE'",
+          `env -u ME bash ${run.files[CLI_BLOCK]} 2>&1`,
+          'echo "###NEW-EXIT $?"',
+          "echo '###WHOAMI'",
+          "id -un",
+        ].join("\n"),
+      );
     } finally {
       removeContainer(container.name);
     }
@@ -98,11 +132,26 @@ export default {
     const section = (name) => sliceBetween(stripAnsi(onDisk.output), `###${name}`);
     const createExit = run.exits["create-an-agent/sh#1"];
     const createOutput = run.blockOutput["create-an-agent/sh#1"] ?? "";
-    const cliOutput = run.blockOutput["send-a-message-and-answer-it-as-the-agent/sh#2"] ?? "";
+    const cliOutput = run.blockOutput[CLI_BLOCK] ?? "";
     const postOutput = run.blockOutput["send-a-message-and-answer-it-as-the-agent/sh#1"] ?? "";
     const paneCapture = section("PANE");
     const bootControlExit = /###CONTROL-EXIT (\d+)/.exec(stripAnsi(bootControl.output))?.[1] ?? null;
     const cliControlExit = /###CONTROL-EXIT (\d+)/.exec(stripAnsi(cliControl.output))?.[1] ?? null;
+
+    const fresh = stripAnsi(freshTerminal.output);
+    const freshWhoami = freshSection(fresh, "###WHOAMI", null);
+    const oldShape = freshSection(fresh, "###OLD-SHAPE", "###OLD-EXIT");
+    const oldExit = /###OLD-EXIT (\d+)/.exec(fresh)?.[1] ?? null;
+    const oldFiles = freshSection(fresh, "###OLD-FILES", "###NEW-SHAPE").split("\n").map((line) => line.trim());
+    const newShape = freshSection(fresh, "###NEW-SHAPE", "###NEW-EXIT");
+    const newExit = /###NEW-EXIT (\d+)/.exec(fresh)?.[1] ?? null;
+    // The trap: exit 0, `replied to` with nothing after it, and a dotfile that
+    // `ls` does not even show. Every one of those three is required, because
+    // any one of them alone is also what a control that stopped running looks
+    // like.
+    const oldSilentlySucceeded = oldExit === "0" && /^replied to\s*$/m.test(oldShape) && oldFiles.includes(".md");
+    const newNamesTheUser =
+      newExit === "0" && Boolean(freshWhoami) && newShape.includes(`replied to ${freshWhoami}`);
 
     const probes = [
       probe({
@@ -233,6 +282,20 @@ export default {
         observed: `exit ${bootControlExit ?? "(no marker)"}; ${oneLine(bootControl.output)}`,
       }),
       control({
+        id: "tier-3-block-survives-a-fresh-terminal",
+        title: "the tier-3 CLI block, and the shape it replaced, each run in a shell that inherits nothing",
+        // Both halves in one control on purpose. "The block still works in a
+        // new terminal" is satisfied by a block that never needed one, so the
+        // old shape has to be shown failing in exactly the way that made this
+        // worth fixing: not an error, a success that wrote to nobody.
+        expectation:
+          "`inbox reply \"$ME\"` with ME unset exits 0 and writes `.md`, while the document's own block derives the name and replies to the real user",
+        satisfied: oldSilentlySucceeded && newNamesTheUser,
+        observed:
+          `old shape: exit ${oldExit ?? "(no marker)"}, said "${oneLine(oldShape)}", wrote .md: ${oldFiles.includes(".md")}; ` +
+          `document's block: exit ${newExit ?? "(no marker)"}, ${oneLine(newShape)} (user ${freshWhoami || "(unknown)"})`,
+      }),
+      control({
         id: "cli-refuses-without-an-identity",
         title: "the inbox CLI with AGENT_NAME unset",
         expectation: "non-zero exit naming AGENT_NAME, never a guessed identity",
@@ -254,11 +317,30 @@ export default {
         pane: paneCapture,
         thread: section("THREAD"),
         windows: section("WINDOWS"),
+        freshTerminal: tail(freshTerminal.output, 24),
         log: tail(run.raw, 30),
       },
     };
   },
 };
+
+/**
+ * The text between two NAMED markers.
+ *
+ * Not `sliceBetween`: that one finds the next marker by shape, and half of
+ * these markers carry a value on the same line (`###OLD-EXIT 0`), which that
+ * pattern does not match. Naming both ends is unambiguous and cannot silently
+ * swallow the section after the one asked for.
+ *
+ * @param {string} output @param {string} from @param {string|null} to
+ */
+function freshSection(output, from, to) {
+  const start = output.indexOf(from);
+  if (start < 0) return "";
+  const begin = start + from.length;
+  const end = to ? output.indexOf(to, begin) : -1;
+  return (end < 0 ? output.slice(begin) : output.slice(begin, end)).trim();
+}
 
 /** The text between one `###MARKER` and the next, from a single exec's output. */
 function sliceBetween(output, marker) {
