@@ -50,8 +50,14 @@ export const ENGINE_STRICT_SETTING = "engine-strict=true";
  * Tools the product needs and the README names, plus the two the README does
  * not (curl is needed to install node at all on a bare Ubuntu; tmux is needed
  * for the live-agent tier, which phase 2 does not exercise but does install).
+ *
+ * python3 arrived here the way this list is supposed to grow: the README
+ * gained it as a prerequisite, the image did not, and the documented check
+ * list then failed IN THE RIG with two of the base package's shell suites red
+ * and no mention anywhere of what was missing. The instrument was a day behind
+ * the thing it measures.
  */
-export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", "tmux"];
+export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", "tmux", "python3"];
 
 /**
  * Test-count instrument.
@@ -102,7 +108,7 @@ export const BASE_IMAGE = "ubuntu:24.04";
  * downstream distinguishes "the product works from a clean install" from "the
  * base image happened to carry the missing piece".
  */
-export const MUST_BE_ABSENT = ["node", "npm", "pnpm", "corepack", "yarn", "tmux", "git", "curl", "rg"];
+export const MUST_BE_ABSENT = ["node", "npm", "pnpm", "corepack", "yarn", "tmux", "git", "curl", "rg", "python3"];
 
 /**
  * Entries the image's own skeleton puts in $HOME. Anything else means the

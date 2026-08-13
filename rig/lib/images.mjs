@@ -12,7 +12,10 @@ import { BASE_IMAGE } from "../expected.mjs";
  * @param {{ nodeMajor: number, pnpmSpec: string, withRipgrep?: boolean }} spec
  */
 export function toolchainDockerfile({ nodeMajor, pnpmSpec, withRipgrep = true }) {
-  const apt = ["ca-certificates", "curl", "git", "tmux", ...(withRipgrep ? ["ripgrep"] : [])];
+  // python3 is not decoration: the base package's inbox CLI is python3, and
+  // its two shell suites run under `pnpm test`, so without it the README's own
+  // check list goes red in a container that was supposed to be measuring it.
+  const apt = ["ca-certificates", "curl", "git", "tmux", "python3", ...(withRipgrep ? ["ripgrep"] : [])];
   return [
     `FROM ${BASE_IMAGE}`,
     "ENV DEBIAN_FRONTEND=noninteractive",

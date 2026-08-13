@@ -41,6 +41,7 @@ const VERSION_COMMANDS = {
   rg: "rg --version | head -1",
   curl: "curl --version | head -1",
   tmux: "tmux -V",
+  python3: "python3 --version",
   [ABSENT_SENTINEL]: `${ABSENT_SENTINEL} --version`,
 };
 
