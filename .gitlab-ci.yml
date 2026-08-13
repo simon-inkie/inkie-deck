@@ -7,8 +7,12 @@ stages:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-# Both current LTS lines. The floor is Node 22.18, the first release where
-# native TypeScript type stripping is on by default.
+# Both current LTS lines, which is exactly what the engines range
+# `^22.13.0 || >=24.0.0` permits. The 22 floor is jsdom's, the strictest
+# constraint in the tree. The range form rather than a `>=` is what keeps the
+# odd-numbered lines out: 23 is above the floor by any arithmetic and has
+# never had a supported day. Both jobs run the LATEST of their line, so
+# neither exercises 22.13.0 itself.
 #
 # corepack activates the exact pnpm pinned in package.json's "packageManager"
 # field, so CI and local installs use the same package manager version. The

@@ -7,8 +7,44 @@
  * agrees with whatever it just measured.
  */
 
-/** Node floor, from the `engines` field of the workspace root package.json. */
-export const NODE_FLOOR = "22.18.0";
+/**
+ * The Node range, verbatim from the `engines` field of all three manifests.
+ *
+ * Copied here rather than read out of package.json, so that a change to the
+ * product's floor shows up as a red probe naming the old and new value, which
+ * is this file's whole job. The self-test asserts the copy still matches all
+ * three manifests, so the duplication cannot rot into a lie.
+ */
+export const NODE_ENGINES = "^22.13.0 || >=24.0.0";
+
+/**
+ * The lowest version the range admits, for the places that need one number.
+ *
+ * NOT interchangeable with the range: 25.0.0 is above this and is permitted,
+ * 23.0.0 is above it and is NOT. Anything deciding "is this Node allowed"
+ * must evaluate the range; this constant only reports where the bottom is.
+ */
+export const NODE_FLOOR = "22.13.0";
+
+/**
+ * The three manifests that must all carry `NODE_ENGINES`.
+ *
+ * A floor enforced in the root and forgotten in a package is not enforced:
+ * pnpm checks each workspace project's own manifest, so a stale one is a
+ * second, quieter answer to the same question.
+ */
+export const ENGINES_MANIFESTS = ["package.json", "packages/base/package.json", "packages/deck/package.json"];
+
+/**
+ * The file that turns the engines field from advice into a refusal.
+ *
+ * pnpm treats `engines` as advisory by default; measured, a clean Node 20
+ * machine installed, typechecked, tested and passed every gate against a
+ * `>=22.18.0` floor. The floor and the setting are one change, so the rig
+ * asserts the setting is present rather than only that the range is right.
+ */
+export const ENGINE_STRICT_FILE = ".npmrc";
+export const ENGINE_STRICT_SETTING = "engine-strict=true";
 
 /**
  * Tools the product needs and the README names, plus the two the README does

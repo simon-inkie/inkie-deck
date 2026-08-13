@@ -13,6 +13,7 @@
  * No docker, no containers, no network: these are decisions, tested as
  * decisions, in about a second.
  */
+import * as fs from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { control, probe } from "./lib/harness.mjs";
@@ -26,8 +27,10 @@ import {
 } from "./lib/harness.mjs";
 import { exec, must, stripAnsi } from "./lib/exec.mjs";
 import { contaminatedEntries, dirtyTreeDecision } from "./lib/source.mjs";
-import { versionAtLeast } from "./lib/version.mjs";
+import { satisfiesRange, versionAtLeast } from "./lib/version.mjs";
 import { parseExitCodes, parseSuiteCounts } from "./stages/03-documented-checks.mjs";
+import { extractRefusal } from "./stages/04-node20-floor.mjs";
+import { ENGINE_STRICT_FILE, ENGINE_STRICT_SETTING, ENGINES_MANIFESTS, NODE_ENGINES, NODE_FLOOR } from "./expected.mjs";
 
 const ABSENT = "rig-self-test-absent-binary";
 
@@ -154,10 +157,84 @@ export async function selfTest(options = {}) {
   );
 
   // -- version arithmetic ----------------------------------------------------
-  assert("20.19.5 is below the 22.18.0 floor", versionAtLeast("20.19.5", "22.18.0") === false);
-  assert("22.9.0 is below 22.18.0 (the float trap)", versionAtLeast("22.9.0", "22.18.0") === false);
-  assert("22.18.0 meets its own floor", versionAtLeast("22.18.0", "22.18.0") === true);
-  assert("22.23.2 is above the floor", versionAtLeast("v22.23.2", "22.18.0") === true);
+  assert("20.19.5 is below the 22.13.0 floor", versionAtLeast("20.19.5", "22.13.0") === false);
+  assert("22.9.0 is below 22.13.0 (the float trap)", versionAtLeast("22.9.0", "22.13.0") === false);
+  assert("22.13.0 meets its own floor", versionAtLeast("22.13.0", "22.13.0") === true);
+  assert("22.23.2 is above the floor", versionAtLeast("v22.23.2", "22.13.0") === true);
+
+  // -- the engines RANGE, which a floor comparison cannot express -------------
+  // The whole reason the manifests carry a range rather than a `>=`: Node 23
+  // is numerically above the floor and is not permitted, because it was never
+  // an LTS line and is already end of life. A `>=22.13.0` floor admits it.
+  assert("20.20.2 is outside the range", satisfiesRange("v20.20.2", NODE_ENGINES) === false);
+  assert("22.12.0, just below the floor, is outside", satisfiesRange("22.12.0", NODE_ENGINES) === false);
+  assert("22.13.0, the bottom of the range, is inside", satisfiesRange("22.13.0", NODE_ENGINES) === true);
+  assert("22.23.2 is inside", satisfiesRange("v22.23.2", NODE_ENGINES) === true);
+  assert("23.11.1 is EXCLUDED despite being above the floor", satisfiesRange("23.11.1", NODE_ENGINES) === false);
+  assert("24.0.0 is inside", satisfiesRange("24.0.0", NODE_ENGINES) === true);
+  assert("26.4.0, a major that does not exist yet, is inside", satisfiesRange("26.4.0", NODE_ENGINES) === true);
+  assert("the floor constant is the bottom of the range", satisfiesRange(NODE_FLOOR, NODE_ENGINES) === true);
+  let rangeThrew = false;
+  try {
+    // A clause form the evaluator does not implement has to be loud. Read
+    // silently as "not satisfied" it fails a supported Node; read silently as
+    // satisfied it passes an unsupported one. Both without a word.
+    satisfiesRange("22.13.0", "~22.13.0");
+  } catch {
+    rangeThrew = true;
+  }
+  assert("an unsupported range clause throws rather than guessing", rangeThrew);
+
+  // -- the floor is the same thing everywhere it is written -------------------
+  // Three manifests, one .npmrc and this rig's own copy all have to agree. A
+  // floor set in the root and left stale in a package is not enforced there,
+  // and the range asserted throughout the rig means nothing if the manifests
+  // have since moved on.
+  const repoRoot = new URL("../", import.meta.url);
+  for (const manifest of ENGINES_MANIFESTS) {
+    let declared;
+    try {
+      declared = JSON.parse(fs.readFileSync(new URL(manifest, repoRoot), "utf8")).engines?.node ?? null;
+    } catch (error) {
+      declared = `unreadable: ${error.message}`;
+    }
+    assert(`${manifest} declares the range this rig asserts`, declared === NODE_ENGINES, declared);
+  }
+  let npmrc;
+  try {
+    npmrc = fs.readFileSync(new URL(ENGINE_STRICT_FILE, repoRoot), "utf8");
+  } catch (error) {
+    npmrc = `unreadable: ${error.message}`;
+  }
+  assert(
+    `${ENGINE_STRICT_FILE} sets ${ENGINE_STRICT_SETTING}, without which engines is only advice`,
+    new RegExp(`^\\s*${ENGINE_STRICT_SETTING.replace(/\./g, "\\.")}\\s*$`, "m").test(npmrc),
+    npmrc.slice(0, 200),
+  );
+
+  // -- the refusal extractor -------------------------------------------------
+  // Cutting the message out of the log is what lets the report quote what a
+  // Node 20 user reads. Terminating on the first blank line would keep the
+  // headline and drop the two lines naming the expected and actual version,
+  // which are the only part of it that tells the reader what to do.
+  const refusalLog = [
+    "###BEGIN install",
+    "Scope: all 3 workspace projects",
+    " ERR_PNPM_UNSUPPORTED_ENGINE  Unsupported environment (bad pnpm and/or Node.js version)",
+    "",
+    'Your Node version is incompatible with "/src".',
+    "",
+    `Expected version: ${NODE_ENGINES}`,
+    "Got: v20.20.2",
+    "###EXIT install 1",
+    "###BEGIN typecheck",
+  ].join("\n");
+  const extracted = extractRefusal(refusalLog);
+  assert("the refusal is found in the log", extracted !== null);
+  assert("the extracted refusal keeps the expected version", String(extracted).includes(`Expected version: ${NODE_ENGINES}`), extracted);
+  assert("the extracted refusal keeps the version actually found", String(extracted).includes("Got: v20.20.2"), extracted);
+  assert("the extractor stops at the exit marker", !String(extracted).includes("###EXIT"), extracted);
+  assert("a log with no refusal in it yields null, not an empty string", extractRefusal("Done in 7.8s") === null);
 
   // -- output parsing --------------------------------------------------------
   // A command with no exit marker must read as null, never as 0. This is the

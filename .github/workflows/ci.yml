@@ -12,8 +12,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both current LTS lines. The floor is Node 22.18, the first release
-        # where native TypeScript type stripping is on by default.
+        # Both current LTS lines, which is exactly what the engines range
+        # `^22.13.0 || >=24.0.0` permits. The 22 floor is jsdom's, the
+        # strictest constraint in the tree. The range form rather than a `>=`
+        # is what keeps the odd-numbered lines out: 23 is above the floor by
+        # any arithmetic and has never had a supported day.
+        #
+        # This matrix runs the LATEST of each line, so nothing here or in
+        # rig/ exercises 22.13.0 itself. It was measured by hand when the
+        # floor was set, and it is green; it is not measured continuously.
         node-version: ["22.x", "24.x"]
     steps:
       - uses: actions/checkout@v4

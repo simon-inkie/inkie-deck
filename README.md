@@ -47,7 +47,10 @@ A pnpm workspace with two packages:
 
 ## Development
 
-Node 22.18 or later, and pnpm.
+Node `^22.13.0 || >=24.0.0`, and pnpm. Both current LTS lines, in other words,
+and not the odd-numbered ones in between: 23 was never an LTS line and is
+already out of support. `pnpm install` refuses to run on anything else and
+tells you so, rather than letting you find out later or not at all.
 
 Two further prerequisites, both easy to miss because every machine that has
 run this so far already had them:

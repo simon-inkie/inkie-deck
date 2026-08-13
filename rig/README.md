@@ -71,9 +71,9 @@ implies.
 | --- | --- | --- |
 | `base-attestation` | the base image is bare, unmounted, digest recorded | the same attestation against a base with git and `~/agents` planted must name both |
 | `source-entry` | HEAD is committed and clean, the archive carries no developer state | a tar with a planted `node_modules` must be reported; a dirty status must be refused |
-| `toolchain` | Node at or above the `engines` floor, corepack, pnpm at the `packageManager` pin, git, ripgrep, curl, tmux | a binary that does not exist must read as absent, never as success; the version comparator must place 20.19.5 and 22.9.0 below a 22.18.0 floor |
+| `toolchain` | Node inside the `engines` range, corepack, pnpm at the `packageManager` pin, git, ripgrep, curl, tmux | a binary that does not exist must read as absent, never as success; the range evaluator must put 20.19.5, 22.9.0 and 23.11.1 outside the range and 22.13.0, 22.23.2 and 24.0.0 inside it |
 | `documented-checks` | the README's own check list, green, with the published test count | the suite with ripgrep removed must go red naming it; the suite and leak gate with `.git` removed must go red naming the repository |
-| `node20-floor` | Node 20 does not go green, and HOW it fails is recorded verbatim | the Node 20 image must be provably Node 20 with every other tool present, so the failure cannot be blamed on a missing tool |
+| `node20-floor` | `pnpm install` REFUSES Node 20, the refusal names the engine and quotes the range, and the message is recorded verbatim | the Node 20 image must be provably Node 20 with every other tool present, so the refusal cannot be blamed on a missing tool; and the same install must exit 0 on a permitted Node, so it cannot be blamed on the product being broken |
 
 Phases 3 to 7 of the setup plan (the demo path, the production path, the live
 agent path, INSTALL.md, the outputs) are not implemented. They are absent from

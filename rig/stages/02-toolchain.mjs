@@ -12,8 +12,8 @@ import { control, probe } from "../lib/harness.mjs";
 import { build, runIn } from "../lib/docker.mjs";
 import { RigError } from "../lib/exec.mjs";
 import { toolchainDockerfile } from "../lib/images.mjs";
-import { versionAtLeast } from "../lib/version.mjs";
-import { NODE_FLOOR, REQUIRED_TOOLS } from "../expected.mjs";
+import { satisfiesRange } from "../lib/version.mjs";
+import { NODE_ENGINES, REQUIRED_TOOLS } from "../expected.mjs";
 
 /**
  * A deliberately absent binary, probed alongside the real ones.
@@ -25,6 +25,13 @@ import { NODE_FLOOR, REQUIRED_TOOLS } from "../expected.mjs";
  * acquire that bug quietly.
  */
 const ABSENT_SENTINEL = "rig-absent-sentinel";
+
+/**
+ * The versions the range evaluator must sort correctly, as data so the
+ * control's expectation sentence and its arithmetic cannot drift apart.
+ */
+const OUTSIDE = ["20.19.5", "22.9.0", "23.11.1"];
+const INSIDE = ["22.13.0", "22.23.2", "24.0.0"];
 
 const VERSION_COMMANDS = {
   node: "node --version",
@@ -70,7 +77,7 @@ fi`,
 
 export default {
   id: "toolchain",
-  title: "Node at or above the engines floor, plus the tools the product needs",
+  title: "Node inside the engines range, plus the tools the product needs",
   async run(ctx) {
     const tag = `inkie-deck-rig/toolchain:${ctx.source.sha.slice(0, 12)}`;
     build({
@@ -94,8 +101,8 @@ export default {
     probes.push(
       probe({
         id: "node-floor",
-        title: `node is at or above the ${NODE_FLOOR} engines floor`,
-        ok: Boolean(tools.node?.version) && versionAtLeast(tools.node.version, NODE_FLOOR),
+        title: `node satisfies the ${NODE_ENGINES} engines range`,
+        ok: Boolean(tools.node?.version) && satisfiesRange(tools.node.version, NODE_ENGINES),
         detail: tools.node?.raw ?? "absent",
       }),
       probe({
@@ -116,16 +123,19 @@ export default {
       }),
       control({
         id: "floor-comparator-rejects-node-20",
-        title: "the version comparator, shown the versions it must separate",
-        // A string or float compare gets both of these wrong, and would pass a
-        // Node 20 environment as meeting a 22.18 floor. The measured Node 20
-        // run is a separate stage; this control is about the arithmetic.
-        expectation: "20.19.5 is below the floor, 22.18.0 meets it, 22.9.0 is below it",
+        title: "the range evaluator, shown the versions it must separate",
+        // A string or float compare gets 20.19.5 and 22.9.0 wrong and would
+        // pass a Node 20 environment as meeting the floor. 23.11.1 is the
+        // clause the range form exists for: above the floor by any `>=`
+        // reading, and excluded, because 23 was never an LTS line. The
+        // measured Node 20 run is a separate stage; this is the arithmetic.
+        expectation: `${OUTSIDE.join(", ")} are outside the range; ${INSIDE.join(", ")} are inside it`,
         satisfied:
-          versionAtLeast("20.19.5", NODE_FLOOR) === false &&
-          versionAtLeast("22.18.0", NODE_FLOOR) === true &&
-          versionAtLeast("22.9.0", NODE_FLOOR) === false,
-        observed: `20.19.5 -> ${versionAtLeast("20.19.5", NODE_FLOOR)}, 22.18.0 -> ${versionAtLeast("22.18.0", NODE_FLOOR)}, 22.9.0 -> ${versionAtLeast("22.9.0", NODE_FLOOR)}`,
+          OUTSIDE.every((version) => satisfiesRange(version, NODE_ENGINES) === false) &&
+          INSIDE.every((version) => satisfiesRange(version, NODE_ENGINES) === true),
+        observed: [...OUTSIDE, ...INSIDE]
+          .map((version) => `${version} -> ${satisfiesRange(version, NODE_ENGINES)}`)
+          .join(", "),
       }),
     ];
 

@@ -5,8 +5,9 @@
   "description": "Workspace root for Inkie Deck, a web control plane for a fleet of AI agents, and the bundled agent protocol package it is built on",
   "license": "Apache-2.0",
   "type": "module",
+  "_comment:engines": "The lowest version that satisfies every engines.node in the installed tree AND sits on an LTS line still receiving security patches. The strictest real constraint is jsdom's ^20.19.0 || ^22.13.0 || >=24.0.0; nothing in the tree needs more than 22.13.0. The old >=22.18.0 had no justification in the history, and written that way it also admitted Node 23, which was never an LTS line and is already end of life. Enforced by engine-strict in .npmrc: without that, this field is advisory and a Node 20 machine installs, typechecks, tests and gates clean.",
   "engines": {
-    "node": ">=22.18.0"
+    "node": "^22.13.0 || >=24.0.0"
   },
   "packageManager": "pnpm@10.34.5",
   "scripts": {
