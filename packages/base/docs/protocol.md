@@ -192,6 +192,35 @@ interpreted as a nested mapping and silently changes the parsed shape.
 
 The meaning of particular keys is out of scope for this document.
 
+### 7.2 Document links (optional, renderer-specific)
+
+Deck's own reader renders a markdown link in a body, `[label](/absolute/path.md)`,
+as a clickable link that opens the target file inside the application (a
+side panel), rather than navigating away. This lets a writer hand the reader
+a document to look at, not just prose to read.
+
+This is a renderer capability, not a protocol requirement. Like 7.1, an
+implementation that ignores it is still conforming: the text renders as an
+ordinary markdown link (or as plain text, in a renderer with no markdown
+support at all). Only Deck's own reader currently opens the target in place.
+
+Where the reference implementation opens files from, and what it opens: an
+allowlist of roots (by default the correspondent's own inbox root; more can
+be added), an allowlist of extensions (`.md`, `.txt`, `.markdown`, and common
+source-code extensions), and a fixed denylist of sensitive filenames
+(`.env`, private keys, and similar) that is checked before the extension
+allowlist regardless of location. A path outside the allowed roots, or with
+an extension or filename the allowlist/denylist rejects, renders as an
+inert link rather than opening.
+
+The path MUST be absolute (`/...`) or home-relative (`~/...`); a relative
+path cannot be resolved against a reader with no notion of the writer's
+working directory. Deck's own reader also retroactively linkifies a BARE
+path meeting the same root/extension rules, even without markdown link
+syntax, but writing the explicit `[label](/path.md)` form is the reliable
+way to do this, since a bare path depends on that specific renderer
+behaviour rather than being part of the protocol.
+
 ## 8. Writer requirements
 
 ### 8.1 Appending

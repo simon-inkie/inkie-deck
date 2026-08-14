@@ -744,7 +744,17 @@ def main():
     p_read = sub.add_parser("read", help="Print and ack unread blocks")
     p_read.add_argument("correspondent", nargs="?", default=None)
 
-    p_reply = sub.add_parser("reply", help="Append a block to a thread")
+    p_reply = sub.add_parser(
+        "reply",
+        help="Append a block to a thread",
+        epilog=(
+            "To hand the reader a file rather than just prose, write a real "
+            "markdown link in --body: [label](/absolute/path.md). Deck's own "
+            "reader opens it in place rather than treating it as plain text. "
+            "See protocol.md section 7.2 for what paths and extensions it "
+            "will actually open."
+        ),
+    )
     p_reply.add_argument("correspondent")
     p_reply.add_argument("--subject", default="")
     p_reply.add_argument("--body", default=None)
