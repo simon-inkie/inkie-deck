@@ -80,6 +80,15 @@ const env = {
   // app falls back to the real clock. NB an explicit MC_NOW export still wins
   // via the process.env spread above.
   ...(externalInbox ? {} : { MC_NOW: process.env.MC_NOW || "2026-06-09T16:00:00Z" }),
+  // Tmux OFF on the internal sandbox, same reasoning as MC_NOW above. Without
+  // this, MC_TMUX_ENABLED defaults on and MC_TMUX_SESSION defaults to
+  // "agents" - the real fleet's actual session name, on any machine that has
+  // one. A fixture agent whose name happens to collide with a real window
+  // (found 2026-08-14: the demo roster includes "quill") then shows that
+  // window's real live pane content in what INSTALL.md documents as a
+  // sandbox that "has no tmux, no agents". An explicit MC_TMUX_ENABLED export
+  // still wins via the process.env spread above.
+  ...(externalInbox ? {} : { MC_TMUX_ENABLED: process.env.MC_TMUX_ENABLED || "false" }),
   VOICE_PROXY_URL: voiceProxyUrl,
   VOICE_PROXY_PORT: voiceProxyPort,
 };
