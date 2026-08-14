@@ -193,6 +193,12 @@ const RULES = [
     pattern: ["in", "k\\d+"],
     sample: ["in", "k700"],
   }),
+  rule({
+    label: "internal-ticket-id-lowercase-hyphenated",
+    why: "Internal ticket id with the hyphen kept but lowercased (seen live in a branch-name string inside a slug: git branch conventions lowercase everything, so a real id survives here in neither the case the numeric rule requires nor the no-hyphen shape the fused rule requires). Case-insensitive with a hyphen, but leading \\b so it does not fire inside an unrelated word ending in the same four letters (shrink-0, a real Tailwind class, matches without the boundary).",
+    pattern: ["\\bin", "k-\\d+"],
+    sample: ["in", "k-691"],
+  }),
 
   // -- Email ----------------------------------------------------------------
   rule({
