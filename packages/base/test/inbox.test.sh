@@ -1587,6 +1587,50 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# Case 52: a markdown heading INSIDE a message body must not truncate it.
+#
+# Found live 2026-08-13: block boundaries came off every column-0
+# "## " line, not only lines that actually parse as a header. A message
+# containing a markdown heading -- ordinary content, we all write in markdown
+# -- ended its own block early and everything after the heading vanished from
+# the rendered body. No error, no gap: the bytes stayed on disk and the
+# reader simply never showed them. Reproduced live against this file's own
+# inbox: a real message was severed at its own embedded example
+# and the remainder rendered as a second message from a sender who does not
+# exist.
+#
+# Ported with the fix from the implementation bin/inbox was copied from, where
+# it was written and reviewed first. Corpus case body-markdown-heading states
+# the same defect against docs/protocol.md, for both readers at once.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  write_thread "$T" "alpha" "beta" "## 2026-01-01T10:00:00Z - from: beta - status: sent - subject: test
+
+Here is my message.
+
+## A markdown heading someone typed
+
+This trailing paragraph is AFTER the heading and must survive." > /dev/null
+
+  OUT=$(run_inbox "$T" "alpha" read beta 2>&1)
+  # Review, 2026-08-13: the previous negative assertion here checked for
+  # "from: alice", a string this fixture never contains regardless of the parser,
+  # so it could not fail and was testing nothing. The real invariant is that a
+  # malformed heading must not split the message into a second block at all --
+  # exactly one "from:" line, not two.
+  from_lines=$(echo "$OUT" | grep -c "^from ")
+  if echo "$OUT" | grep -q "must survive" && [ "$from_lines" -eq 1 ]; then
+    ok "Case 52: a body heading does not truncate the message or split it into a second block"
+  else
+    fail "Case 52: markdown heading in body" "from-lines=$from_lines :: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

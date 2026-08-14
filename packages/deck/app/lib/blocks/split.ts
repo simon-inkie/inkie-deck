@@ -1,9 +1,10 @@
 /**
  * splitBlocks: Split an inbox file into individual block strings.
  *
- * Grammar: each block starts at a line beginning with "## " and runs up to the
- * line before the next "## " header (or EOF for the last block). Block boundaries
- * are determined by header position ONLY, never by scanning for a "---" line.
+ * Grammar: each block starts at a line that PARSES as a header (see
+ * isBlockHeaderLine) and runs up to the line before the next such line (or EOF
+ * for the last block). Block boundaries are determined by header position ONLY,
+ * never by scanning for a "---" line.
  *
  * A bare "---" line is the writer's trailing block separator, but it is NOT a
  * reliable boundary: a message body may legitimately contain a standalone "---"
@@ -13,6 +14,47 @@
  * including any trailing "---" separator the writer appended AND any body-internal
  * "---" line. Stripping the genuine trailing separator is _parseBlock's job.
  */
+import { HEADER_RE } from "./header.js";
+
+/**
+ * Does this line OPEN a block?
+ *
+ * Only a line that actually PARSES as a header may bound a block. A "## " line
+ * that fails the grammar is body content - a markdown heading someone typed in
+ * a message, or a blanked header left by a lossy re-serialise - and protocol
+ * section 4 says so in as many words: "A line beginning with `## ` that does
+ * not match the header grammar in section 5 does NOT begin a block."
+ *
+ * Testing only the "## " prefix, as this did until 2026-08-14, ended the
+ * preceding block at the first markdown heading its author typed and dropped
+ * everything from there to the next real header out of the rendered message,
+ * with no error and no visible gap. The bytes stayed on disk, so it was loss on
+ * display only, but every read lost it again. Corpus cases body-markdown-heading
+ * and pseudo-header-between-blocks pin it; the Python CLI in packages/base had
+ * the same defect from the same cause and was fixed upstream first.
+ *
+ * HEADER_RE and not parseHeader, deliberately. parseHeader additionally rejects
+ * a timestamp Date.parse cannot read, which is stricter than the protocol (a
+ * timestamp is any run of non-whitespace and only SHOULD be ISO 8601 - sections
+ * 5 and 9.1, corpus case unparseable-timestamp-still-a-block). Bounding on
+ * parseHeader would make such a block stop being a block at all, and a first or
+ * only block that stops being a block vanishes from the render entirely: a
+ * strictly worse loss than the one being fixed here.
+ *
+ * What this does NOT close, both by design:
+ *   - a WELL-FORMED header quoted inside a body (a code fence, an example).
+ *     It parses, so it still bounds a block and still misattributes the prose
+ *     after it. That is a different defect - misattribution, not loss, and no
+ *     bytes go missing - and closing it needs a write-time change, not a
+ *     reader-side guess about what is quoted.
+ *   - an INDENTED well-formed header. The trim() here keeps it a boundary, as
+ *     it has always been; protocol section 4 anchors a block at column 0, and
+ *     that departure is recorded against this implementation as corpus case
+ *     indented-pseudo-header rather than quietly folded into this change.
+ */
+export function isBlockHeaderLine(line: string): boolean {
+  return HEADER_RE.test(line.trim());
+}
 
 /**
  * Split raw inbox file content into block strings.
@@ -25,7 +67,7 @@ export function splitBlocks(raw: string): string[] {
   // Collect the line index of every block header.
   const headerIdxs: number[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i]!.trim().startsWith("## ")) headerIdxs.push(i);
+    if (isBlockHeaderLine(lines[i]!)) headerIdxs.push(i);
   }
 
   const blocks: string[] = [];

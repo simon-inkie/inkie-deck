@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   splitBlocks,
+  isBlockHeaderLine,
   parseBlock,
   parseHeader,
   HEADER_RE,
@@ -385,9 +386,13 @@ interface BlockHeaderRef {
  * Cheap block-boundary scan: locate every block header line and its char offset
  * in the raw file, WITHOUT a full parseBlock (no YAML, no zod, no body work).
  *
- * Boundary detection matches splitBlocks exactly (a line whose trimmed form
- * starts with "## " opens a block), so the block SET is identical to what
- * splitBlocks/parseBlock would produce. A block's header line is its first
+ * Boundary detection calls the SAME predicate splitBlocks does, rather than
+ * restating it, so the block SET is identical to what splitBlocks/parseBlock
+ * would produce and cannot drift from it. It was a restatement until
+ * 2026-08-14, and the boundary rule then changed underneath it (only a line
+ * that PARSES as a header may bound a block); the flip set here was unaffected
+ * because every caller below already discards a header parseHeader rejects, but
+ * a copy of a rule is a copy that goes stale. A block's header line is its first
  * line, which is also the line parseBlock resolves the header from on any
  * canonical file - so parseHeader over these lines yields the SAME from/status
  * the full parse would (from/status depend only on parseHeader, never on the
@@ -400,7 +405,7 @@ function scanBlockHeaders(raw: string): BlockHeaderRef[] {
   let charStart = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    if (line.trim().startsWith("## ")) {
+    if (isBlockHeaderLine(line)) {
       out.push({ charStart, headerLine: line });
     }
     // +1 for the "\n" that split consumed between this line and the next.

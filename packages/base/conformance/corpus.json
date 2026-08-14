@@ -212,33 +212,7 @@
           "subject": "plan",
           "bodyRaw": "intro line\n## Options\nthe part that must not vanish"
         }
-      ],
-      "deviations": {
-        "cli": {
-          "reason": "PORTED DEFECT, deliberately unchanged. bin/inbox derives block boundaries from every column-0 '## ' line (parse_blocks: re.finditer(r'^## ')) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. The consequence is silent data loss on READ, not on disk: a message body containing a markdown heading is truncated at that heading on every read, and any prose after the last pseudo header is dropped entirely. The fix is to validate candidate headers first and run each block to the next VALID header. It is not applied here because this is a copy of a proven implementation and changing its behaviour is a separate, reviewable decision. Recorded rather than silently tolerated so it cannot be forgotten, and so that fixing it fails this suite until the record is deleted.",
-          "expect": [
-            {
-              "ts": "2026-08-13T10:00:00Z",
-              "sender": "bob",
-              "status": "sent",
-              "subject": "plan",
-              "bodyRaw": "intro line"
-            }
-          ]
-        },
-        "deck": {
-          "reason": "The application derives block boundaries from every '## ' line (splitBlocks) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. NOTE, and this is the reason the case is worth its weight: the Python CLI has the SAME defect from the same cause, so both readers of this format truncate a message body at any markdown heading its author typed. The two agree with each other and disagree with the specification, which is exactly the failure a corpus keyed to the SPECIFICATION catches and a corpus keyed to 'do the two agree' would not.",
-          "expect": [
-            {
-              "ts": "2026-08-13T10:00:00Z",
-              "sender": "bob",
-              "status": "sent",
-              "subject": "plan",
-              "bodyRaw": "intro line"
-            }
-          ]
-        }
-      }
+      ]
     },
     {
       "id": "pseudo-header-between-blocks",
@@ -260,47 +234,7 @@
           "subject": "theirs",
           "bodyRaw": "bob's note"
         }
-      ],
-      "deviations": {
-        "cli": {
-          "reason": "PORTED DEFECT, deliberately unchanged. bin/inbox derives block boundaries from every column-0 '## ' line (parse_blocks: re.finditer(r'^## ')) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. The consequence is silent data loss on READ, not on disk: a message body containing a markdown heading is truncated at that heading on every read, and any prose after the last pseudo header is dropped entirely. The fix is to validate candidate headers first and run each block to the next VALID header. It is not applied here because this is a copy of a proven implementation and changing its behaviour is a separate, reviewable decision. Recorded rather than silently tolerated so it cannot be forgotten, and so that fixing it fails this suite until the record is deleted.",
-          "expect": [
-            {
-              "ts": "2026-08-13T10:00:00Z",
-              "sender": "alice",
-              "status": "sent",
-              "subject": "mine",
-              "bodyRaw": "my own note"
-            },
-            {
-              "ts": "2026-08-13T10:05:00Z",
-              "sender": "bob",
-              "status": "sent",
-              "subject": "theirs",
-              "bodyRaw": "bob's note"
-            }
-          ]
-        },
-        "deck": {
-          "reason": "The application derives block boundaries from every '## ' line (splitBlocks) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. NOTE, and this is the reason the case is worth its weight: the Python CLI has the SAME defect from the same cause, so both readers of this format truncate a message body at any markdown heading its author typed. The two agree with each other and disagree with the specification, which is exactly the failure a corpus keyed to the SPECIFICATION catches and a corpus keyed to 'do the two agree' would not.",
-          "expect": [
-            {
-              "ts": "2026-08-13T10:00:00Z",
-              "sender": "alice",
-              "status": "sent",
-              "subject": "mine",
-              "bodyRaw": "my own note"
-            },
-            {
-              "ts": "2026-08-13T10:05:00Z",
-              "sender": "bob",
-              "status": "sent",
-              "subject": "theirs",
-              "bodyRaw": "bob's note"
-            }
-          ]
-        }
-      }
+      ]
     },
     {
       "id": "leading-pseudo-header",
@@ -332,20 +266,8 @@
         }
       ],
       "deviations": {
-        "cli": {
-          "reason": "PORTED DEFECT, deliberately unchanged. bin/inbox derives block boundaries from every column-0 '## ' line (parse_blocks: re.finditer(r'^## ')) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. The consequence is silent data loss on READ, not on disk: a message body containing a markdown heading is truncated at that heading on every read, and any prose after the last pseudo header is dropped entirely. The fix is to validate candidate headers first and run each block to the next VALID header. It is not applied here because this is a copy of a proven implementation and changing its behaviour is a separate, reviewable decision. Recorded rather than silently tolerated so it cannot be forgotten, and so that fixing it fails this suite until the record is deleted.",
-          "expect": [
-            {
-              "ts": "2026-08-13T10:00:00Z",
-              "sender": "bob",
-              "status": "sent",
-              "subject": "real",
-              "bodyRaw": "real body line"
-            }
-          ]
-        },
         "deck": {
-          "reason": "The application derives block boundaries from every '## ' line (splitBlocks) and only afterwards discards the ones whose header fails the grammar. Protocol section 4 requires the opposite order: only a line that PARSES may bound a block. NOTE, and this is the reason the case is worth its weight: the Python CLI has the SAME defect from the same cause, so both readers of this format truncate a message body at any markdown heading its author typed. The two agree with each other and disagree with the specification, which is exactly the failure a corpus keyed to the SPECIFICATION catches and a corpus keyed to 'do the two agree' would not.",
+          "reason": "A DIFFERENT CAUSE from the one this record used to carry. Both readers took block boundaries off every '## ' line until 2026-08-14 and this case failed on both for that reason; the boundary rule is now correct in both, and what is left here is the application's HEADER_RE alone. It makes the whole `status: <value> -` segment OPTIONAL, tolerated on READ because a header that dropped it used to blank the timestamp in the UI (the 2026-06-11 queue incident), so the status-less line in this input PARSES for the application and legitimately opens a block. The CLI requires status and treats the same line as body. The two now disagree with each other about what is a header, which is a grammar-tolerance question for section 5, not a boundary one: fixing it means deciding whether the protocol admits a status-less header at all, and then changing the reader that is wrong. Nothing is lost here in either implementation, the prose is attributed differently.",
           "expect": [
             {
               "ts": "2026-08-13T10:00:00Z",

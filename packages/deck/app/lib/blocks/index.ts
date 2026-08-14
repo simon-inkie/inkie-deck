@@ -6,7 +6,7 @@
  */
 export type { MessageBlock, DecisionCard, ActionCard, Option, BlockHeader, AnswerResult, CustomAnswerResult, PushBackResult, DoneResult, DismissResult, DoneNoteResult, DismissDecisionResult, SupersedeActionResult, SupersedeDecisionResult } from "./model.js";
 export { CardSchema, OptionSchema, ActionSchema } from "./schema.js";
-export { splitBlocks } from "./split.js";
+export { splitBlocks, isBlockHeaderLine } from "./split.js";
 export { parseHeader, serializeHeader, HEADER_RE } from "./header.js";
 export { parseBlock } from "./parse.js";
 export { serializeBlock } from "./serialize.js";

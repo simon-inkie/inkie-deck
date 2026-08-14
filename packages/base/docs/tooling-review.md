@@ -110,17 +110,27 @@ its record is deleted. The corpus holds both to the specification, never to
 each other.
 
 Running it produced the finding worth having: **both implementations already
-deviate from the spec**, the CLI on three of the nineteen cases and the
-application on seven, and three of those are the same defect in both. Both
-take block boundaries from every `## ` line and only afterwards discard the
-ones whose header fails the grammar, where section 4 requires the opposite
-order, so a message body containing a markdown heading is truncated at that
-heading on every read. The two agree with each other and disagree with the
-document. The application's other four are its own: a header in another case
-does not parse, an empty subject with no trailing space does not parse, an
-unparseable timestamp loses the block rather than tolerating it, and an
-indented header-shaped line wrongly starts a block. `corpus.json` carries the
-reason for each.
+deviated from the spec**, the CLI on three of the nineteen cases and the
+application on seven, and three of those were the same defect in both. Both
+took block boundaries from every `## ` line and only afterwards discarded the
+ones whose header failed the grammar, where section 4 requires the opposite
+order, so a message body containing a markdown heading was truncated at that
+heading on every read. The two agreed with each other and disagreed with the
+document, which is precisely what a check of the form "do the two produce the
+same answer" would have certified as fine.
+
+That defect is closed in both readers as of 2026-08-14, fixed in the protocol
+implementation this package was copied from and ported here. Closing it is
+what deleted the three shared records: a deviation that gets fixed fails the
+suite until its record is deleted, so the numbers in this paragraph are the
+tree's rather than a memory of it. The CLI now conforms on all nineteen cases.
+The application's remaining five are its own: a header in another case does not
+parse, an empty subject with no trailing space does not parse, an unparseable
+timestamp loses the block rather than tolerating it, an indented header-shaped
+line wrongly starts a block, and its header grammar accepts a status-less
+header that the CLI treats as body, so the two now disagree about what is a
+header rather than about where a block ends. `corpus.json` carries the reason
+for each.
 
 The original port was not wasted either. Its conformance findings were folded
 into the spec before the code went:

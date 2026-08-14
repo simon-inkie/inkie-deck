@@ -178,17 +178,28 @@ def parse_blocks(text):
     start/end are character offsets into text.
     """
     blocks = []
-    matches = list(re.finditer(r"^## ", text, re.MULTILINE))
-    for i, m in enumerate(matches):
+    # Only a candidate whose header actually PARSES may bound a block.
+    #
+    # A column-0 "## " line that is not a valid header is body content: a
+    # markdown heading someone typed in a message, or a blanked header left by
+    # a lossy re-serialise. Treating it as a boundary ends the preceding block
+    # early and drops everything from it to the next valid header out of every
+    # rendered body, with no error and no visible gap. The bytes stay on disk,
+    # so this is loss on display only and a fixed reader recovers it all.
+    candidates = list(re.finditer(r"^## ", text, re.MULTILINE))
+    valid = []
+    for m in candidates:
         start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         header_end = text.find("\n", start)
         if header_end == -1:
-            header_end = end
+            header_end = len(text)
+        hm = HEADER_RE.match(text[start:header_end])
+        if hm:
+            valid.append((start, header_end, hm))
+
+    for i, (start, header_end, hm) in enumerate(valid):
+        end = valid[i + 1][0] if i + 1 < len(valid) else len(text)
         header_line = text[start:header_end]
-        hm = HEADER_RE.match(header_line)
-        if not hm:
-            continue
         raw_body = text[header_end:end]
         body = clean_body(raw_body)
         blocks.append({

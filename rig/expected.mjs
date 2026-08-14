@@ -76,9 +76,14 @@ export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", 
  *
  * `base` is measured rather than documented: the README's number is deck's
  * alone and does not mention the base package's suite at all.
+ *
+ * deck moved 1810 -> 1813 on 2026-08-14: three tests pinning that a markdown
+ * heading in a message body no longer ends the block it sits in. base holds at
+ * 38 because its shell suites are one vitest case each however many cases they
+ * contain; the bash tally there went 54 -> 55 for the same fix.
  */
 export const EXPECTED_TESTS = {
-  deck: { passed: 1810, skipped: 11, files: 88 },
+  deck: { passed: 1813, skipped: 11, files: 88 },
   base: { passed: 38, skipped: 0, files: 4 },
 };
 

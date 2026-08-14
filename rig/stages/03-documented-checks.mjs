@@ -84,9 +84,16 @@ export function parseSuiteCounts(rawOutput) {
 function diagnoseCount(actual, expected) {
   if (actual === null) return "no suite summary was printed at all: the suite did not run";
   if (actual === expected) return `${actual}`;
-  // Measured in this rig's own containers, not arithmetic: removing ripgrep
-  // costs four tests and removing the git repository costs sixty-three more.
-  const known = { 1806: "ripgrep is missing", 1743: "neither git nor ripgrep is present" };
+  // The DELTAS are what this rig measured in its own containers: removing
+  // ripgrep costs four tests and removing the git repository costs sixty-three
+  // more. Written as offsets from the expected total rather than as two more
+  // literals, so that adding a test to the suite cannot leave these two naming
+  // numbers the tree can no longer produce (the whole-tree figure has been
+  // stale twice already, in two different files, on two different days).
+  const known = {
+    [expected - 4]: "ripgrep is missing",
+    [expected - 67]: "neither git nor ripgrep is present",
+  };
   const named = known[actual] ? `, the README's signature for: ${known[actual]}` : "";
   return `${actual} against ${expected} (${actual - expected > 0 ? "+" : ""}${actual - expected})${named}`;
 }

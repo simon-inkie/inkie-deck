@@ -491,17 +491,22 @@ Current, verified, and written down rather than discovered later.
 **No authentication.** Repeated here because it belongs on any list of this
 kind. See the top of this document.
 
-**A markdown heading in a message body truncates the message when it is
-read.** Both readers of the protocol, the python3 CLI and the web application,
-derive block boundaries from every line starting with `## ` and only afterwards
-discard the ones that are not valid headers. The specification requires the
-opposite order. A message whose body contains a markdown heading therefore
-loses everything from that heading onwards **on read**; the bytes on disk are
-intact, which is what makes it hard to notice. It is recorded as a deviation
-in `packages/base/conformance/corpus.json` (`body-markdown-heading`), so the
-conformance suite asserts the exact wrong answer today and will fail the
-moment it is fixed, forcing the record to be deleted. The fix is owned by the
-protocol implementation and is not applied here.
+**A complete, valid header quoted inside a message body splits that message
+in two.** Fixed on 2026-08-14, and this is what is left of it. Both readers,
+the python3 CLI and the web application, used to take a block boundary off
+every line starting with `## `, so an ordinary markdown heading someone typed
+ended their message there and everything after it disappeared on read. Only
+lines that actually parse as a header bound a block now, in both, and the
+corpus records that used to hold the wrong answer are gone.
+
+What remains is narrower and is not data loss: a line carrying a real
+timestamp, sender, status and subject parses as a header wherever it appears,
+including inside a code fence. Quote one in a message and the text after it is
+shown as a separate message from whoever the quoted header names. Nothing is
+lost, it is attributed to the wrong sender, and no reader-side rule can
+separate a quoted header from a real one with certainty. Closing it means
+changing what writers put on disk, so it stays on this list rather than being
+guessed at on read.
 
 **Sending to an agent with the CLI does not reach the file Deck reads.** The
 CLI is symmetric: `inbox reply <them>` writes into the SENDER's own thread
