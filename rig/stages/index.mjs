@@ -18,9 +18,11 @@
  *
  * Still absent from this declaration, and absent rather than skipped: a stage
  * that proves a message typed into a READY pane arrives. Stage eight watches
- * the refusal happen (no model in the pane, so the push declines and says why),
- * which is one side of that gate; the other side needs a stub agent to be
- * typed at and to report what it got, and there is not one. The final outputs
+ * a refusal happen (the recipient is root, not an agent with a tmux window at
+ * all, so the push declines at the window-existence gate before any pane is
+ * ever inspected), which is one side of that gate; the other side needs a
+ * stub agent with a live pane, typed at and asked what it got, and there is
+ * not one. The final outputs
  * of the plan (phase 7) are done and deliberately added no stage: they are a
  * record, in INSTALL.md and rig/container-image-note.md, not a measurement. A
  * skip is a colour and this rig does not have a colour for "we did not look".

@@ -553,8 +553,9 @@ than a setting.
 **Nothing proves that a message typed into a READY pane lands.** This is the
 coverage gap named at the end of tier 3, repeated here because this is where a
 reader looks for it. The refusals are covered from every angle, and one of them
-is exercised against a real pane on every rig run, with the exact wording
-recorded in the report. The other outcome, where the
+(`no-window`, described above) is exercised on every rig run, with the exact
+wording recorded in the report - it declines before a pane is ever inspected,
+since the walkthrough's recipient is you rather than an agent. The other outcome, where the
 gate decides the pane is ready and types, has no test behind it anywhere: the
 delivery suite runs its cases against pane text the test itself supplies, with
 every real keystroke suppressed, and the rig has no agent to be typed at. So

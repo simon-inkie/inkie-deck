@@ -115,7 +115,8 @@ whose whole argument is that such documents stop being true without going red.
 
 One stage is named and NOT built: a stub agent that can be started in a pane,
 typed at, and asked what it received. Live delivery is proven refusing (stage
-eight records a real refusal from a real pane on every run) and unproven
+eight records a real refusal on every run - the recipient is root, not an
+agent, so it declines before any pane is ever inspected) and unproven
 delivering, so
 "a message typed into a ready pane lands" is a belief and is recorded as one in
 INSTALL.md's limitations. It stays absent from the declaration rather than

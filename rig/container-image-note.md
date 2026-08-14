@@ -211,8 +211,10 @@ declines to overclaim in the two places where it would be easiest to:
 - `packages/base/bin/inbox-push` emits `skip:unknown-runtime` or
   `skip:unknown-format` and exits 2 rather than typing into a pane it cannot
   identify, and the message is already persisted before the push is attempted,
-  so a refused push is never a lost message. Stage eight records the real
-  refusal from a real pane on every run.
+  so a refused push is never a lost message. Stage eight records a real
+  refusal on every run, though the specific one it exercises (`skip:no-window`,
+  the recipient being root rather than an agent) declines a step earlier than
+  these two - before any pane is inspected at all.
 
 What an image would have to answer, and this note deliberately does not:
 
