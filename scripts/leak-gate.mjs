@@ -223,11 +223,30 @@ const RULES = [
   }),
 ];
 
+/**
+ * How far into a file a NUL byte still means "this file is binary".
+ *
+ * Git's own buffer_is_binary sniffs a LEADING WINDOW rather than the whole
+ * file, and the reason it does is exactly the case this gate met. A whole-file
+ * `buffer.includes(0)` exempted any file holding a NUL anywhere from all
+ * rules, and the file that tripped it was a test whose hostile-input fixture
+ * carries one deliberate literal NUL 20KB in. That single byte took the one
+ * uncleaned file in the extraction - real names, paths and ticket ids intact -
+ * out of scope, and the gate printed "clean" over it in the same words it uses
+ * when it means it.
+ *
+ * A leading window separates the two real populations correctly: this
+ * repository's genuine binaries (PNGs) all carry their first NUL within the
+ * first ten bytes, and text that merely CONTAINS a NUL is scanned like the
+ * text it is.
+ */
+const BINARY_SNIFF_BYTES = 8000;
+
 /** @param {string} filePath @returns {{ file: string, line: number, label: string, why: string }[]} */
 function scanFile(filePath) {
   const buffer = fs.readFileSync(filePath);
-  if (buffer.includes(0)) {
-    return []; // binary file, out of scope for a text denylist
+  if (buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
+    return []; // binary file (NUL in the first 8000 bytes, matching git's own heuristic)
   }
   const findings = [];
   const lines = buffer.toString("utf8").split("\n");
@@ -324,7 +343,44 @@ function selfTest() {
       console.error("leak-gate self-test: filename scanning failed to catch a denied string in a file name");
       process.exit(1);
     }
-    console.log(`leak-gate self-test: all ${RULES.length} rules fire correctly (content and filename paths)`);
+    // Prove the BINARY SNIFF is a leading window and not a whole-file check.
+    // This is the regression pin for an observed miss, not a hypothetical: one
+    // real test file carried a deliberate literal NUL 20KB into a hostile-input
+    // fixture, and under a whole-file check that byte exempted the entire file
+    // from all rules while the gate reported clean over it. Two files here,
+    // because the fix has two halves and either can rot alone: a NUL PAST the
+    // window must not stop the scan, and a NUL INSIDE the window must still
+    // skip the file (or the gate starts reading PNGs and reporting noise).
+    const pinned = RULES.find((r) => r.label === "internal-ticket-id");
+    if (!pinned) {
+      console.error("leak-gate self-test: internal-ticket-id rule missing");
+      process.exit(1);
+    }
+    const lateNulFile = path.join(dir, "late-nul.txt");
+    fs.writeFileSync(
+      lateNulFile,
+      `${pinned.sample}\n${"filler line\n".repeat(1000)}\0 trailing binary-ish fixture\n`,
+      "utf8",
+    );
+    if (fs.readFileSync(lateNulFile).indexOf(0) <= BINARY_SNIFF_BYTES) {
+      console.error("leak-gate self-test: fixture is wrong, its NUL is inside the sniff window");
+      process.exit(1);
+    }
+    if (!scanFile(lateNulFile).some((f) => f.label === pinned.label)) {
+      console.error(
+        "leak-gate self-test: a text file with a NUL past the sniff window was skipped, so any file holding one anywhere is unscanned",
+      );
+      process.exit(1);
+    }
+    const earlyNulFile = path.join(dir, "early-nul.bin");
+    fs.writeFileSync(earlyNulFile, Buffer.concat([Buffer.from("\0PNG-ish\n"), Buffer.from(pinned.sample)]));
+    if (scanFile(earlyNulFile).length > 0) {
+      console.error("leak-gate self-test: a real binary was scanned as text; the sniff window is not being honoured");
+      process.exit(1);
+    }
+    console.log(
+      `leak-gate self-test: all ${RULES.length} rules fire correctly (content, filename and binary-sniff paths)`,
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
