@@ -484,6 +484,21 @@ Those need the CLI installed, authenticated and billed, and that is the actual
 front door to this tier. The rig measures everything up to it and stops,
 rather than reporting a green run over the half that is not there.
 
+The middle one of those three is not only waiting on a subscription, and it is
+worth separating out rather than leaving it inside a sentence about billing.
+Live delivery into a pane is proven in the REFUSING direction and only there.
+The gates refuse a recipient with no window, a runtime they do not recognise, a
+pane with someone's half-typed text already in it, and a pane whose shape they
+cannot read at all; you saw one of those refusals a moment ago, as
+`push: skip:no-window`. The delivering direction has no test behind it. The
+delivery suite classifies pane text the test itself supplies, with every real
+keystroke suppressed, so nothing anywhere establishes that a pane the gate
+called READY receives the keys and receives them whole. That needs a stub agent
+sitting in a pane to be typed at and to report back what it got, and there is
+not one here yet. It is on the limitations list below, where a coverage gap
+belongs, rather than being carried by the sentence about model subscriptions,
+which would put it down to the wrong cause.
+
 ## Known limitations
 
 Current, verified, and written down rather than discovered later.
@@ -508,6 +523,20 @@ separate a quoted header from a real one with certainty. Closing it means
 changing what writers put on disk, so it stays on this list rather than being
 guessed at on read.
 
+**The two readers of the protocol do not agree everywhere, and the list of
+where is a file rather than this paragraph.** The python3 CLI and the web
+application both implement `packages/base/docs/protocol.md`, and every place
+either one departs from it is recorded as a deviation on a case in
+`packages/base/conformance/corpus.json`, with the reason written out. Both
+suites run that corpus, so a deviation that gets fixed without its record being
+removed goes red, and so does a new one that arrives without a record. Read
+that file for the current set rather than trusting a count in prose. Every
+deviation on it today is in the application, and each is the same kind of
+thing: its header grammar and the protocol's disagree, in one direction or the
+other. A header the protocol admits and the application rejects means a message
+that is on disk and never renders, which is the direction worth knowing about
+if you are writing your own client.
+
 **Sending to an agent with the CLI does not reach the file Deck reads.** The
 CLI is symmetric: `inbox reply <them>` writes into the SENDER's own thread
 file, `$INBOX_ROOT/<you>/inbox/<them>.md`, on the assumption that each pair's
@@ -520,6 +549,30 @@ unread` says there is nothing. That is why the walkthrough above sends from
 Deck and replies from the terminal rather than the other way round. Pairing the
 two files, at creation or on first contact, is an open design question rather
 than a setting.
+
+**Nothing proves that a message typed into a READY pane lands.** This is the
+coverage gap named at the end of tier 3, repeated here because this is where a
+reader looks for it. The refusals are covered from every angle, and one of them
+is exercised against a real pane on every rig run, with the exact wording
+recorded in the report. The other outcome, where the
+gate decides the pane is ready and types, has no test behind it anywhere: the
+delivery suite runs its cases against pane text the test itself supplies, with
+every real keystroke suppressed, and the rig has no agent to be typed at. So
+"the message arrived in the pane, and arrived whole" is a belief. It is
+probably a correct one, since `inbox-push` sends the text and the Enter as
+separate keystrokes and then re-reads the pane to confirm the paste landed, and
+none of that is the same as having measured it.
+
+Worth knowing while you are here: that careful path is the CLI's. Typing into a
+pane from Deck's own terminal view is a different one
+(`packages/deck/app/routes/api.tmux-send.tsx` into `sendKeysToWindow`), whose
+gates are the window name and the live window list, with no idle check and no
+read-back. It was written for a person watching the pane they are typing into.
+
+Closing the gap means a stub agent that can be started in a pane, typed at, and
+asked what it received. That is a named follow-up and deliberately not part of
+this phase, because it wants the container and process-supervision groundwork
+recorded in `rig/container-image-note.md` first.
 
 **The browser test suite is not a guarantee.** `pnpm -C packages/deck e2e`
 runs Playwright journeys that have real, currently un-diagnosed flakes. It is
@@ -545,6 +598,36 @@ on egress.
 image descriptions (Gemini) and web push all need keys, are off without them,
 and are not exercised by the rig. They degrade rather than fail: the voice
 proxy starts without a key and tells the client it has none.
+
+Voice carries one more thing worth knowing before you reach for it, because
+the dev command hides it. Voice is a SECOND listener, on its own port, and
+`pnpm dev` configures it for you while `node scripts/start-production.mjs` does
+not. In production the proxy keeps its own defaults: it binds `127.0.0.1`
+unless `VOICE_PROXY_HOST` says otherwise, it accepts WebSocket upgrades only
+from `http://localhost:5174`, which is the dev server's old port and not one
+anything here serves by default, and the URL handed to your browser falls back
+to `ws://localhost:5176/voice` when `VOICE_PROXY_URL` is unset, which your
+browser resolves against the machine YOU are sitting at rather than the one
+Deck is on.
+So on a production start, voice needs `VOICE_ALLOWED_ORIGINS` and
+`VOICE_PROXY_URL` set by hand even on the machine Deck is running on, and
+`VOICE_PROXY_HOST` as well to reach it from anywhere else. A rejected upgrade
+is logged by the proxy and looks, in the browser, like a microphone that does
+nothing. None of those three is in `.env.example` yet.
+
+**Everything here has only ever been measured as root.** The rig's containers
+run as root, and not by oversight that could be fixed in passing: the
+Dockerfiles it generates carry no `USER`, `docker run` is called with no
+`--user`, and the tier-3 stage records `id -un` in its own evidence, where it
+reads `root`. So every directory this document creates, the four roots and the
+agent homes included, has been created root-owned on every run anyone has
+measured. Nothing in Deck needs root, and nothing here has been measured
+without it either, which is a different sentence from "it works fine as a
+normal user" and is the honest one. Following this document on your own desktop
+already puts you outside what has been measured, in the direction that is
+almost certainly fine. The case where it stops being fine is a container with a
+bind-mounted state directory handing you back files you do not own, and that is
+worked through in `rig/container-image-note.md`.
 
 **macOS and Windows are unverified.** The rig runs Linux containers. The
 Ubuntu path in this document is executed on every run; the macOS block is not,

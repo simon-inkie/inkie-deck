@@ -10,8 +10,21 @@
  *     "active (running)" while 500ing (TASK-434 boot validation, daemon shape).
  *   - Serves the production build via react-router-serve. Run `pnpm build`
  *     before (re)starting the unit.
- *   - Spawns the voice proxy exactly like dev.mjs does; origins/URL come from
- *     env (the tailnet origin in production - see .env.example).
+ *   - Spawns the voice proxy as a sibling, in the same SHAPE dev.mjs uses but
+ *     with none of its configuration. dev.mjs derives VOICE_ALLOWED_ORIGINS
+ *     from the app port and sets VOICE_PROXY_URL for the RR server; this
+ *     launcher sets neither, so a production start keeps the proxy's own
+ *     defaults: a loopback bind, an allowlist naming the dev server's old port,
+ *     and a client URL of ws://localhost:5176/voice that the BROWSER resolves
+ *     (so it means the reader's machine, not this one). All three have to come
+ *     from the environment, and none of them is in .env.example. An earlier
+ *     version of this comment pointed at .env.example for them. No revision of
+ *     that file in this repository has ever carried one, so the pointer sent a
+ *     reader after something that was not there. How they reached the
+ *     deployment this was copied from is not recorded here, and is not being
+ *     guessed at a second time. See INSTALL.md
+ *     "Optional subsystems are unverified here" and section 2 of
+ *     rig/container-image-note.md.
  *
  * ASCII only - no em-dashes (FND-05 / check:dashes gate).
  */

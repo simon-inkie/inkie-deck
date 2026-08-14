@@ -104,9 +104,23 @@ overclaim instead: `create-agent.sh` exits 4 CANNOT VERIFY, and the live push
 into a pane is skipped rather than typed. A run in which either of those
 quietly succeeded would be the finding.
 
-Phase 7 of the setup plan (the finished outputs) is not implemented. It is
-absent from the declaration rather than present and skipped: a skip is a
-colour, and this rig has no colour for "we did not look".
+Phase 7 of the setup plan (the finished outputs) is done, and it added no stage
+here. What it produced is a record rather than a measurement: the assumption
+ledger the earlier phases accumulated is closed, with every entry either fixed
+in the tree or written into `INSTALL.md` as a limitation this rig executes past
+on every run, and the container question is worked through in
+`rig/container-image-note.md`. There is deliberately no ledger file and no
+Dockerfile. Both would be documents nothing executes, sitting in a repository
+whose whole argument is that such documents stop being true without going red.
+
+One stage is named and NOT built: a stub agent that can be started in a pane,
+typed at, and asked what it received. Live delivery is proven refusing (stage
+eight records a real refusal from a real pane on every run) and unproven
+delivering, so
+"a message typed into a ready pane lands" is a belief and is recorded as one in
+INSTALL.md's limitations. It stays absent from the declaration rather than
+appearing as a skip: a skip is a colour, and this rig has no colour for "we did
+not look".
 
 ## Two things worth knowing before you read a report
 

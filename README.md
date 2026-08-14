@@ -110,6 +110,55 @@ pnpm check:licence
 CI runs exactly this list (plus gitleaks), so a green pipeline never claims
 more than a green local run.
 
+## The codes in the comments
+
+Comments through `packages/deck` cite short codes that arrived with the code.
+Each names a rule rather than a ticket, and until now none of them was defined
+anywhere a reader could find. Defined here, from what they actually guard in
+this tree rather than from the register they came out of:
+
+- **FND-02, the seam rule.** Anything server-only (environment, filesystem,
+  subprocesses) lives in a `.server` module, and components and routes receive
+  plain data as props or loader data. The `.server` suffix is what keeps the
+  module out of the client bundle, so a route reaching for `node:fs` directly
+  is not a style complaint, it is a bundling failure waiting to happen. Half of
+  it is mechanical: `packages/deck/test/seam.test.ts` walks every file under
+  `app/routes/` and fails on a direct filesystem import or a literal inbox
+  path. The rest is convention, which is why the comments keep saying it.
+- **FND-03, roots have no defaults.** `INBOX_ROOT`, `ATTACHMENTS_ROOT`,
+  `PROJECTS_ROOT` and `DATA_ROOT` are required, must be absolute, and must
+  exist. Unset, empty or relative is fatal at boot with the variable named,
+  rather than a default that silently writes your messages somewhere you will
+  never look for them.
+- **FND-04, write confinement and write shape.** An inbox write must resolve
+  inside the configured root AND look like `<agent>/inbox/<file>.md`, and
+  traversal-shaped agent or participant names are refused before any path is
+  assembled. `MC_SANDBOX_ONLY` is the same rule's other half: a sandbox
+  configuration may never be pointed at a live agent silo.
+- **FND-05, ASCII only, no em-dashes or en-dashes anywhere in the tree.**
+  `pnpm check:dashes` fails on either codepoint, and the leak gate fails on a
+  literal em-dash as well, for a reason beyond house style: U+2014 is a field
+  separator in the message protocol, so a literal one in a file is a latent
+  parsing hazard.
+- **VALID-01, the walking-skeleton proof.**
+  `packages/deck/test/skeleton.test.ts` and its three legs: the app boots and
+  renders its shell, the parser round-trips a real fixture byte for byte, and
+  the write guard refuses both a forbidden root and a symlink escape.
+- **VALID-02, the four card journeys**, one Playwright spec each: a decision
+  card renders with tappable options, tapping one writes the answer, the action
+  queue persists and ages its deadlines, and a composed reply appends to the
+  thread.
+- **VALID-03, browser journeys write only into temporary roots.** Backstopped
+  rather than promised: `assertGitClean` in `packages/deck/e2e/flows/helpers.ts`
+  fails the run and lists the files if a journey dirties anything tracked, which
+  is what stops a suite from quietly editing the committed fixtures it is
+  supposed to be reading.
+
+Some comments also cite documents (`RESEARCH.md`, `PLAN.md`) and ticket ids
+(`TASK-nnn`) belonging to the repository this code was extracted from. Those
+did not cross and are not coming: read them as provenance, not as something to
+go and open.
+
 ## Licence
 
 Apache-2.0. See `LICENSE`.

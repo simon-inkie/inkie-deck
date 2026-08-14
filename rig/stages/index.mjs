@@ -16,9 +16,14 @@
  * own words, because a script that does the same thing as the document is a
  * second artefact that agrees with it exactly once.
  *
- * Still absent from this declaration, and absent rather than skipped: the
- * final outputs of the plan (phase 7). A skip is a colour and this rig does
- * not have a colour for "we did not look".
+ * Still absent from this declaration, and absent rather than skipped: a stage
+ * that proves a message typed into a READY pane arrives. Stage eight watches
+ * the refusal happen (no model in the pane, so the push declines and says why),
+ * which is one side of that gate; the other side needs a stub agent to be
+ * typed at and to report what it got, and there is not one. The final outputs
+ * of the plan (phase 7) are done and deliberately added no stage: they are a
+ * record, in INSTALL.md and rig/container-image-note.md, not a measurement. A
+ * skip is a colour and this rig does not have a colour for "we did not look".
  */
 import baseAttestation from "./00-base-attestation.mjs";
 import sourceEntry from "./01-source-entry.mjs";
