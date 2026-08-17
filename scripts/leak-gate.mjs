@@ -507,6 +507,28 @@ function scanHistory() {
 }
 
 /**
+ * Message-scope matching for a single line, pulled out of scanMessages so the
+ * self-test can pin the messageExempt / messageExemptPattern semantics
+ * directly against synthetic strings, without needing a real commit: git
+ * history is append-mostly by design, and this exemption logic is a security
+ * boundary that deserves a regression pin, not just a manually-run probe.
+ *
+ * @param {string} lineText
+ * @returns {{ label: string, why: string }[]}
+ */
+function scanMessageLine(lineText) {
+  const findings = [];
+  for (const { label, why, re, messageExempt, messageExemptPattern } of RULES) {
+    if (messageExempt) continue;
+    if (re.test(lineText)) {
+      if (messageExemptPattern && messageExemptPattern.test(lineText)) continue;
+      findings.push({ label, why });
+    }
+  }
+  return findings;
+}
+
+/**
  * --messages: scan every reachable commit's subject, body and trailers.
  *
  * Blob content is only half of what a clone hands over. `git log` is the other
@@ -527,12 +549,8 @@ function scanMessages() {
   for (const sha of shas) {
     const message = git(["log", "-1", "--format=%B", sha]);
     for (const [index, lineText] of message.split("\n").entries()) {
-      for (const { label, why, re, messageExempt, messageExemptPattern } of RULES) {
-        if (messageExempt) continue;
-        if (re.test(lineText)) {
-          if (messageExemptPattern && messageExemptPattern.test(lineText)) continue;
-          findings.push({ file: `${sha.slice(0, 10)} (message)`, line: index + 1, label, why });
-        }
+      for (const { label, why } of scanMessageLine(lineText)) {
+        findings.push({ file: `${sha.slice(0, 10)} (message)`, line: index + 1, label, why });
       }
     }
   }
@@ -636,9 +654,43 @@ function selfTest() {
       console.error("leak-gate self-test: a real binary was scanned as text; the sniff window is not being honoured");
       process.exit(1);
     }
+    // Prove the message-scope EXEMPTION semantics, not just that the rules
+    // fire. Regression pin for a caught mistake: the first cut of this
+    // mechanism set messageExempt: true on company-email-address wholesale,
+    // which silently permitted every address on the domain in every message
+    // shape, not just the one pre-approved trailer, an independent review
+    // caught it before it shipped. Three cases, assembled from fragments so
+    // this file never carries the literal accepted string (see file header):
+    // the approved exact shape is skipped, the same address outside that
+    // shape still fires, and a DIFFERENT address in the same shape still
+    // fires, proving the allow-pattern is anchored to one instance, not the
+    // whole rule.
+    const emailRule = RULES.find((r) => r.label === "company-email-address");
+    if (!emailRule) {
+      console.error("leak-gate self-test: company-email-address rule missing");
+      process.exit(1);
+    }
+    const acceptedTrailer = ["Co-au", "thored-by: Si", "mon <si", "mon@ink", "ie.ink>"].join("");
+    const proseSameAddress = ["contact si", "mon@ink", "ie.ink for details"].join("");
+    const differentAddressTrailer = ["Co-au", "thored-by: Some", "one <some", "one@ink", "ie.ink>"].join("");
+    if (scanMessageLine(acceptedTrailer).some((f) => f.label === emailRule.label)) {
+      console.error("leak-gate self-test: the approved maintainer trailer shape should be exempt in message scope but fired");
+      process.exit(1);
+    }
+    if (!scanMessageLine(proseSameAddress).some((f) => f.label === emailRule.label)) {
+      console.error("leak-gate self-test: the same address outside the approved trailer shape should still fire in message scope");
+      process.exit(1);
+    }
+    if (!scanMessageLine(differentAddressTrailer).some((f) => f.label === emailRule.label)) {
+      console.error(
+        "leak-gate self-test: a different address in the approved trailer shape should still fire, messageExemptPattern is over-broad",
+      );
+      process.exit(1);
+    }
     console.log(
       `leak-gate self-test: all ${RULES.length} rules fire correctly (content, filename and binary-sniff paths)`,
     );
+    console.log("leak-gate self-test: message-scope exemption is narrow (approved shape only, not the whole rule)");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
