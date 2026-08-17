@@ -155,9 +155,9 @@ const RULES = [
   }),
   rule({
     label: "fleet-agent-name-platform-specialist",
-    why: "The platform specialist agent's two-word name and its internal three-character abbreviation. The distinctive rule above catches only the runtime spelling of this name; the prose spelling (spaced, hyphenated or underscored) and the abbreviation are different strings entirely. The abbreviation was the larger surface in practice: it appeared eleven times across seven files as a code-comment attribution and in no other shape.",
+    why: "The platform specialist agent's two-word name and its internal three-character abbreviation. The distinctive rule above catches only the runtime spelling of this name; the prose spelling and the abbreviation are different strings entirely. The abbreviation was the larger surface in practice: it appeared eleven times across seven files as a code-comment attribution and in no other shape. The separator alternation includes the PERCENT-ENCODED space, which is not decoration: one occurrence of this name lived in a URL query assertion, survived a pass that replaced every other spelling, and was caught by a failing test rather than by this rule.",
     pattern: [
-      "(?:doc", "tor[-_ ]?two|\\bd", "r2\\b)",
+      "(?:doc", "tor(?:[-_ ]|%20)?two|\\bd", "r2\\b)",
     ],
     sample: ["Doc", "tor Two"],
   }),
