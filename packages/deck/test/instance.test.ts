@@ -9,7 +9,7 @@
  * ASCII only - no em-dashes (FND-05).
  */
 import { describe, it, expect } from "vitest";
-import { mcUser, tmuxEnabled, instanceLabel, projectsAgents, filterCardsForInstance } from "~/lib/instance.server";
+import { mcUser, tmuxEnabled, cronAdminEnabled, instanceLabel, projectsAgents, filterCardsForInstance } from "~/lib/instance.server";
 import { deriveNeedsYou, deriveQueueItems } from "~/lib/queue-derive";
 import type { InboxEntry } from "~/lib/queue-derive";
 import { isSuperseded } from "~/lib/blocks/working";
@@ -64,6 +64,51 @@ describe("tmuxEnabled", () => {
     expect(tmuxEnabled({ MC_TMUX_ENABLED: "0" })).toBe(false);
     expect(tmuxEnabled({ MC_TMUX_ENABLED: "false" })).toBe(false);
     expect(tmuxEnabled({ MC_TMUX_ENABLED: "FALSE" })).toBe(false);
+  });
+});
+
+describe("cronAdminEnabled", () => {
+  // The gate on /scheduler, which writes the system crontab. Two ways in
+  // (trusted principal by default, explicit kill switch on top), and the
+  // interesting property is that the switch beats the default in the closing
+  // direction only: it can shut a principal out, it cannot let anyone in.
+  it("is open for the default user (MC_USER unset means alex)", () => {
+    expect(cronAdminEnabled({})).toBe(true);
+    expect(cronAdminEnabled({ MC_USER: "" })).toBe(true);
+  });
+
+  it("is open for both trusted principals", () => {
+    expect(cronAdminEnabled({ MC_USER: "alex" })).toBe(true);
+    expect(cronAdminEnabled({ MC_USER: "robin" })).toBe(true);
+  });
+
+  it("is closed for anyone else", () => {
+    expect(cronAdminEnabled({ MC_USER: "quill" })).toBe(false);
+    expect(cronAdminEnabled({ MC_USER: "sprout" })).toBe(false);
+  });
+
+  it("is closed on an explicit 0 / false (any case), even for a principal", () => {
+    expect(cronAdminEnabled({ MC_CRON_ADMIN_ENABLED: "0" })).toBe(false);
+    expect(cronAdminEnabled({ MC_CRON_ADMIN_ENABLED: "false" })).toBe(false);
+    expect(cronAdminEnabled({ MC_CRON_ADMIN_ENABLED: "FALSE" })).toBe(false);
+    expect(cronAdminEnabled({ MC_USER: "robin", MC_CRON_ADMIN_ENABLED: "0" })).toBe(false);
+  });
+
+  it("tolerates whitespace around the kill switch", () => {
+    expect(cronAdminEnabled({ MC_CRON_ADMIN_ENABLED: "  false  " })).toBe(false);
+  });
+
+  it("does not OPEN the gate for a non-principal who sets the switch on", () => {
+    // The switch is an off-only control. "1" is not a grant, so a user who is
+    // not a principal stays out however they spell it.
+    expect(cronAdminEnabled({ MC_USER: "quill", MC_CRON_ADMIN_ENABLED: "1" })).toBe(false);
+    expect(cronAdminEnabled({ MC_USER: "quill", MC_CRON_ADMIN_ENABLED: "true" })).toBe(false);
+  });
+
+  it("falls through to the user check on an empty or unrecognised switch", () => {
+    expect(cronAdminEnabled({ MC_CRON_ADMIN_ENABLED: "" })).toBe(true);
+    expect(cronAdminEnabled({ MC_CRON_ADMIN_ENABLED: "yes" })).toBe(true);
+    expect(cronAdminEnabled({ MC_USER: "quill", MC_CRON_ADMIN_ENABLED: "" })).toBe(false);
   });
 });
 

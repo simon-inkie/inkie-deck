@@ -85,9 +85,15 @@ export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", 
  * deck moved 1813 -> 1819 on 2026-08-17: six tests for MC_BRIEFS_AGENT, which
  * replaced a hardcoded agent name in the briefs path with a validated config
  * value. base is unchanged.
+ *
+ * deck moved 1819 -> 1936 on 2026-08-17, and 88 -> 90 files: coverage for the
+ * Nudges route, which had none. Two new files (scheduler-route, scheduler-nav)
+ * and additions to cron-validate and instance. None of the 117 shells out or
+ * reads the repository, so the two degraded figures in the README move by the
+ * same 117 as the full one. base is unchanged.
  */
 export const EXPECTED_TESTS = {
-  deck: { passed: 1819, skipped: 11, files: 88 },
+  deck: { passed: 1936, skipped: 11, files: 90 },
   base: { passed: 38, skipped: 0, files: 4 },
 };
 

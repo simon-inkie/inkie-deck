@@ -84,8 +84,8 @@ so far already had them:
   all, so `LANG=C.UTF-8` belongs in any deployment that is not a desktop.
 
 The test count doubles as a diagnostic here, with git and ripgrep the two that
-move it: **1819 passing** means everything above is present, **1815** means
-ripgrep is missing, and **1752** means neither ripgrep nor a git repository is.
+move it: **1936 passing** means everything above is present, **1932** means
+ripgrep is missing, and **1869** means neither ripgrep nor a git repository is.
 All three are measured in a container on every rig run rather than remembered;
 the numbers in this paragraph were wrong by twenty for two days before anything
 asserted them.
