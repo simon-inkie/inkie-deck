@@ -1,6 +1,6 @@
 # inkie-deck
 
-Open source agent-ops platform, extracted from Mission Control.
+A web control plane for a fleet of AI agents, copied in from the working platform and cleaned.
 
 ## Git workflow
 
