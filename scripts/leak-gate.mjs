@@ -325,6 +325,15 @@ const RULES = [
     sample: ["x.p", "gr-creds.age"],
   }),
   rule({
+    label: "private-note-provenance-citation",
+    why: "A CITATION, in a comment, pointing at a specific document in a private home-directory vault: a reference verb followed by a home-relative path, or a reference to a date-stamped note. (Written out longhand rather than shown as an example, because an example of this shape matches this rule, and the denylist holding an instance of a denied string is a mistake this file has now made three times.) What leaks is not the path. It is the claim that a named internal document exists and that this code was derived from it, which a reader outside cannot open, cannot check, and cannot act on. DELIBERATELY NARROW, and it has to stay that way: home-relative vault paths are ordinary PRODUCT content here. They are what the review panel resolves and what the file-reference, autolink and project-card parsers are tested against, so a dozen of them are legitimate fixtures and a rule denying the bare shape would be deleted within a day. Two alternations only: a reference verb immediately before the path, and a date-stamped filename two levels into a home directory, which no placeholder fixture has a reason to be. A path built from a variable in a template literal is excluded on purpose, because that is a test constructing a path rather than anything citing a document.",
+    pattern: [
+      "(?:\\b(?:sou", "rce|s", "ee|r", "ef|p", "er|c", "f)\\b[:.]?\\s+~/[a-z][a-z-]*/",
+      "|~/[a-z][a-z-]*/[a-z][a-z-]*/\\d{4}-\\d{2}-\\d{2})",
+    ],
+    sample: ["Sou", "rce: ~/vault/design/tokens.md"],
+  }),
+  rule({
     label: "private-session-link",
     why: "A link into a private assistant session transcript. These shipped as a commit-message trailer on most of this repository's history. The transcripts are not public, the URLs mean nothing to anyone who cannot open them, and they tie every commit to a specific private session.",
     pattern: ["cla", "ude\\.ai/co", "de/"],
