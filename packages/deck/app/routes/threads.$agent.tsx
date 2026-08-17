@@ -1487,6 +1487,14 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                       <DecisionCard
                         block={block}
                         now={now}
+                        // postAction reveals Dismiss + Supersede inline here,
+                        // same affordances the Cards tab has. It points at THIS
+                        // route, which already handles all three intents.
+                        // withDate is pinned false so the stamp stays the bare
+                        // clock time every other bubble in the thread uses -
+                        // postAction alone used to switch that format too.
+                        postAction={`/threads/${agent}`}
+                        withDate={false}
                         onWriteOwn={handleWriteOwn}
                         draftCustomAnswer={isRespondingToThis ? customDraft : undefined}
                         onOpenDoc={handleOpenDoc}
@@ -1495,6 +1503,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                       <ActionCard
                         block={block}
                         now={now}
+                        postAction={`/threads/${agent}`}
+                        withDate={false}
                         onOpenDoc={handleOpenDoc}
                       />
                     ) : (

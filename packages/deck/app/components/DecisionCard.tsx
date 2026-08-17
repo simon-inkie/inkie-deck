@@ -56,10 +56,20 @@ interface DecisionCardProps {
    * Thread C: when set, card mutation forms POST to this path (the owning
    * agent's thread action, e.g. "/threads/scribe") instead of the current
    * route, and the additive Dismiss + Supersede affordances are revealed. The
-   * dedicated Cards tab passes this; the thread view omits it, so its UI is
-   * unchanged (answer options + write-own only, exactly as today).
+   * Cards tab passes the same route it always did (a cross-route hand-off);
+   * the thread view passes its own route too, so Dismiss + Supersede show
+   * inline on unresolved cards there as well.
    */
   postAction?: string;
+  /**
+   * The dated stamp format, independent of postAction. Defaults to
+   * Boolean(postAction) so the Cards tab keeps its dated stamps without
+   * callers having to say so explicitly - but the thread view sets this to
+   * false explicitly, because postAction there means "reveal Dismiss and
+   * Supersede", not "also switch this card's timestamp format away from the
+   * bare clock time every other bubble in the thread uses".
+   */
+  withDate?: boolean;
 }
 
 /**
@@ -77,7 +87,7 @@ interface DecisionCardProps {
  * The PUSHBACK_RESOLUTION const distinguishes a pushed-back badge from an
  * answered badge so the UI can show different copy for each state.
  */
-export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpenDoc, postAction }: DecisionCardProps) {
+export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpenDoc, postAction, withDate = Boolean(postAction) }: DecisionCardProps) {
   const fetcher = useFetcher();
   const busy = fetcher.state !== "idle";
   const card = block.card;
@@ -173,7 +183,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
               Superseded
             </Badge>
           )}
-          <Timestamp iso={block.header.timestamp} now={now} withDate={Boolean(postAction)} />
+          <Timestamp iso={block.header.timestamp} now={now} withDate={withDate} />
           <ChevronDown
             className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-180")}
             aria-hidden="true"
@@ -284,7 +294,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
       {/* Card header row - teal banner so a "needs you" card reads as a physical card */}
       <div className="flex items-center justify-between border-b border-primary/20 bg-primary/10 px-4 py-2">
         <span className="label-mono text-primary">Decision</span>
-        <Timestamp iso={block.header.timestamp} now={now} withDate={Boolean(postAction)} />
+        <Timestamp iso={block.header.timestamp} now={now} withDate={withDate} />
       </div>
 
       <div className="p-4">
@@ -368,8 +378,8 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
               <span className="label-mono text-xs">OR write something...</span>
             </Button>
 
-            {/* Thread C: Dismiss + Supersede - additive, only on the Cards tab
-                (postAction set), so the thread view keeps its answer-only UI.
+            {/* Thread C: Dismiss + Supersede - additive, shown on unresolved
+                cards wherever postAction is set (Cards tab and thread view).
                 Close a stale decision without round-tripping the agent. */}
             {postAction ? (
               <div className="mt-1 flex items-center gap-2">

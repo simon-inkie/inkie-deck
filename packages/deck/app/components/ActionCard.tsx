@@ -48,10 +48,21 @@ interface ActionCardProps {
   /**
    * Thread C: when set, card mutation forms POST to this path (the owning
    * agent's thread action, e.g. "/threads/scribe") instead of the current
-   * route, and the additive Supersede affordance is revealed. The dedicated
-   * Cards tab passes this; the thread view omits it, so its UI is unchanged.
+   * route, and the additive Supersede affordance is revealed. The Cards tab
+   * passes the same route it always did (a cross-route hand-off); the thread
+   * view passes its own route too, so Supersede shows inline on unresolved
+   * cards there as well.
    */
   postAction?: string;
+  /**
+   * The dated stamp format, independent of postAction. Defaults to
+   * Boolean(postAction) so the Cards tab keeps its dated stamps without
+   * callers having to say so explicitly - but the thread view sets this to
+   * false explicitly, because postAction there means "reveal Supersede", not
+   * "also switch this card's timestamp format away from the bare clock time
+   * every other bubble in the thread uses".
+   */
+  withDate?: boolean;
 }
 
 /**
@@ -61,7 +72,7 @@ interface ActionCardProps {
  * When the action is already done, renders a "Done <time>" success badge with
  * the tick disabled (card stays visible as historical record, CARD-06).
  */
-export function ActionCard({ block, now, onOpenDoc, postAction }: ActionCardProps) {
+export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boolean(postAction) }: ActionCardProps) {
   const fetcher = useFetcher();
   const busy = fetcher.state !== "idle";
   const actionCard = block.actionCard;
@@ -165,7 +176,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction }: ActionCardProp
               Superseded {supersededDisplay ?? "just now"}
             </Badge>
           )}
-          <Timestamp iso={block.header.timestamp} now={now} withDate={Boolean(postAction)} />
+          <Timestamp iso={block.header.timestamp} now={now} withDate={withDate} />
           <ChevronDown
             className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-180")}
             aria-hidden="true"
@@ -311,7 +322,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction }: ActionCardProp
           hue (Alex live feedback, TASK-453) - same treatment as the receipt. */}
       <div className="flex items-center justify-between border-b border-accent/20 bg-accent/10 px-4 py-2">
         <span className="label-mono text-accent">Action</span>
-        <Timestamp iso={block.header.timestamp} now={now} withDate={Boolean(postAction)} />
+        <Timestamp iso={block.header.timestamp} now={now} withDate={withDate} />
       </div>
 
       <div className="p-4">
@@ -398,8 +409,9 @@ export function ActionCard({ block, now, onOpenDoc, postAction }: ActionCardProp
               >
                 <X className="h-5 w-5" aria-hidden="true" />
               </Button>
-              {/* Thread C: Supersede button - additive, only on the Cards tab
-                  (postAction set). Marks the action replaced by a newer one. */}
+              {/* Thread C: Supersede button - additive, shown on unresolved
+                  cards wherever postAction is set (Cards tab and thread view).
+                  Marks the action replaced by a newer one. */}
               {postAction ? (
                 <Button
                   type="button"
