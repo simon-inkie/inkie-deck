@@ -1,15 +1,33 @@
 /**
  * briefs.server.ts
  *
- * Data-access seam for the coordinator agent's daily morning brief files (TASK-442).
+ * Data-access seam for the coordinator agent's daily morning brief files
+ * (TASK-442).
  *
  * Exports:
- *   getLatestBrief(env, now) - reads <INBOX_ROOT>/quill/briefs/ and returns the
- *     most recent brief that is today or yesterday relative to the injected
- *     now, or null if the dir is absent, empty, or no file is fresh enough.
+ *   getLatestBrief(env, now) - reads <INBOX_ROOT>/<briefs agent>/briefs/ and
+ *     returns the most recent brief that is today or yesterday relative to the
+ *     injected now, or null if the dir is absent, empty, or no file is fresh
+ *     enough.
+ *   resolveBriefsAgent(env) - which agent's inbox directory carries them.
+ *
+ * WHICH AGENT WRITES THE BRIEFS IS A DEPLOYMENT FACT, NOT A CONSTANT.
+ * This module used to join a hardcoded agent name into the path, so the
+ * shipped application asserted that every deployment had an agent by that
+ * one name and that this particular agent was the one running the brief
+ * cron. Neither is true of anyone else's fleet, and a reader whose
+ * coordinator is called something else got a feature that silently did
+ * nothing, with no configuration to reach for and nothing in the logs.
+ * MC_BRIEFS_AGENT names it. The default keeps the bundled demo fixtures
+ * working out of the box, which is the only reason there is a default.
  *
  * Security:
  *   - Only filenames matching ^\d{4}-\d{2}-\d{2}\.md$ are accepted.
+ *   - MC_BRIEFS_AGENT is validated against AGENT_NAME_RE before it is joined
+ *     into a path, and an invalid value THROWS rather than falling back. It
+ *     becomes a path segment, so the regex is the thing standing between a
+ *     config typo and a traversal; and a silent fallback would read some
+ *     other agent's directory while looking like it had honoured the setting.
  *   - Resolved-path prefix assert (realpath + sep-suffixed startsWith) before
  *     any read - same idiom as review.server.ts / attachments.server.ts.
  *   - No user-controlled path component anywhere.
@@ -21,7 +39,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveInboxRoot } from "./safe-fs.server.js";
+import { resolveInboxRoot, AGENT_NAME_RE } from "./safe-fs.server.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,6 +58,42 @@ export interface BriefResult {
 
 /** Strict filename regex: YYYY-MM-DD.md only. Nothing else enters. */
 const BRIEF_FILENAME_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+
+/**
+ * Agent whose inbox directory carries the morning briefs when MC_BRIEFS_AGENT
+ * is unset. This is the demo roster's coordinator, so the bundled fixtures
+ * work with no configuration; it is not a claim about anybody's real fleet.
+ */
+export const DEFAULT_BRIEFS_AGENT = "quill";
+
+// ---------------------------------------------------------------------------
+// resolveBriefsAgent
+// ---------------------------------------------------------------------------
+
+/**
+ * Which agent's inbox directory carries the morning briefs.
+ *
+ * @param env - Process environment (MC_BRIEFS_AGENT is read from here).
+ * @returns The agent name, guaranteed to satisfy AGENT_NAME_RE.
+ * @throws If MC_BRIEFS_AGENT is set to a value that is not a valid agent name.
+ *   Deliberately loud: this value is joined into a filesystem path, and the
+ *   two quiet alternatives are both worse than a crash at startup. Falling
+ *   back to the default would read a different agent's briefs while appearing
+ *   to honour the setting, and returning null would present "no brief today"
+ *   for a typo, which is indistinguishable from the ordinary empty case.
+ */
+export function resolveBriefsAgent(env: NodeJS.ProcessEnv): string {
+  const raw = env["MC_BRIEFS_AGENT"]?.trim();
+  if (!raw) return DEFAULT_BRIEFS_AGENT;
+  if (!AGENT_NAME_RE.test(raw)) {
+    throw new Error(
+      `MC_BRIEFS_AGENT="${raw}" is not a valid agent name ` +
+        `(${AGENT_NAME_RE.source}). It is used as a directory name under ` +
+        `INBOX_ROOT, so it must be a plain lowercase agent name.`
+    );
+  }
+  return raw;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,6 +165,11 @@ export async function getLatestBrief(
     ? env["INBOX_ROOT"]
     : resolveInboxRoot();
 
+  // Resolved BEFORE the try/catch below, on purpose: that block turns every
+  // failure into null so the panel degrades quietly, and a misconfigured
+  // MC_BRIEFS_AGENT must not be swallowed by it.
+  const briefsAgent = resolveBriefsAgent(env);
+
   // ------------------------------------------------------------------
   // Prefix assert: verify briefsDir is inside INBOX_ROOT.
   // Manager-review fix: build briefsDir from the RESOLVED root so a
@@ -121,7 +180,7 @@ export async function getLatestBrief(
   let briefsDirReal: string;
   try {
     const inboxRootReal = fs.realpathSync(inboxRoot);
-    const briefsDir = path.join(inboxRootReal, "quill", "briefs");
+    const briefsDir = path.join(inboxRootReal, briefsAgent, "briefs");
     // Both the sep-suffixed and exact forms are valid (same as review.server.ts).
     const isContained =
       briefsDir === inboxRootReal ||

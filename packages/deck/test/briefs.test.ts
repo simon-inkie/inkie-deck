@@ -18,19 +18,28 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { getLatestBrief } from "~/lib/briefs.server";
+import {
+  getLatestBrief,
+  resolveBriefsAgent,
+  DEFAULT_BRIEFS_AGENT,
+} from "~/lib/briefs.server";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/** Create an INBOX_ROOT structure with quill/briefs/ seeded with provided files. */
+/**
+ * Create an INBOX_ROOT structure with <agent>/briefs/ seeded with the provided
+ * files. Defaults to the agent getLatestBrief reads with no configuration, so
+ * every existing test keeps testing what it tested before.
+ */
 function makeBriefsInbox(
-  files: Record<string, string>
+  files: Record<string, string>,
+  agent: string = DEFAULT_BRIEFS_AGENT
 ): { inboxRoot: string; briefsDir: string } {
   const inboxRoot = mkdtempSync();
-  const briefsDir = path.join(inboxRoot, "quill", "briefs");
+  const briefsDir = path.join(inboxRoot, agent, "briefs");
   fs.mkdirSync(briefsDir, { recursive: true });
   for (const [name, content] of Object.entries(files)) {
     fs.writeFileSync(path.join(briefsDir, name), content, "utf8");
@@ -358,5 +367,86 @@ describe("getLatestBrief - symlinked INBOX_ROOT", () => {
     expect(result).not.toBeNull();
     expect(result!.date).toBe("2026-06-10");
     expect(result!.markdown).toContain("Via symlink.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MC_BRIEFS_AGENT: which agent's inbox dir carries the briefs
+// ---------------------------------------------------------------------------
+
+describe("resolveBriefsAgent", () => {
+  it("defaults when MC_BRIEFS_AGENT is unset, empty or whitespace", () => {
+    expect(resolveBriefsAgent({})).toBe(DEFAULT_BRIEFS_AGENT);
+    expect(resolveBriefsAgent({ MC_BRIEFS_AGENT: "" })).toBe(DEFAULT_BRIEFS_AGENT);
+    expect(resolveBriefsAgent({ MC_BRIEFS_AGENT: "   " })).toBe(DEFAULT_BRIEFS_AGENT);
+  });
+
+  it("returns a valid agent name, trimmed", () => {
+    expect(resolveBriefsAgent({ MC_BRIEFS_AGENT: "atlas" })).toBe("atlas");
+    expect(resolveBriefsAgent({ MC_BRIEFS_AGENT: "  atlas  " })).toBe("atlas");
+    expect(resolveBriefsAgent({ MC_BRIEFS_AGENT: "agent-9" })).toBe("agent-9");
+  });
+
+  it("THROWS on a value that is not a valid agent name, rather than falling back", () => {
+    // The two quiet alternatives are both worse than a crash. Falling back to
+    // the default reads a different agent's briefs while looking like it had
+    // honoured the setting; returning null presents a typo as "no brief today".
+    for (const bad of [
+      "../../etc",
+      "Atlas",
+      "at las",
+      "-leading-hyphen",
+      "trailing/slash",
+      ".hidden",
+      "under_score",
+    ]) {
+      expect(() => resolveBriefsAgent({ MC_BRIEFS_AGENT: bad })).toThrow(
+        /MC_BRIEFS_AGENT/
+      );
+    }
+  });
+});
+
+describe("getLatestBrief - MC_BRIEFS_AGENT", () => {
+  it("reads the configured agent's briefs dir, not the default one", async () => {
+    const { inboxRoot } = makeBriefsInbox(
+      { "2026-06-10.md": "# from atlas" },
+      "atlas"
+    );
+    try {
+      const env = { ...makeEnv(inboxRoot), MC_BRIEFS_AGENT: "atlas" };
+      const result = await getLatestBrief(env, utcDate("2026-06-10"));
+      expect(result).not.toBeNull();
+      expect(result!.markdown).toBe("# from atlas");
+    } finally {
+      rmSync(inboxRoot);
+    }
+  });
+
+  it("returns null when the configured agent has no briefs dir, even though another agent does", async () => {
+    // The negative half of the test above. Without it, a getLatestBrief that
+    // ignored MC_BRIEFS_AGENT entirely would still pass the positive case on a
+    // fixture that happened to seed both dirs.
+    const { inboxRoot } = makeBriefsInbox({ "2026-06-10.md": "# default agent" });
+    try {
+      const env = { ...makeEnv(inboxRoot), MC_BRIEFS_AGENT: "atlas" };
+      expect(await getLatestBrief(env, utcDate("2026-06-10"))).toBeNull();
+    } finally {
+      rmSync(inboxRoot);
+    }
+  });
+
+  it("propagates the config error instead of degrading to null", async () => {
+    // getLatestBrief turns every filesystem failure into null so the panel
+    // degrades quietly. A misconfigured env var must not be swallowed by that.
+    const { inboxRoot } = makeBriefsInbox({ "2026-06-10.md": "# x" });
+    try {
+      const env = { ...makeEnv(inboxRoot), MC_BRIEFS_AGENT: "../escape" };
+      await expect(getLatestBrief(env, utcDate("2026-06-10"))).rejects.toThrow(
+        /MC_BRIEFS_AGENT/
+      );
+    } finally {
+      rmSync(inboxRoot);
+    }
   });
 });
