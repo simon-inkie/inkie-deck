@@ -375,6 +375,7 @@ describe("settings merge", () => {
     );
     expect(settings).toEqual({
       env: { AGENT_NAME: "wren", INBOX_ROOT: box.inboxRoot, AGENT_ROLE: "keeps the notes" },
+      promptSuggestionEnabled: false,
     });
   });
 

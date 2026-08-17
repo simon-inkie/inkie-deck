@@ -211,7 +211,14 @@ const inboxRoot = process.env.CA_INBOX_ROOT;
 // application must resolve the SAME root, and a default on either side would
 // quietly split an agent's messages away from the application while both halves
 // carried on looking like they worked.
-const additions = { env: { AGENT_NAME: name, INBOX_ROOT: inboxRoot } };
+const additions = {
+  env: { AGENT_NAME: name, INBOX_ROOT: inboxRoot },
+  // Claude Code's ghost/auto-suggest text has no detection in Deck's
+  // compose-push (unlike Codex's dim-SGR-wrapped hints), so an agent left on
+  // the default silently drops pushed messages. Off by default closes that
+  // gap without relying on every adopter finding it the hard way.
+  promptSuggestionEnabled: false,
+};
 if (role) additions.env.AGENT_ROLE = role;
 
 let existing = {};

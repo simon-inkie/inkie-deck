@@ -96,7 +96,9 @@ AGENTS_HOME=/path/to/agents INBOX_ROOT=/path/to/inboxes \
 ```
 
 That writes the persona files, the inbox, and the runtime settings (including
-the `AGENT_NAME` and `INBOX_ROOT` the inbox CLI refuses to run without), stamps
+the `AGENT_NAME` and `INBOX_ROOT` the inbox CLI refuses to run without, and
+`promptSuggestionEnabled: false` so Claude's ghost-text suggestions can't get
+mistaken for a real reply and silently eat a pushed message), stamps
 that CLI's path and commands into the agent's own `TOOLS.md`, and links
 `bin/inbox` into `~/.local/bin` so plain `inbox` resolves for it. That symlink
 is the one thing written outside the agents home and the inbox root; it is
