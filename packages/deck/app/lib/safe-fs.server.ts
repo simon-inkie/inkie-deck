@@ -19,8 +19,10 @@
  *     never touch even though they are inside the root.
  *   assertNoLiveSiloRoot(rootReal, label) - the old ban's intent, relocated:
  *     when MC_SANDBOX_ONLY is set (tests/CI/dev), any root resolving inside
- *     the real ~/.the-vault is refused outright. Production unsets it at
- *     cutover. Resolved against the real home directory, never string-matched.
+ *     the live silo is refused outright. Production unsets it at cutover.
+ *     Resolved as a path, never string-matched. The silo is MC_LIVE_SILO_ROOT
+ *     when set and ~/.the-vault otherwise, so the guard can protect
+ *     a fleet whose silo directory is not the one this project ships.
  *   atomicWrite / atomicWriteBuffer - temp+same-dir-rename write primitives.
  *     LIB-INTERNAL discipline: only data-access seam modules (inbox, queue,
  *     attachments, projects) may import these, and every call must be preceded
@@ -93,18 +95,56 @@ export function resolveInboxRoot(): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * The live agent silo this instance must never be pointed at while sandboxed.
+ *
+ * MC_LIVE_SILO_ROOT when set, otherwise ~/.the-vault.
+ *
+ * The default is the silo layout this project ships and documents, so an
+ * instance that sets nothing behaves exactly as it did before this became
+ * configurable. The variable exists because the guard below is the ONLY thing
+ * standing between a dev instance and a real fleet's messages, and it can only
+ * do that job on a machine whose silo happens to carry the default name.
+ * README states FND-04's other half as "a sandbox configuration may never be
+ * pointed at a live agent silo" - no directory named - while the code could
+ * only ever recognise one particular directory. On every other deployment the
+ * flag was a no-op that read, from .env.example, as a protection. Naming your
+ * real silo here is what makes MC_SANDBOX_ONLY mean something.
+ *
+ * Absolute paths only, and validated at the point of use rather than at boot:
+ * the variable is meaningless unless MC_SANDBOX_ONLY is also set, and failing
+ * a production start over an unused sandbox setting would be the wrong trade.
+ */
+export function resolveLiveSiloRoot(): string {
+  const configured = process.env["MC_LIVE_SILO_ROOT"];
+  if (configured && configured.trim() !== "") {
+    const value = configured.trim();
+    if (!path.isAbsolute(value)) {
+      throw new Error(
+        `MC_LIVE_SILO_ROOT must be an absolute path, got: "${value}". ` +
+          "It names the live agent silo a sandbox instance must refuse, so a " +
+          "relative value would resolve against the working directory and " +
+          "guard nothing."
+      );
+    }
+    return value;
+  }
+  return path.join(os.homedir(), ".the-vault");
+}
+
+/**
  * When MC_SANDBOX_ONLY is set to a non-empty value (test/setup.ts sets "1";
- * dev .env should too), refuse any root that realpath-resolves to the real
- * ~/.the-vault or below. This preserves the original FND-04 intent - sandbox
- * configurations must never point at live agent silos - WITHOUT the per-write
- * substring matching that blocked production's legitimate paths.
+ * dev .env should too), refuse any root that realpath-resolves to the live
+ * agent silo (see resolveLiveSiloRoot) or below. This preserves the original
+ * FND-04 intent - sandbox configurations must never point at live agent silos
+ * - WITHOUT the per-write substring matching that blocked production's
+ * legitimate paths.
  *
  * Production unsets MC_SANDBOX_ONLY as a deliberate step of the real-inbox
  * cutover (separate Alex-gated commit).
  *
- * The comparison is against the RESOLVED real home silo path, never a string
- * match, so test fixtures that happen to contain ".the-vault" in a tmpdir name
- * are unaffected.
+ * The comparison is against the RESOLVED silo path, never a string match, so
+ * test fixtures that happen to contain the silo's name in a tmpdir name are
+ * unaffected.
  *
  * @param rootReal - The realpath-resolved root to vet.
  * @param label - Human label for the error message ("inbox", "attachments", ...).
@@ -113,7 +153,7 @@ export function assertNoLiveSiloRoot(rootReal: string, label: string): void {
   const sandboxOnly = process.env["MC_SANDBOX_ONLY"];
   if (!sandboxOnly || sandboxOnly.trim() === "") return;
 
-  const siloCandidate = path.join(os.homedir(), ".the-vault");
+  const siloCandidate = resolveLiveSiloRoot();
   let siloReal: string;
   try {
     siloReal = fs.realpathSync(siloCandidate);
