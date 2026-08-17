@@ -464,11 +464,18 @@ else
   # Do not guess silently. Propose, explain, and record the choice in the
   # output, so an inbox created in the wrong place is visible at the moment it
   # happens rather than the first time a message goes missing.
+  #
+  # This value is the silo layout this project ships, NOT a reading of the
+  # deployment. It used to be announced as "the value from the application's
+  # .env.example", which was never true - that file ships INBOX_ROOT empty,
+  # because there is no default (FND-03) - and it invited the reader to trust a
+  # guess as though something had confirmed it.
   INBOX_ROOT="$HOME/.the-vault/agents"
   INBOX_ROOT_SOURCE="default (INBOX_ROOT was unset)"
   warn "INBOX_ROOT is not set. The application reads agents from that directory,"
   warn "so an agent created outside it exists for the launcher and not for the"
-  warn "application. Proposing the value from the application's .env.example:"
+  warn "application. Nothing here knows where YOUR inbox root is: the value"
+  warn "below is this project's default layout, and it is a guess."
   warn "    $INBOX_ROOT"
   warn "Set INBOX_ROOT, or pass --inbox-root, to put it somewhere else."
 fi

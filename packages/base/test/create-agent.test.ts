@@ -290,6 +290,53 @@ describe("creation", () => {
     expect(result.output).toContain("--inbox-root");
   });
 
+  // ---------------------------------------------------------------------------
+  // Where the inbox root comes from
+  // ---------------------------------------------------------------------------
+  //
+  // The built-in fallback names a silo directory this project ships. An audit
+  // read that literal as a hardcoded path and called the script broken. It is
+  // not: the literal is the LAST of three sources, and both of the ones ahead
+  // of it win. These pin that ordering, because the thing that would actually
+  // be broken is a fallback that fired when something had been configured.
+
+  it("uses INBOX_ROOT from the environment in preference to the built-in default", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { INBOX_ROOT: box.inboxRoot },
+    });
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
+    // The fallback did not fire, so it said nothing.
+    expect(result.output).not.toContain("INBOX_ROOT is not set");
+    expect(fs.existsSync(path.join(box.home, ".the-vault"))).toBe(false);
+  });
+
+  it("--inbox-root beats INBOX_ROOT, which beats the built-in default", () => {
+    const box = sandbox();
+    const chosen = path.join(box.home, "chosen-inbox");
+    const result = run(box, ["wren", "--no-verify", "--inbox-root", chosen], {
+      env: { INBOX_ROOT: box.inboxRoot },
+    });
+    expect(fs.existsSync(path.join(chosen, "wren", "inbox"))).toBe(true);
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren"))).toBe(false);
+    expect(result.output).toContain(chosen);
+  });
+
+  it("calls the fallback a guess, and does not attribute it to a file that does not say it", () => {
+    // The warning used to claim the value came from the application's
+    // .env.example. That file ships INBOX_ROOT empty (there is no default,
+    // FND-03), so the citation dressed a guess up as a lookup.
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { INBOX_ROOT: "" },
+    });
+    expect(result.output).toContain("INBOX_ROOT is not set");
+    expect(result.output).toContain("guess");
+    expect(result.output).not.toContain(".env.example");
+    // It still says exactly where the agent went.
+    expect(result.output).toContain(path.join(box.home, ".the-vault", "agents"));
+  });
+
   it("warns when AGENTS_HOME and AGENTS_ROOT disagree instead of silently picking one", () => {
     const box = sandbox();
     const result = run(box, ["wren", "--no-verify"], {
