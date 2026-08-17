@@ -81,9 +81,13 @@ export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", 
  * heading in a message body no longer ends the block it sits in. base holds at
  * 38 because its shell suites are one vitest case each however many cases they
  * contain; the bash tally there went 54 -> 55 for the same fix.
+ *
+ * deck moved 1813 -> 1819 on 2026-08-17: six tests for MC_BRIEFS_AGENT, which
+ * replaced a hardcoded agent name in the briefs path with a validated config
+ * value. base is unchanged.
  */
 export const EXPECTED_TESTS = {
-  deck: { passed: 1813, skipped: 11, files: 88 },
+  deck: { passed: 1819, skipped: 11, files: 88 },
   base: { passed: 38, skipped: 0, files: 4 },
 };
 
