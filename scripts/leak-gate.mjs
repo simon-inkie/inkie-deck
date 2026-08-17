@@ -312,9 +312,10 @@ const RULES = [
   // -- Email ----------------------------------------------------------------
   rule({
     label: "company-email-address",
-    why: "Addresses on the company mail domain are personal contact details, not public repo content.",
+    why: "Addresses on the company mail domain are personal contact details, not public repo content. EXEMPT IN MESSAGE SCOPE ONLY (see messageExempt below), same reasoning as principal-first-name above: GitHub's own squash-merge writes a Co-authored-by trailer carrying the maintainer's address onto the merge commit, and that address already sits in the author/committer header of every commit here by the same deliberate, standing decision. It stays fully enforced over file content, where no such decision covers an address pasted into a doc or fixture.",
     pattern: ["[A-Za-z0-9._-]+@ink", "ie\\.ink\\b"],
     sample: ["someone@ink", "ie.ink"],
+    messageExempt: true,
   }),
 
   // -- Internal tooling -----------------------------------------------------
