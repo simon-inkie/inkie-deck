@@ -4,10 +4,35 @@
  * Read-only safe-fs module for the review side-panel (TASK-431, TASK-562).
  * Mirrors the discipline from attachments.server.ts:
  *   - realpath BOTH sides for containment
- *   - .the-vault ban (raw + resolved)
  *   - sep-suffixed startsWith prefix assert
  *   - console.warn on denial (observable in dev logs, no client leak)
  *   - route maps ALL throws to 404 (no reason leak)
+ *
+ * That list used to carry a second bullet, a per-path substring ban on a
+ * literal silo directory name, applied to the raw and the resolved path
+ * both. TASK-434 replaced deny-known-bad with allowlist confinement across
+ * safe-fs, attachments and projects; the ban was left standing here alone,
+ * still naming a literal directory. Two things were wrong with it. It banned
+ * a string no deployment is obliged to use, so on most of them it denied
+ * nothing at all. And INBOX_ROOT is ALWAYS an implicit review root (see
+ * resolveReviewRoots below), so on any deployment that DID use that name the
+ * ban and the root list contradicted each other outright: the panel refused
+ * every read from the one root it is guaranteed to have. Containment against
+ * realpath'd roots is strictly stronger than a substring test for the
+ * traversal and symlink-escape cases the ban was reaching for, so removing it
+ * loses nothing that was load-bearing.
+ *
+ * KNOWN GAP, deliberately not closed here (needs its own change): the
+ * MC_SANDBOX_ONLY live-silo refusal covers the four roots in safe-fs's
+ * ROOT_ENV_VARS table, which validateConfiguredRoots vets once at boot.
+ * INBOX_ROOT is in that table, so the implicit review root IS covered.
+ * REVIEW_ROOTS is not in it and is vetted nowhere, so a sandbox instance can
+ * still name a live silo there explicitly. The obvious fix - calling
+ * assertNoLiveSiloRoot per root inside assertContained - lands on the
+ * autolink hot path, which linkifyBlockBodies shares root resolution across
+ * precisely because the realpath cost there is measured and bounded by a
+ * regression test. Closing it wants a once-per-request home, not a per-path
+ * syscall.
  *
  * Exports:
  *   resolveReviewRoots() - parses REVIEW_ROOTS env (colon-separated absolute
@@ -115,7 +140,9 @@ export function resolveReviewRoots(): string[] {
  *
  * Steps:
  *   1. Shape: absolute, no NUL, no ".." segments (early, before fs).
- *   2. .the-vault ban (raw + resolved).
+ *   2. GONE. Was a substring ban on a literal silo directory name, raw and
+ *      resolved. The module header says why it went. The number is left in
+ *      place so step 3 below still matches the "Step 3" in the code.
  *   3. Containment: realpathSync BOTH sides; must be inside at least one root.
  *
  * Returns the fully resolved path on success. Throws with a descriptive
@@ -135,13 +162,6 @@ function assertContained(targetPath: string, roots: string[]): string {
   const parts = normalized.split(path.sep);
   if (parts.some((p) => p === "..")) {
     throw new Error(`Path contains ".." segment: "${targetPath}".`);
-  }
-
-  // Step 2: .the-vault ban on raw path.
-  if (targetPath.includes(".the-vault")) {
-    throw new Error(
-      `Refusing to read: path contains banned substring ".the-vault": "${targetPath}".`
-    );
   }
 
   // Resolve all roots (realpathSync, throws ENOENT if root does not exist).
@@ -168,22 +188,13 @@ function assertContained(targetPath: string, roots: string[]): string {
   }
   const joined = path.join(parentReal, path.basename(targetPath));
 
-  // Step 2b: .the-vault ban on parent-resolved path.
-  if (joined.includes(".the-vault")) {
-    throw new Error(
-      `Refusing to read: resolved path contains banned substring ".the-vault": "${joined}".`
-    );
-  }
-
-  // Fully resolve the target itself if it exists (catches final-component symlinks).
+  // Fully resolve the target itself if it exists (catches final-component
+  // symlinks). Containment below is what judges the result: a symlink that
+  // escapes the roots fails the prefix assert wherever it points, which is the
+  // property the old resolved-path substring ban was approximating.
   let finalResolved = joined;
   try {
     finalResolved = fs.realpathSync(joined);
-    if (finalResolved.includes(".the-vault")) {
-      throw new Error(
-        `Refusing to read: fully-resolved path contains banned substring ".the-vault": "${finalResolved}".`
-      );
-    }
   } catch (err) {
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
       finalResolved = joined;
@@ -227,7 +238,7 @@ export interface ReviewFileResult {
  *
  * Gate chain (every failure throws; route maps all to 404, console.warn'd):
  *   1. Shape rejection (absolute, no NUL, no ".." segments).
- *   2. .the-vault ban (raw + resolved).
+ *   2. GONE - see assertContained.
  *   3. Multi-root realpath containment.
  *   4. Extension allowlist (markdown + code set) - evaluated on BOTH the
  *      requested path AND the realpath'd path.
@@ -448,7 +459,7 @@ const AUTOLINK_TOKEN_RE = new RegExp(
  *
  * Reuses the exact review-panel validation (no second implementation):
  *   - expandTilde + resolveReviewRoots (unless roots pre-passed by the caller).
- *   - assertContained (shape + .the-vault ban + multi-root realpath containment).
+ *   - assertContained (shape + root vetting + multi-root realpath containment).
  *   - REVIEW_DOC_EXTS allowlist (doc + code) on BOTH requested and resolved
  *     extension - the same combined set readReviewFile serves.
  *   - isSecretBasename on BOTH basenames (deny-before-allow).

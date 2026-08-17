@@ -4,9 +4,9 @@
  * Covers (per plan sections 7 + TASK-562 test plan):
  *   - resolveReviewRoots: parsing, absolute-only, implicit INBOX_ROOT, unset.
  *   - readReviewFile: containment in/out per root, symlinked root + symlink
- *     escape; .the-vault ban; THE .env test - .env inside allowed root denied
- *     by extension gate; .markdown/.txt/.ts/.json accepted; size cap; ".." shape
- *     rejection; binary-NUL guard; kind/lang derivation.
+ *     escape; no silo-name substring ban; THE .env test - .env inside
+ *     allowed root denied by extension gate; .markdown/.txt/.ts/.json accepted;
+ *     size cap; ".." shape rejection; binary-NUL guard; kind/lang derivation.
  *   - readReviewAsset: image allowed, svg denied, .md denied.
  *   - seam: REVIEW_ROOTS ban is in seam.test.ts (separate suite).
  *
@@ -315,34 +315,73 @@ describe("review.server", () => {
   });
 
   // -------------------------------------------------------------------------
-  // readReviewFile - .the-vault ban
+  // readReviewFile - silo directory name is not a substring rule
   // -------------------------------------------------------------------------
+  //
+  // This block used to assert the opposite: that any path whose text contained
+  // a particular silo directory name was refused. TASK-434 had already retired
+  // that pattern everywhere else (safe-fs, attachments, projects) in favour of
+  // realpath containment, and it was left standing here alone. It denied
+  // nothing on a deployment that does not use that name, and on a deployment
+  // that DOES it contradicted resolveReviewRoots, which always appends
+  // INBOX_ROOT as an implicit root: the panel refused every read from the one
+  // root it is guaranteed to have. What follows pins the behaviour that
+  // actually protects the surface - containment, judged on the realpath - and
+  // pins that the name itself carries no special power.
 
-  describe("readReviewFile - .the-vault ban", () => {
-    it("rejects any path containing .the-vault", () => {
-      withEnv({ INBOX_ROOT: sandbox }, () => {
-        const bannedPath = path.join(sandbox, ".the-vault", "memory.md");
-        expect(() => readReviewFile(bannedPath)).toThrow(/\.the-vault/);
+  describe("readReviewFile - containment, not name matching", () => {
+    it("SERVES a file from a root whose own path contains a silo-shaped dir name", () => {
+      // The exact case the old ban made impossible: a production root sitting
+      // inside a dot-prefixed silo directory.
+      const siloish = path.join(sandbox, ".the-vault", "agents");
+      fs.mkdirSync(siloish, { recursive: true });
+      const filePath = path.join(siloish, "memory.md");
+      fs.writeFileSync(filePath, "# notes\n");
+
+      withEnv({ INBOX_ROOT: siloish }, () => {
+        const result = readReviewFile(filePath);
+        expect(result.content).toBe("# notes\n");
+        expect(result.path).toContain(".the-vault");
       });
     });
 
-    it("rejects .the-vault via intermediate symlink", () => {
-      const fakeBrainDir = mkdtempSync();
+    it("still REFUSES a silo-shaped path that is outside every root", () => {
+      // Same shape as above, but not configured as a root. The denial has to
+      // come from containment now, not from the directory's name.
+      const outside = mkdtempSync();
       try {
-        const fakeBrainSubdir = path.join(fakeBrainDir, ".the-vault");
-        fs.mkdirSync(fakeBrainSubdir);
-        const fakeBrainInner = path.join(fakeBrainSubdir, "agents");
-        fs.mkdirSync(fakeBrainInner, { recursive: true });
-        const linkPath = path.join(sandbox, "escape-link");
-        fs.symlinkSync(fakeBrainInner, linkPath);
-        const targetPath = path.join(linkPath, "memory.md");
-        // raw path does NOT contain ".the-vault" but resolved path does.
-        expect(targetPath).not.toContain(".the-vault");
+        const siloish = path.join(outside, ".the-vault", "agents");
+        fs.mkdirSync(siloish, { recursive: true });
+        const filePath = path.join(siloish, "memory.md");
+        fs.writeFileSync(filePath, "# notes\n");
+
         withEnv({ INBOX_ROOT: sandbox }, () => {
-          expect(() => readReviewFile(targetPath)).toThrow(/\.the-vault/);
+          expect(() => readReviewFile(filePath)).toThrow(/outside all review roots/);
         });
       } finally {
-        rmSync(fakeBrainDir);
+        rmSync(outside);
+      }
+    });
+
+    it("REFUSES an escape through an intermediate symlink on the resolved path", () => {
+      // The case the resolved-path half of the old ban was reaching for. It is
+      // caught by containment against the realpath, with no name involved.
+      const outside = mkdtempSync();
+      try {
+        const inner = path.join(outside, ".the-vault", "agents");
+        fs.mkdirSync(inner, { recursive: true });
+        fs.writeFileSync(path.join(inner, "memory.md"), "# notes\n");
+        const linkPath = path.join(sandbox, "escape-link");
+        fs.symlinkSync(inner, linkPath);
+        const targetPath = path.join(linkPath, "memory.md");
+        // The raw path does not carry the directory name at all; only the
+        // realpath does, which is the point.
+        expect(targetPath).not.toContain(".the-vault");
+        withEnv({ INBOX_ROOT: sandbox }, () => {
+          expect(() => readReviewFile(targetPath)).toThrow(/outside all review roots/);
+        });
+      } finally {
+        rmSync(outside);
       }
     });
   });
