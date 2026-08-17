@@ -119,13 +119,13 @@ function compareDates(a: string, b: string): number {
  * Format a Date as a YYYY-MM-DD string in LOCAL time terms, consistent with
  * how MC_NOW is consumed elsewhere (the MC_NOW pattern treats the ISO string
  * as a wall-clock instant; date comparisons are done against the date portion
- * of that instant in UTC, since the briefs are stamped UTC-midnight by Quill's
- * cron).
+ * of that instant in UTC, since the briefs are stamped UTC-midnight by the
+ * job that writes them).
  *
  * We use UTC date extraction so that a brief dated 2026-06-10 (UTC) is
  * considered "today" when MC_NOW is 2026-06-10T20:30:00Z, regardless of the
- * server's local timezone. This is consistent with Quill's cron writing the brief
- * at ~07:50 UTC.
+ * server's local timezone. This is consistent with a brief cron that runs in
+ * the early morning UTC, which is the case the freshness window is sized for.
  */
 function toUtcDateString(d: Date): string {
   const y = d.getUTCFullYear();

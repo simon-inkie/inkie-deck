@@ -163,8 +163,8 @@ const RULES = [
   }),
   rule({
     label: "private-agent-persona-name",
-    why: "The internal coordinator agent's persona name. Two letters, so it is matched case-sensitively AND word-bounded: an unbounded or case-insensitive rule for a token this short fires inside ordinary identifiers everywhere. The capitalised standalone form is the one that appears in prose as a named design actor, which is the shape that leaks.",
-    pattern: ["\\bI", "o\\b"],
+    why: "The internal coordinator agent's persona name. Two letters, so it is word-bounded AND case-sensitive, matching only the capitalised prose form and the all-lowercase identifier form. The all-UPPERCASE spelling is deliberately allowed: it is the ordinary abbreviation for input/output, which this repository's own purity markers use two dozen times, and denying it would make the rule unusable. Both denied spellings are at zero occurrences in this tree, which is what makes a bounded rule for a two-letter name affordable at all. Keep it that way: the demo roster uses a different coordinator name precisely so this can stay empty.",
+    pattern: ["\\b(?:I|i)", "o\\b"],
     flags: "",
     sample: ["I", "o"],
   }),
@@ -191,15 +191,16 @@ const RULES = [
   rule({
     label: "internal-repo-or-host-name",
     why: "Name of an internal repository, project or host. Their names alone reveal internal topology and invite links back into private material.",
-    // NB the fragment split here is not arbitrary. Splitting this list at
-    // "inkie-" boundaries left one internal tool's three-letter name sitting
-    // at the start of a fragment, delimited by a quote on one side and a
-    // pipe on the other: a bare, word-bounded instance of a denied string,
-    // in the denylist itself, which the private-db-tool-name rule below
-    // duly caught when it was added. Fragments must split the NAMES, not
-    // the separators between them.
+    // NB the fragment split here is not arbitrary, and it has been wrong
+    // twice. Splitting an alternation at its SEPARATORS leaves whichever
+    // name follows sitting at the start of a fragment, delimited by a quote
+    // on one side and a pipe or hyphen on the other: a bare, word-bounded
+    // instance of a denied string, in the denylist itself. This one line
+    // held two of them, one three letters and one two, and neither was
+    // visible to any rule that existed at the time. Fragments must break
+    // the NAMES, never the separators between them.
     pattern: [
-      "\\b(?:the-", "brain|mission-", "control|quill-", "projects|inkie-p",
+      "\\b(?:the-", "brain|mission-", "control|i", "o-projects|inkie-p",
       "gr|inkie-", "app-v2|inkie-", "worker|inkie-", "functions)\\b",
     ],
     sample: ["mission-", "control"],
@@ -208,8 +209,12 @@ const RULES = [
   rule({
     label: "internal-worktree-name",
     why: "Names of internal per-agent git worktrees, plus the internal codename the shared memory system grew out of (which survives today as a real agent silo directory name). Leading \\b only, no trailing bound, on purpose: a numbered SECONDARY worktree is the same name with a digit appended, and a trailing \\b silently misses it. One such secondary was in the tree when this rule was written.",
+    // Same split discipline as internal-repo-or-host-name above: break the
+    // names, not the pipes. A fragment that STARTS with the two-letter
+    // coordinator name, with a quote before it and a pipe after, is a bare
+    // word-bounded instance of a denied string sitting in the denylist.
     pattern: [
-      "\\b(?:inkie-", "gtm|inkie-", "quill|inkie-", "analytics|grey", "matter)",
+      "\\b(?:inkie-", "gtm|inkie-i", "o|inkie-", "analytics|grey", "matter)",
     ],
     sample: ["inkie-", "gtm"],
   }),

@@ -86,9 +86,8 @@ const DG_URL_BASE =
 // roster name transcribed as a common English near-neighbour mid-sentence on
 // the untouched config; a keyterm entry for it fixed that directly, and
 // smart_format/language variants did not, which rules both out as the cause.
-// Confirmed on the STREAMING endpoint
-// specifically - the docs describe the batch API, and the two are not the
-// same surface.
+// Confirmed on the STREAMING endpoint specifically - the docs describe the
+// batch API, and the two are not the same surface.
 //
 // Default list is the demo roster (DEFAULT_KEYTERMS, voice-relay.mjs).
 // Deliberately NOT capped or validated here: an allowlist on term COUNT would
