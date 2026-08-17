@@ -57,15 +57,23 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 /**
- * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[], messageExempt?: boolean }} spec
+ * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[], messageExempt?: boolean, messageExemptPattern?: string[] }} spec
  */
-function rule({ label, why, pattern, flags = "i", sample, messageExempt = false }) {
+function rule({ label, why, pattern, flags = "i", sample, messageExempt = false, messageExemptPattern }) {
   return {
     label,
     why,
     re: new RegExp(pattern.join(""), flags),
     sample: sample.join(""),
     messageExempt,
+    // A narrower, anchored allow-pattern: when set, a message-scope match is
+    // only skipped if the SAME line also matches this exact shape, everything
+    // else the rule's own pattern catches still fires. This is deliberately
+    // separate from `messageExempt` (a whole-rule skip), because a rule whose
+    // pattern class covers more than one person's identity (an email-domain
+    // rule, not a specific name) must not go blind to every OTHER match on
+    // that class just to permit one pre-approved instance.
+    messageExemptPattern: messageExemptPattern ? new RegExp(messageExemptPattern.join(""), flags) : undefined,
   };
 }
 
@@ -312,10 +320,10 @@ const RULES = [
   // -- Email ----------------------------------------------------------------
   rule({
     label: "company-email-address",
-    why: "Addresses on the company mail domain are personal contact details, not public repo content. EXEMPT IN MESSAGE SCOPE ONLY (see messageExempt below), same reasoning as principal-first-name above: GitHub's own squash-merge writes a Co-authored-by trailer carrying the maintainer's address onto the merge commit, and that address already sits in the author/committer header of every commit here by the same deliberate, standing decision. It stays fully enforced over file content, where no such decision covers an address pasted into a doc or fixture.",
+    why: "Addresses on the company mail domain are personal contact details, not public repo content. NARROWLY exempt for one exact message shape only (see messageExemptPattern below), not the whole rule: GitHub's own squash-merge writes a Co-authored-by trailer carrying the maintainer's address onto the merge commit, and that address already sits in the author/committer header of every commit here by the same deliberate, standing decision that exempts his first name (principal-first-name, above). A blanket message-scope skip here would go blind to every OTHER address on the domain in every message shape, not just this one pre-approved instance, this rule's pattern class covers more than one person's identity, unlike a specific name. (An independent model-diverse review pass, 2026-08-17, caught the original blanket exemption on its first look.)",
     pattern: ["[A-Za-z0-9._-]+@ink", "ie\\.ink\\b"],
     sample: ["someone@ink", "ie.ink"],
-    messageExempt: true,
+    messageExemptPattern: ["^Co-au", "thored-by: Si", "mon <si", "mon@ink", "ie\\.ink>$"],
   }),
 
   // -- Internal tooling -----------------------------------------------------
@@ -519,9 +527,10 @@ function scanMessages() {
   for (const sha of shas) {
     const message = git(["log", "-1", "--format=%B", sha]);
     for (const [index, lineText] of message.split("\n").entries()) {
-      for (const { label, why, re, messageExempt } of RULES) {
+      for (const { label, why, re, messageExempt, messageExemptPattern } of RULES) {
         if (messageExempt) continue;
         if (re.test(lineText)) {
+          if (messageExemptPattern && messageExemptPattern.test(lineText)) continue;
           findings.push({ file: `${sha.slice(0, 10)} (message)`, line: index + 1, label, why });
         }
       }
