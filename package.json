@@ -19,7 +19,10 @@
     "_comment:test": "One workspace at a time, deliberately. pnpm -r defaults to running package scripts in parallel, and the base suite drives bin/create-agent.sh as real subprocesses. Run alongside deck's suite, that load alone pushed a dozen of deck's 5-second per-test timeouts over the line: 64 failures, none of them a real defect, on a tree that is green when the two run in sequence. A suite that fails for load reasons is no more use than one that passes for environmental ones.",
     "test": "pnpm -r --workspace-concurrency=1 run test",
     "check:boundaries": "depcruise packages",
+    "_comment:check:leaks": "Three scopes, because a clone hands over more than the working tree. check:leaks answers 'is the checkout clean'. :history answers 'is every reachable object clean', which is the only one that means anything for a repository that has history: a string deleted by a later commit is still served by git show from every tree that carried it. :messages answers the same question for what git log prints, which is the half a reader reaches for first. A green check:leaks over a red check:leaks:history is the exact shape of a repository that looks scrubbed and is not.",
     "check:leaks": "node scripts/leak-gate.mjs",
+    "check:leaks:history": "node scripts/leak-gate.mjs --history",
+    "check:leaks:messages": "node scripts/leak-gate.mjs --messages",
     "check:licence": "node scripts/licence-gate.mjs"
   },
   "devDependencies": {

@@ -27,10 +27,23 @@
  * the next reader cannot infer that from a split string. Then run
  * `node scripts/leak-gate.mjs --self-test` to prove the new rule fires.
  *
+ * WHAT A CLONE HANDS OVER, which is more than the working tree.
+ *
+ * The working-tree scan answers "is the checkout clean". That is not the
+ * question a public repository poses. Someone who clones this gets every
+ * reachable object and every commit message, and a string removed by a later
+ * commit is still served by `git show` from the tree that carried it. So the
+ * gate has three scopes, and only all three together mean anything:
+ * the working tree, every reachable blob, and every reachable message.
+ *
  * USAGE
  *   node scripts/leak-gate.mjs                  scan every file in the working
  *                                               tree that is not gitignored
  *   node scripts/leak-gate.mjs <file>...        scan the given files only
+ *   node scripts/leak-gate.mjs --history        scan every blob reachable from
+ *                                               any ref, and every object path
+ *   node scripts/leak-gate.mjs --messages       scan every reachable commit's
+ *                                               subject, body and trailers
  *   node scripts/leak-gate.mjs --self-test      prove every rule catches its
  *                                               own sample, using a temp file
  *                                               outside the repository
@@ -44,14 +57,15 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 /**
- * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[] }} spec
+ * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[], messageExempt?: boolean }} spec
  */
-function rule({ label, why, pattern, flags = "i", sample }) {
+function rule({ label, why, pattern, flags = "i", sample, messageExempt = false }) {
   return {
     label,
     why,
     re: new RegExp(pattern.join(""), flags),
     sample: sample.join(""),
+    messageExempt,
   };
 }
 
@@ -66,15 +80,39 @@ const RULES = [
   // no realistic false positives, so they get the stronger form.
   rule({
     label: "principal-first-name",
-    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment).",
+    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment). EXEMPT IN MESSAGE SCOPE ONLY (see messageExempt below): this person is the repository's maintainer and the author and committer fields of every commit here carry his full name and address, by a deliberate decision that is not being revisited. Denying in a commit body what the header of that same commit states outright is theatre, and a rule kept only by being ignored is worse than no rule. It stays fully enforced over file content, where there is no such decision and no such header.",
     pattern: ["si", "mon"],
     sample: ["si", "mon"],
+    messageExempt: true,
   }),
   rule({
     label: "second-principal-first-name",
     why: "First name of the second person the internal deployment serves. Substring match: distinctive, no \\b (see section comment).",
     pattern: ["sop", "hie"],
     sample: ["sop", "hie"],
+  }),
+  rule({
+    label: "third-principal-first-name",
+    why: "First name of a third real person the internal deployment serves, named in the internal roster alongside the two above. Substring match: distinctive, no realistic false positive.",
+    pattern: ["lou", "ise"],
+    sample: ["lou", "ise"],
+  }),
+  // DELIBERATE OMISSION, so nobody adds it later thinking it was missed.
+  // A FOURTH real person shares her first name with one half of the
+  // alice/bob placeholder pair, and this repository uses that pair for
+  // demo agent names in roughly thirty-six places. A rule for it would
+  // fire on every one of them and be deleted within a day. The real
+  // exposure is not the bare name, it is the name next to a role, so it
+  // is guarded by review: if a fixture ever grows a job title, a company
+  // position or a meeting cadence beside that name, that is the leak.
+
+  // -- Children -------------------------------------------------------------
+  rule({
+    label: "principal-child-first-name",
+    why: "First names of the principal's children. These reached the repository as speech-recognition keyterms, with doc comments describing dictation measured against them. Word-bounded and case-sensitive: one is a common word in other cases and inside hyphenated identifiers (a model id in this tree ends in it), and only the capitalised standalone form is the real name.",
+    pattern: ["\\b(?:S", "ol|As", "traea)\\b"],
+    flags: "",
+    sample: ["S", "ol"],
   }),
 
   // -- Agent names ----------------------------------------------------------
@@ -107,11 +145,59 @@ const RULES = [
     ],
     sample: ["se", "th"],
   }),
+  rule({
+    label: "fleet-agent-name-boundary",
+    why: "Two more internal fleet agent names that must keep \\b bounds because each is a substring of an ordinary English word - one of a word for a collection of work samples, the other of the words for medicine and a paramedic. Weaker than the distinctive rule by construction: a fused occurrence will NOT fire.",
+    pattern: [
+      "\\b(?:fo", "lio|me", "dic)\\b",
+    ],
+    sample: ["fo", "lio"],
+  }),
+  rule({
+    label: "fleet-agent-name-platform-specialist",
+    why: "The platform specialist agent's two-word name and its internal three-character abbreviation. The distinctive rule above catches only the runtime spelling of this name; the prose spelling (spaced, hyphenated or underscored) and the abbreviation are different strings entirely. The abbreviation was the larger surface in practice: it appeared eleven times across seven files as a code-comment attribution and in no other shape.",
+    pattern: [
+      "(?:doc", "tor[-_ ]?two|\\bd", "r2\\b)",
+    ],
+    sample: ["Doc", "tor Two"],
+  }),
+  rule({
+    label: "private-agent-persona-name",
+    why: "The internal coordinator agent's persona name. Two letters, so it is matched case-sensitively AND word-bounded: an unbounded or case-insensitive rule for a token this short fires inside ordinary identifiers everywhere. The capitalised standalone form is the one that appears in prose as a named design actor, which is the shape that leaks.",
+    pattern: ["\\bI", "o\\b"],
+    flags: "",
+    sample: ["I", "o"],
+  }),
+  rule({
+    label: "coordinator-attribution-shape",
+    why: "Two shapes that name the internal open-source maintainer agent: a parenthesised credit, and a protocol message header naming it as sender. There is DELIBERATELY no bare-word rule for this name, and that omission must not be 'fixed': the name is an ordinary English word that this repository's own documentation uses constantly (a contributing one, an installation one, a style one). Coverage for it is these two shapes plus the agent-home path rule below, and nothing else.",
+    pattern: ["(?:\\(G", "uide[),:]|from: g", "uide\\b)"],
+    flags: "",
+    sample: ["(G", "uide)"],
+  }),
+  rule({
+    label: "real-agent-home-path",
+    why: "A path under an agent home directory that names one of the internal fleet's real agents. The <home>/agents/<name> path SHAPE is this product's own shipped convention and is fine on its own; the names in this alternation are not. This is also the only coverage for two names the bare-name rules cannot have: the two-letter coordinator name, and the maintainer name that is an ordinary English word.",
+    pattern: [
+      "(?:~|/home/[A-Za-z0-9_.-]+)/agents/",
+      "(?:i", "o|fo", "lio|gu", "ide|me", "dic|doc", "tor2|al", "dus|ag",
+      "gy|an", "dor|mon", "tani|hop", "kins|mag", "gie|p", "ea|se",
+      "th|ir", "is)\\b",
+    ],
+    sample: ["~/agents/", "i", "o/bin/sweep.sh"],
+  }),
 
   // -- Internal repositories and hosts --------------------------------------
   rule({
     label: "internal-repo-or-host-name",
     why: "Name of an internal repository, project or host. Their names alone reveal internal topology and invite links back into private material.",
+    // NB the fragment split here is not arbitrary. Splitting this list at
+    // "inkie-" boundaries left one internal tool's three-letter name sitting
+    // at the start of a fragment, delimited by a quote on one side and a
+    // pipe on the other: a bare, word-bounded instance of a denied string,
+    // in the denylist itself, which the private-db-tool-name rule below
+    // duly caught when it was added. Fragments must split the NAMES, not
+    // the separators between them.
     pattern: [
       "\\b(?:the-", "brain|mission-", "control|quill-", "projects|inkie-p",
       "gr|inkie-", "app-v2|inkie-", "worker|inkie-", "functions)\\b",
@@ -119,6 +205,24 @@ const RULES = [
     sample: ["mission-", "control"],
   }),
 
+  rule({
+    label: "internal-worktree-name",
+    why: "Names of internal per-agent git worktrees, plus the internal codename the shared memory system grew out of (which survives today as a real agent silo directory name). Leading \\b only, no trailing bound, on purpose: a numbered SECONDARY worktree is the same name with a digit appended, and a trailing \\b silently misses it. One such secondary was in the tree when this rule was written.",
+    pattern: [
+      "\\b(?:inkie-", "gtm|inkie-", "quill|inkie-", "analytics|grey", "matter)",
+    ],
+    sample: ["inkie-", "gtm"],
+  }),
+  rule({
+    label: "internal-commit-sha-citation",
+    why: "A short hex commit id cited in prose as provenance, pointing at a commit in the private repository this one was extracted from. A bare hex run is far too common to deny, so this is shape-scoped: 7 to 12 hex characters containing at least one letter (so a decimal constant such as a cache max-age cannot match), immediately preceded by the word for a commit, an opening parenthesis, or a comma and a space. That covered every instance found in this tree, in eight distinct shapes.",
+    pattern: [
+      "(?:com", "mit |\\(|, )",
+      "(?=[0-9a-f]{7,12}\\b)[0-9a-f]*[a-f][0-9a-f]*\\b",
+    ],
+    flags: "",
+    sample: ["(", "3e5b1a2", ")"],
+  }),
   rule({
     label: "internal-product-name",
     why: "The internal deployment's former product name (two words, also seen fused or underscore/hyphen-joined). The open product is Inkie Deck; the old name appearing anywhere means internal UI copy, docs or push text crossed over uncleaned. Substring, case-insensitive, so fused identifiers fire too.",
@@ -208,6 +312,20 @@ const RULES = [
     sample: ["someone@ink", "ie.ink"],
   }),
 
+  // -- Internal tooling -----------------------------------------------------
+  rule({
+    label: "private-db-tool-name",
+    why: "The internal read-only production-database CLI, in its bare, dotfile-prefix and credential-bundle shapes. Bounded on the bare form because the widely-used search tool this repository names about thirty times contains the same three letters fused mid-word; without the bound this rule fires on every one of those and gets deleted.",
+    pattern: ["(?:\\bp", "gr\\b|\\.p", "gr-|p", "gr-creds)"],
+    sample: ["x.p", "gr-creds.age"],
+  }),
+  rule({
+    label: "private-session-link",
+    why: "A link into a private assistant session transcript. These shipped as a commit-message trailer on most of this repository's history. The transcripts are not public, the URLs mean nothing to anyone who cannot open them, and they tie every commit to a specific private session.",
+    pattern: ["cla", "ude\\.ai/co", "de/"],
+    sample: ["https://cla", "ude.ai/co", "de/session_abc"],
+  }),
+
   // -- Credentials (backstop; gitleaks in CI is the primary scanner) --------
   rule({
     label: "private-key-block",
@@ -248,9 +366,15 @@ const RULES = [
  */
 const BINARY_SNIFF_BYTES = 8000;
 
-/** @param {string} filePath @returns {{ file: string, line: number, label: string, why: string }[]} */
-function scanFile(filePath) {
-  const buffer = fs.readFileSync(filePath);
+/**
+ * Scan a buffer of file content. `display` is only ever used to report the
+ * finding, so callers can pass a working-tree path, a "<blob>:<path>" pair,
+ * or a commit id; the scanning itself never touches the filesystem.
+ *
+ * @param {string} display @param {Buffer} buffer
+ * @returns {{ file: string, line: number, label: string, why: string }[]}
+ */
+function scanBuffer(display, buffer) {
   if (buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
     return []; // binary file (NUL in the first 8000 bytes, matching git's own heuristic)
   }
@@ -259,11 +383,16 @@ function scanFile(filePath) {
   for (const [index, lineText] of lines.entries()) {
     for (const { label, why, re } of RULES) {
       if (re.test(lineText)) {
-        findings.push({ file: filePath, line: index + 1, label, why });
+        findings.push({ file: display, line: index + 1, label, why });
       }
     }
   }
   return findings;
+}
+
+/** @param {string} filePath @returns {{ file: string, line: number, label: string, why: string }[]} */
+function scanFile(filePath) {
+  return scanBuffer(filePath, fs.readFileSync(filePath));
 }
 
 /**
@@ -277,14 +406,113 @@ function scanFile(filePath) {
  * @param {string} filePath @returns {{ file: string, line: number, label: string, why: string }[]}
  */
 function scanFileName(filePath) {
-  const relative = path.relative(REPO_ROOT, filePath);
+  return scanName(path.relative(REPO_ROOT, filePath), filePath);
+}
+
+/**
+ * @param {string} relative repo-relative path to test
+ * @param {string} display how to report it
+ * @returns {{ file: string, line: number, label: string, why: string }[]}
+ */
+function scanName(relative, display = relative) {
   const findings = [];
   for (const { label, why, re } of RULES) {
     if (re.test(relative)) {
-      findings.push({ file: filePath, line: 0, label: `${label} (in filename)`, why });
+      findings.push({ file: display, line: 0, label: `${label} (in filename)`, why });
     }
   }
   return findings;
+}
+
+/** @param {string[]} args @returns {string} */
+function git(args) {
+  return execFileSync("git", ["-C", REPO_ROOT, ...args], {
+    encoding: "utf8",
+    maxBuffer: 512 * 1024 * 1024,
+  });
+}
+
+/**
+ * --history: scan every BLOB reachable from any ref, not every tree.
+ *
+ * Iterating the 46 trees and scanning each one's 365 files re-reads the same
+ * unchanged blob dozens of times: 16,790 file scans to cover 548 distinct
+ * objects. Reachability is what the question actually is - "can anyone who
+ * clones this get at a denied string" - and a blob is reachable or it is not,
+ * regardless of how many trees point at it. So the unit is the blob, and each
+ * one is read once.
+ *
+ * A blob is reported with one of the paths it is stored under, which is enough
+ * to find it; `git log --all --find-object=<sha>` gives the commits if needed.
+ * Paths are scanned too, for the same reason the working-tree mode scans them:
+ * a denied string can live in a name with no trace in any content.
+ */
+function scanHistory() {
+  const findings = [];
+  const seenPath = new Set();
+  const lines = git(["rev-list", "--objects", "--all"]).split("\n").filter(Boolean);
+  const blobs = new Map(); // sha -> first path seen
+  for (const line of lines) {
+    const space = line.indexOf(" ");
+    if (space < 0) continue; // commit or root tree: no path, not a blob
+    const sha = line.slice(0, space);
+    const objectPath = line.slice(space + 1);
+    if (!blobs.has(sha)) blobs.set(sha, objectPath);
+    if (!seenPath.has(objectPath)) {
+      seenPath.add(objectPath);
+      findings.push(...scanName(objectPath));
+    }
+  }
+  // One batch-check call for every object's type, rather than one `cat-file -t`
+  // per object: rev-list --objects reports directories (trees) with paths too,
+  // and telling them apart one spawn at a time costs more than the scan does.
+  const types = new Map();
+  for (const line of git(["cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"]).split("\n")) {
+    const [sha, type] = line.split(" ");
+    if (sha && type) types.set(sha, type);
+  }
+  let scanned = 0;
+  for (const [sha, objectPath] of blobs) {
+    if (types.get(sha) !== "blob") continue;
+    scanned += 1;
+    const buffer = execFileSync("git", ["-C", REPO_ROOT, "cat-file", "blob", sha], {
+      maxBuffer: 512 * 1024 * 1024,
+    });
+    findings.push(...scanBuffer(`${sha.slice(0, 10)} (${objectPath})`, buffer));
+  }
+  return { findings, scanned, paths: seenPath.size };
+}
+
+/**
+ * --messages: scan every reachable commit's subject, body and trailers.
+ *
+ * Blob content is only half of what a clone hands over. `git log` is the other
+ * half, and it is the half a reader reaches for first. Messages in this
+ * repository's history named a real ticket id, a real branch, a real person's
+ * observation of a real fleet, and carried a link into a private session
+ * transcript on most commits.
+ */
+function scanMessages() {
+  const findings = [];
+  const shas = git(["rev-list", "--all"]).split("\n").filter(Boolean);
+  // One `git log -1` per commit, rather than one batched call that splits on a
+  // separator embedded in the format string. A separator has to be a byte
+  // sequence no message can contain, and these message bodies are the very
+  // material under audit; guess wrong and a commit is split in half with
+  // neither part scanned properly. Forty-six spawns cost milliseconds and
+  // cannot be fooled by their own input.
+  for (const sha of shas) {
+    const message = git(["log", "-1", "--format=%B", sha]);
+    for (const [index, lineText] of message.split("\n").entries()) {
+      for (const { label, why, re, messageExempt } of RULES) {
+        if (messageExempt) continue;
+        if (re.test(lineText)) {
+          findings.push({ file: `${sha.slice(0, 10)} (message)`, line: index + 1, label, why });
+        }
+      }
+    }
+  }
+  return { findings, scanned: shas.length };
 }
 
 /**
@@ -392,22 +620,54 @@ function selfTest() {
   }
 }
 
+/**
+ * @param {{ file: string, line: number, label: string, why: string }[]} findings
+ * @param {string} cleanMessage
+ * @param {boolean} relativise
+ */
+function report(findings, cleanMessage, relativise) {
+  if (findings.length > 0) {
+    for (const { file, line, label, why } of findings) {
+      const shown = relativise ? path.relative(REPO_ROOT, file) : file;
+      console.error(`${shown}:${line}: [${label}] ${why}`);
+    }
+    console.error(`\nleak-gate: ${findings.length} finding(s). This material must not enter the repository; see the rule comments in scripts/leak-gate.mjs.`);
+    process.exit(1);
+  }
+  console.log(cleanMessage);
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args[0] === "--self-test") {
     selfTest();
     return;
   }
+  if (args[0] === "--history") {
+    const { findings, scanned, paths } = scanHistory();
+    report(
+      findings,
+      `leak-gate --history: clean (${scanned} reachable blobs and ${paths} object paths scanned, ${RULES.length} rules)`,
+      false,
+    );
+    return;
+  }
+  if (args[0] === "--messages") {
+    const { findings, scanned } = scanMessages();
+    report(
+      findings,
+      `leak-gate --messages: clean (${scanned} reachable commit messages scanned, ${RULES.length} rules)`,
+      false,
+    );
+    return;
+  }
   const files = args.length > 0 ? args : repositoryFiles();
   const findings = files.flatMap((file) => [...scanFileName(file), ...scanFile(file)]);
-  if (findings.length > 0) {
-    for (const { file, line, label, why } of findings) {
-      console.error(`${path.relative(REPO_ROOT, file)}:${line}: [${label}] ${why}`);
-    }
-    console.error(`\nleak-gate: ${findings.length} finding(s). This material must not enter the repository; see the rule comments in scripts/leak-gate.mjs.`);
-    process.exit(1);
-  }
-  console.log(`leak-gate: clean (${files.length} files scanned, ${RULES.length} rules)`);
+  report(
+    findings,
+    `leak-gate: clean (${files.length} files scanned, ${RULES.length} rules)`,
+    true,
+  );
 }
 
 main();
