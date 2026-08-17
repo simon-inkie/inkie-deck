@@ -47,13 +47,28 @@ import { HEADER_RE } from "./header.js";
  *     after it. That is a different defect - misattribution, not loss, and no
  *     bytes go missing - and closing it needs a write-time change, not a
  *     reader-side guess about what is quoted.
- *   - an INDENTED well-formed header. The trim() here keeps it a boundary, as
- *     it has always been; protocol section 4 anchors a block at column 0, and
- *     that departure is recorded against this implementation as corpus case
- *     indented-pseudo-header rather than quietly folded into this change.
+ *   - an INDENTED well-formed header. Stripping the leading whitespace below
+ *     keeps it a boundary, as it has always been; protocol section 4 anchors a
+ *     block at column 0, and that departure is recorded against this
+ *     implementation as corpus case indented-pseudo-header rather than quietly
+ *     folded into this change.
+ *
+ * LEADING whitespace only, never a full trim(), and the two differ by a whole
+ * class of message. HEADER_RE requires `subject:\s+` ahead of the subject
+ * capture, so the space after that label is grammar, not padding, and a header
+ * whose subject is EMPTY matches only by way of it: serializeHeader
+ * interpolates the subject straight after "subject: ", so such a line ends in
+ * that space with nothing following. A full trim() takes it off along with the
+ * indentation, the line stops matching HEADER_RE, and the message stops opening
+ * a block - it merges into the one above it, attributed to that block's sender,
+ * with no error and nothing missing from disk. Empty subjects are ordinary
+ * traffic here, not a corner case; every message written without one
+ * serialises to exactly that shape. Stripping only what precedes the "##"
+ * normalises the indentation this has always tolerated and leaves the rest of
+ * the line as the writer emitted it.
  */
 export function isBlockHeaderLine(line: string): boolean {
-  return HEADER_RE.test(line.trim());
+  return HEADER_RE.test(line.replace(/^\s+/, ""));
 }
 
 /**
