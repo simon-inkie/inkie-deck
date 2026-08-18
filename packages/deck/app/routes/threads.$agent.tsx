@@ -69,6 +69,7 @@ import {
   takeRecoveredBatch,
 } from "~/lib/batch-durability";
 import { useBatchPrefs } from "~/lib/batch-prefs";
+import { usePersistedPanelState } from "~/lib/panel-state";
 import { ReviewPanel, DOC_PARAM } from "~/components/ReviewPanel";
 import { FilesPanel } from "~/components/FilesPanel";
 import { isNearBottom, shouldFollow } from "~/lib/scroll-follow";
@@ -1389,6 +1390,28 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
     : undefined;
   const respondingSubject = respondingCard?.header.subject;
 
+  // Both side panels live purely in the URL (?doc= / ?files=1), so navigating
+  // away and back used to reset them to closed. This remembers them per thread
+  // (sessionStorage, keyed by agent) and restores them on re-entry when the
+  // incoming URL has no opinion of its own. Deliberately called here, after the
+  // #anchor deep-link effect above: if both navigations land in the same commit
+  // the anchor effect is the one that re-runs and re-applies (this hook restores
+  // once per thread by design). Everything downstream keeps reading the search
+  // params, unchanged.
+  //
+  // HELD WHILE ?reply= IS STILL IN THE URL. Both this hook and the seed-strip
+  // effect directly above replace-navigate off a render-time searchParams
+  // snapshot. On a card-reply link into a thread that has remembered panel
+  // state they fire in the SAME effect flush, so neither snapshot carries the
+  // other's pending edit: two navigations, last one wins, one edit lost. This
+  // hook is the later one, so what survived was `?reply=<id>&doc=<path>` - the
+  // spent seed written back into the URL, where replySeedRef (consume-once)
+  // guarantees the strip never removes it again. Holding makes the two writes
+  // sequential instead of racing: the strip lands, searchParams changes, this
+  // effect wakes on the settled URL. The strip effect owns REPLY_PARAM's
+  // lifetime, so the presence of the param IS "a strip is pending".
+  usePersistedPanelState(agent, { hold: searchParams.has(REPLY_PARAM) });
+
   // File pinner: the Files panel is open when ?files=1 (read here so the thread
   // column can shrink to make room on desktop, same as the review panel does).
   const filesOpen = searchParams.get("files") === "1";
@@ -1487,6 +1510,14 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                       <DecisionCard
                         block={block}
                         now={now}
+                        // postAction reveals Dismiss + Supersede inline here,
+                        // same affordances the Cards tab has. It points at THIS
+                        // route, which already handles all three intents.
+                        // withDate is pinned false so the stamp stays the bare
+                        // clock time every other bubble in the thread uses -
+                        // postAction alone used to switch that format too.
+                        postAction={`/threads/${agent}`}
+                        withDate={false}
                         onWriteOwn={handleWriteOwn}
                         draftCustomAnswer={isRespondingToThis ? customDraft : undefined}
                         onOpenDoc={handleOpenDoc}
@@ -1495,6 +1526,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                       <ActionCard
                         block={block}
                         now={now}
+                        postAction={`/threads/${agent}`}
+                        withDate={false}
                         onOpenDoc={handleOpenDoc}
                       />
                     ) : (
