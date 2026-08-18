@@ -91,5 +91,20 @@ export function parseHeader(line: string): ParseHeaderResult {
  * Inverse of parseHeader; must produce valid HEADER_RE-matching output.
  */
 export function serializeHeader(header: BlockHeader): string {
+  // ROUND-TRIP GUARANTEE. When parseHeader failed, parse.ts hands us the original
+  // line on rawHeader and we emit it verbatim.
+  //
+  // Without this the docstring above was false: the parse fallback substitutes an
+  // empty timestamp/from/subject, and interpolating those emits
+  // "##  - from:  - status: read - subject: ", which does NOT match HEADER_RE. So
+  // reading a file and writing it back PERMANENTLY destroyed the header, and the
+  // damage compounded with every read. 318 lines across 17 inbox files were
+  // produced this way, including 50 in Alex's thread with Quill.
+  //
+  // Fixing it here rather than by making this throw: a throw pushes the decision
+  // onto every caller and one of them gets it wrong quietly. Fixing it by deleting
+  // the parse fallback is also wrong - that fallback exists for the 2026-06-12
+  // phantom-unread dots.
+  if (header.rawHeader !== undefined) return header.rawHeader;
   return `## ${header.timestamp} - from: ${header.from} - status: ${header.status} - subject: ${header.subject}`;
 }
