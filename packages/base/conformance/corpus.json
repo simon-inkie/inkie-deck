@@ -163,6 +163,21 @@
       }
     },
     {
+      "id": "empty-subject-trailing-space",
+      "protocol": "5",
+      "why": "The spelling both writers actually emit for an empty subject: the label, one space, end of line. Its sibling above covers the bare-label spelling, and the application's deviation there is exactly why this one needs a case of its own - the answer recorded for the application on that case is already 'no blocks', so a reader that stopped recognising THIS line too would leave the sibling passing and say nothing. The application did precisely that for a day: its block-boundary test trimmed the line before matching, which took off the one space its own grammar requires, and a message with no subject was absorbed into the block above it.",
+      "input": "## 2026-08-13T10:00:00Z - from: bob - status: sent - subject: \n\nbody\n",
+      "expect": [
+        {
+          "ts": "2026-08-13T10:00:00Z",
+          "sender": "bob",
+          "status": "sent",
+          "subject": "",
+          "bodyRaw": "body"
+        }
+      ]
+    },
+    {
       "id": "status-read",
       "protocol": "6",
       "why": "Both delivery states parse. Section 6: status has exactly two values.",
@@ -339,7 +354,7 @@
       ],
       "deviations": {
         "deck": {
-          "reason": "The application tests `line.trim().startsWith('## ')`, so an INDENTED header-shaped line begins a block. Protocol section 4 anchors a block at column 0. This is the opposite direction from the CLI, which correctly ignores the indented line, so the two implementations disagree with each other here as well as with the specification.",
+          "reason": "The application strips LEADING whitespace off a line before matching the header grammar against it, so an INDENTED header-shaped line that is otherwise well formed begins a block. Protocol section 4 anchors a block at column 0. This is the opposite direction from the CLI, whose scan is anchored there and correctly reads the indented line as body, so the two implementations disagree with each other here as well as with the specification. (This text described the boundary test as `line.trim().startsWith('## ')` until 2026-08-17, two fixes after that stopped being what it did; the behaviour recorded below never moved.)",
           "expect": [
             {
               "ts": "2026-08-13T10:00:00Z",
