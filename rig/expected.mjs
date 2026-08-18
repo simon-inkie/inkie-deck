@@ -86,15 +86,26 @@ export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", 
  * replaced a hardcoded agent name in the briefs path with a validated config
  * value. base is unchanged.
  *
- * deck moved 1819 -> 1824 on 2026-08-17: four tests pinning that a header with
- * an empty subject still opens a block, after the block-boundary test stopped
- * trimming off the trailing space its own grammar requires, plus the corpus
- * case for the same shape, which is one more case and so one more deck test.
- * base holds at 38: its conformance runner is a single vitest case whatever
- * the corpus holds, and its CLI never had the defect.
+ * deck moved 1819 -> 2023 on 2026-08-18, and 88 -> 95 files: merging PR #2
+ * (an empty subject still opens a block after trim() ate the trailing space
+ * the header's own grammar requires: four tests plus one more corpus case)
+ * into PR #3 (117 tests for the Nudges route, which had none: scheduler-route
+ * and scheduler-nav, plus additions to cron-validate and instance).
+ *
+ * The 1936/90 this branch carried into the merge was itself stale: its own
+ * first merge of main had already brought in activity-escalation,
+ * app-shell-escalation, header-roundtrip, panel-state and panel-state-persist
+ * (five files, from three unrelated PRs) without repricing the total against
+ * them, so 117 got added to a base that predated tests already sitting in
+ * the tree. Measured on the fully merged tree rather than summed from the
+ * two PRs' own deltas, which is what caught it. None of it shells out or
+ * reads the repository, so the two degraded figures in the README move by
+ * the same amount as the full one. base holds at 38: its conformance runner
+ * is a single vitest case whatever the corpus holds, and its CLI never had
+ * the defect.
  */
 export const EXPECTED_TESTS = {
-  deck: { passed: 1824, skipped: 11, files: 88 },
+  deck: { passed: 2023, skipped: 11, files: 95 },
   base: { passed: 38, skipped: 0, files: 4 },
 };
 

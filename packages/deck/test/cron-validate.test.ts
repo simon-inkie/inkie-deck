@@ -10,6 +10,17 @@
  *   - Every-N-min presets (ask-2).
  *   - targetType field in cronFormSchema (ask-3).
  *
+ * Added with the scheduler-route suite, filling what the original plan left
+ * open once the minute field was covered:
+ *   - Bounds for the hour, day-of-month, month and day-of-week fields
+ *     (validateField is one shared function whose range/list/step branches had
+ *     only ever run against minute bounds).
+ *   - Token shapes across all five: reversed ranges, out-of-bounds range ends,
+ *     lists with one bad member, step divisors and bases, the documented
+ *     range-plus-list limitation, and a trailing command.
+ *   - humanizeSchedule's fallbacks, including dow=7 (legal to the validator,
+ *     off the end of the day-name table).
+ *
  * ASCII only - no em-dashes (FND-05).
  */
 
@@ -473,5 +484,242 @@ describe("cronFormSchema - targetType field", () => {
       message: "## Header\n\nRun `pnpm build` and check `$HOME`.",
     });
     expect(result.success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-field ranges (the four fields after the minute)
+//
+// The suite above exercises the minute field hard, because that is the one the
+// frequency cap reads. The other four went in on the same code path and were
+// never pinned: validateField is one shared function, and its range, list and
+// step branches were only ever run against minute bounds. A wrong `max` on the
+// month field is a silent write of a line cron will never fire.
+// ---------------------------------------------------------------------------
+
+describe("validateCronExpression - hour field bounds", () => {
+  it("accepts the endpoints (0 and 23)", () => {
+    expect(validateCronExpression("0 0 * * *").ok).toBe(true);
+    expect(validateCronExpression("0 23 * * *").ok).toBe(true);
+  });
+
+  it("rejects 24", () => {
+    const result = validateCronExpression("0 24 * * *");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("hour");
+  });
+
+  it("accepts an hour range and a step inside the range", () => {
+    expect(validateCronExpression("0 9-17 * * *").ok).toBe(true);
+    expect(validateCronExpression("0 */6 * * *").ok).toBe(true);
+  });
+
+  it("rejects a step wider than the field itself", () => {
+    // Step must be at most max-min, so */24 on a 0-23 field is out.
+    expect(validateCronExpression("0 */24 * * *").ok).toBe(false);
+  });
+});
+
+describe("validateCronExpression - day-of-month field bounds", () => {
+  it("accepts the endpoints (1 and 31)", () => {
+    expect(validateCronExpression("0 9 1 * *").ok).toBe(true);
+    expect(validateCronExpression("0 9 31 * *").ok).toBe(true);
+  });
+
+  it("rejects 0 (day of month is 1-based, unlike every field before it)", () => {
+    const result = validateCronExpression("0 9 0 * *");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("day of month");
+  });
+
+  it("rejects 32", () => {
+    expect(validateCronExpression("0 9 32 * *").ok).toBe(false);
+  });
+
+  it("accepts a full-width range", () => {
+    expect(validateCronExpression("0 9 1-31 * *").ok).toBe(true);
+  });
+});
+
+describe("validateCronExpression - month field bounds", () => {
+  it("accepts the endpoints (1 and 12)", () => {
+    expect(validateCronExpression("0 9 * 1 *").ok).toBe(true);
+    expect(validateCronExpression("0 9 * 12 *").ok).toBe(true);
+  });
+
+  it("rejects 0 and 13", () => {
+    expect(validateCronExpression("0 9 * 0 *").ok).toBe(false);
+    const result = validateCronExpression("0 9 * 13 *");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("month");
+  });
+
+  it("rejects month names (numeric fields only)", () => {
+    // Some cron implementations take JAN-DEC. This validator does not, and a
+    // name silently accepted here would reach the crontab unparsed.
+    expect(validateCronExpression("0 9 * JAN *").ok).toBe(false);
+  });
+
+  it("accepts a quarterly list", () => {
+    expect(validateCronExpression("0 9 1 1,4,7,10 *").ok).toBe(true);
+  });
+});
+
+describe("validateCronExpression - day-of-week field bounds", () => {
+  it("accepts 0 through 7 (7 is the second spelling of Sunday)", () => {
+    for (const dow of ["0", "1", "6", "7"]) {
+      expect(validateCronExpression(`0 9 * * ${dow}`).ok).toBe(true);
+    }
+  });
+
+  it("rejects 8", () => {
+    const result = validateCronExpression("0 9 * * 8");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("day of week");
+  });
+
+  it("rejects day names (numeric fields only)", () => {
+    expect(validateCronExpression("0 9 * * MON").ok).toBe(false);
+  });
+
+  it("accepts the weekday range and a weekend list", () => {
+    expect(validateCronExpression("0 9 * * 1-5").ok).toBe(true);
+    expect(validateCronExpression("0 9 * * 0,6").ok).toBe(true);
+  });
+});
+
+describe("validateCronExpression - range, list and step token shapes", () => {
+  it("rejects a reversed range", () => {
+    // 5-1 parses as two in-bounds numbers and still describes nothing.
+    expect(validateCronExpression("0 9 * * 5-1").ok).toBe(false);
+    expect(validateCronExpression("0 17-9 * * *").ok).toBe(false);
+  });
+
+  it("accepts a single-value range", () => {
+    expect(validateCronExpression("0 9-9 * * *").ok).toBe(true);
+  });
+
+  it("rejects a range with an out-of-bounds end", () => {
+    expect(validateCronExpression("0 9 * * 5-9").ok).toBe(false);
+  });
+
+  it("rejects a negative value", () => {
+    // Reaches the range branch on the hyphen and fails there rather than
+    // parsing as -5.
+    expect(validateCronExpression("-5 9 * * *").ok).toBe(false);
+  });
+
+  it("rejects a bare hyphen and a bare slash", () => {
+    expect(validateCronExpression("- 9 * * *").ok).toBe(false);
+    expect(validateCronExpression("/ 9 * * *").ok).toBe(false);
+  });
+
+  it("rejects a list with one bad member", () => {
+    // Every member has to hold; the good ones must not carry the bad one in.
+    expect(validateCronExpression("0,99 * * * *").ok).toBe(false);
+    expect(validateCronExpression("0 9 * * 1,9").ok).toBe(false);
+  });
+
+  it("tolerates spaces after commas inside a list", () => {
+    // The field split is on whitespace, so "0, 30" arrives as two fields and is
+    // a field-count error, but a list member's own padding is trimmed.
+    expect(validateCronExpression("0,30 9 * * *").ok).toBe(true);
+    expect(validateCronExpression("0, 30 9 * * *").ok).toBe(false);
+  });
+
+  it("rejects a range combined with a list in one token", () => {
+    // Documented limitation, not an accident: the hyphen is tested before the
+    // comma, so "1-5,0" goes down the range branch and fails there. Anyone
+    // adding mixed-token support should expect this test to change.
+    expect(validateCronExpression("0 9 * * 1-5,0").ok).toBe(false);
+  });
+
+  it("accepts a step on a starting value", () => {
+    expect(validateCronExpression("5/10 * * * *").ok).toBe(true);
+  });
+
+  it("rejects a step with a missing or non-numeric divisor", () => {
+    expect(validateCronExpression("*/ * * * *").ok).toBe(false);
+    expect(validateCronExpression("5/ * * * *").ok).toBe(false);
+    expect(validateCronExpression("*/abc * * * *").ok).toBe(false);
+  });
+
+  it("rejects a step on an out-of-bounds base", () => {
+    expect(validateCronExpression("70/10 * * * *").ok).toBe(false);
+  });
+
+  it("accepts the widest legal minute step and rejects one past it", () => {
+    expect(validateCronExpression("*/59 * * * *").ok).toBe(true);
+    expect(validateCronExpression("*/60 * * * *").ok).toBe(false);
+  });
+});
+
+describe("validateCronExpression - whitespace and shape", () => {
+  it("rejects a whitespace-only expression as required, not as a field count", () => {
+    const result = validateCronExpression("   ");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("required");
+  });
+
+  it("trims leading and trailing whitespace before counting fields", () => {
+    const result = validateCronExpression("  30 7 * * *  ");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.expression).toBe("30 7 * * *");
+  });
+
+  it("normalises tabs and newlines between fields", () => {
+    const result = validateCronExpression("30\t7 *\n* *");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.expression).toBe("30 7 * * *");
+  });
+
+  it("rejects a trailing command appended to a valid expression", () => {
+    // The crontab line format is schedule THEN command. A schedule field that
+    // swallowed the command would write a line nobody reviewed.
+    expect(validateCronExpression("30 7 * * * /bin/sh -c evil").ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// humanizeSchedule fallbacks
+//
+// The contract is "never throws, returns the raw expression when it has nothing
+// better to say". The happy patterns are covered above; these are the inputs
+// that have to reach the fallback rather than a wrong sentence, since this
+// string is the only description of a schedule the Nudges list shows.
+// ---------------------------------------------------------------------------
+
+describe("humanizeSchedule - falls back rather than guessing", () => {
+  it("returns the raw expression for dow=7", () => {
+    // 7 is a legal Sunday for the validator, but the day-name table stops at 6,
+    // so this must fall through to raw rather than index off the end.
+    expect(humanizeSchedule("0 9 * * 7")).toBe("0 9 * * 7");
+  });
+
+  it("returns the raw expression for a weekday range", () => {
+    expect(humanizeSchedule("0 9 * * 1-5")).toBe("0 9 * * 1-5");
+  });
+
+  it("returns the raw expression for a day-of-month schedule", () => {
+    expect(humanizeSchedule("0 9 1 * *")).toBe("0 9 1 * *");
+  });
+
+  it("returns the raw input for the wrong number of fields", () => {
+    expect(humanizeSchedule("0 9 * *")).toBe("0 9 * *");
+    expect(humanizeSchedule("0 9 * * * *")).toBe("0 9 * * * *");
+    expect(humanizeSchedule("")).toBe("");
+  });
+
+  it("does not throw on a malformed step", () => {
+    expect(humanizeSchedule("*/abc * * * *")).toBe("*/abc * * * *");
+  });
+
+  it("trims before describing", () => {
+    expect(humanizeSchedule("  0 * * * *  ")).toBe("Hourly");
+  });
+
+  it("zero-pads both halves of a daily time", () => {
+    expect(humanizeSchedule("5 9 * * *")).toBe("Daily at 09:05");
+    expect(humanizeSchedule("0 0 * * *")).toBe("Daily at 00:00");
   });
 });
