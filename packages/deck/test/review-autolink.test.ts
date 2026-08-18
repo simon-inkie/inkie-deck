@@ -27,6 +27,7 @@ import {
   autoLinkifyReviewPaths,
   resolveReviewablePath,
   linkifyBlockBodies,
+  resolveReviewRoots,
 } from "~/lib/review.server";
 import { FileInboxRepository } from "~/lib/inbox.server";
 import { isReviewablePath } from "~/lib/review-exts";
@@ -337,6 +338,41 @@ describe("linkifyBlockBodies over real readBlocksWindow data (TASK-645)", () => 
     expect(linkifyBlockBodies(blocks)[0]!.body).toBe("path /x/y.md here");
   });
 
+  it("leaves bodies untouched when the review roots name a live silo (fails closed)", () => {
+    // The autolink pass swallows every error by design, so the MC_SANDBOX_ONLY
+    // live-silo refusal surfaces here as "no links", not as a throw. That is the
+    // right direction: a configuration the review surface has refused must not
+    // hand back clickable links into the silo it refused, and a render path is
+    // no place to start throwing.
+    const silo = mkdtempSync();
+    const savedSilo = process.env["MC_LIVE_SILO_ROOT"];
+    try {
+      const doc = path.join(silo, "private.md");
+      fs.writeFileSync(doc, "# private", "utf8");
+      const body = `see ${doc} now`;
+      const blocks: MessageBlock[] = [
+        {
+          header: { timestamp: "t", from: "quill", status: "read", subject: "s" },
+          body,
+          rawMeta: "",
+        },
+      ];
+
+      process.env["MC_LIVE_SILO_ROOT"] = silo;
+      process.env["REVIEW_ROOTS"] = silo;
+
+      expect(() => linkifyBlockBodies(blocks)).not.toThrow();
+      expect(linkifyBlockBodies(blocks)[0]!.body).toBe(body);
+    } finally {
+      if (savedSilo === undefined) {
+        delete process.env["MC_LIVE_SILO_ROOT"];
+      } else {
+        process.env["MC_LIVE_SILO_ROOT"] = savedSilo;
+      }
+      rmSync(silo);
+    }
+  });
+
   it("shares root resolution + the candidate cache across blocks in one call (CR perf catch)", () => {
     // Regression for a peer-review-style catch: root resolution and the
     // resolveReviewablePath cache used to be allocated fresh PER BLOCK
@@ -363,6 +399,15 @@ describe("linkifyBlockBodies over real readBlocksWindow data (TASK-645)", () => 
         rawMeta: "",
       },
     ];
+
+    // Resolve the roots once OUTSIDE the measured window. Root resolution also
+    // vets those roots against the MC_SANDBOX_ONLY live-silo refusal, which is
+    // a once-per-process cost (memoised on the roots and the two env vars the
+    // refusal reads), not the per-block cost this test exists to pin. beforeEach
+    // hands every case fresh tmpdir roots, so leaving it inside the window would
+    // count a one-time charge against a bound that is about work scaling with
+    // the number of BLOCKS.
+    resolveReviewRoots();
 
     const realpathSpy = vi.spyOn(fs, "realpathSync");
     let linked: MessageBlock[] = [];

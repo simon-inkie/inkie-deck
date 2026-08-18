@@ -9,6 +9,7 @@ import {
 
 import type { Route } from "./+types/root";
 import { validateConfiguredRoots } from "~/lib/safe-fs.server";
+import { validateReviewRoots } from "~/lib/review.server";
 import "./app.css";
 
 /**
@@ -18,9 +19,18 @@ import "./app.css";
  * named-root error instead of a lazy per-surface 500 later.
  * (Server-only: RR7 strips loader-only imports from the client bundle,
  * the FND-02 mechanism.)
+ *
+ * The review panel's roots are a second, list-valued configuration that does
+ * not fit safe-fs's required-single-path table, so they are vetted by their own
+ * module and named here. Same purpose, same place: an instance whose review
+ * roots reach into a live agent silo while sandboxed must not look healthy
+ * until someone opens the panel. That check also runs on every review read of
+ * its own accord, because a resource route runs its own loader and never this
+ * one; this call is what makes the failure loud and early rather than a 404.
  */
 export async function loader() {
   validateConfiguredRoots();
+  validateReviewRoots();
   return null;
 }
 

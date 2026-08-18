@@ -22,21 +22,39 @@
  * traversal and symlink-escape cases the ban was reaching for, so removing it
  * loses nothing that was load-bearing.
  *
- * KNOWN GAP, deliberately not closed here (needs its own change): the
- * MC_SANDBOX_ONLY live-silo refusal covers the four roots in safe-fs's
- * ROOT_ENV_VARS table, which validateConfiguredRoots vets once at boot.
- * INBOX_ROOT is in that table, so the implicit review root IS covered.
- * REVIEW_ROOTS is not in it and is vetted nowhere, so a sandbox instance can
- * still name a live silo there explicitly. The obvious fix - calling
- * assertNoLiveSiloRoot per root inside assertContained - lands on the
- * autolink hot path, which linkifyBlockBodies shares root resolution across
- * precisely because the realpath cost there is measured and bounded by a
- * regression test. Closing it wants a once-per-request home, not a per-path
- * syscall.
+ * What did NOT go with it is the MC_SANDBOX_ONLY live-silo refusal. That one
+ * is real on every deployment, because MC_LIVE_SILO_ROOT lets an instance name
+ * its own silo, and dropping the ban without replacing it would have widened
+ * this read surface: with MC_SANDBOX_ONLY set, an operator could name the live
+ * silo in REVIEW_ROOTS and read it back through the review API. safe-fs vets
+ * the four roots in its ROOT_ENV_VARS table once at boot, but REVIEW_ROOTS is
+ * not in that table and does not fit it - it is optional and list-valued where
+ * that table is required and single-valued. So the refusal lives at the one
+ * place this module resolves its roots instead:
+ *
+ *   resolveReviewRoots() runs assertNoLiveSiloRoot over EVERY root it is about
+ *   to return, the configured entries and the implicit INBOX_ROOT alike, and
+ *   throws before any of them reaches a caller. Every read on this surface goes
+ *   through it, including a cold request straight to the review API, which the
+ *   boot check alone would not have covered: a resource route runs its own
+ *   loader only, never the root loader that calls validateConfiguredRoots.
+ *
+ * It is vetted ONCE per process, not once per path: the result is memoised on
+ * the root list plus the two env vars the refusal reads, so the autolink path
+ * pays a string compare. Only a pass is recorded, so a refusal never latches
+ * into a pass. That memo is what keeps this off the hot path - linkifyBlockBodies
+ * shares root resolution across blocks precisely because the realpath cost
+ * there is measured and bounded by a regression test, and this adds nothing to
+ * what that test measures.
  *
  * Exports:
  *   resolveReviewRoots() - parses REVIEW_ROOTS env (colon-separated absolute
  *     paths); implicit INBOX_ROOT always appended; unset = INBOX_ROOT only.
+ *     Refuses a root inside the live silo while MC_SANDBOX_ONLY is set.
+ *   validateReviewRoots() - the same vetting under a boot-time name, called by
+ *     the root loader beside validateConfiguredRoots so a sandbox instance
+ *     pointed at a live silo dies at start with the offending root named,
+ *     rather than at whichever read happens to reach it first.
  *   readReviewFile(absPath) - returns {path, content, kind, lang} or throws.
  *   readReviewAsset(absPath) - returns {bytes, contentType} for images or throws.
  *
@@ -47,7 +65,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveInboxRoot } from "./safe-fs.server.js";
+import { resolveInboxRoot, assertNoLiveSiloRoot } from "./safe-fs.server.js";
 import { REVIEW_MD_EXTS, REVIEW_CODE_EXTS, extKind, extToLang, isSecretBasename } from "./review-exts.js";
 import type { MessageBlock } from "./blocks/model.js";
 
@@ -90,6 +108,61 @@ export function expandTilde(p: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Live-silo vetting of the review roots (MC_SANDBOX_ONLY)
+// ---------------------------------------------------------------------------
+
+/** A root about to be returned, with the env var it came from for the error. */
+interface ReviewRootEntry {
+  root: string;
+  label: string;
+}
+
+/**
+ * The last root list that PASSED vetReviewRoots, keyed with the two env vars
+ * the refusal itself reads. A hit skips the syscalls; a miss re-vets. Only a
+ * pass is ever recorded, so a refusal cannot latch into a pass.
+ */
+let vettedReviewRootsKey: string | null = null;
+
+/**
+ * Refuse any review root that resolves inside the live agent silo while
+ * MC_SANDBOX_ONLY is set (see assertNoLiveSiloRoot in safe-fs.server).
+ *
+ * This is the review surface's half of that guard. safe-fs vets its own four
+ * roots once at boot; these are vetted here, at the single point where this
+ * module resolves the list, so no read path can reach a root the refusal has
+ * not seen. Memoised on the roots plus MC_SANDBOX_ONLY and MC_LIVE_SILO_ROOT,
+ * which is everything the answer depends on, so a running instance pays for
+ * this once rather than once per call.
+ */
+function vetReviewRoots(entries: readonly ReviewRootEntry[]): void {
+  // JSON, not a joined string: a separator character can appear in a path
+  // and two different configurations must never produce the same key.
+  const key = JSON.stringify([
+    process.env["MC_SANDBOX_ONLY"] ?? "",
+    process.env["MC_LIVE_SILO_ROOT"] ?? "",
+    ...entries.map((e) => e.root),
+  ]);
+  if (key === vettedReviewRootsKey) return;
+
+  for (const { root, label } of entries) {
+    let rootReal: string;
+    try {
+      rootReal = fs.realpathSync(root);
+    } catch {
+      // The directory does not exist yet. assertContained skips such a root at
+      // read time, but it starts serving the moment the directory appears, so
+      // it is vetted where it sits rather than waved through: with nothing to
+      // resolve, the normalised absolute path IS the honest answer for it.
+      rootReal = path.resolve(root);
+    }
+    assertNoLiveSiloRoot(rootReal, label);
+  }
+
+  vettedReviewRootsKey = key;
+}
+
+// ---------------------------------------------------------------------------
 // resolveReviewRoots
 // ---------------------------------------------------------------------------
 
@@ -99,13 +172,18 @@ export function expandTilde(p: string): string {
  *
  * Throws if:
  *   - An individual entry is not absolute after tilde-expansion.
+ *   - Any resulting root resolves inside the live agent silo while
+ *     MC_SANDBOX_ONLY is set (vetReviewRoots above). Nothing is returned in
+ *     that case, so every caller on this surface fails closed: the two read
+ *     entry points throw and the route maps that to 404, and the autolink pass
+ *     leaves every candidate as plain text.
  * Unset/empty REVIEW_ROOTS returns [INBOX_ROOT] only.
  */
 export function resolveReviewRoots(): string[] {
   const raw = process.env["REVIEW_ROOTS"];
   const inboxRoot = resolveInboxRoot();
 
-  const roots: string[] = [];
+  const entries: ReviewRootEntry[] = [];
 
   if (raw && raw.trim() !== "") {
     for (const entry of raw.split(":")) {
@@ -118,17 +196,33 @@ export function resolveReviewRoots(): string[] {
             "Relative paths are rejected."
         );
       }
-      roots.push(expanded);
+      entries.push({ root: expanded, label: "REVIEW_ROOTS" });
     }
   }
 
   // INBOX_ROOT is always appended (implicit root).
   // Dedup: only append if not already in the list.
-  if (!roots.includes(inboxRoot)) {
-    roots.push(inboxRoot);
+  if (!entries.some((e) => e.root === inboxRoot)) {
+    entries.push({ root: inboxRoot, label: "INBOX_ROOT" });
   }
 
-  return roots;
+  vetReviewRoots(entries);
+
+  return entries.map((e) => e.root);
+}
+
+/**
+ * Boot-time name for the vetting above: resolve the review roots for their
+ * side effect and discard them.
+ *
+ * The root loader calls this beside validateConfiguredRoots, so a sandbox
+ * instance whose REVIEW_ROOTS names a live silo dies at start with the root
+ * named, the same way the four roots in safe-fs's table do, instead of looking
+ * healthy until someone opens the review panel. Shares the memo, so it costs
+ * the request path nothing after the first call.
+ */
+export function validateReviewRoots(): void {
+  resolveReviewRoots();
 }
 
 // ---------------------------------------------------------------------------
