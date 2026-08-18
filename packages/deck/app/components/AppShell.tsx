@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from "react";
 import { Outlet, Link, NavLink, useLocation, useParams } from "react-router";
-import { Bell, CalendarClock, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, X } from "lucide-react";
+import { Bell, CalendarClock, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, TriangleAlert, X } from "lucide-react";
 import { Sidebar, type SidebarAgent } from "./Sidebar";
 import {
   ResizablePanelGroup,
@@ -31,7 +31,8 @@ import type { MiniCard } from "~/lib/projects.shared";
 import { Avatar } from "./ui/avatar";
 import { Badge } from "./ui/badge";
 import { cn } from "~/lib/utils";
-import { formatRelative } from "~/lib/time";
+import { formatRelative, formatDurationHm } from "~/lib/time";
+import { statusLabel, type EscalatedAgent } from "~/lib/activity.shared";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { useMessageChime } from "~/lib/message-chime";
 import {
@@ -115,9 +116,18 @@ interface AppShellProps {
    * not the old duplicate terminal-browsing surface that link used to open.
    */
   activityNavOn?: boolean;
+  /**
+   * Top-bar escalation: agents `stuck`/`needs-you` for longer than the
+   * escalation threshold (see escalatedAgents, activity.shared.ts).
+   * Distinct top-bar element from the needs-you bell, deliberately - the two
+   * concepts (the operator has something to action vs. an agent has been
+   * silently wedged for a while) must not blur into one badge count.
+   * Empty/absent renders nothing, same posture as workCards.
+   */
+  escalated?: EscalatedAgent[];
 }
 
-export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false }: AppShellProps) {
+export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false, escalated = [] }: AppShellProps) {
   const params = useParams();
   const active = params.agent;
   const location = useLocation();
@@ -152,9 +162,53 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Top bar */}
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/60 px-4 backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-4">
+      {/* Top bar.
+
+          WRAPPING, and why the header is not `h-14` any more (TASK-783).
+          The escalation chip is ~176px of deliberately unshrinkable text
+          (whitespace-nowrap, and truncating it would throw away the duration,
+          which is the whole point of the chip). Added to the right-hand
+          cluster that already carries the files toggle and the bell, it took
+          the cluster from 132px to 264px, which on a phone left the LEFT group
+          a box far narrower than its own contents. `min-w-0` lets that box
+          shrink, but the avatar and the chat/terminal toggle inside it are
+          `shrink-0`, so they did not shrink with it - they OVERFLOWED their
+          box and were painted underneath the right-hand cluster. Measured in
+          Chromium against the real stylesheet (see the e2e layout test): at
+          375px the toggle overlapped the chip by 58px and the thread title was
+          crushed to zero width; at 320px the whole toggle sat under the chip
+          (78px, i.e. all of it) and was therefore unclickable, since the chip
+          is later in DOM order and paints on top. That is strictly worse than
+          the bare-icon bug the visible reason set out to fix, and it is the
+          ONE surface the operator reads on a phone.
+
+          So the header wraps: `flex-wrap` plus a `gap-x-2` (the gap is what
+          makes a `w-full` item exceed the line and start a new one), and
+          `min-h-14` instead of `h-14` so a second row makes the bar taller
+          rather than spilling over the content below. `min-h-` and not a
+          padded `h-`: measured, the height is byte-identical to the old fixed
+          `h-14` at every width where nothing wraps, INCLUDING the 768-1023
+          band where the left group is already 56px tall and a vertical
+          padding would have pushed the bar to 65px for a case that has
+          nothing to do with escalation.
+
+          `flex-1` on this left group is the other half: with a content-sized
+          basis it is the left group that decides where the line breaks, and a
+          thread title alone is enough to push the bell onto its own row on a
+          360px Android. At `basis-0` it never forces a break and simply takes
+          whatever the line has left, which is also the SPEC's stated priority
+          order (the thread title yields, the alert does not).
+
+          `overflow-hidden` is the backstop for everything this class of bug
+          can still throw at us: if the left group's contents ever outgrow its
+          box again they are CLIPPED at its edge instead of being drawn over
+          the controls to its right. A clipped glyph is visibly wrong; an
+          invisible overlay that swallows taps is not. Safe against the two
+          things inside it that escape their box on purpose - the Radix model
+          dropdown renders through a Portal, and the unread dot is positioned
+          inside its own link. */}
+      <header className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-border bg-card/60 px-4 backdrop-blur-sm lg:flex-nowrap lg:gap-y-0">
+        <div className="flex min-w-0 flex-1 items-center gap-4 overflow-hidden">
           <Link
             to="/"
             aria-label="Inkie Deck home"
@@ -302,7 +356,28 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           ) : null}
         </div>
 
-        <div className="flex items-center gap-1">
+        {/* Right-hand control cluster. `w-full` below `lg` when - and only
+            when - the single-agent escalation chip is in here is what buys the
+            cluster its own row: a full-width flex item cannot share a line
+            with anything (the header's gap-x pushes it over), so the chip
+            lands on row two at its natural width and the reason text stays
+            whole. It is the CLUSTER that drops, not the chip alone, because
+            the chip lives inside here and moving it out to be a header-level
+            sibling would either reorder the desktop bar or need an `order`
+            override, which puts visual order and tab order out of step.
+
+            Conditional on `escalated.length === 1` deliberately. With no
+            escalation this cluster is 84px and with the multi-agent dropdown
+            it is 132px - both fit inline at 320px with room to spare, so
+            neither has any business costing a phone a second header row.
+            `justify-end` keeps the controls hard right on the wrapped row, so
+            the bar reads the same way it does when it is one line. */}
+        <div
+          className={cn(
+            "flex items-center justify-end gap-1",
+            escalated.length === 1 ? "w-full lg:w-auto" : undefined
+          )}
+        >
           {/* File pinner: per-thread Files panel toggle. Chat view only (the
               manifest is built from chat messages, not the tmux pane). Pure
               URL-state (?files=1) - no shell prop needed. */}
@@ -327,6 +402,94 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
                 {workCards.length}
               </span>
             </button>
+          ) : null}
+
+          {/* Top-bar escalation alert: distinct icon (TriangleAlert,
+              StatusPill's own `stuck` glyph) and destructive tint so this
+              never blurs into the needs-you bell's count - it is a different
+              claim ("an agent has been silently wedged") not an action queue.
+              Single escalated agent -> direct click-through to its thread.
+              Multiple -> a dropdown, same shape as the bell's. No dismiss/
+              mute in v1 (SPEC): it is a live-computed present/absent state
+              off current data, not a fired-once event.
+
+              TASK-783: the single-agent branch spells the REASON out in
+              visible text ("quill stuck for 45m") rather than leaving the
+              glyph bare with the facts only in aria-label. That shape was hit
+              live - red triangle, click, thread, no idea why it fired or
+              whether it was worth the interruption. The duration is the
+              number the interruption gets priced with, so it cannot live
+              behind a screen reader (or a mouse-only title=, which never
+              fires on touch); house rule, see StatusPill. The count badge
+              goes with it: naming the agent makes a badge reading "1" pure
+              noise. The dropdown branch below keeps its count - a count is
+              the only summary available there - and is otherwise untouched.
+              aria-label drops "has been" so the visible label is a contiguous
+              substring of the accessible name (WCAG 2.5.3 Label in Name),
+              which also spares screen readers "quill has been needs you for
+              45m". */}
+          {escalated.length === 1 ? (
+            <Link
+              to={`/threads/${escalated[0]!.agent}`}
+              data-testid="escalation-alert"
+              aria-label={`${escalated[0]!.agent} ${statusLabel(escalated[0]!.status)} for ${formatDurationHm(escalated[0]!.durationMs)} - go to thread`}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <TriangleAlert className="size-5 shrink-0" aria-hidden="true" />
+              {/* Plain text, not label-mono: the top bar's nav idiom
+                  uppercases on 0.18em tracking, which is both shouty for an
+                  agent's name and ~60% wider - width the header does not
+                  have on a phone. The dropdown renders its own reason line
+                  ("wedged 45m") as plain text for the same reason. */}
+              <span
+                data-testid="escalation-reason"
+                className="whitespace-nowrap text-xs font-medium"
+              >
+                {escalated[0]!.agent} {statusLabel(escalated[0]!.status)} for{" "}
+                {formatDurationHm(escalated[0]!.durationMs)}
+              </span>
+            </Link>
+          ) : escalated.length > 1 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  data-testid="escalation-alert"
+                  aria-label={`Wedged agents (${escalated.length})`}
+                  className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <TriangleAlert className="size-5" />
+                  <span className="absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 font-mono text-[10px] font-bold leading-none text-destructive-foreground">
+                    {escalated.length}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuLabel>Wedged ({escalated.length})</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {escalated.map((e) => (
+                  <DropdownMenuItem key={e.agent} asChild>
+                    <Link
+                      to={`/threads/${e.agent}`}
+                      data-testid={`escalation-item-${e.agent}`}
+                      className="flex flex-col items-start gap-0.5"
+                    >
+                      <span className="flex w-full items-center gap-2">
+                        <span className="font-display text-xs font-bold uppercase tracking-tight text-foreground">
+                          {e.agent}
+                        </span>
+                        <span className="label-mono ml-auto text-[10px] text-muted-foreground">
+                          {statusLabel(e.status)}
+                        </span>
+                      </span>
+                      <span className="text-sm text-destructive">
+                        wedged {formatDurationHm(e.durationMs)}
+                      </span>
+                    </Link>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : null}
 
         <DropdownMenu>

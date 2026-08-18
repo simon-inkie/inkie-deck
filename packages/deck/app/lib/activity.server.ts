@@ -102,6 +102,44 @@ export function activityFilePath(env: NodeJS.ProcessEnv): string | undefined {
 export const ACTIVITY_STALE_AFTER_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
+// Top-bar escalation threshold
+// ---------------------------------------------------------------------------
+
+/**
+ * Default duration (ms) an agent must sit `stuck`/`needs-you` before the
+ * top-bar escalation alert fires (top-bar escalation SPEC).
+ *
+ * 30 minutes. NOT SPECIFIED by Alex ("a certain amount of time") - the
+ * SPEC's own proposed default, flagged there as an assumption to correct
+ * rather than a blocker: long enough that a normal working pause never
+ * fires, short enough to have caught the incident that prompted the feature
+ * (an agent wedged for most of a day) with hours to spare. Overridable
+ * per-instance via ESCALATION_THRESHOLD_MS, same convention as
+ * ACTIVITY_STALE_AFTER_MS's would-be override - a single constant either way.
+ */
+export const ESCALATION_THRESHOLD_MS = 30 * 60 * 1000;
+
+/**
+ * Resolve the escalation threshold from env, degrading to the default on any
+ * unset/blank/unparseable/non-positive value rather than throwing or letting
+ * a bad env var produce a threshold of 0 (which would escalate everything)
+ * or NaN (which would escalate nothing, silently). Same posture as
+ * resolveNow (time.ts): a bad override degrades, it never crashes the loader.
+ */
+export function resolveEscalationThresholdMs(env: NodeJS.ProcessEnv): number {
+  const raw = env["ESCALATION_THRESHOLD_MS"]?.trim();
+  if (!raw) return ESCALATION_THRESHOLD_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `[activity] ESCALATION_THRESHOLD_MS value "${raw}" is invalid - falling back to default ${ESCALATION_THRESHOLD_MS}ms`
+    );
+    return ESCALATION_THRESHOLD_MS;
+  }
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
 // readActivity
 // ---------------------------------------------------------------------------
 

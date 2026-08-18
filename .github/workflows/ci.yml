@@ -42,6 +42,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # dashes.test.ts shells out to rg; ubuntu-latest doesn't carry it.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -53,6 +57,12 @@ jobs:
 
   guards:
     runs-on: ubuntu-latest
+    # gitleaks-action reads the PR's commit list via the API; the default
+    # GITHUB_TOKEN for a pull_request run on a private repo doesn't carry
+    # pull-requests:read unless a job grants it explicitly.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:

@@ -173,6 +173,25 @@ describe("DecisionCard passes withDate on the Cards-tab seam", () => {
     expect(html).toContain(">14:40</time>");
     expect(html).not.toContain("22 Jul,");
   });
+
+  // The thread view sets postAction too (that is what reveals Dismiss and
+  // Supersede inline), so the case above no longer models what
+  // threads.$agent.tsx actually renders. This pins the real shape: postAction
+  // set AND withDate false. Without it, re-coupling the stamp format to
+  // postAction leaves the suite green while every card in the thread silently
+  // grows a date the surrounding bubbles do not have.
+  it("renders the bare clock time in the thread view's actual shape (postAction set, withDate false)", () => {
+    const html = renderCard(
+      React.createElement(DecisionCard, {
+        block,
+        now: CARD_NOW,
+        postAction: "/threads/scribe",
+        withDate: false,
+      })
+    );
+    expect(html).toContain(">14:40</time>");
+    expect(html).not.toContain("22 Jul,");
+  });
 });
 
 describe("ActionCard passes withDate on the Cards-tab seam", () => {
@@ -188,6 +207,22 @@ describe("ActionCard passes withDate on the Cards-tab seam", () => {
 
   it("renders the bare clock time when postAction is omitted (thread view)", () => {
     const html = renderCard(React.createElement(ActionCard, { block, now: CARD_NOW }));
+    expect(html).toContain(">14:40</time>");
+    expect(html).not.toContain("22 Jul,");
+  });
+
+  // Same as the DecisionCard case above: the thread view sets postAction (for
+  // Supersede) and pins withDate false, so this is the shape the route really
+  // renders.
+  it("renders the bare clock time in the thread view's actual shape (postAction set, withDate false)", () => {
+    const html = renderCard(
+      React.createElement(ActionCard, {
+        block,
+        now: CARD_NOW,
+        postAction: "/threads/quill",
+        withDate: false,
+      })
+    );
     expect(html).toContain(">14:40</time>");
     expect(html).not.toContain("22 Jul,");
   });
