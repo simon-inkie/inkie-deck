@@ -142,6 +142,20 @@ machinery that speaks the message protocol, use `bin/inbox`, or the application
 in `packages/deck`, or implement `docs/protocol.md` in your language of choice
 and check it against `conformance/corpus.json`.
 
+### If you just want one CLAUDE.md or AGENTS.md, not a whole agent home
+
+Everything above is for a persistent, named agent (or a team of them) with its
+own identity files under an `AGENTS_HOME`. If you're just working in a single
+repo with a vanilla Claude Code or Codex session, you don't need any of that:
+drop a `CLAUDE.md` (Claude Code) or `AGENTS.md` (Codex) straight in your
+project root, the directory the CLI is launched from. Both tools also walk
+upward from there through parent directories picking up more of the same
+file, and both have a separate user-level file that applies across every
+project regardless of which repo you're in: `~/.claude/CLAUDE.md` for Claude
+Code, `~/.codex/AGENTS.md` (or `$CODEX_HOME/AGENTS.md` if set) for Codex.
+Project-level and user-level files are concatenated together, not one
+overriding the other.
+
 ## Development
 
 This package is markdown, shell and python3, so it has no build and no
