@@ -85,9 +85,16 @@ export const REQUIRED_TOOLS = ["node", "corepack", "pnpm", "git", "rg", "curl", 
  * deck moved 1813 -> 1819 on 2026-08-17: six tests for MC_BRIEFS_AGENT, which
  * replaced a hardcoded agent name in the briefs path with a validated config
  * value. base is unchanged.
+ *
+ * deck moved 1819 -> 1824 on 2026-08-17: four tests pinning that a header with
+ * an empty subject still opens a block, after the block-boundary test stopped
+ * trimming off the trailing space its own grammar requires, plus the corpus
+ * case for the same shape, which is one more case and so one more deck test.
+ * base holds at 38: its conformance runner is a single vitest case whatever
+ * the corpus holds, and its CLI never had the defect.
  */
 export const EXPECTED_TESTS = {
-  deck: { passed: 1819, skipped: 11, files: 88 },
+  deck: { passed: 1824, skipped: 11, files: 88 },
   base: { passed: 38, skipped: 0, files: 4 },
 };
 

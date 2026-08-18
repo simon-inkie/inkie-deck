@@ -1,5 +1,5 @@
 /**
- * Regression tests for the two ways splitBlocks has lost message content.
+ * Regression tests for the three ways splitBlocks has lost message content.
  *
  * 1. A standalone "---" line inside a message body silently truncated the
  *    rendered message in MC, dropping everything after it (hit Alex 1 + 15
@@ -16,14 +16,24 @@
  *    packages/base/test/inbox.test.sh). Corpus cases body-markdown-heading and
  *    pseudo-header-between-blocks state it against docs/protocol.md.
  *
+ * 3. Bounding on the header GRAMMAR rather than the "## " prefix (the fix for
+ *    2) was first written as HEADER_RE.test(line.trim()), and the trim was the
+ *    next defect: HEADER_RE requires a space after `subject:`, serializeHeader
+ *    emits exactly one and nothing else when the subject is empty, and trim
+ *    takes it back off. An empty-subject header stopped opening a block and
+ *    was absorbed into the message above it, under that message's sender.
+ *    Stripping only LEADING whitespace keeps the indentation tolerance that
+ *    trim was there for without touching the end of the line.
+ *
  * These tests drive the FULL pipeline (splitBlocks -> parseBlock) from a
- * multi-block raw string, which is the only way to exercise BOTH bugs: a
+ * multi-block raw string, which is the only way to exercise ALL THREE bugs: a
  * parseBlock-only test on a hand-built single block would never touch the split
  * stage.
  */
 import { describe, it, expect } from "vitest";
 import { splitBlocks } from "~/lib/blocks/split.js";
 import { parseBlock } from "~/lib/blocks/parse.js";
+import { serializeHeader } from "~/lib/blocks/header.js";
 
 describe("body-internal --- is preserved (not a block/body boundary)", () => {
   it("mid-body --- followed by more content, a trailing separator, then a second block", () => {
@@ -222,5 +232,114 @@ describe("a body markdown heading is not a block boundary", () => {
     expect(only.body).toContain("## <timestamp> - from: <name>");
     expect(only.body).toContain("## Why it matters");
     expect(only.body).toContain("Everything from the fence down used to vanish.");
+  });
+});
+
+describe("an empty subject does not stop a header opening a block", () => {
+  // The line under test is produced by the writer rather than typed out here.
+  // An empty-subject header ends in the space after "subject:" and nothing
+  // else; that space is invisible in a source file and is the first thing an
+  // editor or formatter that strips trailing whitespace takes away - and
+  // taking it away leaves a test that still passes while no longer testing
+  // this. serializeHeader cannot drift from what the reader must accept, and
+  // the shape is asserted below rather than assumed.
+  const emptySubjectHeader = serializeHeader({
+    timestamp: "2026-08-17T09:05:00Z",
+    from: "atlas",
+    status: "read",
+    subject: "",
+  });
+
+  it("the writer emits a line ending in the space HEADER_RE requires", () => {
+    expect(emptySubjectHeader.endsWith("subject: ")).toBe(true);
+  });
+
+  it("keeps its own block between two ordinary ones", () => {
+    const raw = [
+      "## 2026-08-17T09:00:00Z - from: scribe - status: sent - subject: opener",
+      "",
+      "First block body.",
+      "",
+      "---",
+      emptySubjectHeader,
+      "",
+      "The message with no subject.",
+      "",
+      "---",
+      "## 2026-08-17T09:10:00Z - from: courier - status: sent - subject: closer",
+      "",
+      "Third block body.",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    const blocks = splitBlocks(raw);
+    // Two is the bug: a fully trimmed line no longer satisfies `subject:\s+`,
+    // so the middle header failed the boundary test and its message was served
+    // as the tail of the block above it, over scribe's name.
+    expect(blocks).toHaveLength(3);
+
+    const first = parseBlock(blocks[0]!);
+    expect(first.header.from).toBe("scribe");
+    expect(first.body).toBe("First block body.");
+
+    const middle = parseBlock(blocks[1]!);
+    expect(middle.header.from).toBe("atlas");
+    expect(middle.header.subject).toBe("");
+    expect(middle.body).toBe("The message with no subject.");
+
+    const last = parseBlock(blocks[2]!);
+    expect(last.header.from).toBe("courier");
+    expect(last.body).toBe("Third block body.");
+  });
+
+  it("opens the file when it is the first and only header", () => {
+    // The costlier half of the same defect. With nothing above it to be
+    // absorbed into, an unrecognised sole header leaves no headers at all, and
+    // a file with no blocks renders as an empty thread: the whole conversation
+    // gone from the view, not merely attributed to the wrong sender.
+    const raw = [
+      emptySubjectHeader,
+      "",
+      "The only message in the file.",
+      "",
+      "---",
+      "",
+    ].join("\n");
+
+    const blocks = splitBlocks(raw);
+    expect(blocks).toHaveLength(1);
+
+    const only = parseBlock(blocks[0]!);
+    expect(only.header.from).toBe("atlas");
+    expect(only.header.subject).toBe("");
+    expect(only.body).toBe("The only message in the file.");
+  });
+
+  it("still treats an indented well-formed header as a boundary", () => {
+    // The other side of the same expression, pinned here because the two are
+    // one decision: leading whitespace is stripped, trailing whitespace is
+    // not. Bounding on an indented header is a known departure from protocol
+    // section 4 (corpus case indented-pseudo-header), so it is deliberate
+    // behaviour to preserve, not incidental - a "fix" that stopped stripping
+    // whitespace altogether would change it silently.
+    const raw = [
+      "## 2026-08-17T10:00:00Z - from: scribe - status: sent - subject: outer",
+      "",
+      "body line",
+      "  ## 2026-08-17T10:05:00Z - from: courier - status: sent - subject: indented",
+      "more body",
+      "",
+    ].join("\n");
+
+    const blocks = splitBlocks(raw);
+    expect(blocks).toHaveLength(2);
+    expect(parseBlock(blocks[0]!).body).toBe("body line");
+    // Asserted on the split output, not through parseBlock: the block the
+    // indented line opens keeps its indentation, and parseHeader is anchored at
+    // column 0, so it goes on to parse as a plain bubble. Splitting there at
+    // all is the behaviour under test.
+    expect(blocks[1]!.startsWith("  ## 2026-08-17T10:05:00Z")).toBe(true);
   });
 });
