@@ -67,6 +67,12 @@ export const PUSHBACK_REPLY_MARKER = "push-back: true";
  * the record showed no option chosen at all. "answered: pushback" already
  * proved a non-letter resolution is the established shape here, and the parser
  * accepts any non-empty string, so nothing schema-side moves.
+ *
+ * A non-letter sentinel cannot collide with A/B/C by CONVENTION, and
+ * convention is not a guarantee: the parser accepts ANY non-empty string as an
+ * option key, so nothing stops a card author writing `key: custom`. The
+ * guarantee lives in isCustomAnswer below, which requires the custom-answer
+ * TEXT to be present and not merely the marker.
  */
 export const CUSTOM_ANSWER_RESOLUTION = "custom";
 
@@ -81,22 +87,33 @@ const LEGACY_CUSTOM_ANSWER_RESOLUTION = "C";
 /**
  * Does this card's answered state mean "the user wrote their own answer"?
  *
- * Both forms count, because the fix changed the value written from here on and
- * did NOT migrate what is already on disk:
- * - "answered: custom" - written since the collision fix.
- * - "answered: C" WITH a custom-answer: value - the legacy form. The custom
- *   text is the evidence: a real tap on option C never writes that field, so
- *   keying on its presence rather than on the letter distinguishes the two
- *   cases that the old sentinel had merged.
+ * Requires BOTH a marker (the current sentinel, or the legacy letter for
+ * records already on disk) AND the custom-answer text. Both halves are
+ * load-bearing:
+ *
+ *   - the text alone is not enough, or a normal tap on a card carrying
+ *     leftover custom-answer text would read as a written answer;
+ *   - the marker alone is not enough, which is what keeps out both a genuine
+ *     tap on option C and a tap on an option someone keyed `custom`.
  */
 export function isCustomAnswer(card: {
   answered?: string;
   customAnswer?: string;
 }): boolean {
-  if (card.answered === CUSTOM_ANSWER_RESOLUTION) return true;
+  // A WRITTEN ANSWER ALWAYS HAS TEXT. The thread route's schema enforces
+  // `text: z.string().trim().min(1)` and applyCustomAnswer writes that text as
+  // the custom-answer: sibling, so this is not a heuristic. Requiring it FIRST
+  // is what makes "cannot collide with an option key" true by construction
+  // rather than by convention: a card author CAN key an option `custom`, and a
+  // tap on that option carries no sibling, so it is correctly not a written
+  // answer.
+  if (card.customAnswer === undefined) return false;
+  // Either marker, given the text is there. The legacy letter is accepted only
+  // for records already on disk; a genuine tap on option C has no sibling and
+  // was excluded above.
   return (
-    card.answered === LEGACY_CUSTOM_ANSWER_RESOLUTION &&
-    card.customAnswer !== undefined
+    card.answered === CUSTOM_ANSWER_RESOLUTION ||
+    card.answered === LEGACY_CUSTOM_ANSWER_RESOLUTION
   );
 }
 

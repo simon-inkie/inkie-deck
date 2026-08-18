@@ -465,3 +465,79 @@ describe("custom answer - records written before the sentinel changed", () => {
     expect("alreadyAnswered" in result).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The sentinel is safe by CONSTRUCTION, not by convention
+// ---------------------------------------------------------------------------
+
+/**
+ * Moving off the letter "C" only made the collision UNLIKELY, not impossible.
+ * Option keys are not constrained to letters: the parser accepts any non-empty
+ * string, so a card author can key a real option `custom` and a tap on it
+ * records exactly the marker a written answer records.
+ *
+ * So the marker alone cannot be the test. isCustomAnswer requires the
+ * custom-answer TEXT as well, which a tap never writes - and that is what
+ * turns "cannot collide with an option key" from a convention the next card
+ * author might break into a property of the reader.
+ */
+const SENTINEL_KEYED_CARD = [
+  `## 2026-06-09T14:30:00Z - from: scribe - status: sent - subject: bespoke or off-the-shelf`,
+  `decision-id: TASK-413-q4`,
+  `options:`,
+  `  - key: A`,
+  `    label: "Take the standard package"`,
+  `    detail: "Ships Monday."`,
+  `  - key: ${CUSTOM_ANSWER_RESOLUTION}`,
+  `    label: "Build a bespoke one"`,
+  `    detail: "A real option someone keyed with the sentinel's spelling."`,
+  ``,
+  `**The problem:** Standard or bespoke?`,
+  ``,
+  `---`,
+].join("\n");
+
+describe("custom answer vs an option someone keyed with the sentinel", () => {
+  it("a tap on an option keyed 'custom' is NOT read as a written answer", () => {
+    const block = parseBlock(SENTINEL_KEYED_CARD);
+    const result = applyAnswer(block, CUSTOM_ANSWER_RESOLUTION);
+    if (!("answeredOriginal" in result)) throw new Error("Expected the tap to apply");
+
+    const reparsed = parseBlock(serializeBlock(result.answeredOriginal));
+    // The tap recorded the sentinel's own spelling...
+    expect(reparsed.card?.answered).toBe(CUSTOM_ANSWER_RESOLUTION);
+    expect(reparsed.card?.options.map((o) => o.key)).toContain(CUSTOM_ANSWER_RESOLUTION);
+    // ...and it still reads as a tap, because no text came with it.
+    expect(reparsed.card?.customAnswer).toBeUndefined();
+    expect(isCustomAnswer(reparsed.card!)).toBe(false);
+  });
+
+  it("the marker alone is never enough, whatever the card's options are", () => {
+    expect(isCustomAnswer({ answered: CUSTOM_ANSWER_RESOLUTION })).toBe(false);
+  });
+
+  it("a written answer on the same card still reads as written", () => {
+    // The other direction: the text is present, so the same marker means what
+    // it is supposed to mean. Without this the test above is satisfied by a
+    // reader that simply never says yes.
+    const original = parseBlock(SENTINEL_KEYED_CARD);
+    const result = applyCustomAnswer(original, "Bespoke, but reuse the standard billing");
+    if (!("answeredOriginal" in result)) throw new Error("Expected first apply to succeed");
+
+    const reparsed = parseBlock(serializeBlock(result.answeredOriginal));
+    expect(isCustomAnswer(reparsed.card!)).toBe(true);
+  });
+
+  it("orphaned text with no marker is not a written answer either", () => {
+    // Both halves are load-bearing, so pin the missing-marker direction too.
+    expect(isCustomAnswer({ customAnswer: "orphaned text" })).toBe(false);
+    expect(isCustomAnswer({})).toBe(false);
+  });
+
+  it("the sentinel is not a single letter, so it cannot collide by accident", () => {
+    // Guards the CHOICE rather than today's value: option keys are single
+    // letters by convention, so any multi-character sentinel avoids the
+    // accidental collision. Changing this back to a letter fails here.
+    expect(CUSTOM_ANSWER_RESOLUTION).not.toMatch(/^[A-Z]$/);
+  });
+});
