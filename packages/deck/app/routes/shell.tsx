@@ -22,8 +22,8 @@ import { avatarUrl } from "~/lib/avatars.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled, instanceLabel, filterCardsForInstance, modelSelectorEnabled, cronAdminEnabled, activityEnabled } from "~/lib/instance.server";
 import { getAgentModelInfo } from "~/lib/agent-model.server";
-import { readActivity } from "~/lib/activity.server";
-import type { ActivityStatus } from "~/lib/activity.shared";
+import { readActivity, resolveEscalationThresholdMs } from "~/lib/activity.server";
+import { escalatedAgents, type ActivityStatus, type EscalatedAgent } from "~/lib/activity.shared";
 import { AppShell } from "~/components/AppShell";
 import type { SidebarAgent } from "~/components/Sidebar";
 import type { NeedsItem } from "~/components/AppShell";
@@ -46,12 +46,25 @@ import type { ModelSelectorData } from "~/components/ModelSelector";
  * The read is the same small JSON file the Activity route reads, on the same
  * AppShell revalidation poll (3s off that route), and it is skipped entirely
  * when the gate is off. See loadActivity in routes/tmux.tsx for the cost note.
+ *
+ * ONE read serves BOTH the sidebar pills and the top-bar escalation alert
+ * (top-bar escalation SPEC, "Loader wiring") - `escalated` is derived from
+ * the same `readActivity` call below, not a second file read.
  */
-function sidebarStatuses(now: Date): Map<string, ActivityStatus> {
-  if (!activityEnabled(process.env)) return new Map();
+function sidebarStatuses(now: Date): {
+  statuses: Map<string, ActivityStatus>;
+  escalated: EscalatedAgent[];
+} {
+  if (!activityEnabled(process.env)) return { statuses: new Map(), escalated: [] };
   const view = readActivity(process.env, now);
-  if (view.state !== "live") return new Map();
-  return new Map(view.agents.map((a) => [a.agent, a.status]));
+  if (view.state !== "live") return { statuses: new Map(), escalated: [] };
+  return {
+    statuses: new Map(view.agents.map((a) => [a.agent, a.status])),
+    // Live-only, same posture as the statuses map above: the escalation alert
+    // is a claim about NOW, so an offline engine (last-known state) escalates
+    // nothing rather than firing off potentially-stale data.
+    escalated: escalatedAgents(view.agents, now, resolveEscalationThresholdMs(process.env)),
+  };
 }
 
 export async function loader({ params, request }: Route.LoaderArgs) {
@@ -80,8 +93,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // below: only chat view fires markRead, so only chat view clears the dot.
   const activeView = new URL(request.url).searchParams.get("view");
 
-  // One read for the whole sidebar, joined per agent by name below.
-  const statuses = sidebarStatuses(now);
+  // One read for the whole sidebar, joined per agent by name below - and for
+  // the top-bar escalation alert (see sidebarStatuses' doc comment).
+  const { statuses, escalated } = sidebarStatuses(now);
 
   const allEntries: InboxEntry[] = [];
   const agents: SidebarAgent[] = await Promise.all(
@@ -218,11 +232,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
-  return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env) };
+  return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env), escalated };
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { agents, needsItems, needsCount, workCards, tmuxOn, instanceLabel, modelSelector, cronAdminOn, activityNavOn } = loaderData;
+  const { agents, needsItems, needsCount, workCards, tmuxOn, instanceLabel, modelSelector, cronAdminOn, activityNavOn, escalated } = loaderData;
   return (
     <AppShell
       agents={agents}
@@ -234,6 +248,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       modelSelector={modelSelector}
       cronAdminOn={cronAdminOn}
       activityNavOn={activityNavOn}
+      escalated={escalated}
     />
   );
 }
