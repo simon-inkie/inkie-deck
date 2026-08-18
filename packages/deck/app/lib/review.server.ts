@@ -39,13 +39,30 @@
  *   boot check alone would not have covered: a resource route runs its own
  *   loader only, never the root loader that calls validateConfiguredRoots.
  *
- * It is vetted ONCE per process, not once per path: the result is memoised on
- * the root list plus the two env vars the refusal reads, so the autolink path
- * pays a string compare. Only a pass is recorded, so a refusal never latches
- * into a pass. That memo is what keeps this off the hot path - linkifyBlockBodies
- * shares root resolution across blocks precisely because the realpath cost
- * there is measured and bounded by a regression test, and this adds nothing to
- * what that test measures.
+ * It is vetted once per RESOLUTION, not once per path. That distinction is the
+ * whole of the cost story here: linkifyBlockBodies resolves the roots once and
+ * shares them across every block, so the vetting rides along on a per-request
+ * charge that a regression test already bounds, and never lands on the
+ * per-candidate path where the realpath cost would scale with the message.
+ *
+ * It is deliberately NOT memoised across resolutions while MC_SANDBOX_ONLY is
+ * set. The first shipped attempt memoised a pass on the root list plus the two
+ * env vars the refusal reads, on the reasoning that those are everything the
+ * answer depends on. They are not. assertNoLiveSiloRoot answers from the
+ * FILESYSTEM: it returns early when the silo cannot be realpath'd, and both
+ * sides of its comparison are realpaths. Codex reproduced the consequence in
+ * one process - configure a sandbox instance whose REVIEW_ROOTS sits inside a
+ * silo that does not exist yet, resolve once (a pass, because there is no silo
+ * to resolve), then create the silo and the file, and the read succeeds off the
+ * stale pass with the env and the root list byte-for-byte unchanged. Retargeting
+ * a symlinked root after a pass is the same bug wearing a different hat. A pass
+ * cannot be memoised on configuration when the answer also depends on what is
+ * on disk, and no key can carry that.
+ *
+ * So the memo now applies only while the guard is INACTIVE, where the vetting
+ * has no answer to give and the recorded pass cannot go stale. With the guard
+ * active every resolveReviewRoots() re-vets. Only a pass is ever recorded, so a
+ * refusal still never latches into a pass.
  *
  * Exports:
  *   resolveReviewRoots() - parses REVIEW_ROOTS env (colon-separated absolute
@@ -119,8 +136,13 @@ interface ReviewRootEntry {
 
 /**
  * The last root list that PASSED vetReviewRoots, keyed with the two env vars
- * the refusal itself reads. A hit skips the syscalls; a miss re-vets. Only a
- * pass is ever recorded, so a refusal cannot latch into a pass.
+ * the refusal itself reads.
+ *
+ * Consulted and written ONLY while MC_SANDBOX_ONLY is unset, where the refusal
+ * is a no-op and a recorded pass therefore cannot go stale. Under the guard the
+ * answer depends on filesystem state that no key describes, so there is nothing
+ * safe to record - see vetReviewRoots. Only a pass is ever written either way,
+ * so a refusal cannot latch into a pass.
  */
 let vettedReviewRootsKey: string | null = null;
 
@@ -131,19 +153,37 @@ let vettedReviewRootsKey: string | null = null;
  * This is the review surface's half of that guard. safe-fs vets its own four
  * roots once at boot; these are vetted here, at the single point where this
  * module resolves the list, so no read path can reach a root the refusal has
- * not seen. Memoised on the roots plus MC_SANDBOX_ONLY and MC_LIVE_SILO_ROOT,
- * which is everything the answer depends on, so a running instance pays for
- * this once rather than once per call.
+ * not seen.
+ *
+ * Re-vetted on EVERY call while the guard is active, and memoised only while it
+ * is not. assertNoLiveSiloRoot answers from realpaths, and a realpath is not a
+ * function of the configuration: a root inside a silo that does not exist yet
+ * passes, and passes for exactly as long as that stays true. Keyed memoisation
+ * turned that "for now" into "for the life of the process" - create the silo
+ * afterwards and the read went through on a pass recorded before the directory
+ * existed (Codex, PR #9, reproduced end to end). The re-vet is bounded: this
+ * runs once per root RESOLUTION, and every caller on this surface resolves once
+ * per request, not once per path.
+ *
+ * The flag is read here only to decide how long an answer stays valid, never to
+ * decide what the answer is. assertNoLiveSiloRoot remains the one authority on
+ * that, and the loop below still runs at least once for any distinct root list
+ * whatever the flag says.
  */
 function vetReviewRoots(entries: readonly ReviewRootEntry[]): void {
+  // Same emptiness test assertNoLiveSiloRoot applies to decide whether it has
+  // anything to say at all.
+  const sandboxOnly = process.env["MC_SANDBOX_ONLY"];
+  const guardActive = sandboxOnly !== undefined && sandboxOnly.trim() !== "";
+
   // JSON, not a joined string: a separator character can appear in a path
   // and two different configurations must never produce the same key.
   const key = JSON.stringify([
-    process.env["MC_SANDBOX_ONLY"] ?? "",
+    sandboxOnly ?? "",
     process.env["MC_LIVE_SILO_ROOT"] ?? "",
     ...entries.map((e) => e.root),
   ]);
-  if (key === vettedReviewRootsKey) return;
+  if (!guardActive && key === vettedReviewRootsKey) return;
 
   for (const { root, label } of entries) {
     let rootReal: string;
@@ -159,7 +199,7 @@ function vetReviewRoots(entries: readonly ReviewRootEntry[]): void {
     assertNoLiveSiloRoot(rootReal, label);
   }
 
-  vettedReviewRootsKey = key;
+  if (!guardActive) vettedReviewRootsKey = key;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +258,9 @@ export function resolveReviewRoots(): string[] {
  * The root loader calls this beside validateConfiguredRoots, so a sandbox
  * instance whose REVIEW_ROOTS names a live silo dies at start with the root
  * named, the same way the four roots in safe-fs's table do, instead of looking
- * healthy until someone opens the review panel. Shares the memo, so it costs
- * the request path nothing after the first call.
+ * healthy until someone opens the review panel. It is a boot-time ALIAS, not a
+ * substitute: the per-resolution vetting is what covers a cold request straight
+ * to the review API, and what covers a silo created after this call returned.
  */
 export function validateReviewRoots(): void {
   resolveReviewRoots();

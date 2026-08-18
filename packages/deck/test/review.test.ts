@@ -517,6 +517,84 @@ describe("review.server", () => {
       }
     });
 
+    // -----------------------------------------------------------------------
+    // A pass is not memoisable: the refusal answers from the filesystem
+    // -----------------------------------------------------------------------
+    //
+    // The first version of this guard cached a pass on the root list plus
+    // MC_SANDBOX_ONLY and MC_LIVE_SILO_ROOT, on the reasoning that those are
+    // everything the answer depends on. Codex (PR #9, second round) showed they
+    // are not, and reproduced the bypass in one process. assertNoLiveSiloRoot
+    // compares REALPATHS and returns early when the silo cannot be resolved, so
+    // both of the cases below start from an honest pass over a configuration
+    // that then changes underneath it without a single environment variable or
+    // root string moving. The two tests are the two shapes Codex named: a silo
+    // that appears after the pass, and a symlinked root retargeted after it.
+
+    it("REFUSES a read through a silo created AFTER the roots passed", () => {
+      const parent = mkdtempSync();
+      try {
+        // Neither exists yet. That is the point: with no silo on disk the
+        // refusal has nothing to resolve and lets the roots through.
+        const silo = path.join(parent, "silo");
+        const agents = path.join(silo, "agents");
+
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: agents }, () => {
+            // 1. The pass. Correct at the time it is given.
+            expect(() => resolveReviewRoots()).not.toThrow();
+
+            // 2. The silo appears, with a real agent file in it. REVIEW_ROOTS,
+            //    MC_LIVE_SILO_ROOT and MC_SANDBOX_ONLY are all untouched - a
+            //    cache keyed on configuration sees no reason to re-check.
+            fs.mkdirSync(agents, { recursive: true });
+            const doc = path.join(agents, "private.md");
+            fs.writeFileSync(doc, "# private\n");
+
+            // 3. The next resolution must answer on what is on disk NOW...
+            expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+            // ...and the read must be refused, not served off the stale pass.
+            expect(() => readReviewFile(doc)).toThrow(/live agent silo/);
+          });
+        });
+      } finally {
+        rmSync(parent);
+      }
+    });
+
+    it("REFUSES a read through a symlinked root RETARGETED into the silo after it passed", () => {
+      const parent = mkdtempSync();
+      try {
+        const silo = path.join(parent, "silo");
+        const agents = path.join(silo, "agents");
+        const safe = path.join(parent, "safe");
+        const rootLink = path.join(parent, "root"); // the configured root
+        fs.mkdirSync(agents, { recursive: true });
+        fs.mkdirSync(safe, { recursive: true });
+        fs.symlinkSync(safe, rootLink);
+
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: rootLink }, () => {
+            // 1. The pass. rootLink resolves outside the silo, so it is fine.
+            expect(() => resolveReviewRoots()).not.toThrow();
+
+            // 2. The same root string now points into the silo.
+            fs.unlinkSync(rootLink);
+            fs.symlinkSync(agents, rootLink);
+            fs.writeFileSync(path.join(agents, "private.md"), "# private\n");
+
+            // 3. Refused, through the unchanged configured path.
+            expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+            expect(() => readReviewFile(path.join(rootLink, "private.md"))).toThrow(
+              /live agent silo/
+            );
+          });
+        });
+      } finally {
+        rmSync(parent);
+      }
+    });
+
     it("REFUSES when the implicit INBOX_ROOT is the live silo", () => {
       // Every root the panel would use is vetted, not only the configured ones.
       const silo = mkdtempSync();
