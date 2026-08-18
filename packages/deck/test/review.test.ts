@@ -4,9 +4,9 @@
  * Covers (per plan sections 7 + TASK-562 test plan):
  *   - resolveReviewRoots: parsing, absolute-only, implicit INBOX_ROOT, unset.
  *   - readReviewFile: containment in/out per root, symlinked root + symlink
- *     escape; .the-vault ban; THE .env test - .env inside allowed root denied
- *     by extension gate; .markdown/.txt/.ts/.json accepted; size cap; ".." shape
- *     rejection; binary-NUL guard; kind/lang derivation.
+ *     escape; no silo-name substring ban; THE .env test - .env inside
+ *     allowed root denied by extension gate; .markdown/.txt/.ts/.json accepted;
+ *     size cap; ".." shape rejection; binary-NUL guard; kind/lang derivation.
  *   - readReviewAsset: image allowed, svg denied, .md denied.
  *   - seam: REVIEW_ROOTS ban is in seam.test.ts (separate suite).
  *
@@ -23,6 +23,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   resolveReviewRoots,
+  validateReviewRoots,
   readReviewFile,
   readReviewAsset,
   expandTilde,
@@ -62,6 +63,44 @@ function withEnv(overrides: EnvSnapshot, fn: () => void): void {
       delete process.env["INBOX_ROOT"];
     } else {
       process.env["INBOX_ROOT"] = saved.INBOX_ROOT;
+    }
+  }
+}
+
+/** Save and restore MC_LIVE_SILO_ROOT around a test (mirrors safe-fs.test.ts). */
+function withLiveSiloRoot(value: string | undefined, fn: () => void): void {
+  const previous = process.env["MC_LIVE_SILO_ROOT"];
+  if (value === undefined) {
+    delete process.env["MC_LIVE_SILO_ROOT"];
+  } else {
+    process.env["MC_LIVE_SILO_ROOT"] = value;
+  }
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env["MC_LIVE_SILO_ROOT"];
+    } else {
+      process.env["MC_LIVE_SILO_ROOT"] = previous;
+    }
+  }
+}
+
+/** Save and restore MC_SANDBOX_ONLY (test/setup.ts sets it to "1" globally). */
+function withSandboxOnly(value: string | undefined, fn: () => void): void {
+  const previous = process.env["MC_SANDBOX_ONLY"];
+  if (value === undefined) {
+    delete process.env["MC_SANDBOX_ONLY"];
+  } else {
+    process.env["MC_SANDBOX_ONLY"] = value;
+  }
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env["MC_SANDBOX_ONLY"];
+    } else {
+      process.env["MC_SANDBOX_ONLY"] = previous;
     }
   }
 }
@@ -315,34 +354,311 @@ describe("review.server", () => {
   });
 
   // -------------------------------------------------------------------------
-  // readReviewFile - .the-vault ban
+  // readReviewFile - silo directory name is not a substring rule
   // -------------------------------------------------------------------------
+  //
+  // This block used to assert the opposite: that any path whose text contained
+  // a particular silo directory name was refused. TASK-434 had already retired
+  // that pattern everywhere else (safe-fs, attachments, projects) in favour of
+  // realpath containment, and it was left standing here alone. It denied
+  // nothing on a deployment that does not use that name, and on a deployment
+  // that DOES it contradicted resolveReviewRoots, which always appends
+  // INBOX_ROOT as an implicit root: the panel refused every read from the one
+  // root it is guaranteed to have. What follows pins the behaviour that
+  // actually protects the surface - containment, judged on the realpath - and
+  // pins that the name itself carries no special power.
 
-  describe("readReviewFile - .the-vault ban", () => {
-    it("rejects any path containing .the-vault", () => {
-      withEnv({ INBOX_ROOT: sandbox }, () => {
-        const bannedPath = path.join(sandbox, ".the-vault", "memory.md");
-        expect(() => readReviewFile(bannedPath)).toThrow(/\.the-vault/);
+  describe("readReviewFile - containment, not name matching", () => {
+    it("SERVES a file from a root whose own path contains a silo-shaped dir name", () => {
+      // The exact case the old ban made impossible: a production root sitting
+      // inside a dot-prefixed silo directory.
+      const siloish = path.join(sandbox, ".the-vault", "agents");
+      fs.mkdirSync(siloish, { recursive: true });
+      const filePath = path.join(siloish, "memory.md");
+      fs.writeFileSync(filePath, "# notes\n");
+
+      withEnv({ INBOX_ROOT: siloish }, () => {
+        const result = readReviewFile(filePath);
+        expect(result.content).toBe("# notes\n");
+        expect(result.path).toContain(".the-vault");
       });
     });
 
-    it("rejects .the-vault via intermediate symlink", () => {
-      const fakeBrainDir = mkdtempSync();
+    it("still REFUSES a silo-shaped path that is outside every root", () => {
+      // Same shape as above, but not configured as a root. The denial has to
+      // come from containment now, not from the directory's name.
+      const outside = mkdtempSync();
       try {
-        const fakeBrainSubdir = path.join(fakeBrainDir, ".the-vault");
-        fs.mkdirSync(fakeBrainSubdir);
-        const fakeBrainInner = path.join(fakeBrainSubdir, "agents");
-        fs.mkdirSync(fakeBrainInner, { recursive: true });
-        const linkPath = path.join(sandbox, "escape-link");
-        fs.symlinkSync(fakeBrainInner, linkPath);
-        const targetPath = path.join(linkPath, "memory.md");
-        // raw path does NOT contain ".the-vault" but resolved path does.
-        expect(targetPath).not.toContain(".the-vault");
+        const siloish = path.join(outside, ".the-vault", "agents");
+        fs.mkdirSync(siloish, { recursive: true });
+        const filePath = path.join(siloish, "memory.md");
+        fs.writeFileSync(filePath, "# notes\n");
+
         withEnv({ INBOX_ROOT: sandbox }, () => {
-          expect(() => readReviewFile(targetPath)).toThrow(/\.the-vault/);
+          expect(() => readReviewFile(filePath)).toThrow(/outside all review roots/);
         });
       } finally {
-        rmSync(fakeBrainDir);
+        rmSync(outside);
+      }
+    });
+
+    it("REFUSES an escape through an intermediate symlink on the resolved path", () => {
+      // The case the resolved-path half of the old ban was reaching for. It is
+      // caught by containment against the realpath, with no name involved.
+      const outside = mkdtempSync();
+      try {
+        const inner = path.join(outside, ".the-vault", "agents");
+        fs.mkdirSync(inner, { recursive: true });
+        fs.writeFileSync(path.join(inner, "memory.md"), "# notes\n");
+        const linkPath = path.join(sandbox, "escape-link");
+        fs.symlinkSync(inner, linkPath);
+        const targetPath = path.join(linkPath, "memory.md");
+        // The raw path does not carry the directory name at all; only the
+        // realpath does, which is the point.
+        expect(targetPath).not.toContain(".the-vault");
+        withEnv({ INBOX_ROOT: sandbox }, () => {
+          expect(() => readReviewFile(targetPath)).toThrow(/outside all review roots/);
+        });
+      } finally {
+        rmSync(outside);
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The other half of the removed ban: REVIEW_ROOTS may not name a live silo
+  // -------------------------------------------------------------------------
+  //
+  // Containment answers "is this path inside a configured root". It cannot
+  // answer "should this root have been configured at all", and that second
+  // question is the whole of MC_SANDBOX_ONLY. safe-fs vets its four roots
+  // against it once at boot; REVIEW_ROOTS is not in that table (optional and
+  // list-valued, where the table is required and single-valued), so without the
+  // refusal pinned below, dropping the substring ban WIDENED this surface: a
+  // sandbox instance could name the live silo in REVIEW_ROOTS and read it back
+  // through the review API, which is more than the deleted code allowed on the
+  // default layout and defeats MC_LIVE_SILO_ROOT on every other one.
+  //
+  // The silo here is a tmpdir standing in for a real one, named through
+  // MC_LIVE_SILO_ROOT, so these run on any machine including CI - unlike the
+  // pre-MC_LIVE_SILO_ROOT test of this guard, which skipped everywhere.
+
+  describe("REVIEW_ROOTS live-silo refusal (MC_SANDBOX_ONLY)", () => {
+    it("REFUSES a REVIEW_ROOTS entry that IS the live silo", () => {
+      const silo = mkdtempSync();
+      try {
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: silo }, () => {
+            expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+            // Twice: a refusal must never memoise itself into a pass.
+            expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+          });
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("REFUSES a REVIEW_ROOTS entry BELOW the live silo, and names the variable", () => {
+      const silo = mkdtempSync();
+      try {
+        const agents = path.join(silo, "agents");
+        fs.mkdirSync(agents, { recursive: true });
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: agents }, () => {
+            expect(() => resolveReviewRoots()).toThrow(/REVIEW_ROOTS/);
+          });
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("REFUSES the READ, not merely the root resolution", () => {
+      // The reported case end to end: a real agent file inside the live silo,
+      // named as a review root, requested through the exact function the review
+      // API route calls. The route maps the throw to 404.
+      const silo = mkdtempSync();
+      try {
+        const agentDir = path.join(silo, "agents", "quill");
+        fs.mkdirSync(agentDir, { recursive: true });
+        const doc = path.join(agentDir, "MEMORY.md");
+        fs.writeFileSync(doc, "# private\n");
+
+        withLiveSiloRoot(silo, () => {
+          withEnv(
+            { INBOX_ROOT: sandbox, REVIEW_ROOTS: path.join(silo, "agents") },
+            () => {
+              expect(() => readReviewFile(doc)).toThrow(/live agent silo/);
+            }
+          );
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("REFUSES an entry that does not exist YET but sits inside the silo", () => {
+      // A root the containment check skips (it cannot realpath it) but which
+      // starts serving the moment the directory is created. Vetting only what
+      // happens to exist at the time would leave that window open.
+      const silo = mkdtempSync();
+      try {
+        withLiveSiloRoot(silo, () => {
+          withEnv(
+            { INBOX_ROOT: sandbox, REVIEW_ROOTS: path.join(silo, "not-yet") },
+            () => {
+              expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+            }
+          );
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // A pass is not memoisable: the refusal answers from the filesystem
+    // -----------------------------------------------------------------------
+    //
+    // The first version of this guard cached a pass on the root list plus
+    // MC_SANDBOX_ONLY and MC_LIVE_SILO_ROOT, on the reasoning that those are
+    // everything the answer depends on. Codex (PR #9, second round) showed they
+    // are not, and reproduced the bypass in one process. assertNoLiveSiloRoot
+    // compares REALPATHS and returns early when the silo cannot be resolved, so
+    // both of the cases below start from an honest pass over a configuration
+    // that then changes underneath it without a single environment variable or
+    // root string moving. The two tests are the two shapes Codex named: a silo
+    // that appears after the pass, and a symlinked root retargeted after it.
+
+    it("REFUSES a read through a silo created AFTER the roots passed", () => {
+      const parent = mkdtempSync();
+      try {
+        // Neither exists yet. That is the point: with no silo on disk the
+        // refusal has nothing to resolve and lets the roots through.
+        const silo = path.join(parent, "silo");
+        const agents = path.join(silo, "agents");
+
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: agents }, () => {
+            // 1. The pass. Correct at the time it is given.
+            expect(() => resolveReviewRoots()).not.toThrow();
+
+            // 2. The silo appears, with a real agent file in it. REVIEW_ROOTS,
+            //    MC_LIVE_SILO_ROOT and MC_SANDBOX_ONLY are all untouched - a
+            //    cache keyed on configuration sees no reason to re-check.
+            fs.mkdirSync(agents, { recursive: true });
+            const doc = path.join(agents, "private.md");
+            fs.writeFileSync(doc, "# private\n");
+
+            // 3. The next resolution must answer on what is on disk NOW...
+            expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+            // ...and the read must be refused, not served off the stale pass.
+            expect(() => readReviewFile(doc)).toThrow(/live agent silo/);
+          });
+        });
+      } finally {
+        rmSync(parent);
+      }
+    });
+
+    it("REFUSES a read through a symlinked root RETARGETED into the silo after it passed", () => {
+      const parent = mkdtempSync();
+      try {
+        const silo = path.join(parent, "silo");
+        const agents = path.join(silo, "agents");
+        const safe = path.join(parent, "safe");
+        const rootLink = path.join(parent, "root"); // the configured root
+        fs.mkdirSync(agents, { recursive: true });
+        fs.mkdirSync(safe, { recursive: true });
+        fs.symlinkSync(safe, rootLink);
+
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: rootLink }, () => {
+            // 1. The pass. rootLink resolves outside the silo, so it is fine.
+            expect(() => resolveReviewRoots()).not.toThrow();
+
+            // 2. The same root string now points into the silo.
+            fs.unlinkSync(rootLink);
+            fs.symlinkSync(agents, rootLink);
+            fs.writeFileSync(path.join(agents, "private.md"), "# private\n");
+
+            // 3. Refused, through the unchanged configured path.
+            expect(() => resolveReviewRoots()).toThrow(/live agent silo/);
+            expect(() => readReviewFile(path.join(rootLink, "private.md"))).toThrow(
+              /live agent silo/
+            );
+          });
+        });
+      } finally {
+        rmSync(parent);
+      }
+    });
+
+    it("REFUSES when the implicit INBOX_ROOT is the live silo", () => {
+      // Every root the panel would use is vetted, not only the configured ones.
+      const silo = mkdtempSync();
+      try {
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: silo, REVIEW_ROOTS: sandbox }, () => {
+            expect(() => resolveReviewRoots()).toThrow(/INBOX_ROOT/);
+          });
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("REFUSES at boot through validateReviewRoots, so the instance dies loudly", () => {
+      // What the root loader calls. Without it the misconfiguration is a 404 on
+      // one panel rather than a start-up failure, which is the shape the other
+      // four roots have.
+      const silo = mkdtempSync();
+      try {
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: silo }, () => {
+            expect(() => validateReviewRoots()).toThrow(/live agent silo/);
+          });
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("ALLOWS a sibling whose name merely starts with the silo's (no prefix bug)", () => {
+      const parent = mkdtempSync();
+      try {
+        const silo = path.join(parent, "silo");
+        const sibling = path.join(parent, "silo-backup");
+        fs.mkdirSync(silo);
+        fs.mkdirSync(sibling);
+        withLiveSiloRoot(silo, () => {
+          withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: sibling }, () => {
+            expect(() => resolveReviewRoots()).not.toThrow();
+          });
+        });
+      } finally {
+        rmSync(parent);
+      }
+    });
+
+    it("ALLOWS the live silo once MC_SANDBOX_ONLY is unset (the production cutover)", () => {
+      // Production reads the real silo on purpose. The refusal is a sandbox
+      // rule, and unsetting the flag is the deliberate step that lifts it.
+      const silo = mkdtempSync();
+      try {
+        const doc = path.join(silo, "note.md");
+        fs.writeFileSync(doc, "# live\n");
+        withSandboxOnly(undefined, () => {
+          withLiveSiloRoot(silo, () => {
+            withEnv({ INBOX_ROOT: sandbox, REVIEW_ROOTS: silo }, () => {
+              expect(() => resolveReviewRoots()).not.toThrow();
+              expect(readReviewFile(doc).content).toBe("# live\n");
+            });
+          });
+        });
+      } finally {
+        rmSync(silo);
       }
     });
   });

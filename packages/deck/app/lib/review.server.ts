@@ -4,14 +4,74 @@
  * Read-only safe-fs module for the review side-panel (TASK-431, TASK-562).
  * Mirrors the discipline from attachments.server.ts:
  *   - realpath BOTH sides for containment
- *   - .the-vault ban (raw + resolved)
  *   - sep-suffixed startsWith prefix assert
  *   - console.warn on denial (observable in dev logs, no client leak)
  *   - route maps ALL throws to 404 (no reason leak)
  *
+ * That list used to carry a second bullet, a per-path substring ban on a
+ * literal silo directory name, applied to the raw and the resolved path
+ * both. TASK-434 replaced deny-known-bad with allowlist confinement across
+ * safe-fs, attachments and projects; the ban was left standing here alone,
+ * still naming a literal directory. Two things were wrong with it. It banned
+ * a string no deployment is obliged to use, so on most of them it denied
+ * nothing at all. And INBOX_ROOT is ALWAYS an implicit review root (see
+ * resolveReviewRoots below), so on any deployment that DID use that name the
+ * ban and the root list contradicted each other outright: the panel refused
+ * every read from the one root it is guaranteed to have. Containment against
+ * realpath'd roots is strictly stronger than a substring test for the
+ * traversal and symlink-escape cases the ban was reaching for, so removing it
+ * loses nothing that was load-bearing.
+ *
+ * What did NOT go with it is the MC_SANDBOX_ONLY live-silo refusal. That one
+ * is real on every deployment, because MC_LIVE_SILO_ROOT lets an instance name
+ * its own silo, and dropping the ban without replacing it would have widened
+ * this read surface: with MC_SANDBOX_ONLY set, an operator could name the live
+ * silo in REVIEW_ROOTS and read it back through the review API. safe-fs vets
+ * the four roots in its ROOT_ENV_VARS table once at boot, but REVIEW_ROOTS is
+ * not in that table and does not fit it - it is optional and list-valued where
+ * that table is required and single-valued. So the refusal lives at the one
+ * place this module resolves its roots instead:
+ *
+ *   resolveReviewRoots() runs assertNoLiveSiloRoot over EVERY root it is about
+ *   to return, the configured entries and the implicit INBOX_ROOT alike, and
+ *   throws before any of them reaches a caller. Every read on this surface goes
+ *   through it, including a cold request straight to the review API, which the
+ *   boot check alone would not have covered: a resource route runs its own
+ *   loader only, never the root loader that calls validateConfiguredRoots.
+ *
+ * It is vetted once per RESOLUTION, not once per path. That distinction is the
+ * whole of the cost story here: linkifyBlockBodies resolves the roots once and
+ * shares them across every block, so the vetting rides along on a per-request
+ * charge that a regression test already bounds, and never lands on the
+ * per-candidate path where the realpath cost would scale with the message.
+ *
+ * It is deliberately NOT memoised across resolutions while MC_SANDBOX_ONLY is
+ * set. The first shipped attempt memoised a pass on the root list plus the two
+ * env vars the refusal reads, on the reasoning that those are everything the
+ * answer depends on. They are not. assertNoLiveSiloRoot answers from the
+ * FILESYSTEM: it returns early when the silo cannot be realpath'd, and both
+ * sides of its comparison are realpaths. Codex reproduced the consequence in
+ * one process - configure a sandbox instance whose REVIEW_ROOTS sits inside a
+ * silo that does not exist yet, resolve once (a pass, because there is no silo
+ * to resolve), then create the silo and the file, and the read succeeds off the
+ * stale pass with the env and the root list byte-for-byte unchanged. Retargeting
+ * a symlinked root after a pass is the same bug wearing a different hat. A pass
+ * cannot be memoised on configuration when the answer also depends on what is
+ * on disk, and no key can carry that.
+ *
+ * So the memo now applies only while the guard is INACTIVE, where the vetting
+ * has no answer to give and the recorded pass cannot go stale. With the guard
+ * active every resolveReviewRoots() re-vets. Only a pass is ever recorded, so a
+ * refusal still never latches into a pass.
+ *
  * Exports:
  *   resolveReviewRoots() - parses REVIEW_ROOTS env (colon-separated absolute
  *     paths); implicit INBOX_ROOT always appended; unset = INBOX_ROOT only.
+ *     Refuses a root inside the live silo while MC_SANDBOX_ONLY is set.
+ *   validateReviewRoots() - the same vetting under a boot-time name, called by
+ *     the root loader beside validateConfiguredRoots so a sandbox instance
+ *     pointed at a live silo dies at start with the offending root named,
+ *     rather than at whichever read happens to reach it first.
  *   readReviewFile(absPath) - returns {path, content, kind, lang} or throws.
  *   readReviewAsset(absPath) - returns {bytes, contentType} for images or throws.
  *
@@ -22,7 +82,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveInboxRoot } from "./safe-fs.server.js";
+import { resolveInboxRoot, assertNoLiveSiloRoot } from "./safe-fs.server.js";
 import { REVIEW_MD_EXTS, REVIEW_CODE_EXTS, extKind, extToLang, isSecretBasename } from "./review-exts.js";
 import type { MessageBlock } from "./blocks/model.js";
 
@@ -65,6 +125,84 @@ export function expandTilde(p: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Live-silo vetting of the review roots (MC_SANDBOX_ONLY)
+// ---------------------------------------------------------------------------
+
+/** A root about to be returned, with the env var it came from for the error. */
+interface ReviewRootEntry {
+  root: string;
+  label: string;
+}
+
+/**
+ * The last root list that PASSED vetReviewRoots, keyed with the two env vars
+ * the refusal itself reads.
+ *
+ * Consulted and written ONLY while MC_SANDBOX_ONLY is unset, where the refusal
+ * is a no-op and a recorded pass therefore cannot go stale. Under the guard the
+ * answer depends on filesystem state that no key describes, so there is nothing
+ * safe to record - see vetReviewRoots. Only a pass is ever written either way,
+ * so a refusal cannot latch into a pass.
+ */
+let vettedReviewRootsKey: string | null = null;
+
+/**
+ * Refuse any review root that resolves inside the live agent silo while
+ * MC_SANDBOX_ONLY is set (see assertNoLiveSiloRoot in safe-fs.server).
+ *
+ * This is the review surface's half of that guard. safe-fs vets its own four
+ * roots once at boot; these are vetted here, at the single point where this
+ * module resolves the list, so no read path can reach a root the refusal has
+ * not seen.
+ *
+ * Re-vetted on EVERY call while the guard is active, and memoised only while it
+ * is not. assertNoLiveSiloRoot answers from realpaths, and a realpath is not a
+ * function of the configuration: a root inside a silo that does not exist yet
+ * passes, and passes for exactly as long as that stays true. Keyed memoisation
+ * turned that "for now" into "for the life of the process" - create the silo
+ * afterwards and the read went through on a pass recorded before the directory
+ * existed (Codex, PR #9, reproduced end to end). The re-vet is bounded: this
+ * runs once per root RESOLUTION, and every caller on this surface resolves once
+ * per request, not once per path.
+ *
+ * The flag is read here only to decide how long an answer stays valid, never to
+ * decide what the answer is. assertNoLiveSiloRoot remains the one authority on
+ * that, and the loop below still runs at least once for any distinct root list
+ * whatever the flag says.
+ */
+function vetReviewRoots(entries: readonly ReviewRootEntry[]): void {
+  // Same emptiness test assertNoLiveSiloRoot applies to decide whether it has
+  // anything to say at all.
+  const sandboxOnly = process.env["MC_SANDBOX_ONLY"];
+  const guardActive = sandboxOnly !== undefined && sandboxOnly.trim() !== "";
+
+  // JSON, not a joined string: a separator character can appear in a path
+  // and two different configurations must never produce the same key.
+  const key = JSON.stringify([
+    sandboxOnly ?? "",
+    process.env["MC_LIVE_SILO_ROOT"] ?? "",
+    ...entries.map((e) => e.root),
+  ]);
+  if (!guardActive && key === vettedReviewRootsKey) return;
+
+  for (const { root, label } of entries) {
+    let rootReal: string;
+    try {
+      rootReal = fs.realpathSync(root);
+    } catch {
+      // The directory does not exist yet. assertContained skips such a root at
+      // read time, but it starts serving the moment the directory appears, so
+      // it is vetted where it sits rather than waved through: with nothing to
+      // resolve, the normalised absolute path IS the honest answer for it.
+      rootReal = path.resolve(root);
+    }
+    assertNoLiveSiloRoot(rootReal, label);
+  }
+
+  if (!guardActive) vettedReviewRootsKey = key;
+}
+
+// ---------------------------------------------------------------------------
 // resolveReviewRoots
 // ---------------------------------------------------------------------------
 
@@ -74,13 +212,18 @@ export function expandTilde(p: string): string {
  *
  * Throws if:
  *   - An individual entry is not absolute after tilde-expansion.
+ *   - Any resulting root resolves inside the live agent silo while
+ *     MC_SANDBOX_ONLY is set (vetReviewRoots above). Nothing is returned in
+ *     that case, so every caller on this surface fails closed: the two read
+ *     entry points throw and the route maps that to 404, and the autolink pass
+ *     leaves every candidate as plain text.
  * Unset/empty REVIEW_ROOTS returns [INBOX_ROOT] only.
  */
 export function resolveReviewRoots(): string[] {
   const raw = process.env["REVIEW_ROOTS"];
   const inboxRoot = resolveInboxRoot();
 
-  const roots: string[] = [];
+  const entries: ReviewRootEntry[] = [];
 
   if (raw && raw.trim() !== "") {
     for (const entry of raw.split(":")) {
@@ -93,17 +236,34 @@ export function resolveReviewRoots(): string[] {
             "Relative paths are rejected."
         );
       }
-      roots.push(expanded);
+      entries.push({ root: expanded, label: "REVIEW_ROOTS" });
     }
   }
 
   // INBOX_ROOT is always appended (implicit root).
   // Dedup: only append if not already in the list.
-  if (!roots.includes(inboxRoot)) {
-    roots.push(inboxRoot);
+  if (!entries.some((e) => e.root === inboxRoot)) {
+    entries.push({ root: inboxRoot, label: "INBOX_ROOT" });
   }
 
-  return roots;
+  vetReviewRoots(entries);
+
+  return entries.map((e) => e.root);
+}
+
+/**
+ * Boot-time name for the vetting above: resolve the review roots for their
+ * side effect and discard them.
+ *
+ * The root loader calls this beside validateConfiguredRoots, so a sandbox
+ * instance whose REVIEW_ROOTS names a live silo dies at start with the root
+ * named, the same way the four roots in safe-fs's table do, instead of looking
+ * healthy until someone opens the review panel. It is a boot-time ALIAS, not a
+ * substitute: the per-resolution vetting is what covers a cold request straight
+ * to the review API, and what covers a silo created after this call returned.
+ */
+export function validateReviewRoots(): void {
+  resolveReviewRoots();
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +275,9 @@ export function resolveReviewRoots(): string[] {
  *
  * Steps:
  *   1. Shape: absolute, no NUL, no ".." segments (early, before fs).
- *   2. .the-vault ban (raw + resolved).
+ *   2. GONE. Was a substring ban on a literal silo directory name, raw and
+ *      resolved. The module header says why it went. The number is left in
+ *      place so step 3 below still matches the "Step 3" in the code.
  *   3. Containment: realpathSync BOTH sides; must be inside at least one root.
  *
  * Returns the fully resolved path on success. Throws with a descriptive
@@ -135,13 +297,6 @@ function assertContained(targetPath: string, roots: string[]): string {
   const parts = normalized.split(path.sep);
   if (parts.some((p) => p === "..")) {
     throw new Error(`Path contains ".." segment: "${targetPath}".`);
-  }
-
-  // Step 2: .the-vault ban on raw path.
-  if (targetPath.includes(".the-vault")) {
-    throw new Error(
-      `Refusing to read: path contains banned substring ".the-vault": "${targetPath}".`
-    );
   }
 
   // Resolve all roots (realpathSync, throws ENOENT if root does not exist).
@@ -168,22 +323,13 @@ function assertContained(targetPath: string, roots: string[]): string {
   }
   const joined = path.join(parentReal, path.basename(targetPath));
 
-  // Step 2b: .the-vault ban on parent-resolved path.
-  if (joined.includes(".the-vault")) {
-    throw new Error(
-      `Refusing to read: resolved path contains banned substring ".the-vault": "${joined}".`
-    );
-  }
-
-  // Fully resolve the target itself if it exists (catches final-component symlinks).
+  // Fully resolve the target itself if it exists (catches final-component
+  // symlinks). Containment below is what judges the result: a symlink that
+  // escapes the roots fails the prefix assert wherever it points, which is the
+  // property the old resolved-path substring ban was approximating.
   let finalResolved = joined;
   try {
     finalResolved = fs.realpathSync(joined);
-    if (finalResolved.includes(".the-vault")) {
-      throw new Error(
-        `Refusing to read: fully-resolved path contains banned substring ".the-vault": "${finalResolved}".`
-      );
-    }
   } catch (err) {
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
       finalResolved = joined;
@@ -227,7 +373,7 @@ export interface ReviewFileResult {
  *
  * Gate chain (every failure throws; route maps all to 404, console.warn'd):
  *   1. Shape rejection (absolute, no NUL, no ".." segments).
- *   2. .the-vault ban (raw + resolved).
+ *   2. GONE - see assertContained.
  *   3. Multi-root realpath containment.
  *   4. Extension allowlist (markdown + code set) - evaluated on BOTH the
  *      requested path AND the realpath'd path.
@@ -448,7 +594,7 @@ const AUTOLINK_TOKEN_RE = new RegExp(
  *
  * Reuses the exact review-panel validation (no second implementation):
  *   - expandTilde + resolveReviewRoots (unless roots pre-passed by the caller).
- *   - assertContained (shape + .the-vault ban + multi-root realpath containment).
+ *   - assertContained (shape + root vetting + multi-root realpath containment).
  *   - REVIEW_DOC_EXTS allowlist (doc + code) on BOTH requested and resolved
  *     extension - the same combined set readReviewFile serves.
  *   - isSecretBasename on BOTH basenames (deny-before-allow).

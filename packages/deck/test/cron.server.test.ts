@@ -33,6 +33,16 @@ import {
 // Stub builder
 // ---------------------------------------------------------------------------
 
+/**
+ * The configured agent-directory root (INBOX_ROOT) the stubs hand back.
+ *
+ * Deliberately NOT of the shape "<home>/<some dotted silo name>/agents": the
+ * bug this suite now pins was a hardcoded silo directory name, and a fixture
+ * that happens to look like the old literal cannot tell a resolved root from
+ * a reintroduced constant.
+ */
+const INBOX = "/home/you/deck/inbox";
+
 function makeDeps(
   initialLines: string[] = [],
   overrides: Partial<CronDeps> = {}
@@ -55,6 +65,7 @@ function makeDeps(
     readStateFile: () => null,
     writeStateFile: vi.fn(),
     homedir: () => "/home/you",
+    inboxRoot: () => INBOX,
     ...overrides,
   };
 }
@@ -65,75 +76,116 @@ function makeDeps(
 
 describe("buildNudgeScript template structure", () => {
   it("starts with shebang and set -u", () => {
-    const script = buildNudgeScript("sprout", "abc123", "/home/you/agents/sprout/bin/cron-nudge-abc123.prompt.md");
+    const script = buildNudgeScript("sprout", "abc123", "/home/you/agents/sprout/bin/cron-nudge-abc123.prompt.md", INBOX);
     expect(script.startsWith("#!/usr/bin/env bash")).toBe(true);
     expect(script).toContain("set -u");
   });
 
   it("embeds the target and id in paths", () => {
-    const script = buildNudgeScript("sprout", "xyz", "/home/you/agents/sprout/bin/cron-nudge-xyz.prompt.md");
-    expect(script).toContain(".the-vault/agents/sprout/cron-state");
+    const script = buildNudgeScript("sprout", "xyz", "/home/you/agents/sprout/bin/cron-nudge-xyz.prompt.md", INBOX);
+    expect(script).toContain(`${INBOX}/sprout/cron-state`);
     expect(script).toContain("xyz");
   });
 
+  // -------------------------------------------------------------------------
+  // Configured state root
+  // -------------------------------------------------------------------------
+  //
+  // The state directory used to be a literal silo directory name pasted into
+  // the generated script AND independently re-derived by listCrons. The two
+  // agreed with each other and disagreed with the deployment, so a nudge that
+  // fired wrote run-state the UI could not see, and an edited nudge started a
+  // second state tree beside the first: dedupe markers split, idempotency
+  // gone. These pin the root as CONFIGURED rather than as any particular
+  // string, which is the property that was missing.
+
+  it("derives CRON_STATE_DIR from the configured root, not a built-in silo name", () => {
+    const elsewhere = "/srv/fleet/agent-dirs";
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", elsewhere);
+    expect(script).toContain(`${elsewhere}/sprout/cron-state`);
+  });
+
+  it("puts a DIFFERENT configured root in the script, proving nothing is baked in", () => {
+    const a = buildNudgeScript("sprout", "abc", "/some/prompt.md", "/roots/one");
+    const b = buildNudgeScript("sprout", "abc", "/some/prompt.md", "/roots/two");
+    expect(a).toContain("/roots/one/sprout/cron-state");
+    expect(b).toContain("/roots/two/sprout/cron-state");
+    expect(a).not.toContain("/roots/two");
+  });
+
+  it("single-quotes the state dir so a root cannot inject shell", () => {
+    // A configured value is one an operator can put a metacharacter into. The
+    // old literal sat inside double quotes, where $ and ` expand.
+    const nasty = "/srv/$(touch /tmp/pwned)/`id`";
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", nasty);
+    expect(script).toContain(`CRON_STATE_DIR='${nasty}/sprout/cron-state'`);
+    expect(script).not.toContain(`CRON_STATE_DIR="`);
+  });
+
+  it("escapes a single quote in the configured root", () => {
+    const quoted = "/srv/it's/agents";
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", quoted);
+    expect(script).toContain(`CRON_STATE_DIR='/srv/it'\\''s/agents/sprout/cron-state'`);
+  });
+
   it("includes has-session guard", () => {
-    const script = buildNudgeScript("quill", "myid", "/some/prompt.md");
+    const script = buildNudgeScript("quill", "myid", "/some/prompt.md", INBOX);
     expect(script).toContain("has-session");
     expect(script).toContain("|| exit 0");
   });
 
   it("includes PROMPT_FILE variable referencing the given path", () => {
     const promptPath = "/home/you/agents/sprout/bin/cron-nudge-abc.prompt.md";
-    const script = buildNudgeScript("sprout", "abc", promptPath);
+    const script = buildNudgeScript("sprout", "abc", promptPath, INBOX);
     expect(script).toContain(`PROMPT_FILE="${promptPath}"`);
   });
 
   it("includes tmux load-buffer with named buffer", () => {
-    const script = buildNudgeScript("quill", "myid", "/some/prompt.md");
+    const script = buildNudgeScript("quill", "myid", "/some/prompt.md", INBOX);
     expect(script).toContain("tmux load-buffer");
     expect(script).toContain("cron-myid");
   });
 
   it("includes tmux paste-buffer with -p flag (bracketed-paste)", () => {
-    const script = buildNudgeScript("quill", "myid", "/some/prompt.md");
+    const script = buildNudgeScript("quill", "myid", "/some/prompt.md", INBOX);
     expect(script).toContain("tmux paste-buffer -p");
   });
 
   it("does NOT contain the message content (message is in the prompt file, not embedded)", () => {
     const secret = "super secret markdown content with `backticks` and $vars";
-    const script = buildNudgeScript("sprout", "abc", "/home/you/agents/sprout/bin/cron-nudge-abc.prompt.md");
+    const script = buildNudgeScript("sprout", "abc", "/home/you/agents/sprout/bin/cron-nudge-abc.prompt.md", INBOX);
     // The message is NOT in the script; only the file path is.
     expect(script).not.toContain(secret);
   });
 
   it("includes send-keys with double-Enter race defeat", () => {
-    const script = buildNudgeScript("quill", "myid", "/some/prompt.md");
+    const script = buildNudgeScript("quill", "myid", "/some/prompt.md", INBOX);
     // Two Enter send-keys for the double-Enter race defeat
     const enterCount = (script.match(/send-keys.*Enter/g) ?? []).length;
     expect(enterCount).toBeGreaterThanOrEqual(2);
   });
 
   it("includes per-run marker (idempotent guard)", () => {
-    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md");
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", INBOX);
     expect(script).toContain("MARKER=");
     expect(script).toContain("exit 0");
   });
 
   it("uses per-minute marker (date +%F-%H%M) not per-day (date +%F)", () => {
-    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md");
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", INBOX);
     expect(script).toContain("$(date +%F-%H%M)");
     expect(script).not.toContain("$(date +%F)");
   });
 
   it("includes cleanup find command to delete stale markers for this id", () => {
-    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md");
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", INBOX);
     expect(script).toContain("find \"$CRON_STATE_DIR\"");
     expect(script).toContain(".run-marker-abc-*");
     expect(script).toContain("-delete");
   });
 
   it("includes DC4 state-file writes (fired + delivered)", () => {
-    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md");
+    const script = buildNudgeScript("sprout", "abc", "/some/prompt.md", INBOX);
     expect(script).toContain("STATE_FILE=");
     expect(script).toContain("fired");
     expect(script).toContain("delivered");
@@ -568,6 +620,60 @@ describe("createCron - target validation", () => {
 // ---------------------------------------------------------------------------
 // listCrons - body recovery (ask-1 + ask-3)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// listCrons - state read location
+// ---------------------------------------------------------------------------
+//
+// The other half of the round-trip. buildNudgeScript is the writer; this is
+// the reader. Pinning only the writer would let the pair drift apart again.
+
+describe("listCrons - cron-state read location", () => {
+  it("reads run-state from the configured root, not a built-in silo name", () => {
+    const asked: string[] = [];
+    const deps = makeDeps(
+      ["30 7 * * * /home/you/agents/sprout/bin/cron-nudge-abc.sh # MC-CRON:abc"],
+      {
+        readStateFile: (filePath: string) => {
+          asked.push(filePath);
+          if (filePath === `${INBOX}/sprout/cron-state/abc.json`) {
+            return '{"fired":"2026-08-17T07:30:00Z","delivered":"2026-08-17T07:30:02Z"}';
+          }
+          return null;
+        },
+      }
+    );
+
+    const crons = listCrons(deps);
+    expect(crons).toHaveLength(1);
+    // The state was found, which is only true if the reader looked in the
+    // configured root.
+    expect(crons[0]!.lastFired).toBe("2026-08-17T07:30:00Z");
+    expect(crons[0]!.lastDelivered).toBe("2026-08-17T07:30:02Z");
+    expect(asked).toContain(`${INBOX}/sprout/cron-state/abc.json`);
+  });
+
+  it("follows the root it is given when the root changes", () => {
+    const elsewhere = "/srv/fleet/agent-dirs";
+    const asked: string[] = [];
+    const deps = makeDeps(
+      ["30 7 * * * /home/you/agents/sprout/bin/cron-nudge-abc.sh # MC-CRON:abc"],
+      {
+        inboxRoot: () => elsewhere,
+        readStateFile: (filePath: string) => {
+          asked.push(filePath);
+          return null;
+        },
+      }
+    );
+
+    listCrons(deps);
+    expect(asked).toContain(`${elsewhere}/sprout/cron-state/abc.json`);
+    // The home directory is still the source for the SCRIPT path, and must
+    // not have leaked into the state path.
+    expect(asked.some((p) => p.includes("/home/you/") && p.includes("cron-state"))).toBe(false);
+  });
+});
 
 describe("listCrons - body/targetType detection", () => {
   it("returns targetType=agent and prompt text when .prompt.md sibling exists", () => {

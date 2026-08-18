@@ -337,6 +337,41 @@ describe("linkifyBlockBodies over real readBlocksWindow data (TASK-645)", () => 
     expect(linkifyBlockBodies(blocks)[0]!.body).toBe("path /x/y.md here");
   });
 
+  it("leaves bodies untouched when the review roots name a live silo (fails closed)", () => {
+    // The autolink pass swallows every error by design, so the MC_SANDBOX_ONLY
+    // live-silo refusal surfaces here as "no links", not as a throw. That is the
+    // right direction: a configuration the review surface has refused must not
+    // hand back clickable links into the silo it refused, and a render path is
+    // no place to start throwing.
+    const silo = mkdtempSync();
+    const savedSilo = process.env["MC_LIVE_SILO_ROOT"];
+    try {
+      const doc = path.join(silo, "private.md");
+      fs.writeFileSync(doc, "# private", "utf8");
+      const body = `see ${doc} now`;
+      const blocks: MessageBlock[] = [
+        {
+          header: { timestamp: "t", from: "quill", status: "read", subject: "s" },
+          body,
+          rawMeta: "",
+        },
+      ];
+
+      process.env["MC_LIVE_SILO_ROOT"] = silo;
+      process.env["REVIEW_ROOTS"] = silo;
+
+      expect(() => linkifyBlockBodies(blocks)).not.toThrow();
+      expect(linkifyBlockBodies(blocks)[0]!.body).toBe(body);
+    } finally {
+      if (savedSilo === undefined) {
+        delete process.env["MC_LIVE_SILO_ROOT"];
+      } else {
+        process.env["MC_LIVE_SILO_ROOT"] = savedSilo;
+      }
+      rmSync(silo);
+    }
+  });
+
   it("shares root resolution + the candidate cache across blocks in one call (CR perf catch)", () => {
     // Regression for a peer-review-style catch: root resolution and the
     // resolveReviewablePath cache used to be allocated fresh PER BLOCK
@@ -346,43 +381,51 @@ describe("linkifyBlockBodies over real readBlocksWindow data (TASK-645)", () => 
     const docAbs = path.join(reviewRoot, "shared.md");
     fs.writeFileSync(docAbs, "# shared", "utf8");
 
-    const blocks: MessageBlock[] = [
-      {
-        header: { timestamp: "t1", from: "quill", status: "read", subject: "s" },
-        body: `See ${docAbs} for context.`,
-        rawMeta: "",
-      },
-      {
-        header: { timestamp: "t2", from: "quill", status: "read", subject: "s" },
-        body: `Also see ${docAbs} again.`,
-        rawMeta: "",
-      },
-      {
-        header: { timestamp: "t3", from: "quill", status: "read", subject: "s" },
-        body: `And once more, ${docAbs}.`,
-        rawMeta: "",
-      },
-    ];
+    const block = (i: number): MessageBlock => ({
+      header: { timestamp: `t${i}`, from: "quill", status: "read", subject: "s" },
+      body: `See ${docAbs} for context (${i}).`,
+      rawMeta: "",
+    });
 
-    const realpathSpy = vi.spyOn(fs, "realpathSync");
-    let linked: MessageBlock[] = [];
-    let totalRealpathCalls = 0;
-    try {
-      linked = linkifyBlockBodies(blocks);
-      totalRealpathCalls = realpathSpy.mock.calls.length;
-    } finally {
-      realpathSpy.mockRestore();
+    function measure(blocks: MessageBlock[]): { calls: number; linked: MessageBlock[] } {
+      const realpathSpy = vi.spyOn(fs, "realpathSync");
+      try {
+        const linked = linkifyBlockBodies(blocks);
+        return { calls: realpathSpy.mock.calls.length, linked };
+      } finally {
+        realpathSpy.mockRestore();
+      }
     }
 
-    // All 3 blocks correctly linked...
-    for (const b of linked) {
+    const three = measure([1, 2, 3].map(block));
+    const six = measure([1, 2, 3, 4, 5, 6].map(block));
+
+    // Every block correctly linked...
+    for (const b of [...three.linked, ...six.linked]) {
       expect(b.body).toContain(`[shared.md](${docAbs})`);
     }
-    // ...but assertContained's realpathSync work (root + parentDir + final
-    // component, ~3 calls) happens once for the shared candidate, not once
-    // per block. Without sharing this would be ~9 (3 blocks x 3 calls each);
-    // assert a bound well below that rather than an exact count, so the test
-    // isn't brittle to containment-check internals.
-    expect(totalRealpathCalls).toBeLessThanOrEqual(4);
+
+    // ...and DOUBLING the blocks costs exactly nothing. That equality is the
+    // property this test exists for, stated directly rather than as a constant:
+    // everything linkifyBlockBodies pays for is per CALL, and nothing is per
+    // block. Before the sharing, assertContained's realpath work (root +
+    // parentDir + final component) ran once per block, so six blocks cost twice
+    // what three did.
+    //
+    // Measuring the difference rather than an absolute count is also what keeps
+    // this honest across the fix to the live-silo vetting. That vetting is
+    // deliberately NOT memoised across calls while MC_SANDBOX_ONLY is set (see
+    // review.server.ts: a pass depends on filesystem state, so a cached one is
+    // a bypass), and test/setup.ts sets the flag, so its cost is now inside the
+    // measured window. It is a per-CALL cost, which is the granularity the
+    // reviewer signed off on, and this comparison proves that is what it is.
+    expect(six.calls).toBe(three.calls);
+
+    // A bound too, so a per-call cost cannot balloon unnoticed. 8 = the vetting
+    // (2 roots, each realpath'd and then compared against a realpath'd silo)
+    // plus assertContained's 4 (2 roots + parentDir + final component), paid
+    // once for the one distinct candidate. Without the sharing, the second half
+    // alone would be 4 per block.
+    expect(three.calls).toBeLessThanOrEqual(8);
   });
 });

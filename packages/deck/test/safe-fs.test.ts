@@ -30,12 +30,33 @@ import {
   safeWrite,
   validateConfiguredRoots,
   resetRootsValidationForTests,
+  resolveLiveSiloRoot,
+  assertNoLiveSiloRoot,
 } from "~/lib/safe-fs.server";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/** Save and restore process.env.MC_LIVE_SILO_ROOT around a test. */
+function withLiveSiloRoot(value: string | undefined, fn: () => void): void {
+  const previous = process.env["MC_LIVE_SILO_ROOT"];
+  if (value === undefined) {
+    delete process.env["MC_LIVE_SILO_ROOT"];
+  } else {
+    process.env["MC_LIVE_SILO_ROOT"] = value;
+  }
+  try {
+    fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env["MC_LIVE_SILO_ROOT"];
+    } else {
+      process.env["MC_LIVE_SILO_ROOT"] = previous;
+    }
+  }
+}
 
 /** Save and restore process.env.INBOX_ROOT around a test. */
 function withInboxRoot(value: string | undefined, fn: () => void): void {
@@ -408,6 +429,148 @@ describe("safe-fs.server", () => {
     } finally {
       rmSync(fakeBrainDir);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Which silo the sandbox guard protects
+  // -------------------------------------------------------------------------
+  //
+  // The test directly below this block is the only one that exercised the
+  // live-silo refusal, and it returns early on any machine that does not have
+  // the default silo directory - which is most of them, including CI. The
+  // guard was therefore both untested in practice AND unable to protect a
+  // fleet whose silo is named anything else: it could only ever recognise one
+  // hardcoded directory, while README states the rule with no directory in it
+  // ("a sandbox configuration may never be pointed at a live agent silo").
+  // MC_LIVE_SILO_ROOT closes that, and lets the refusal be tested for real
+  // against a tmpdir standing in for a live silo.
+
+  describe("resolveLiveSiloRoot", () => {
+    it("defaults to the shipped silo layout when MC_LIVE_SILO_ROOT is unset", () => {
+      withLiveSiloRoot(undefined, () => {
+        expect(resolveLiveSiloRoot()).toBe(path.join(os.homedir(), ".the-vault"));
+      });
+    });
+
+    it("returns the configured silo when MC_LIVE_SILO_ROOT is set", () => {
+      withLiveSiloRoot("/srv/fleet/silo", () => {
+        expect(resolveLiveSiloRoot()).toBe("/srv/fleet/silo");
+      });
+    });
+
+    it("falls back to the default when MC_LIVE_SILO_ROOT is empty or blank", () => {
+      withLiveSiloRoot("   ", () => {
+        expect(resolveLiveSiloRoot()).toBe(path.join(os.homedir(), ".the-vault"));
+      });
+    });
+
+    it("refuses a relative MC_LIVE_SILO_ROOT rather than guarding nothing", () => {
+      withLiveSiloRoot("relative/silo", () => {
+        expect(() => resolveLiveSiloRoot()).toThrow(/absolute/);
+      });
+    });
+  });
+
+  describe("assertNoLiveSiloRoot honours MC_LIVE_SILO_ROOT", () => {
+    it("REFUSES a root inside the configured silo, whatever the silo is named", () => {
+      // Runs everywhere, unlike the default-silo test below: the "live silo"
+      // is a tmpdir this test creates, so there is nothing to skip on.
+      const silo = mkdtempSync();
+      try {
+        const root = path.join(silo, "agents");
+        fs.mkdirSync(root, { recursive: true });
+        withLiveSiloRoot(silo, () => {
+          expect(() => assertNoLiveSiloRoot(fs.realpathSync(root), "inbox")).toThrow(
+            /live agent silo|MC_SANDBOX_ONLY/
+          );
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("REFUSES the configured silo root itself, not only paths below it", () => {
+      const silo = mkdtempSync();
+      try {
+        withLiveSiloRoot(silo, () => {
+          expect(() => assertNoLiveSiloRoot(fs.realpathSync(silo), "inbox")).toThrow(
+            /live agent silo/
+          );
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
+
+    it("ALLOWS a root outside the configured silo", () => {
+      const silo = mkdtempSync();
+      const elsewhere = mkdtempSync();
+      try {
+        withLiveSiloRoot(silo, () => {
+          expect(() =>
+            assertNoLiveSiloRoot(fs.realpathSync(elsewhere), "inbox")
+          ).not.toThrow();
+        });
+      } finally {
+        rmSync(silo);
+        rmSync(elsewhere);
+      }
+    });
+
+    it("ALLOWS a sibling whose name merely starts with the silo's (no prefix bug)", () => {
+      const parent = mkdtempSync();
+      try {
+        const silo = path.join(parent, "silo");
+        const sibling = path.join(parent, "silo-backup");
+        fs.mkdirSync(silo);
+        fs.mkdirSync(sibling);
+        withLiveSiloRoot(silo, () => {
+          expect(() =>
+            assertNoLiveSiloRoot(fs.realpathSync(sibling), "inbox")
+          ).not.toThrow();
+        });
+      } finally {
+        rmSync(parent);
+      }
+    });
+
+    it("does nothing at all while MC_SANDBOX_ONLY is unset", () => {
+      const silo = mkdtempSync();
+      const saved = process.env["MC_SANDBOX_ONLY"];
+      try {
+        delete process.env["MC_SANDBOX_ONLY"];
+        withLiveSiloRoot(silo, () => {
+          expect(() => assertNoLiveSiloRoot(fs.realpathSync(silo), "inbox")).not.toThrow();
+        });
+      } finally {
+        if (saved === undefined) {
+          delete process.env["MC_SANDBOX_ONLY"];
+        } else {
+          process.env["MC_SANDBOX_ONLY"] = saved;
+        }
+        rmSync(silo);
+      }
+    });
+
+    it("blocks a real inbox write into the configured silo end to end", () => {
+      // The whole point of the guard, through the surface that uses it.
+      const silo = mkdtempSync();
+      try {
+        const root = path.join(silo, "agents");
+        fs.mkdirSync(path.join(root, "quill", "inbox"), { recursive: true });
+        withLiveSiloRoot(silo, () => {
+          withInboxRoot(root, () => {
+            const target = path.join(root, "quill", "inbox", "never-written.md");
+            expect(() => assertSafeWritePath(target)).toThrow(
+              /live agent silo|MC_SANDBOX_ONLY/
+            );
+            expect(fs.existsSync(target)).toBe(false);
+          });
+        });
+      } finally {
+        rmSync(silo);
+      }
+    });
   });
 
   it("REFUSES the real ~/.the-vault as a root while MC_SANDBOX_ONLY is set", () => {
