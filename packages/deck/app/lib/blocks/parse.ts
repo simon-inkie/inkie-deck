@@ -111,7 +111,15 @@ function _parseBlock(raw: string): MessageBlock {
   // this is the exact path that lit quill/atlas phantom dots (2026-06-12).
   const header = headerResult.ok
     ? headerResult.header
-    : { timestamp: "", from: "", status: "read" as const, subject: "" };
+    : {
+        timestamp: "",
+        from: "",
+        status: "read" as const,
+        subject: "",
+        // Carry the ORIGINAL line so serializeHeader can round-trip it verbatim
+        // instead of writing back a blanked header that no parser can read.
+        rawHeader: headerLine,
+      };
 
   // Stage 3: Extract the metadata region (lines between header and first blank line)
   // Lines start at headerIdx+1
