@@ -118,6 +118,29 @@ export function formatRelative(iso: string, now: Date = new Date()): string {
   return formatDistance(date, now, { addSuffix: true });
 }
 
+/**
+ * Format a millisecond duration as a terse "Xh Ym" / "Ym" string, for the
+ * top-bar escalation alert's "wedged Xh Ym" phrasing.
+ *
+ * Deliberately NOT formatRelative: that renders "about 2 hours ago" (a claim
+ * anchored to a past instant, phrased for date-fns' coarse buckets), whereas
+ * the escalation alert already holds a precise duration (now - statusSince)
+ * and needs it as a plain elapsed-time span, not a fuzzy "about" sentence.
+ * Minutes-only durations omit the hours segment ("12m", not "0h 12m").
+ * Negative/NaN input (should not happen - callers only pass an already
+ * threshold-cleared durationMs) degrades to "0m" rather than a "-5m" or
+ * "NaNh NaNm" string.
+ *
+ * @param ms - Elapsed duration in milliseconds
+ * @returns "2h 15m" | "12m"
+ */
+export function formatDurationHm(ms: number): string {
+  const totalMinutes = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 60000)) : 0;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
 /** Display timezone for clock + day-grouping. Block timestamps are ISO UTC. */
 const DISPLAY_TZ = "Europe/London";
 

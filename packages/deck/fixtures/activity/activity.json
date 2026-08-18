@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "generator": "e2e-fixture",
+  "swept": "2026-06-10T20:29:00Z",
+  "worktreeCandidates": 0,
+  "notes": [],
+  "agents": {
+    "quill": {
+      "status": "stuck",
+      "signal": "no-output",
+      "evidence": "e2e fixture: pinned so the top-bar escalation alert fires",
+      "busy": false,
+      "idleMinutes": 45,
+      "updated": "2026-06-10T20:29:00Z",
+      "statusSince": "2026-06-10T19:45:00Z"
+    }
+  }
+}

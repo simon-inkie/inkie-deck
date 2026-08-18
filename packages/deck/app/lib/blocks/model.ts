@@ -76,6 +76,17 @@ export interface BlockHeader {
    */
   status: "sent" | "read" | "working";
   subject: string;
+  /**
+   * The header line EXACTLY as it was read, set ONLY when parseHeader failed.
+   *
+   * A header we cannot parse has no correct canonical form: every field we would
+   * emit is a guess. serializeHeader therefore writes this back verbatim, making
+   * a re-serialise a no-op rather than a lossy rewrite.
+   *
+   * Never set on the success path. If it were, a legitimate status flip
+   * (sent -> read) would serialise the OLD line and the flip would never persist.
+   */
+  rawHeader?: string;
 }
 
 /**

@@ -116,6 +116,21 @@ export interface AgentActivity {
   worktree: AgentWorktree | null;
   recent: RecentCompletion[];
   updated: string | null;
+  /**
+   * ISO-8601 instant the agent's CURRENT `status` was first observed (top-bar
+   * escalation SPEC, Part A - a producer field, not written by every sweep).
+   *
+   * OPTIONAL, deliberately, unlike every other timestamp on this record: the
+   * producer half of this feature is newer than the consumer half, so a
+   * sweep that predates it writes documents with no `statusSince` at all.
+   * Absence must degrade, never throw - see `escalatedAgents` below, which
+   * SKIPS an agent entirely when this is absent, computing no duration at
+   * all. (Caught in review: the first version fell back to `updated`,
+   * reasoning it as "just started" - wrong the moment the sweep itself goes
+   * stale, since `updated` then stops advancing and looks like a
+   * long-running status instead of missing data.)
+   */
+  statusSince?: string;
 }
 
 export interface ActivityDocument {
@@ -382,6 +397,10 @@ export function parseActivityDocument(text: string): ParseActivityResult {
         worktree: asWorktree(value["worktree"]),
         recent: asRecent(value["recent"]),
         updated: str(value["updated"]),
+        // Coerced to undefined rather than left as a stored null, so a
+        // document written by a sweep that does not emit this field yet
+        // leaves the optional property genuinely ABSENT.
+        statusSince: str(value["statusSince"]) ?? undefined,
       });
     }
   }
@@ -506,4 +525,65 @@ export function countStatuses(
     status: s,
     count: counts.get(s)!,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Top-bar escalation (the consumer half)
+// ---------------------------------------------------------------------------
+
+/** A status the top-bar escalation cares about - see `escalatedAgents`. */
+export type EscalatableStatus = "stuck" | "needs-you";
+
+/** One agent that has been stuck/needs-you for at least the threshold. */
+export interface EscalatedAgent {
+  agent: string;
+  status: EscalatableStatus;
+  /**
+   * The instant `status` was entered, straight off the producer field.
+   * Carried so the UI can show a "since" time without recomputing it from
+   * `durationMs` and `now`.
+   */
+  statusSince: string;
+  durationMs: number;
+}
+
+/**
+ * Agents that have been `stuck` or `needs-you` for >= thresholdMs, i.e. the
+ * top-bar escalation alert's contents (top-bar escalation SPEC, "Design"
+ * section 1).
+ *
+ * Pure: `now` is injected, matching the MC_NOW convention used throughout
+ * activity.test.ts - no clock read happens in here.
+ *
+ * DEGRADE ON MISSING `statusSince`: an agent whose record carries no such
+ * timestamp is SKIPPED, computing no duration at all. There is deliberately
+ * no fallback to `updated` (the sweep-tick write time). That fallback reads
+ * as reasonable - `updated` is usually seconds old, so the gap stands in for
+ * "just entered this status" - and it only holds while the sweep is healthy.
+ * If the sweep itself stalls, which is exactly the failure this feature
+ * exists to notice, `updated` stops advancing and the gap grows without
+ * bound, firing a FALSE escalation off data staleness at the precise moment
+ * the alert's own inputs became unreliable.
+ *
+ * `waiting-on-teammate`/`waiting-on-machine` are expected, unescalated states
+ * (StatusPill.tsx's own tint table draws the same line) - an agent waiting on
+ * a teammate is not the operator's problem by definition.
+ */
+export function escalatedAgents(
+  agents: AgentActivity[],
+  now: Date,
+  thresholdMs: number
+): EscalatedAgent[] {
+  const out: EscalatedAgent[] = [];
+  for (const a of agents) {
+    if (a.status !== "stuck" && a.status !== "needs-you") continue;
+    const since = a.statusSince;
+    if (since === undefined) continue; // no statusSince - nothing to escalate on
+    const sinceMs = new Date(since).getTime();
+    if (Number.isNaN(sinceMs)) continue;
+    const durationMs = now.getTime() - sinceMs;
+    if (durationMs < thresholdMs) continue;
+    out.push({ agent: a.agent, status: a.status, statusSince: since, durationMs });
+  }
+  return out;
 }

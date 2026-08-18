@@ -90,6 +90,42 @@ const queueStatePath = path.join(tmpData, "queue-state.json");
 // Fixed clock instant (30h after fixture card = 6h overdue on 24h tier).
 const mcNow = "2026-06-10T20:30:00Z";
 
+// ---------------------------------------------------------------------------
+// Layout server roots (e2e/layout)
+// ---------------------------------------------------------------------------
+//
+// A SECOND app server, on 3918, whose only difference from the main one is
+// that it has an ACTIVITY_ROOT and therefore renders the top-bar escalation
+// alert. It exists because that alert cannot be turned on per-test: the gate
+// is activityEnabled(), which reads ACTIVITY_ROOT once at boot, and setting
+// it on the main server would silently flip every other suite onto the
+// activity-configured branch (tmux-tab.test.ts asserts the opposite branch by
+// name, and the Activity nav link would appear in every header assertion).
+// A second server is the only way to add this coverage without editing tests
+// that have nothing to do with escalation.
+//
+// It gets its OWN inbox, data and activity dirs, so resetFixtureInbox() in
+// the flows suites cannot pull the thread out from under a layout test, and
+// vice versa.
+const layoutRoot = path.join(tmpRoot, "layout");
+const layoutInbox = path.join(layoutRoot, "inbox");
+fs.cpSync(fixturesInbox, layoutInbox, { recursive: true });
+const layoutData = path.join(layoutRoot, "data");
+fs.mkdirSync(layoutData, { recursive: true });
+const layoutAttachments = path.join(layoutRoot, "attachments");
+fs.mkdirSync(layoutAttachments, { recursive: true });
+const layoutProjects = path.join(layoutRoot, "projects");
+fs.cpSync(fixturesProjects, layoutProjects, { recursive: true });
+// The escalation state file. Committed at fixtures/activity/activity.json
+// with instants pinned relative to MC_NOW above: swept 1 minute ago (well
+// inside ACTIVITY_STALE_AFTER_MS, so the view is "live"), quill stuck since
+// 45 minutes ago (past ESCALATION_THRESHOLD_MS), which renders the chip as
+// exactly "quill stuck for 45m".
+const layoutActivity = path.join(layoutRoot, "activity");
+fs.cpSync(path.join(repoRoot, "fixtures", "activity"), layoutActivity, {
+  recursive: true,
+});
+
 // Write e2e/.e2e-env for start-server.sh to source.
 const envFile = path.join(repoRoot, "e2e", ".e2e-env");
 const envContent = [
@@ -107,6 +143,14 @@ const envContent = [
   `MC_TMUX_SESSION=mc-e2e-missing`,
   `MC_NOW=${mcNow}`,
   `E2E_TEMP_ROOT=${tmpRoot}`,
+  // Layout server (3918). LAYOUT_-prefixed so sourcing this file cannot
+  // accidentally reconfigure the main server; start-layout-server.sh maps
+  // them onto the real names for its own process only.
+  `LAYOUT_INBOX_ROOT=${layoutInbox}`,
+  `LAYOUT_ATTACHMENTS_ROOT=${layoutAttachments}`,
+  `LAYOUT_PROJECTS_ROOT=${layoutProjects}`,
+  `LAYOUT_DATA_ROOT=${layoutData}`,
+  `LAYOUT_ACTIVITY_ROOT=${layoutActivity}`,
 ].join("\n") + "\n";
 fs.writeFileSync(envFile, envContent, "utf8");
 
@@ -123,6 +167,11 @@ process.env["MC_TMUX_SESSION"] = "mc-e2e-missing";
 process.env["MC_NOW"] = mcNow;
 process.env["E2E_TEMP_ROOT"] = tmpRoot;
 process.env["REVIEW_ROOT_E2E"] = tmpReviewRoot;
+process.env["LAYOUT_INBOX_ROOT"] = layoutInbox;
+process.env["LAYOUT_ATTACHMENTS_ROOT"] = layoutAttachments;
+process.env["LAYOUT_PROJECTS_ROOT"] = layoutProjects;
+process.env["LAYOUT_DATA_ROOT"] = layoutData;
+process.env["LAYOUT_ACTIVITY_ROOT"] = layoutActivity;
 
 // Print the temp root so the caller can pass it along or record it.
 console.log(`E2E_TEMP_ROOT=${tmpRoot}`);
