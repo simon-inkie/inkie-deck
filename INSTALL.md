@@ -446,7 +446,10 @@ replied to <you>
 `AGENT_NAME` and `INBOX_ROOT` are what the CLI refuses to run without, and a
 real agent gets both from the `.claude/settings.json` that `create-agent.sh`
 wrote for it. You are setting them by hand only because you are typing on its
-behalf.
+behalf. Nothing above needs anything installed beyond `python3`; sending a
+message whose body opens a card metadata region additionally needs PyYAML, and
+the CLI says so rather than sending the card unchecked. See the base package
+README for that and for the optional bare-reference check.
 
 The name is read back out of `packages/deck/.env` for a reason worth stating,
 because it is the one step here that fails quietly. This tier is followed

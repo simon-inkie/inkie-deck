@@ -153,3 +153,69 @@ If you are writing your own client, implement `docs/protocol.md`; its section
 [`docs/conformance.md`](conformance.md) explains how that corpus is structured,
 what it deliberately does not cover, and the rules for adding a case or
 recording a deviation.
+
+### Drift audit of `bin/inbox` against the implementation it was copied from
+
+The copy here and the one it came from were diffed line by line, and every
+behavioural difference between them classified. Comment and docstring rewording
+is not listed; it is most of the diff and none of the behaviour. What follows
+is the whole of the rest.
+
+**Two write-time guards had been left behind, and are now ported.** Both refuse
+a send outright, and both are refusals rather than warnings for the same
+reason: what they catch is invisible to the sender afterwards.
+
+- **The card metadata region is now parsed as YAML before the block is
+  written** (`validate_card_metadata`). `docs/protocol.md` section 7.1 has
+  always said the region MUST be valid YAML and that a scalar containing a
+  colon MUST be quoted; nothing here enforced it. An unquoted colon in a
+  `label:` or `detail:` value is read as a nested mapping, the parse breaks,
+  and a renderer shows the block as plain prose with no error, which its
+  re-serialiser then makes permanent. The sender sees `replied to ...`. This
+  cost a real user two messages in one morning upstream before the check
+  landed there. The port brings the optional PyYAML dependency described in
+  the package README: present, cards are checked; absent, cards are refused
+  and say why, and everything else runs on a stock python3.
+
+  What was already here and is NOT the same thing: a heuristic that inserts a
+  blank line after the metadata run when prose follows it immediately. That
+  fixes an unterminated region, a different defect, and does nothing about an
+  unparseable one. Both now run, in that order, so the YAML check sees the
+  text that will actually be sent.
+
+- **Bare, unlinked references are now refused, if you configure a pattern**
+  (`INBOX_BARE_REF_PATTERN`, `INBOX_BARE_REF_TO`). The original hardcoded one
+  deployment's conventions throughout: a single change-request syntax, a
+  single ticket prefix, two named human recipients, and two URL templates for
+  the error message. None of that is true of anyone else, so here the pattern
+  is the configuration, the check is off until one is supplied, and the error
+  message names the offending reference rather than guessing a URL for it. The
+  audience filter survives as a setting because the reason for it generalises:
+  the original applied only to messages to humans, since agent-to-agent
+  threads were not the problem, and a check that fires everywhere gets
+  switched off. The markdown-link-stripping strategy is kept verbatim, being
+  the load-bearing part.
+
+**Deliberate genericisations, already correct, left alone.** `INBOX_ROOT`
+replacing a hardcoded home-directory root; `default_push_bin()` resolving
+`inbox-push` as a sibling of this file rather than at a fixed absolute path;
+`resolve_attachments_root()` reading only the environment variable, having
+dropped a fallback that parsed one specific deployment's `.env.production`;
+`HEADER_RE` built by concatenation from `SEP_PATTERN` rather than spelling the
+separators out three more times; and the separators themselves written as
+codepoint escapes rather than literal characters, since the character is
+protocol syntax here and a literal one in source is a parsing hazard.
+
+**Internal-only, correctly absent, and staying that way.** The
+`.env.production` fallback above is the whole of this category: it is coupled
+to one deployment's filesystem layout, and this repository's own application
+requires `ATTACHMENTS_ROOT` in its environment anyway, so there is one
+contract rather than two.
+
+**Present here and not upstream**, for completeness: the `reply` subcommand's
+epilog documenting the document-link form from section 7.2, and the comment in
+`flip_blocks_in_file` recording the loose `status:\s*(sent)` search as a known
+deviation. That deviation is real, is shared with the implementation this was
+copied from, and is described in `docs/protocol.md` section 8.3. It is not
+fixed here, for the reason given in the code: changing behaviour is a separate
+reviewable decision rather than something to slip into a drift audit.

@@ -19,7 +19,12 @@ export function toolchainDockerfile({ nodeMajor, pnpmSpec, withRipgrep = true })
   // before and after an in-place status patch. On Ubuntu 24.04 it is its own
   // package rather than part of vim-common, so it is absent by default and the
   // suite fails with `xxd: command not found` at line 422 and nothing else.
-  const apt = ["ca-certificates", "curl", "git", "tmux", "python3", "xxd", ...(withRipgrep ? ["ripgrep"] : [])];
+  // python3-yaml is the same shape of omission one layer down: python3 alone
+  // is a python3 without PyYAML, and the inbox CLI needs it to check a card's
+  // metadata region parses as YAML before writing the block. Without it that
+  // CLI refuses card sends by design rather than sending them unchecked, so
+  // its suite goes red on every card case.
+  const apt = ["ca-certificates", "curl", "git", "tmux", "python3", "python3-yaml", "xxd", ...(withRipgrep ? ["ripgrep"] : [])];
   return [
     `FROM ${BASE_IMAGE}`,
     "ENV DEBIAN_FRONTEND=noninteractive",

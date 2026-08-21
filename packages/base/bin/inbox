@@ -11,6 +11,18 @@ Commands:
 Identity:   AGENT_NAME env var (hard-error if unset).
 Inbox root: $INBOX_ROOT/<AGENT_NAME>/inbox/  (required, absolute, no default).
 
+Optional, all off or defaulted when unset:
+  INBOX_BARE_REF_PATTERN  regex; refuse to send a message carrying a matching
+                          reference that is not inside a markdown link.
+  INBOX_BARE_REF_TO       comma-separated correspondents the check applies
+                          to (default: all of them).
+  INBOX_PUSH / INBOX_NO_PUSH / INBOX_PUSH_FULLTEXT / INBOX_PUSH_BIN
+                          live pane delivery, see push_enabled and maybe_push.
+  ATTACHMENTS_ROOT        rewrite /attachments/ image refs for pane delivery.
+
+python3 alone is enough for everything except sending a message whose body
+opens a card metadata region; that needs PyYAML, and says so if it is absent.
+
 The normative description of the on-disk format this implements is
 docs/protocol.md. Where this file and that document disagree, the document
 says which one is the bug; section 11 lists the deviations known at the time
@@ -27,6 +39,23 @@ import argparse
 import subprocess
 from contextlib import contextmanager
 from datetime import datetime, timezone
+
+# PyYAML, OPTIONALLY. It is used for exactly one thing: checking that a card
+# body's metadata region really is valid YAML before the block is written
+# (see cmd_reply). Every other command, and every reply whose body is ordinary
+# prose, runs on a stock python3 with nothing installed, which is what the
+# README promises and what this soft import preserves.
+#
+# Absent, a card send is REFUSED rather than sent unchecked. The whole reason
+# that check exists is that an invalid metadata region fails SILENTLY (the
+# renderer degrades the block to prose and its re-serialiser then locks it
+# there), so "could not check, sent it anyway" reproduces the exact defect.
+# Same reasoning as INBOX_ROOT having no default: a loud stop beats a quiet
+# wrong answer.
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 # U+2014 / U+2013 are written as escapes rather than literally. The character
 # is protocol SYNTAX here (a header field separator), not prose, and a literal
@@ -47,6 +76,87 @@ HEADER_RE = re.compile(
     + r"\s*subject:(?P<subject>.*)",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# Bare reference detection (optional, OFF unless configured)
+# ---------------------------------------------------------------------------
+# A recurring complaint in the deployment this was ported from: messages to a
+# human arriving with a bare issue or change-request id in them ("!856",
+# "ENG-793") rather than a link the reader can click. Writing the convention
+# down twice did not stop it, so it became a mechanical block at send time.
+#
+# PORT EDIT. The original hardcoded that deployment's own conventions: one
+# change-request syntax, one issue-tracker prefix, one pair of recipient names,
+# and two URL templates. None of that is true of anyone else, so here the
+# PATTERN is the configuration and the check is off until you supply one:
+#
+#   INBOX_BARE_REF_PATTERN  a python regex matching the reference shapes you
+#                           want linked. Unset or empty (the default) turns the
+#                           check off entirely, which is the right default for
+#                           a tool that cannot know whether you have a tracker
+#                           at all. Use alternation for more than one shape.
+#   INBOX_BARE_REF_TO       comma-separated correspondent names the check
+#                           applies to. Unset means all of them. This exists
+#                           because the original applied only to messages to
+#                           humans: agent-to-agent threads were not the pain
+#                           point, and a check that fires everywhere gets
+#                           switched off.
+#
+# The deployment this came from expresses itself as, with names changed:
+#
+#   INBOX_BARE_REF_PATTERN='!\d+|(?<![A-Za-z0-9])ENG-\d+'
+#   INBOX_BARE_REF_TO='alice,bob'
+#
+# The negative lookbehind in that example is worth copying: without it a ref
+# pattern matches inside a longer alphanumeric token, so "LINKED-12" trips a
+# rule meant for "ENG-12".
+#
+# Strategy, kept verbatim from the original because it is the load-bearing
+# part: strip every markdown link span [...](...) out of the text FIRST, then
+# scan whatever remains. Anything inside a real [text](url) span is by
+# definition already linked and never reaches the scan; anything left over is
+# bare prose. That sidesteps trying to write one regex that tells "!856" as
+# link text apart from "!856" as prose.
+MD_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]*\)")
+
+
+def bare_ref_pattern():
+    """Compile INBOX_BARE_REF_PATTERN, or None when the check is switched off.
+
+    A pattern that does not compile is a hard error rather than a silently
+    skipped check: an unnoticed typo here would turn the guard off and leave
+    every message looking as though it had passed.
+    """
+    raw = os.environ.get("INBOX_BARE_REF_PATTERN", "").strip()
+    if not raw:
+        return None
+    try:
+        return re.compile(raw)
+    except re.error as exc:
+        print(
+            f"ERROR: INBOX_BARE_REF_PATTERN is not a valid python regular "
+            f"expression: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def bare_ref_audience():
+    """Correspondents the bare-reference check applies to.
+
+    An empty set means "everyone", which is the default: if you went to the
+    trouble of configuring a pattern, the check applying by default is the
+    less surprising of the two options.
+    """
+    raw = os.environ.get("INBOX_BARE_REF_TO", "")
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
+def find_bare_refs(text, pattern):
+    """Return bare (unlinked) references in text, per the configured pattern."""
+    stripped = MD_LINK_RE.sub("", text)
+    return [m.group(0) for m in pattern.finditer(stripped)]
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +454,70 @@ def cmd_read(me, args):
         print("no new messages")
 
 
+def validate_card_metadata(metadata_text):
+    """Check a card's metadata region. Returns an error message, or None if valid.
+
+    `docs/protocol.md` section 7.1 says the region MUST be valid YAML and that
+    any scalar containing a colon MUST be quoted. This is where a writer keeps
+    that promise, and it is a REFUSAL rather than a warning because every way
+    it goes wrong is silent at the far end:
+
+    - an unquoted colon-space inside a label or detail value is read as a
+      nested mapping, so the parse either breaks outright or yields the wrong
+      shape;
+    - a stray blank line straight after the header empties the region.
+
+    Either way a renderer degrades the block to plain prose, emits no error,
+    and its re-serialiser then locks it in that shape permanently. The sender
+    sees `replied to ...` and believes a card was delivered. Nothing
+    downstream can tell them otherwise, so before the write is the only place
+    this is catchable at all.
+
+    A REAL YAML PARSER, not a hand-rolled check of the subset the region is
+    allowed to use, on purpose. The renderer in `packages/deck` parses this
+    region with a full YAML implementation, so an approximation here would
+    accept regions the reader goes on to reject, which is the same silent
+    failure with more steps in front of it.
+
+    The two shape checks after a successful parse (a mapping, carrying at
+    least one of the two id keys) are not reachable from `cmd_reply`, which
+    only calls this for a body already starting with one of those keys. They
+    are kept because this reads as a general validator, and a caller that
+    trims or reorders the region before validating would otherwise get a pass
+    for a region with no id in it at all.
+    """
+    if yaml is None:
+        return (
+            "this body opens a metadata region (decision-id:/action-id:), which "
+            "docs/protocol.md section 7.1 requires to be valid YAML, and PyYAML "
+            "is not importable so it cannot be checked. An unchecked region "
+            "fails silently at the far end (it renders as plain prose and stays "
+            "that way), so nothing has been written.\n"
+            "Install PyYAML (pip install PyYAML, or apt-get install "
+            "python3-yaml) and send again. It is needed ONLY for this check: "
+            "every other command, and any reply whose body is ordinary prose, "
+            "runs on a stock python3."
+        )
+
+    try:
+        parsed = yaml.safe_load(metadata_text)
+    except yaml.YAMLError as exc:
+        detail = str(exc)
+    else:
+        if not isinstance(parsed, dict):
+            detail = "metadata region did not parse to a mapping (dict)"
+        elif "decision-id" not in parsed and "action-id" not in parsed:
+            detail = "parsed mapping is missing both decision-id and action-id"
+        else:
+            return None
+
+    return (
+        f"card metadata does not parse as valid YAML: {detail}. Check for an "
+        "unquoted colon in a label/detail field (wrap the value in quotes) or "
+        "a stray blank line before decision-id/action-id. Nothing was written."
+    )
+
+
 def cmd_reply(me, args):
     correspondent = args.correspondent
 
@@ -376,6 +550,27 @@ def cmd_reply(me, args):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Bare, unlinked references. Off unless INBOX_BARE_REF_PATTERN is set; see
+    # the block near the top of this file for the shape and the reasoning.
+    # Deliberately BEFORE any file is touched, so a refusal writes nothing.
+    ref_pattern = bare_ref_pattern()
+    if ref_pattern is not None:
+        audience = bare_ref_audience()
+        if not audience or correspondent in audience:
+            for field_name, field_text in (("subject", subject), ("body", body_text)):
+                bare_refs = find_bare_refs(field_text, ref_pattern)
+                if bare_refs:
+                    ref = bare_refs[0]
+                    print(
+                        f"ERROR: {field_name} to {correspondent} contains a bare "
+                        f"reference '{ref}' with no markdown link. Wrap it so the "
+                        f"reader can follow it, e.g. [{ref}](https://tracker.example/{ref}). "
+                        "This check is INBOX_BARE_REF_PATTERN; unset it to turn "
+                        "the check off, or narrow it with INBOX_BARE_REF_TO.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     header = f"## {ts} - from: {me} - status: sent - subject: {subject}"
@@ -428,6 +623,16 @@ def cmd_reply(me, args):
                 lines.insert(end_idx, "")
                 body_text = "\n".join(lines)
         # If end_idx >= len(lines): pure metadata; block construction handles it.
+
+        # Validate the region as real YAML before anything is written. Runs on
+        # lines[:end_idx] AFTER the blank-line insertion above (which shifts
+        # nothing at or below end_idx), so it checks what will actually be
+        # sent rather than a pre-correction snapshot. See
+        # validate_card_metadata for why this is a hard stop.
+        metadata_error = validate_card_metadata("\n".join(lines[:end_idx]))
+        if metadata_error is not None:
+            print(f"ERROR: {metadata_error}", file=sys.stderr)
+            sys.exit(1)
 
     # For is_card bodies, end the block with "\n\n" (guaranteed terminating
     # blank line) rather than relying on rstrip() which would eat it.
