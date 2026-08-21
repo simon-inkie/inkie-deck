@@ -1100,9 +1100,14 @@ function flush(   kind, id, open, low) {
       # defect rather than a spelling of `answered:`. It is a PAYLOAD field that
       # accompanies `answered: custom`, and the reference writer never emits it
       # without that line. A block carrying it alone is malformed or half-written,
-      # and treating that as a resolution silently closes a card nobody answered
-      # -- the same failure mode as reading an empty `answered:` placeholder as an
-      # answer, which section 7.1.1 also forbids.
+      # and treating that as a resolution silently closes a card nobody answered.
+      #
+      # AN EMPTY VALUE IS NOT A RESOLUTION, which is why every test below demands
+      # a non-blank character after the colon. Section 7.1.1 requires this and the
+      # reader application already did it; this parser did not, so a card template
+      # carrying a bare `answered:` placeholder read as ANSWERED. Same failure as
+      # the lone `custom-answer:` above, arriving by a different door: a card
+      # nobody has looked at, silently counted as settled.
       #
       # `superseded:` was previously absent, and its absence was recorded as a
       # deviation rather than fixed, on the reasoning that changing which cards
@@ -1116,11 +1121,12 @@ function flush(   kind, id, open, low) {
       # string, and one would terminate it.)
       open = 1
       if (kind == "decision") {
-        if (metatext ~ /(^|\n)answered:/) open = 0
+        if (metatext ~ /(^|\n)answered:[ \t]*[^ \t\n]/) open = 0
       } else {
-        if (metatext ~ /(^|\n)done:/) open = 0
+        if (metatext ~ /(^|\n)done:[ \t]*[^ \t\n]/) open = 0
       }
-      if (metatext ~ /(^|\n)dismissed:/ || metatext ~ /(^|\n)superseded:/) open = 0
+      if (metatext ~ /(^|\n)dismissed:[ \t]*[^ \t\n]/ ||
+          metatext ~ /(^|\n)superseded:[ \t]*[^ \t\n]/) open = 0
       printf "CARD\t%s\t%s\t%s\t%d\t%s\n", ts, kind, tsv(id), open, tsv(subject)
     }
   }

@@ -363,6 +363,71 @@ answered: A
 Do the thing.
 EOF
 
+# AN EMPTY VALUE IS NOT A RESOLUTION (section 7.1.1). A card template carrying a
+# bare placeholder is the shape that makes this matter: it is a card nobody has
+# looked at, and reading the placeholder as an answer settles every card in that
+# template's shape without a person touching one.
+card_case "an empty answered placeholder does NOT close a decision" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-PLACEHOLDER
+answered:
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Nobody has answered this.
+EOF
+
+card_case "an empty done placeholder does NOT close an action" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-PLACEHOLDER
+done:
+
+Nobody has done this.
+EOF
+
+card_case "an empty dismissed placeholder does NOT close a card" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-DIS-BLANK
+dismissed:
+
+Nobody has dismissed this.
+EOF
+
+card_case "an empty superseded placeholder does NOT close a card" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-SUP-BLANK
+superseded:
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Nobody has superseded this.
+EOF
+
+# A value that is only whitespace is empty too. The trailing spaces are built
+# with printf rather than typed, so that an editor or a whitespace linter cannot
+# quietly turn this case back into the bare-placeholder case above.
+card_case "a whitespace-only value is empty too" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-WS
+done:$(printf '   ')
+
+Nobody has done this either.
+EOF
+
+# ...and the positive control: a non-blank value still closes the card, so the
+# non-empty requirement above cannot be satisfied by never resolving anything.
+card_case "a non-blank value still closes the card" waiting-on-teammate <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-REAL
+done: 2026-08-21T09:45:00Z
+
+Please have a look at the thing.
+EOF
+
 new_box
 pane alice "$IDLE_PANE"
 # Older than CARD_WINDOW_H (72h) from the frozen clock.
