@@ -248,7 +248,7 @@ describe("superseded is terminal on the homepage too (behaviour CHANGED by the s
   // dismissed DECISION is resolved everywhere except the homepage/bell, which is
   // the surviving half of the Option-1 freeze: a product decision about what the
   // homepage shows, not a transcription error, and out of scope for the port.
-  // Recorded in packages/base/docs/protocol.md section 7.1.1. A dismissed ACTION
+  // Recorded in packages/base/docs/protocol.md section 11. A dismissed ACTION
   // was always excluded here, so this is one state on one card kind.
   it("a DISMISSED decision still surfaces on the homepage (surviving Option-1 divergence)", () => {
     const entry = decisionEntry({

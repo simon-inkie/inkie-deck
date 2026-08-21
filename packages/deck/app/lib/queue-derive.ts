@@ -434,8 +434,8 @@ export function deriveNeedsYou(
       // function does not, which is the Option-1 freeze of the homepage/bell
       // contract made when dismiss landed, pinned by its own guard test, and a
       // product decision about the homepage rather than a transcription error.
-      // Recorded in docs/protocol.md section 7.1.1 rather than changed in
-      // passing. A dismissed ACTION was already excluded below, so the
+      // Recorded in docs/protocol.md section 11 (known deviations) rather
+      // than changed in passing. A dismissed ACTION was already excluded below, so the
       // divergence is one state on one card kind.
       if (block.card.superseded !== undefined) continue; // superseded in place
 
