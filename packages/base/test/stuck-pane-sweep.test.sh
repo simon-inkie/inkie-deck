@@ -209,6 +209,24 @@ assert "the finding is still recorded in shadow"  '.agents.alice.tier' 'determin
 no_keystrokes "shadow mode wakes nobody even with a route configured"
 drop_box
 
+# SWITCHING ROUTING ON DOES NOT REPLAY WHAT REPORT-ONLY ALREADY FOUND. The
+# once-per-episode dedupe flag is written in both modes, so an episode recorded
+# while unrouted is already marked when routing arrives. Fail-safe, deliberate,
+# and the opposite of what "turn live routing on" sounds like -- which is why it
+# is pinned here as well as documented.
+new_box
+pane alice "$DIALOG_PANE"
+run_sweep >/dev/null                                   # report-only: records it
+assert "report-only marks the episode as reported" '.agents.alice.escalated' 'true'
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )   # same pane, now live
+assert "the mode change is visible in the record"  '.escalationMode' 'live'
+no_keystrokes "going live mid-episode does NOT retroactively wake the new route"
+# ...and it re-arms by itself the moment the pane is genuinely a new episode.
+pane alice "$DIALOG_PANE"$'\n  and then something else happened'
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+keystrokes_to "a genuinely new episode notifies normally" hub
+drop_box
+
 new_box
 pane hub "$DIALOG_PANE"
 ( export STUCK_ROUTE_DEFAULT=hub STUCK_ROUTE_SELF=deputy; run_sweep >/dev/null )

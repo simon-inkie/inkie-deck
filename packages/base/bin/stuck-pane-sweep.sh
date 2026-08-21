@@ -40,6 +40,18 @@
 # have been) routed to, so a report-only run is a genuine report rather than a
 # silence.
 #
+# SWITCHING ROUTING ON DOES NOT NOTIFY WHAT REPORT-ONLY ALREADY FOUND. The
+# once-per-episode dedupe flag (`escalated`, keyed on the pane hash) is set in
+# BOTH modes. An episode recorded while unrouted is therefore already marked, and
+# if routing is turned on while that same episode is still live -- same pane,
+# unchanged -- nobody is woken about it. The state re-arms when the pane next
+# changes, i.e. on a genuinely new episode, and notifies from there.
+#
+# That is the fail-safe direction and it is the intended one: the alternative is
+# that enabling routing replays a backlog of already-recorded findings into
+# somebody's pane in one burst. It is written down because "turn live routing on"
+# reads like "current findings will now notify", and it does not.
+#
 # THREE-TIER JUDGMENT, cheapest-first:
 #   1. DETERMINISTIC fast path. A known stuck-shape literal in the live tail of
 #      the pane (default list below; extend via the config file, no code change).
@@ -816,6 +828,12 @@ while IFS= read -r w <&3; do
     # has been reported once"; in live mode it additionally means "and somebody
     # was woken about it". Either way it is the once-per-episode dedupe key, and
     # it re-arms by itself when the pane changes.
+    #
+    # THE MODE-CHANGE CONSEQUENCE, which is the part that surprises people: an
+    # episode marked here in report-only stays marked across a switch to live, so
+    # that episode is never retroactively notified. See the header. Fail-safe, and
+    # the reason a live trial should be timed by when a NEW episode appears rather
+    # than by what the state file already holds.
     escalated="true"
   fi
 
