@@ -1630,6 +1630,468 @@ This trailing paragraph is AFTER the heading and must survive." > /dev/null
   rm -rf "$T"
 }
 
+# ===========================================================================
+# Cases 53-59: the card-metadata YAML hard stop.
+#
+# `bin/inbox` refuses to send a body whose metadata region is not valid YAML.
+# The reason it is a REFUSAL and not a warning is that the failure is silent
+# downstream: an unquoted colon inside a label or detail value is read as a
+# nested mapping, the parse breaks, the renderer degrades the block to plain
+# prose, and its re-serialiser locks it in that shape. The sender sees
+# "replied to ..." and has no way to learn otherwise. The write is the only
+# point at which it is catchable, so these cases assert the two halves
+# together every time: non-zero exit AND nothing on disk.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Case 53: unquoted colon in a top-level detail field -> refused, and the
+#          thread file is never even created.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  CARD_BODY="decision-id: test-53
+detail: Ship it: today
+lean: A"
+
+  # set +e around every expected-refusal call in this file: errexit is on from
+  # case 14 onward, and a non-zero exit from a case that is TESTING a non-zero
+  # exit would otherwise end the run rather than record a result.
+  set +e
+  OUT=$(INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta --subject "card-53" --body "$CARD_BODY" 2>&1)
+  RC=$?
+  set -e
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 53: colon-in-detail card was accepted" "exit 0, out: $OUT"
+  elif [ -e "$THREAD" ]; then
+    fail "Case 53: refused but wrote a thread file anyway" "$(cat "$THREAD")"
+  elif echo "$OUT" | grep -q "does not parse as valid YAML"; then
+    ok "Case 53: unquoted colon in detail -> refused, nothing written"
+  else
+    fail "Case 53: refused with the wrong message" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 54: the same defect nested inside an options list (label:), against an
+#          EXISTING thread. Asserts the stronger property that case 53 cannot:
+#          the file is byte-identical afterwards, so the refusal did not
+#          append a partial or de-carded block.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  TPATH=$(write_thread "$T" "alpha" "beta" "## 2026-01-01T09:00:00Z - from: beta - status: read - subject: earlier
+
+Something already in the thread.")
+
+  BEFORE=$(cksum < "$TPATH")
+
+  CARD_BODY="decision-id: test-54
+options:
+  - key: A
+    label: Ship it: now
+  - key: B
+    label: Hold
+lean: A"
+
+  set +e
+  OUT=$(INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta --subject "card-54" --body "$CARD_BODY" 2>&1)
+  RC=$?
+  set -e
+
+  AFTER=$(cksum < "$TPATH")
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 54: colon-in-label card was accepted" "exit 0, out: $OUT"
+  elif [ "$BEFORE" != "$AFTER" ]; then
+    fail "Case 54: refused but the thread file changed" "before=$BEFORE after=$AFTER"
+  else
+    ok "Case 54: colon nested in an options label -> refused, thread byte-identical"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 55: the check is not over-broad. The SAME value, quoted, is legal YAML
+#          and must go through and still parse as a card. Without this case a
+#          guard that rejected every card would score as a pass on 53 and 54.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  CARD_BODY='decision-id: test-55
+detail: "Ship it: today"
+lean: A'
+
+  INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta --subject "card-55" --body "$CARD_BODY" > /dev/null 2>&1
+  RC=$?
+
+  THREAD="$T/alpha/inbox/beta.md"
+  RESULT=$(check_card_parses "$THREAD")
+  if [ "$RC" -ne 0 ]; then
+    fail "Case 55: quoted colon was rejected" "exit $RC"
+  elif [ "$RESULT" = "CARD" ]; then
+    ok "Case 55: quoted colon -> accepted and still parses as a card"
+  else
+    fail "Case 55: quoted-colon card did not parse as card" "parser said: $RESULT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 56: validate_card_metadata rejects a region carrying NEITHER
+#          decision-id nor action-id.
+#
+# Driven as a pure function rather than through `reply`, deliberately and not
+# for convenience: `cmd_reply` only calls the validator for a body that
+# already begins with one of those two keys, so that branch is unreachable
+# from the CLI and an end-to-end case claiming to cover it would be testing
+# the is_card gate instead. The branch exists for any other caller of the
+# validator; this is the only honest way to hold it.
+# ---------------------------------------------------------------------------
+{
+  set +e
+  OUT=$(python3 - "$INBOX" <<'PY' 2>&1
+import importlib.util, sys
+from importlib.machinery import SourceFileLoader
+loader = SourceFileLoader("inbox", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("inbox", loader))
+loader.exec_module(m)
+print(m.validate_card_metadata("subject-id: x\nlean: A") or "NONE")
+PY
+)
+  set -e
+  if echo "$OUT" | grep -q "missing both decision-id and action-id"; then
+    ok "Case 56: metadata region with neither id -> rejected by validate_card_metadata"
+  else
+    fail "Case 56: no-id region was not rejected" "got: $OUT"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Case 57: validate_card_metadata rejects a region that parses to something
+#          other than a mapping, and ACCEPTS a well-formed one. Both in one
+#          case so the negative cannot pass by rejecting everything.
+# ---------------------------------------------------------------------------
+{
+  set +e
+  OUT=$(python3 - "$INBOX" <<'PY' 2>&1
+import importlib.util, sys
+from importlib.machinery import SourceFileLoader
+loader = SourceFileLoader("inbox", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("inbox", loader))
+loader.exec_module(m)
+print("SCALAR:", m.validate_card_metadata("just a bare scalar") or "NONE")
+print("VALID:", m.validate_card_metadata("decision-id: x\nlean: A") or "NONE")
+PY
+)
+  SCALAR_LINE=$(echo "$OUT" | grep "^SCALAR:")
+  VALID_LINE=$(echo "$OUT" | grep "^VALID:")
+  set -e
+  if ! echo "$SCALAR_LINE" | grep -q "did not parse to a mapping"; then
+    fail "Case 57: non-mapping region was not rejected" "got: $SCALAR_LINE"
+  elif [ "$VALID_LINE" != "VALID: NONE" ]; then
+    fail "Case 57: a valid region was rejected" "got: $VALID_LINE"
+  else
+    ok "Case 57: non-mapping region rejected, valid region accepted"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Case 58: PyYAML absent -> a CARD send is refused (never sent unchecked), and
+#          nothing is written.
+#
+# The import is defeated with a shadowing yaml.py on PYTHONPATH that raises
+# ImportError, which is the same thing the interpreter does when the package
+# genuinely is not installed. This is the environment a stock python3 with no
+# pip installs is actually in, so it is the default for a stranger rather
+# than an exotic case.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  SHIM=$(mktemp -d)
+  make_inbox "$T" "alpha"
+  printf 'raise ImportError("PyYAML is not installed")\n' > "$SHIM/yaml.py"
+
+  set +e
+  OUT=$(PYTHONPATH="$SHIM" INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta \
+          --subject "card-58" --body "decision-id: test-58
+lean: A" 2>&1)
+  RC=$?
+  set -e
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 58: card sent unchecked with PyYAML absent" "exit 0, out: $OUT"
+  elif [ -e "$THREAD" ]; then
+    fail "Case 58: refused but wrote a thread file" "$(cat "$THREAD")"
+  elif echo "$OUT" | grep -q "PyYAML"; then
+    ok "Case 58: PyYAML absent -> card refused by name, nothing written"
+  else
+    fail "Case 58: refused without naming the missing dependency" "out: $OUT"
+  fi
+  rm -rf "$T" "$SHIM"
+}
+
+# ---------------------------------------------------------------------------
+# Case 59: PyYAML absent -> a PLAIN body still sends. The dependency is scoped
+#          to the card check alone, which is what lets the README keep saying
+#          this CLI needs python3 and nothing else for ordinary use.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  SHIM=$(mktemp -d)
+  make_inbox "$T" "alpha"
+  printf 'raise ImportError("PyYAML is not installed")\n' > "$SHIM/yaml.py"
+
+  OUT=$(PYTHONPATH="$SHIM" INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta \
+          --subject "plain-59" --body "ordinary prose, no metadata region" 2>&1)
+  RC=$?
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -ne 0 ]; then
+    fail "Case 59: plain reply failed with PyYAML absent" "exit $RC, out: $OUT"
+  elif grep -q "ordinary prose" "$THREAD" 2>/dev/null; then
+    ok "Case 59: PyYAML absent -> an ordinary prose reply still sends"
+  else
+    fail "Case 59: plain reply did not reach the thread file" "out: $OUT"
+  fi
+  rm -rf "$T" "$SHIM"
+}
+
+# ===========================================================================
+# Cases 60-66: the bare-reference check.
+#
+# Refuses to send a message carrying an issue or change-request id that is not
+# inside a markdown link, so a reader gets something they can follow rather
+# than a token they have to go and look up. OFF unless a pattern is
+# configured, because this tool cannot know whether the person running it has
+# a tracker, or what its ids look like.
+#
+# REF_PAT below is the shape the deployment this was ported from uses,
+# rewritten in invented conventions: a change-request sigil and a
+# project-prefixed ticket id. It is a test fixture, not a default.
+# ===========================================================================
+REF_PAT='!\d+|(?<![A-Za-z0-9])ENG-\d+'
+
+# ---------------------------------------------------------------------------
+# Case 60: OFF by default. With no pattern configured, a body that is nothing
+#          but bare references sends normally.
+#
+# This is the case that keeps the feature honest for a stranger: a public tool
+# that started refusing messages over one deployment's ticket syntax would be
+# a bug, not a guard.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  OUT=$(INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta --subject "ENG-1 and !2" \
+          --body "see ENG-793 and !856" 2>&1)
+  RC=$?
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -ne 0 ]; then
+    fail "Case 60: unconfigured check refused a send" "exit $RC, out: $OUT"
+  elif grep -q "ENG-793" "$THREAD" 2>/dev/null; then
+    ok "Case 60: bare-ref check is off unless configured"
+  else
+    fail "Case 60: message did not reach the thread file" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 61: configured + bare ref in the BODY -> refused, nothing written.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  set +e
+  OUT=$(INBOX_BARE_REF_PATTERN="$REF_PAT" INBOX_NO_PUSH=1 \
+          run_inbox "$T" "alpha" reply beta --subject "status" \
+          --body "picked this up from ENG-793 this morning" 2>&1)
+  RC=$?
+  set -e
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 61: bare body reference was accepted" "exit 0, out: $OUT"
+  elif [ -e "$THREAD" ]; then
+    fail "Case 61: refused but wrote a thread file" "$(cat "$THREAD")"
+  elif echo "$OUT" | grep -q "bare reference 'ENG-793'"; then
+    ok "Case 61: bare reference in body -> refused by name, nothing written"
+  else
+    fail "Case 61: refused with the wrong message" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 62: configured + the SAME ref properly linked -> sends.
+#
+# The pass-through half of case 61, and the case that actually exercises the
+# implementation's strategy: markdown link spans are stripped before the scan,
+# so a ref inside [text](url) never reaches it. A guard that simply searched
+# the raw text would fail here while passing 61.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  OUT=$(INBOX_BARE_REF_PATTERN="$REF_PAT" INBOX_NO_PUSH=1 \
+          run_inbox "$T" "alpha" reply beta --subject "status" \
+          --body "picked up [ENG-793](https://tracker.example/ENG-793) this morning" 2>&1)
+  RC=$?
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -ne 0 ]; then
+    fail "Case 62: a correctly linked reference was refused" "exit $RC, out: $OUT"
+  elif grep -q "tracker.example/ENG-793" "$THREAD" 2>/dev/null; then
+    ok "Case 62: a reference inside a markdown link passes through"
+  else
+    fail "Case 62: linked message did not reach the thread file" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 63: the SUBJECT is checked too, not only the body. A subject is the
+#          half a reader sees in a list view, so a bare id there is exactly
+#          the unfollowable reference this exists to stop.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  set +e
+  OUT=$(INBOX_BARE_REF_PATTERN="$REF_PAT" INBOX_NO_PUSH=1 \
+          run_inbox "$T" "alpha" reply beta --subject "!856 is ready" \
+          --body "no references in this body at all" 2>&1)
+  RC=$?
+  set -e
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 63: bare subject reference was accepted" "exit 0, out: $OUT"
+  elif [ -e "$THREAD" ]; then
+    fail "Case 63: refused but wrote a thread file" "$(cat "$THREAD")"
+  elif echo "$OUT" | grep -q "subject to beta contains a bare reference"; then
+    ok "Case 63: bare reference in subject -> refused, and the field is named"
+  else
+    fail "Case 63: refused with the wrong message" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 64: INBOX_BARE_REF_TO narrows the audience. The identical message is
+#          refused to a listed correspondent and accepted for an unlisted one.
+#
+# Both halves in one case on purpose: either alone is satisfied by a check
+# that is simply always on, or always off.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  BODY="have a look at !856"
+
+  set +e
+  OUT_LISTED=$(INBOX_BARE_REF_PATTERN="$REF_PAT" INBOX_BARE_REF_TO="beta,gamma" \
+    INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply beta --subject "s" --body "$BODY" 2>&1)
+  RC_LISTED=$?
+
+  OUT_OTHER=$(INBOX_BARE_REF_PATTERN="$REF_PAT" INBOX_BARE_REF_TO="beta,gamma" \
+    INBOX_NO_PUSH=1 run_inbox "$T" "alpha" reply delta --subject "s" --body "$BODY" 2>&1)
+  RC_OTHER=$?
+  set -e
+
+  if [ "$RC_LISTED" -eq 0 ]; then
+    fail "Case 64: listed correspondent was not checked" "out: $OUT_LISTED"
+  elif [ "$RC_OTHER" -ne 0 ]; then
+    fail "Case 64: unlisted correspondent was checked anyway" "out: $OUT_OTHER"
+  elif [ -e "$T/alpha/inbox/beta.md" ]; then
+    fail "Case 64: refused send still wrote a thread file"
+  elif grep -q "!856" "$T/alpha/inbox/delta.md" 2>/dev/null; then
+    ok "Case 64: INBOX_BARE_REF_TO scopes the check to the named correspondents"
+  else
+    fail "Case 64: allowed message did not reach the unlisted thread" "out: $OUT_OTHER"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 65: an INBOX_BARE_REF_PATTERN that does not compile is a hard error,
+#          not a silently skipped check.
+#
+# A typo that turned the guard off would leave every message looking as though
+# it had passed, which is the same silent-success shape the guard exists to
+# remove.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  set +e
+  OUT=$(INBOX_BARE_REF_PATTERN='!(\d+' INBOX_NO_PUSH=1 \
+          run_inbox "$T" "alpha" reply beta --subject "s" --body "nothing suspicious" 2>&1)
+  RC=$?
+  set -e
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 65: an uncompilable pattern silently allowed the send" "out: $OUT"
+  elif [ -e "$THREAD" ]; then
+    fail "Case 65: refused but wrote a thread file" "$(cat "$THREAD")"
+  elif echo "$OUT" | grep -q "INBOX_BARE_REF_PATTERN is not a valid"; then
+    ok "Case 65: an uncompilable pattern is a hard error naming the variable"
+  else
+    fail "Case 65: refused with the wrong message" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
+# ---------------------------------------------------------------------------
+# Case 66: link-stripping is per-occurrence, not whole-message. A body holding
+#          the same ref twice, once linked and once bare, is still refused.
+#
+# The failure this pins: a guard that gave up as soon as it saw one link, or
+# that stripped only the first span, would pass case 62 and let the real
+# mistake through here. Bare-in-the-same-body is also the shape the mistake
+# actually takes, since it comes from writing a second mention in a hurry.
+# ---------------------------------------------------------------------------
+{
+  T=$(mktemp -d)
+  make_inbox "$T" "alpha"
+
+  set +e
+  OUT=$(INBOX_BARE_REF_PATTERN="$REF_PAT" INBOX_NO_PUSH=1 \
+          run_inbox "$T" "alpha" reply beta --subject "s" \
+          --body "opened [!856](https://forge.example/mr/856), which supersedes !412" 2>&1)
+  RC=$?
+  set -e
+
+  THREAD="$T/alpha/inbox/beta.md"
+  if [ "$RC" -eq 0 ]; then
+    fail "Case 66: a second, bare reference slipped past a linked one" "out: $OUT"
+  elif [ -e "$THREAD" ]; then
+    fail "Case 66: refused but wrote a thread file" "$(cat "$THREAD")"
+  elif echo "$OUT" | grep -q "bare reference '!412'"; then
+    ok "Case 66: a bare ref alongside a linked one is still caught, and named"
+  else
+    fail "Case 66: refused with the wrong message" "out: $OUT"
+  fi
+  rm -rf "$T"
+}
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

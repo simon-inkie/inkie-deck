@@ -43,8 +43,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # dashes.test.ts shells out to rg; ubuntu-latest doesn't carry it.
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      # python3-yaml is the base package's inbox CLI checking a card's
+      # metadata region parses as YAML before it writes the block. Installed
+      # explicitly rather than relied on: the runner image happens to carry
+      # PyYAML today, and a suite that is green because of what an image
+      # happens to include is measuring the image.
+      - name: Install ripgrep and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y ripgrep python3-yaml
 
       - name: Typecheck
         run: pnpm typecheck

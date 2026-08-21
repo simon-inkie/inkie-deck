@@ -69,6 +69,47 @@ refused or fails is never a lost message. `bin/pane-idle` is a sourced library
 holding the one definition of "is this pane busy"; `inbox-push` cannot run
 without it.
 
+### Sending a card needs PyYAML
+
+One exception to "it needs python3". A body that opens with a metadata region
+(`decision-id:` or `action-id:` on the first line, see `docs/protocol.md`
+section 7.1) has to be **valid YAML**, and `inbox reply` checks that with a real
+YAML parser before it writes anything. That check needs PyYAML
+(`pip install PyYAML`, or `apt-get install python3-yaml`). Without it, a card
+send is refused and says so; every other command, and every reply whose body is
+ordinary prose, runs on a stock python3 with nothing installed.
+
+It is a refusal rather than a warning because the failure it catches is silent
+at the far end. An unquoted colon inside a `label:` or `detail:` value is read
+as a nested mapping, the parse breaks, and a renderer then shows the block as
+plain prose with no error anywhere. The sender sees `replied to ...` and
+believes a card went out. Before the write is the only place that is catchable.
+
+### Optional: refusing bare, unlinked references
+
+Off unless you configure it. Set `INBOX_BARE_REF_PATTERN` to a python regex
+matching the reference shapes your team uses, and `inbox reply` refuses to send
+a subject or body carrying one that is not inside a markdown link:
+
+```bash
+# a change-request sigil and a project-prefixed ticket id, as an example
+export INBOX_BARE_REF_PATTERN='!\d+|(?<![A-Za-z0-9])ENG-\d+'
+export INBOX_BARE_REF_TO='alice,bob'    # optional; default is everyone
+```
+
+`ENG-793 is ready` is refused; `[ENG-793](https://tracker.example/ENG-793) is
+ready` goes through. The point is that the reader gets something they can
+follow rather than a token they have to go and look up, which matters most for
+the people on the receiving end who do not live in your issue tracker.
+
+There is deliberately no default pattern. This tool cannot know whether you
+have a tracker or what its ids look like, and a public CLI that started
+refusing messages over one team's ticket syntax would be a bug rather than a
+guard. `INBOX_BARE_REF_TO` narrows it to named correspondents, which is worth
+using: a check that fires on every agent-to-agent message gets switched off.
+The negative lookbehind in the example is worth copying too, or a rule meant
+for `ENG-12` also fires inside `LINKED-12`.
+
 ## The idea
 
 An agent's identity shouldn't live only in a conversation that resets. It lives
@@ -176,6 +217,12 @@ The `bin/inbox` and `bin/inbox-push` suites are shell, and are run directly:
 bash packages/base/test/inbox.test.sh
 bash packages/base/test/inbox-push.test.sh
 ```
+
+The `inbox` suite needs PyYAML for its card cases, for the same reason
+`inbox reply` does, plus `xxd` for the cases that compare a thread file's bytes
+before and after an in-place status patch. Both are installed explicitly in CI
+rather than assumed, because a suite that is green because of what an image
+happened to carry is measuring the image.
 
 The repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
 workspace-wide checks, including the leak gate that also scans this package,
