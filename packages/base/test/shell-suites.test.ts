@@ -1,22 +1,25 @@
 /**
- * Runs the two ported bash suites under vitest.
+ * Runs the ported bash suites under vitest.
  *
- * WHY THIS WRAPPER EXISTS. `inbox.test.sh` and `inbox-push.test.sh` came
- * across with the tools they cover, and they are the reason porting those
- * tools was safe at all: both suites are larger than the code they test. But
- * `pnpm test` runs vitest, whose `include` glob only ever collects
- * `*.test.ts`, so as shell scripts they were invisible to it and to CI. A
- * suite nobody runs is not a safety net, it is a bug preserved in the one
- * place it can never go red, and it would have gone stale silently while
- * looking like coverage.
+ * WHY THIS WRAPPER EXISTS. Each of these suites came across with the tool it
+ * covers, and they are the reason porting those tools was safe at all: several
+ * are larger than the code they test. But `pnpm test` runs vitest, whose
+ * `include` glob only ever collects `*.test.ts`, so as shell scripts they were
+ * invisible to it and to CI. A suite nobody runs is not a safety net, it is a
+ * bug preserved in the one place it can never go red, and it would have gone
+ * stale silently while looking like coverage.
  *
  * Each script is spawned as a real subprocess and its output is surfaced
  * verbatim on failure, because the per-case output is the actual diagnostic.
- * They are slow relative to a unit test (both drive the real CLI as
+ * They are slow relative to a unit test (they drive the real scripts as
  * subprocesses against temporary directories), hence the generous timeout.
  *
- * Neither suite needs a live tmux: inbox-push.test.sh drives the whole flow
- * through the PANE_OVERRIDE / RUNTIME_OVERRIDE / PUSH_DRY_RUN seams.
+ * NONE of them needs a live tmux, and that is enforced rather than hoped for:
+ * inbox-push.test.sh drives the whole flow through the PANE_OVERRIDE /
+ * RUNTIME_OVERRIDE / PUSH_DRY_RUN seams, and the two sweep suites run in
+ * fixture mode behind a stub `tmux` on PATH whose log they then assert against.
+ * The sweep suites additionally need `jq`, which the sweep itself treats as a
+ * hard dependency; both say so loudly rather than skipping if it is absent.
  */
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -25,7 +28,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const PACKAGE_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const SUITES = ["inbox.test.sh", "inbox-push.test.sh"] as const;
+const SUITES = [
+  "inbox.test.sh",
+  "inbox-push.test.sh",
+  "pane-idle.test.sh",
+  "activity-sweep.test.sh",
+  "stuck-pane-sweep.test.sh",
+] as const;
 
 describe("ported shell suites", () => {
   for (const suite of SUITES) {

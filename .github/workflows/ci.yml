@@ -42,9 +42,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # dashes.test.ts shells out to rg; ubuntu-latest doesn't carry it.
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      # dashes.test.ts shells out to rg; ubuntu-latest doesn't carry it. jq is
+      # a hard dependency of bin/activity-sweep.sh (it refuses to write rather
+      # than hand-print JSON carrying human text) and of both sweep suites, so
+      # without it those suites fail for an environmental reason rather than a
+      # real one.
+      - name: Install ripgrep and jq
+        run: sudo apt-get update && sudo apt-get install -y ripgrep jq
 
       - name: Typecheck
         run: pnpm typecheck
@@ -82,6 +86,16 @@ jobs:
 
       - name: Leak gate
         run: node scripts/leak-gate.mjs
+
+      # PANE_IDLE_LIB_VERSION is a safety assertion that only holds while one
+      # number means one function surface; see scripts/lib-version-gate.mjs.
+      # The self-test proves the gate still catches a collision before the real
+      # check certifies the tree, same discipline as the leak gate above.
+      - name: Library version gate self-test
+        run: node scripts/lib-version-gate.mjs --self-test
+
+      - name: Library version gate
+        run: node scripts/lib-version-gate.mjs
 
       - name: gitleaks (credential scan)
         uses: gitleaks/gitleaks-action@v2

@@ -40,7 +40,7 @@ stages:
     # runs and not only for whatever follows it in one script.
     LANG: C.UTF-8
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends ripgrep xxd
+    - apt-get update && apt-get install -y --no-install-recommends ripgrep xxd jq
     - corepack enable
     - corepack prepare --activate
   script:
@@ -67,6 +67,18 @@ leak-gate:
   script:
     - node scripts/leak-gate.mjs --self-test
     - node scripts/leak-gate.mjs
+
+# PANE_IDLE_LIB_VERSION is a safety assertion that only holds while one number
+# means one function surface; see scripts/lib-version-gate.mjs. The self-test
+# proves the gate still catches a collision before the real check certifies the
+# tree, same discipline as the leak gate above.
+lib-version-gate:
+  extends: .rules_template
+  stage: guards
+  image: node:22
+  script:
+    - node scripts/lib-version-gate.mjs --self-test
+    - node scripts/lib-version-gate.mjs
 
 gitleaks:
   extends: .rules_template

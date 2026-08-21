@@ -29,7 +29,9 @@ filling in.
 - **`bin/`**: `create-agent.sh`, which creates an agent and then proves its
   persona actually reached the model, plus the orchestration scripts that launch
   a team of agents in tmux (one window each, on boot or on demand), plus
-  `inbox`, `inbox-push` and `pane-idle`, the message-protocol tooling below.
+  `inbox`, `inbox-push` and `pane-idle`, the message-protocol tooling below,
+  plus `activity-sweep.sh`, `activity` and `stuck-pane-sweep.sh`, which answer
+  "what is everyone doing" and "is anyone wedged" (see below).
 - **`docs/conformance.md`**: how the two implementations of the protocol in
   this repository are kept from drifting apart, and how a known deviation is
   recorded so that fixing it forces its own record to be deleted.
@@ -68,6 +70,83 @@ for best-effort live delivery into the recipient's tmux pane, so a push that is
 refused or fails is never a lost message. `bin/pane-idle` is a sourced library
 holding the one definition of "is this pane busy"; `inbox-push` cannot run
 without it.
+
+## Knowing what everyone is doing
+
+Once you're running more than two or three agents, "what is each of them
+actually doing right now" stops being answerable by looking. Two scripts answer
+it, and they are deliberately separate systems.
+
+**`bin/activity-sweep.sh` observes.** Run it on a timer. It reads every window
+in the tmux session, joins that against each agent's inbox threads and its
+likely git worktree, and writes one file, `$ACTIVITY_ROOT/activity.json`, giving
+each agent a status (`working`, `stuck`, `needs-you`, `waiting-on-teammate`,
+`waiting-on-machine`, `done-for-now`, or `unknown` for "no observation at all")
+plus an **evidence** line saying what it actually saw. It escalates nothing,
+pastes nothing and wakes nobody: it writes a file.
+
+Every pill is deterministic. There are no model calls in it and no seam through
+which one could appear, so a wrong answer is always inspectable rather than
+merely wrong. `unknown` is a refusal to answer, styled distinctly from every
+verdict for exactly that reason.
+
+**`bin/activity` reads that file.** It is the terminal half; the web application
+in `packages/deck` is the other reader of the same file.
+
+```bash
+export ACTIVITY_ROOT=~/.the-vault/activity
+
+packages/base/bin/activity-sweep.sh      # produce (put this on a timer)
+packages/base/bin/activity status --all  # every agent, one line each
+packages/base/bin/activity status wren   # one agent, in detail
+packages/base/bin/activity pin wren ~/repos/site   # override the worktree guess
+```
+
+Every output leads with how old the data is, and says so loudly past
+`ACTIVITY_STALE_MIN`. The sweep is on a timer; if it stops, the file keeps
+saying whatever was true when it died, and acting on a `done-for-now` from forty
+minutes ago is the exact failure that banner exists to prevent.
+
+It needs `jq`, and refuses to run without it rather than hand-printing JSON that
+parses today and breaks on the first apostrophe in a commit subject.
+
+**`bin/stuck-pane-sweep.sh` acts, and only if you tell it who to talk to.** It
+asks a narrower question: is this pane genuinely wedged, waiting on something
+that will never arrive on its own. Three tiers, cheapest first: a known dialog
+literal in the live tail; text sitting unsubmitted in the composer across
+several unchanged ticks; and, optionally, a cheap model call for a pane that is
+motionless and matches nothing (skipped entirely if you configure no model).
+
+**Routing is required configuration and there is no default recipient.** With
+nothing configured it runs in report-only mode: it detects, it records every
+finding in its state file and its append-only history log, and it types into
+nobody's pane.
+
+```bash
+# report-only: detects and records, wakes nobody. This is the default.
+packages/base/bin/stuck-pane-sweep.sh
+
+# live: tell it who decides
+STUCK_ROUTE_DEFAULT=hub STUCK_ROUTE_SELF=deputy \
+  packages/base/bin/stuck-pane-sweep.sh
+```
+
+`STUCK_ROUTE_DEFAULT` is who gets told when any agent looks stuck.
+`STUCK_ROUTE_SELF` is who gets told when the *default route's own* pane is the
+stuck one, which is not a nicety: that agent cannot judge its own wedged pane
+from inside its own blocked turn. Leave it unset and that one case stays
+report-only. It is never routed back into the wedged pane itself.
+
+**The composer-pending tier is calibrated, not universal.** It was verified
+empirically against Claude Code 2.1.236 and Codex, on live panes, on
+2026-08-20. There is no specification for how a terminal composer renders, so
+this is reverse-engineered fact with a shelf life: a future version of either
+runtime could change its rendering, and an agent on any other runtime gets
+nothing from this tier at all. What makes that safe is the polarity, which the
+test suite pins: every uncertain case is a "could not positively identify
+pending text", never a "probably fine". An unrecognised composer format falls
+through and can never produce an escalation. If you extend it, keep that
+property.
 
 ## The idea
 
@@ -170,12 +249,22 @@ the conformance corpus. Both drive the code as a subprocess against temporary
 directories, with `HOME`, the agents home, the inbox root and `PATH` all
 redirected, so they cannot touch a real agent or reach a real runtime.
 
-The `bin/inbox` and `bin/inbox-push` suites are shell, and are run directly:
+The shell suites can also be run directly, which is what you want while working
+on one of them:
 
 ```bash
 bash packages/base/test/inbox.test.sh
 bash packages/base/test/inbox-push.test.sh
+bash packages/base/test/pane-idle.test.sh
+bash packages/base/test/activity-sweep.test.sh
+bash packages/base/test/stuck-pane-sweep.test.sh
 ```
+
+The two sweep suites need `jq`, and say so rather than skipping. Neither needs a
+live tmux: both run the real scripts in fixture mode behind a stub `tmux` on
+`PATH`, then assert against that stub's log, which is how "the activity sweep
+never types into a pane" and "an unconfigured stuck sweep wakes nobody" are
+tested properties rather than claims.
 
 The repository-level CI (`.gitlab-ci.yml`, `.github/workflows/ci.yml`) runs the
 workspace-wide checks, including the leak gate that also scans this package,
@@ -185,8 +274,15 @@ on every push.
 
 Templates, one worked example, the shared multi-agent conventions, the create
 and tmux launch scripts, the protocol specification, the `inbox` CLI and its
-live-delivery half, the shared conformance corpus, a licence, and CI all
-exist now.
+live-delivery half, the activity sweep and its query CLI, the stuck-pane sweep,
+the shared conformance corpus, a licence, and CI all exist now.
+
+Deliberately not here: the prose-narration layer that turns the activity sweep's
+signals into a sentence per agent. The plumbing it needs is in the sweep already
+(the two hashes, the bounded and credential-redacted signals digest, the
+freshness verdict over its sidecar), and the digest is written only if you turn
+`ACTIVITY_SIGNAL_PERSIST` on, because nothing in this package reads one yet.
+
 Still to come: a CONTRIBUTING guide, and a second worked example that shows a
 small team of agents using `SYSTEM.md`/`ROSTER.md` together, not just one
 agent in isolation.
