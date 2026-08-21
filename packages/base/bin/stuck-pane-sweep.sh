@@ -1,0 +1,734 @@
+#!/usr/bin/env bash
+# stuck-pane-sweep.sh -- mechanical stuck-pane detector.
+#
+# It asks one question, once a tick, for every agent window in the tmux session:
+# "is this pane genuinely STUCK", meaning waiting on something that will never
+# arrive on its own. A wedged agent has no unblock path from inside its own
+# blocked turn, and a wedged COORDINATOR has none at all, because the
+# coordinator is the unblock path for everyone else.
+#
+# SIBLING of bin/activity-sweep.sh, and deliberately a separate system. That one
+# OBSERVES and never escalates; this one is the sole ACTUATOR. Do not merge them,
+# and do not add an escalation path to the observer: two escalators into one pane
+# is a wake storm with two authors and no owner.
+#
+# ============================================================================
+# ROUTING IS REQUIRED CONFIGURATION. THERE IS NO DEFAULT RECIPIENT.
+# ============================================================================
+#
+# With nothing configured this sweep runs in REPORT-ONLY mode: it detects, it
+# records every finding in its state file and its history log, and it types into
+# nobody's pane. That is the correct posture for a fresh install and it is not a
+# degraded one -- the deployment this was extracted from ran in exactly this mode
+# for weeks before live escalation was switched on deliberately.
+#
+#   STUCK_ROUTE_DEFAULT=<window>  who is told when ANY agent's pane looks stuck.
+#                                 Usually a coordinator: someone who can look at
+#                                 the pane and decide whether to clear it, ask
+#                                 the owner, or escalate to a person.
+#   STUCK_ROUTE_SELF=<window>     who is told when the DEFAULT ROUTE'S OWN pane
+#                                 is the stuck one. This is not a nicety: the
+#                                 default route cannot judge its own wedged pane
+#                                 from inside its own blocked turn, so without a
+#                                 deputy that one case has nowhere to go. Leave
+#                                 it unset and that case stays report-only; it is
+#                                 NEVER routed back to the wedged pane itself.
+#   STUCK_NO_ESCALATE=1           force report-only even when routing IS
+#                                 configured (shadow mode, for a live trial).
+#
+# Every finding is recorded whatever the mode, with the window it was (or would
+# have been) routed to, so a report-only run is a genuine report rather than a
+# silence.
+#
+# THREE-TIER JUDGMENT, cheapest-first:
+#   1. DETERMINISTIC fast path. A known stuck-shape literal in the live tail of
+#      the pane (default list below; extend via the config file, no code change).
+#      Free, instant, fires on the FIRST tick it is seen -- a confirmation dialog
+#      is unambiguous, there is nothing to corroborate.
+#   1b. DETERMINISTIC composer-pending tier (see composer_pending). Positively
+#      identified unsubmitted text in the composer, still there after
+#      >= STUCK_MIN_TICKS byte-identical ticks. Also free, also no model call.
+#   2. LIGHTWEIGHT-MODEL fallback, and entirely OPTIONAL. Only for a pane that is
+#      idle, matches NO known literal, and has been BYTE-IDENTICAL across
+#      >= STUCK_MIN_TICKS consecutive ticks. Env-configurable model, a floating
+#      alias so a retired pin cannot cause an outage, temperature 0 and a JSON
+#      response type, a daily spend cap charged BEFORE the call (but only once
+#      the call is actually ATTEMPTABLE, see model_preconditions_ok), fail-closed
+#      on any error -- but fail-closed as ONE fault, not as N stuck panes; see
+#      the model-unavailable branch, which a live run proved matters. With no
+#      credential and no STUCK_MODEL_CMD this tier simply never runs, and the two
+#      deterministic tiers are unaffected.
+#
+# COST DISCIPLINE -- the model must not be called on every idle pane every tick:
+#   - busy pane                -> no call (it is working, by definition not stuck)
+#   - deterministic match      -> no call (already decided, for free)
+#   - first sighting of a capture, or a capture that CHANGED -> no call (a pane
+#     between turns looks idle on any given tick; that is not stuck)
+#   - a capture already judged -> no call. The verdict is cached AGAINST THE
+#     HASH, so an agent idling untouched all night costs exactly ONE call, not
+#     one per tick. New call only when the pane actually changes and then goes
+#     still again.
+#   Net: <= 1 model call per agent per DISTINCT motionless capture.
+#
+# ESCALATION IS ONCE PER EPISODE, keyed on the same hash. Re-pasting the same
+# line into a possibly-wedged pane every tick is a wake storm, not a fix. The
+# state re-arms by itself when the pane changes (i.e. when someone unblocked it,
+# or when it wedged in a new way).
+#
+# Test/dry-run seams (no live panes, no API calls when set):
+#   STUCK_FIXTURE_DIR=<dir>  read pane text from <dir>/<window>.txt instead of tmux.
+#                            An OPTIONAL <window>.raw.txt sibling supplies that
+#                            same pane's ANSI-preserved (`capture-pane -e`)
+#                            rendering for the composer-pending tier; absent =
+#                            "no raw evidence", which that tier treats as a
+#                            reason NOT to fire. The sibling is NOT itself a
+#                            window: the enumeration below filters it out, or a
+#                            fixture dir would sweep a phantom agent called
+#                            "<window>.raw".
+#   STUCK_DRY_RUN=1          print decisions instead of pasting; prints MODEL->
+#                            and COMPOSER-> lines
+#   STUCK_MODEL_CMD=<cmd>    run <cmd> with the prompt on stdin instead of curl;
+#                            it must print the model's raw JSON verdict. This is
+#                            the injectable seam -- tests never reach the network.
+#   STUCK_MIN_TICKS=<n>      consecutive-unchanged ticks before the model may run (2)
+#   STUCK_STATE_DIR=<dir>    state home; shares the stuck-shape list with
+#                            activity-sweep.sh, which is why it is not inside
+#                            either sweep's own directory
+#   STUCK_STATE_FILE=<path>  override the state file directly
+#   STUCK_HISTORY_FILE=<path> override the append-only history log
+#   STUCK_TMUX_SESSION=<name> tmux session holding the agent windows (agents)
+#   STUCK_SKIP_AGENTS="a b"  windows to ignore entirely (default: none)
+#
+# Env prefix is STUCK_, not SWEEP_, on purpose: both sweeps in this package can
+# be scheduled on the same box and a shared SWEEP_DRY_RUN/SWEEP_FIXTURE_DIR would
+# silently neuter whichever one you were not thinking about.
+set -u
+
+# Schedulers run with a minimal PATH that often omits ~/.local/bin, where jq is
+# commonly installed. jq is load-bearing here (state + spend ledger), so its
+# absence is RECORDED in the state file rather than degrading quietly.
+export PATH="$HOME/.local/bin:$PATH"
+
+SELF="stuck-pane-sweep"
+STATE_DIR="${STUCK_STATE_DIR:-$HOME/.the-vault/sweep-state}"
+STATE_FILE="${STUCK_STATE_FILE:-$STATE_DIR/last-stuck-sweep.json}"
+PATTERN_CONFIG="${STUCK_PATTERN_CONFIG:-$STATE_DIR/stuck-patterns.txt}"  # one literal per line, optional
+HISTORY_FILE="${STUCK_HISTORY_FILE:-$STATE_DIR/stuck-sweep-history.jsonl}"
+
+TMUX_SESSION="${STUCK_TMUX_SESSION:-agents}"
+
+# --- routing: required config, report-only default -------------------------------
+# See the header. Both are empty unless a deployment sets them, and empty means
+# "record it, wake nobody".
+ROUTE_DEFAULT="${STUCK_ROUTE_DEFAULT:-}"
+ROUTE_SELF="${STUCK_ROUTE_SELF:-}"
+if [ "${STUCK_NO_ESCALATE:-0}" = "1" ] || [ -z "$ROUTE_DEFAULT" ]; then
+  ESCALATION_MODE="report-only"
+else
+  ESCALATION_MODE="live"
+fi
+
+# route_for <window> -> the window an escalation ABOUT <window> should go to, or
+# nothing when there is nowhere to send it.
+#
+# The self-route case is derived rather than configured separately: the one pane
+# the default route cannot judge is its own. Returning ROUTE_SELF (possibly
+# empty) for that case is what keeps a wedged coordinator from being sent a
+# message about its own wedge, which is the failure the two-route split exists to
+# prevent and which a single-route fallback would reintroduce.
+route_for() {
+  local w="$1"
+  if [ -n "$ROUTE_DEFAULT" ] && [ "$w" = "$ROUTE_DEFAULT" ]; then
+    printf '%s' "$ROUTE_SELF"
+  else
+    printf '%s' "$ROUTE_DEFAULT"
+  fi
+}
+
+# Windows to ignore. EMPTY BY DEFAULT: a skip list is a statement about one
+# deployment's roster. The built-in pattern list below is shaped for Claude Code
+# dialogs, so this is where you exclude a window running something else if that
+# matters to you.
+SKIP_AGENTS="${STUCK_SKIP_AGENTS:-}"
+
+MIN_TICKS="${STUCK_MIN_TICKS:-2}"
+TAIL_LINES="${STUCK_TAIL_LINES:-20}"      # live-viewport window the literals are matched in
+PROMPT_LINES="${STUCK_PROMPT_LINES:-60}"  # pane tail handed to the model (bounds cost)
+
+# --- model config: env-first, floating-alias policy ------------------------------
+# A cheap, fast tier is right for this call: a few hundred tokens of pane text
+# and a two-field JSON answer. The alias floats so a retired pin cannot 404 the
+# sweep into permanent fail-closed.
+STUCK_MODEL="${STUCK_SWEEP_MODEL:-gemini-flash-lite-latest}"
+USD_PER_1K="${STUCK_SWEEP_MODEL_USD_PER_1K:-0.0005}"
+# Bounded at ~1 call per agent per distinct capture, a legitimate day is cents.
+# $1 is unreachable except by a runaway.
+DAILY_CAP_USD="${STUCK_SWEEP_DAILY_HARD_CAP_USD:-1}"
+# ITS OWN ledger. Sharing one with another guarded system would let this sweep
+# spend that system's daily cap, and a system that fails CLOSED on cap could then
+# be paused fleet-wide by a chatty sweep. Same shape, separate file.
+SPEND_LEDGER="${STUCK_SWEEP_SPEND_LEDGER:-$STATE_DIR/stuck-sweep-spend-ledger.json}"
+
+mkdir -p "$STATE_DIR"
+
+have_jq=1; command -v jq >/dev/null 2>&1 || have_jq=0
+
+# --- known stuck shapes ----------------------------------------------------------
+# Config file (one literal per line, # comments) REPLACES this list when present,
+# so a shape can be added without a code change.
+default_patterns() {
+  cat <<'EOF'
+Auto mode classifier requires confirmation
+EOF
+}
+load_patterns() {
+  if [ -f "$PATTERN_CONFIG" ]; then
+    grep -v '^[[:space:]]*#' "$PATTERN_CONFIG" 2>/dev/null | grep -v '^[[:space:]]*$'
+  else
+    default_patterns
+  fi
+}
+
+# --- shared busy/idle classification (bin/pane-idle) -----------------------------
+# Sourced, never re-implemented: a third copy of check_idle is exactly the drift
+# that library exists to prevent. BASH_SOURCE-relative so a checkout tests
+# itself; the AGENTS_HOME fallback is for an installed copy invoked from
+# elsewhere.
+AGENTS_HOME="${AGENTS_HOME:-$HOME/agents}"
+PANE_IDLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/pane-idle"
+[ -r "$PANE_IDLE_LIB" ] || PANE_IDLE_LIB="$AGENTS_HOME/bin/pane-idle"
+# shellcheck source=./pane-idle
+. "$PANE_IDLE_LIB" 2>/dev/null
+# >= 2 is a HARD requirement, not a nice-to-have: composer_pending is built on
+# find_composer_line + raw_line_for, which only exist from lib v2. Against a v1
+# lib they are undefined -- bash reports "command not found", the command
+# substitution yields an empty string, and composer_pending's own "empty line ->
+# not pending" default would answer NOT STUCK for every pane, silently, forever.
+# That is the exact incident this tier exists to prevent, so a stale lib refuses
+# the tick and records why rather than degrading into a permanently-quiet sweep.
+# Digit-guarded before comparing so a garbage version fails the check instead of
+# erroring `[`.
+_lib_ok=0
+case "${PANE_IDLE_LIB_VERSION:-}" in
+  ''|*[!0-9]*) _lib_ok=0 ;;
+  *) [ "$PANE_IDLE_LIB_VERSION" -ge 2 ] && _lib_ok=1 ;;
+esac
+if [ "$_lib_ok" != "1" ]; then
+  # No busy detection means every mid-turn pane reads as a candidate and the
+  # model gets asked about panes that are plainly working. Refuse the tick,
+  # loudly.
+  echo "$SELF: pane-idle lib missing or too old (need >=2, got '${PANE_IDLE_LIB_VERSION:-none}') at $PANE_IDLE_LIB" >&2
+  printf '{"swept":"%s","verdict":"error","error":"no-pane-idle-lib","libVersion":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PANE_IDLE_LIB_VERSION:-none}" > "$STATE_FILE"
+  exit 0
+fi
+
+# --- pane capture (fixture-aware) ------------------------------------------------
+capture_pane() {
+  local w="$1"
+  if [ -n "${STUCK_FIXTURE_DIR:-}" ]; then
+    cat "$STUCK_FIXTURE_DIR/$w.txt" 2>/dev/null
+  else
+    tmux capture-pane -t "${TMUX_SESSION}:${w}" -p 2>/dev/null
+  fi
+}
+
+# --- pane capture, ANSI PRESERVED (composer-pending tier only) --------------------
+# A separate seam from capture_pane because it is a separate tmux invocation (-e)
+# and a separate fixture file (<window>.raw.txt). Only ever called for a pane
+# that already has a non-empty composer candidate, so the common case (every
+# healthy pane, every tick) costs nothing extra. A missing fixture or failed
+# capture yields "" and the caller treats that as "no evidence", never as "no dim
+# styling".
+capture_pane_raw() {
+  local w="$1"
+  if [ -n "${STUCK_FIXTURE_DIR:-}" ]; then
+    cat "$STUCK_FIXTURE_DIR/$w.raw.txt" 2>/dev/null
+  else
+    tmux capture-pane -t "${TMUX_SESSION}:${w}" -p -e 2>/dev/null
+  fi
+}
+
+# --- capture fingerprint ---------------------------------------------------------
+# Normalise trailing whitespace and trailing blank lines before hashing: a pane
+# that is doing nothing can still repaint its own padding, and a hash that never
+# repeats means ticks never reach MIN_TICKS and the model tier silently never
+# fires. The per-agent tick count is written to the state file so that failure
+# would be VISIBLE (an agent pinned at ticks:1 forever) rather than a silent hole.
+pane_hash() {
+  printf '%s\n' "$1" | sed -e 's/[[:space:]]*$//' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' \
+    | sha256sum 2>/dev/null | cut -c1-16
+}
+
+# --- deterministic tier ----------------------------------------------------------
+# Matched in the live TAIL only: a dialog that has already been dealt with, or
+# prose that merely QUOTES the string (an agent discussing this very feature),
+# can sit higher in the viewport. Echoes the matched literal; returns 1 on no
+# match.
+match_pattern() {
+  local pane="$1" tail_txt p
+  tail_txt=$(printf '%s\n' "$pane" | tail -n "$TAIL_LINES")
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    if printf '%s\n' "$tail_txt" | grep -qF -- "$p" 2>/dev/null; then
+      printf '%s\n' "$p"; return 0
+    fi
+  done <<EOF
+$(load_patterns)
+EOF
+  return 1
+}
+
+# --- deterministic tier 1b: unsubmitted composer text ----------------------------
+# WHY: an agent sat over two hours with a large unsubmitted paste in its
+# composer. The sweep saw the pane, hashed it, counted ticks 1 -> 10 correctly,
+# called the model ONCE at tick 2, got back "clear", cached that verdict against
+# the hash, and never looked again. Text sitting unsubmitted for fifteen minutes
+# or more is a wedge; the pane is waiting for an Enter that is never coming on
+# its own.
+#
+# ============================================================================
+# CALIBRATED AGAINST TWO RUNTIMES, AS OF 2026-08-20. NOT UNIVERSAL.
+# ============================================================================
+#
+# The composer shapes and the dim-hint exemption below were verified empirically
+# against Claude Code 2.1.236 and Codex, on live panes, on that date. There is no
+# specification for terminal composer rendering; this is reverse-engineered fact
+# with a shelf life. Two consequences you should plan for:
+#
+#   - A future version of either runtime could change its composer rendering and
+#     silently break the dim-text exemption. The failure would be quiet.
+#   - An agent on any OTHER runtime gets NOTHING from this tier. That is a
+#     non-match, not a wrong answer.
+#
+# WHAT MAKES THAT SAFE TO SHIP: the polarity. Every early return in
+# composer_pending is a "could not positively identify pending text", never a
+# "probably fine". An unrecognised composer format falls through to the model
+# tier (or, with no model configured, to no finding at all) and can never produce
+# an escalation. Fail toward silence, always. If you extend this for another
+# runtime, keep that property: the test suite pins it.
+#
+# THE MODEL IS NOT CONSULTED FOR THIS SHAPE, at all, in either direction. It has
+# already looked at this exact pane and answered "clear", so using it as a
+# corroborating second opinion would let it veto a correct escalation.
+# Deterministic detection triggers; model judgement enriches, never suppresses.
+# The model tier stays the backstop only for composer shapes THIS function cannot
+# parse (rc 1 from an unrecognised format), never a second opinion on one it can.
+#
+# POLARITY -- deliberately the OPPOSITE of inbox-push's check_composer_clean,
+# which shares the same primitives. There, uncertainty must read "staged": the
+# cost of being wrong is typing over a human's half-written line, so it fails
+# towards NOT ACTING. Here, uncertainty must read "not pending": the cost of
+# being wrong is waking someone about a healthy pane every tick, so it also fails
+# towards NOT ACTING -- which for THIS caller means returning 1. Same principle,
+# inverted return value.
+#
+# Publishes COMPOSER_PENDING_TEXT (sanitised, capped) so a finding can say WHAT
+# is sitting there. That excerpt is load-bearing for whoever reads it: it is how
+# you tell "another agent pushed a long message and it never submitted" from "a
+# person left a half-typed line and walked away", which are the same finding with
+# two different correct responses (press Enter, versus check with the human
+# first).
+composer_excerpt() {  # flatten + strip quotes/backslashes + cap: this string can be pasted into a tmux composer
+  printf '%s' "$1" | tr '\n\t' '  ' | tr -d '"\\' | cut -c1-60 | sed 's/[[:space:]]*$//'
+}
+
+composer_pending() {  # <plain_pane> <window> -> 0 = pending text positively identified, 1 = not
+  local pane="$1" w="$2" line after raw rawline
+  COMPOSER_PENDING_TEXT=""
+  line=$(find_composer_line "$pane")
+  # No recognisable composer at all (a plain shell, a half-rendered UI, a runtime
+  # whose composer we do not know). Fall through to the model tier, which is the
+  # backstop for exactly this.
+  [ -n "$line" ] || return 1
+  after=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*(❯|›|>)[[:space:]]*//' 2>/dev/null) || return 1
+  # The bare idle Claude composer rests at glyph + NO-BREAK SPACE (U+00A0, bytes
+  # C2 A0), which [[:space:]] does not reliably match -- under C it is two
+  # ordinary non-space bytes, so a genuinely empty composer would read as text
+  # and every idle Claude pane would escalate every episode. Byte-strip it,
+  # locale-independently, before the has-content test. (Verified live
+  # 2026-08-20: ten out of ten idle Claude panes rested at exactly
+  # ESC[39m + glyph + NBSP.)
+  after=$(printf '%s' "$after" | sed 's/\xc2\xa0//g' 2>/dev/null) || return 1
+  printf '%s' "$after" | grep -qE '[^[:space:]]' 2>/dev/null || return 1
+  # Codex collapses a large paste to this fixed placeholder. A POSITIVE literal,
+  # so it is decided here, above the dim exemption: the placeholder's own styling
+  # was never independently reproduced (it would need a disposable Codex pane),
+  # and this match makes that unknown irrelevant instead of load-bearing.
+  case "$after" in
+    '[Pasted Content'*) COMPOSER_PENDING_TEXT=$(composer_excerpt "$after"); return 0 ;;
+  esac
+  # RAW EVIDENCE IS REQUIRED to fire. Codex's idle composer is never bare -- it
+  # rotates through hint placeholders ("Use /skills to list available skills",
+  # captured live 2026-08-20) that a plain -p capture cannot distinguish from
+  # typed text. Without the raw check every idle Codex pane would escalate every
+  # episode. No raw capture, or no plain/raw correspondence, means no evidence:
+  # refuse to fire and retry next tick, rather than escalate on a shape we cannot
+  # corroborate.
+  raw=$(capture_pane_raw "$w")
+  [ -n "$raw" ] || return 1
+  rawline=$(raw_line_for "$raw" "$line")
+  [ -n "$rawline" ] || return 1
+  # ESC[2m = SGR dim, the marker both calibrated runtimes use for
+  # placeholder/hint chrome and that real typed text never carries. Verified live
+  # 2026-08-20 on both sides: an idle Codex hint renders
+  # "ESC[0;1m + glyph + ESC[0m ESC[2mUse /skills...ESC[0m", while a live Claude
+  # Code composer holding real text renders "ESC[39m + glyph + NBSP + text" with
+  # no SGR of its own, so this exemption cannot swallow a genuine pending line.
+  printf '%s' "$rawline" | grep -qF "$(printf '\033[2m')" 2>/dev/null && return 1
+  COMPOSER_PENDING_TEXT=$(composer_excerpt "$after")
+  return 0
+}
+
+# --- model tier: cost guard ------------------------------------------------------
+# Charge the ledger BEFORE the call so a runaway can never spend past the cap,
+# and treat a corrupt ledger as empty rather than throwing.
+estimate_cost_usd() { awk -v c="$1" -v r="$USD_PER_1K" 'BEGIN{printf "%.8f", (c/4/1000)*r}'; }
+charge_daily() {  # <costUsd> -> 0 ok, 1 cap hit / ledger unusable (fail closed)
+  local cost="$1" today tmp total
+  [ "$have_jq" = "1" ] || return 1
+  today=$(date -u +%F)
+  mkdir -p "$(dirname "$SPEND_LEDGER")" 2>/dev/null
+  [ -s "$SPEND_LEDGER" ] || echo '{}' > "$SPEND_LEDGER"
+  jq -e . "$SPEND_LEDGER" >/dev/null 2>&1 || echo '{}' > "$SPEND_LEDGER"
+  tmp=$(mktemp) || return 1
+  if jq --arg d "$today" --argjson c "$cost" \
+      '.[$d] = {costUsd: ((.[$d].costUsd // 0) + $c), calls: ((.[$d].calls // 0) + 1)}' \
+      "$SPEND_LEDGER" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$SPEND_LEDGER"
+  else
+    rm -f "$tmp"; return 1
+  fi
+  total=$(jq -r --arg d "$today" '.[$d].costUsd // 0' "$SPEND_LEDGER" 2>/dev/null)
+  awk -v t="${total:-0}" -v cap="$DAILY_CAP_USD" 'BEGIN{exit !(t+0 >= cap+0)}' && return 1
+  return 0
+}
+
+# --- model tier: static preconditions --------------------------------------------
+# Can a call even be ATTEMPTED on this box, before any cost is incurred? These are
+# STATIC facts about the environment (credential present, jq present), not
+# outcomes of a call, which is why model_judge consults them BEFORE charging the
+# ledger. A whole day's ledger once recorded charges against zero actual
+# judgements because the credential was named wrong and the check for it sat
+# below charge_daily.
+#
+# A genuine transport failure AFTER a legitimate attempt (timeout, bad response)
+# is a different thing and is still charged: the call really was made.
+model_preconditions_ok() {  # 0 = a call can be attempted, 1 = it cannot
+  # The injected seam replaces the network path entirely, so it needs neither.
+  [ -n "${STUCK_MODEL_CMD:-}" ] && return 0
+  [ -n "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ] || return 1
+  [ "$have_jq" = "1" ] || return 1
+  return 0
+}
+
+# --- model tier: the call --------------------------------------------------------
+# STUCK_MODEL_CMD is the injectable seam (tests, and a swap to any other provider
+# without touching this logic). Without it: a plain generateContent call over
+# curl.
+model_raw() {  # prompt on stdin -> raw model JSON on stdout, non-zero on transport failure
+  if [ -n "${STUCK_MODEL_CMD:-}" ]; then
+    $STUCK_MODEL_CMD
+    return $?
+  fi
+  local prompt body resp
+  prompt=$(cat)
+  # Re-checked here, not just in model_judge: this is the function that would
+  # otherwise POST a request with an empty api-key header, so it stays safe for
+  # any future caller rather than trusting one to have gated it.
+  model_preconditions_ok || return 1
+  # No thinking-budget field: the default STUCK_MODEL rejects it outright with
+  # 400 INVALID_ARGUMENT, confirmed live. Do not re-add one without testing
+  # against the actual configured STUCK_MODEL first.
+  body=$(jq -n --arg p "$prompt" '{
+    contents: [{parts: [{text: $p}]}],
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: "application/json"
+    }
+  }') || return 1
+  resp=$(curl -sS --max-time 20 -X POST \
+    "https://generativelanguage.googleapis.com/v1beta/models/${STUCK_MODEL}:generateContent" \
+    -H "x-goog-api-key: ${GOOGLE_GENERATIVE_AI_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "$body" 2>/dev/null) || return 1
+  printf '%s' "$resp" | jq -er '.candidates[0].content.parts[0].text' 2>/dev/null || return 1
+}
+
+# model_judge <agent> <pane> <ticks> -> echoes "stuck|clear<TAB>reason"; returns 1
+# if the classifier is UNAVAILABLE (no key, cap hit, transport error, unparseable
+# answer). The caller fails CLOSED on that -- see the call site.
+model_judge() {
+  local agent="$1" pane="$2" ticks="$3" prompt cost raw verdict reason
+  # PRECONDITIONS BEFORE COST. Nothing below this line can succeed without them,
+  # so failing here costs the ledger nothing -- it is the same fail-closed answer
+  # the caller would get anyway, minus the phantom charge.
+  model_preconditions_ok || return 1
+  prompt="You judge whether an AI coding agent's terminal pane is STUCK or CLEAR.
+
+STUCK = the pane is waiting on something that will never arrive on its own: an
+unanswered confirmation or permission dialog, a prompt awaiting a keypress, a
+crashed or half-rendered UI, a fatal error with no recovery, or text sitting
+unsubmitted in the composer. It needs a human or another agent to move it.
+
+CLEAR = the pane is simply resting between turns: a finished-turn summary, an
+empty composer, a shell prompt, a completed task list. This is the COMMON case.
+An agent with nothing to do looks exactly like this and is NOT stuck.
+
+Context: this pane belongs to the agent '$agent' and has been byte-for-byte
+identical for $ticks consecutive sweep ticks.
+
+Answer with JSON only, no prose, no code fence:
+{\"verdict\":\"stuck\"|\"clear\",\"reason\":\"at most 15 words\"}
+
+--- pane ---
+$(printf '%s\n' "$pane" | tail -n "$PROMPT_LINES")
+--- end pane ---"
+  cost=$(estimate_cost_usd "${#prompt}")
+  charge_daily "$cost" || return 1
+  raw=$(printf '%s' "$prompt" | model_raw) || return 1
+  [ -n "$raw" ] || return 1
+  # Strip a ```json fence if the model added one.
+  raw=$(printf '%s' "$raw" | sed -e 's/^```[a-zA-Z]*//' -e 's/```$//')
+  if [ "$have_jq" = "1" ]; then
+    verdict=$(printf '%s' "$raw" | jq -er '.verdict' 2>/dev/null) || return 1
+    # Flatten to one line and trim: this string can be pasted into a tmux
+    # composer, where an embedded newline would submit the message early.
+    reason=$(printf '%s' "$raw" | jq -r '.reason // ""' 2>/dev/null | tr '\n\t"' '   ' | sed 's/[[:space:]]*$//;s/^[[:space:]]*//')
+  else
+    return 1
+  fi
+  case "$verdict" in
+    stuck|clear) ;;
+    *) return 1 ;;   # schema violation is deterministic; do not retry, fail closed
+  esac
+  printf '%s\t%s\n' "$verdict" "$reason"
+}
+
+# --- escalation: paste a targeted prompt into the router's pane ------------------
+# THE ONLY PLACE THIS SCRIPT ACTS. Text, settle, Enter, Enter.
+#
+# Four independent conditions have to hold before a keystroke is sent, and the
+# order is the point: dry-run prints, shadow mode returns, an EMPTY TARGET
+# returns, and only then does it touch tmux. An unconfigured install therefore
+# never reaches tmux at all, and it does so by falling out of this function
+# rather than by a caller having remembered to check.
+escalate() {
+  local window="$1" msg="$2"
+  if [ "${STUCK_DRY_RUN:-0}" = "1" ]; then
+    echo "ESCALATE -> ${window:-<unrouted, report-only>}: $msg"
+    return
+  fi
+  [ "$ESCALATION_MODE" = "live" ] || return 0
+  # Report-only for THIS finding even in live mode: no route exists for it. The
+  # case that reaches here is the default route's own wedged pane with no deputy
+  # configured, and sending it to the default route would be sending a message
+  # about a wedged pane INTO that wedged pane.
+  [ -n "$window" ] || return 0
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null || return 0
+  tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$window" || return 0
+  tmux send-keys -t "${TMUX_SESSION}:${window}" "$msg"
+  sleep 1; tmux send-keys -t "${TMUX_SESSION}:${window}" Enter
+  sleep 1; tmux send-keys -t "${TMUX_SESSION}:${window}" Enter
+}
+
+# --- prior state -----------------------------------------------------------------
+prev_field() {  # <agent> <field> -> value or empty
+  [ "$have_jq" = "1" ] || return 0
+  [ -f "$STATE_FILE" ] || return 0
+  jq -r --arg a "$1" --arg f "$2" '.agents[$a][$f] // empty' "$STATE_FILE" 2>/dev/null
+}
+
+# --- main sweep ------------------------------------------------------------------
+if [ -n "${STUCK_FIXTURE_DIR:-}" ]; then
+  # <window>.raw.txt is a SIBLING of <window>.txt, not a window of its own.
+  # Without this filter every fixture dir carrying a raw sibling would also sweep
+  # a phantom agent named "<window>.raw" (capture_pane would happily read
+  # <window>.raw.txt for it), inventing findings about a pane that does not exist.
+  windows=$(ls "$STUCK_FIXTURE_DIR" 2>/dev/null | grep -v '\.raw\.txt$' | sed 's/\.txt$//')
+else
+  windows=$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null)
+fi
+
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+declare -a state_rows=()
+declare -a stuck_others=()   # agents newly found stuck that route to ROUTE_DEFAULT
+declare -a unavailable=()    # panes the classifier could not judge this tick
+self_stuck=""                # the default route's own reason, if it is newly stuck
+model_calls=0
+
+# Iterated over a FILE DESCRIPTOR, never `for w in $windows`. The unquoted form
+# both word-splits a window name on whitespace and GLOB-EXPANDS it: a window
+# named `*` makes the loop iterate every entry in the working directory,
+# inventing a finding per file. tmux window names are settable by anything on the
+# box (`tmux rename-window`), so they are input, not constants.
+while IFS= read -r w <&3; do
+  [ -n "$w" ] || continue
+  case " $SKIP_AGENTS " in *" $w "*) continue;; esac
+  pane=$(capture_pane "$w")
+  if [ -z "$pane" ]; then
+    state_rows+=("\"$w\":{\"note\":\"no-pane\"}")
+    continue
+  fi
+
+  h=$(pane_hash "$pane")
+  ph=$(prev_field "$w" hash)
+  if [ "$h" = "$ph" ] && [ -n "$ph" ]; then
+    ticks=$(prev_field "$w" ticks); ticks=$(( ${ticks:-1} + 1 ))
+    since=$(prev_field "$w" since); [ -n "$since" ] || since="$now"
+    judged=$(prev_field "$w" judged)
+    escalated=$(prev_field "$w" escalated)
+  else
+    ticks=1; since="$now"; judged=""; escalated=""
+  fi
+  [ "$escalated" = "true" ] || escalated="false"
+
+  # A busy pane is working, not wedged. No pattern match, no model call, and the
+  # tick counter still advances honestly (the capture genuinely changed or didn't).
+  if check_idle "$pane"; then
+    state_rows+=("\"$w\":{\"hash\":\"$h\",\"ticks\":$ticks,\"since\":\"$since\",\"busy\":1,\"judged\":null,\"escalated\":false}")
+    continue
+  fi
+
+  reason=""; source_tier=""
+  if hit=$(match_pattern "$pane"); then
+    # TIER 1 -- free, immediate, no corroboration needed.
+    reason="$hit"; source_tier="deterministic"
+  elif [ "$ticks" -ge "$MIN_TICKS" ] && composer_pending "$pane" "$w"; then
+    # TIER 1b -- unsubmitted composer text, still there after >= MIN_TICKS
+    # byte-identical ticks. NOT gated on `-z "$judged"`, unlike the model tier
+    # below, and that difference IS the fix: in the incident that produced this
+    # tier the model's "clear" was cached from tick 2 onward, so a tier gated the
+    # same way would have gone quiet for ticks 3-10 exactly as the model tier
+    # did. This one is re-evaluated every tick; the per-episode `escalated` flag
+    # below is what stops it re-waking anyone, the same mechanism tier 1 rides.
+    #
+    # NOT fired at ticks=1 on purpose: a first sighting proves the text exists,
+    # not that it has been sitting there -- it could be seconds old with the
+    # sender's own Enter still in flight.
+    [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "COMPOSER -> $w (ticks=$ticks)"
+    reason="composer-pending: unsubmitted composer text (ticks=$ticks): $COMPOSER_PENDING_TEXT"
+    source_tier="composer-pending"
+  elif [ "$ticks" -ge "$MIN_TICKS" ] && [ -z "$judged" ]; then
+    # TIER 2 -- motionless for real, and never judged for THIS capture.
+    [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "MODEL -> $w (ticks=$ticks)"
+    model_calls=$((model_calls+1))
+    if out=$(model_judge "$w" "$pane" "$ticks"); then
+      v=${out%%	*}; r=${out#*	}
+      judged="$v"
+      [ "$v" = "stuck" ] && { reason="model: ${r:-no reason given}"; source_tier="model"; }
+    else
+      # FAIL CLOSED, but as ONE fault, not N stuck panes.
+      #
+      # Measured before this branch existed: with the classifier forced
+      # unavailable, every window hit tier 2 on the same tick and every one of
+      # them escalated as "stuck". A single outage therefore produced a
+      # whole-fleet wake storm aimed at the coordinator -- which is precisely the
+      # failure this sweep exists to prevent, arriving by a new route.
+      #
+      # An unavailable classifier is also not EVIDENCE about any individual pane,
+      # so "this pane looks stuck" would simply be a false statement. Fail-closed
+      # here means: refuse to answer "fine", surface the fault once, name the
+      # panes left unjudged, and claim nothing about them. Deterministic matches
+      # are unaffected and still fire normally throughout an outage.
+      #
+      # judged stays EMPTY on purpose. Caching a fabricated "stuck" would make
+      # the next tick's cached-verdict branch assert it as a real finding,
+      # laundering a transport error into a diagnosis. Empty means "still
+      # unjudged": retry next tick, and self-heal the moment the classifier
+      # returns.
+      judged=""
+      source_tier="model-unavailable"
+      unavailable+=("$w")
+    fi
+  elif [ "$judged" = "stuck" ]; then
+    # Same capture, already judged stuck on an earlier tick. Still stuck; the
+    # escalated flag below is what stops it from re-waking anyone.
+    reason="previously judged stuck"; source_tier="cached"
+  fi
+
+  routed_to=$(route_for "$w")
+  if [ -n "$reason" ] && [ "$escalated" != "true" ]; then
+    if [ -n "$ROUTE_DEFAULT" ] && [ "$w" = "$ROUTE_DEFAULT" ]; then
+      self_stuck="$reason"
+    else
+      stuck_others+=("$w ($reason)")
+    fi
+    # RECORDED whatever the mode. In report-only this flag means "this episode
+    # has been reported once"; in live mode it additionally means "and somebody
+    # was woken about it". Either way it is the once-per-episode dedupe key, and
+    # it re-arms by itself when the pane changes.
+    escalated="true"
+  fi
+
+  jr=$(printf '%s' "$reason" | tr -d '"\\' | cut -c1-160)
+  jj="null"; [ -n "$judged" ] && jj="\"$judged\""
+  jrt="null"; [ -n "$routed_to" ] && jrt="\"$routed_to\""
+  state_rows+=("\"$w\":{\"hash\":\"$h\",\"ticks\":$ticks,\"since\":\"$since\",\"busy\":0,\"judged\":$jj,\"tier\":\"${source_tier:-none}\",\"reason\":\"$jr\",\"routedTo\":$jrt,\"escalated\":$escalated}")
+done 3<<< "$windows"
+
+# --- decide + escalate -----------------------------------------------------------
+verdict="all-clear"
+if [ "${#stuck_others[@]}" -gt 0 ]; then
+  list=$(printf '%s, ' "${stuck_others[@]}"); list=${list%, }
+  escalate "$ROUTE_DEFAULT" "[stuck-sweep] pane looks stuck: $list -- check the pane and decide whether to clear it, ask the agent's owner, or escalate to a person"
+  verdict="stuck"
+fi
+if [ -n "$self_stuck" ]; then
+  # ROUTE_SELF, never ROUTE_DEFAULT: this IS the default route's own pane. With
+  # no deputy configured, escalate() receives an empty target and records without
+  # sending, which is the correct answer -- there is nobody who can act on it.
+  escalate "$ROUTE_SELF" "[stuck-sweep] the routing agent's own pane looks stuck: $self_stuck -- you are deputy for that pane only: check it, unblock if it is clearly safe else escalate to a person, then report back"
+  verdict="stuck"
+fi
+
+# ONE notice per distinct outage: this is a fault in the sweep's own machinery,
+# not a finding about anyone's pane. Re-sent only when the affected SET changes,
+# so a long outage is not a per-tick drip. It names the panes, so a
+# genuinely-wedged agent still surfaces as "unjudged" rather than vanishing.
+#
+# Routed to ROUTE_SELF where one exists, falling back to ROUTE_DEFAULT: in the
+# two-route model the deputy is the one holding the platform end, and a machinery
+# fault is not something the coordinator can fix by looking at a pane.
+notice_key=""
+if [ "${#unavailable[@]}" -gt 0 ]; then
+  ulist=$(printf '%s ' "${unavailable[@]}"); ulist=${ulist% }
+  notice_key=$(printf '%s' "$ulist" | sha256sum 2>/dev/null | cut -c1-16)
+  prev_notice=""
+  if [ "$have_jq" = "1" ] && [ -f "$STATE_FILE" ]; then
+    prev_notice=$(jq -r '.classifierNotice // empty' "$STATE_FILE" 2>/dev/null)
+  fi
+  if [ "$notice_key" != "$prev_notice" ]; then
+    escalate "${ROUTE_SELF:-$ROUTE_DEFAULT}" "[stuck-sweep] classifier unavailable -- ${#unavailable[@]} idle pane(s) went UNJUDGED this tick ($ulist). NOT a claim that any of them is stuck; the deterministic tiers are unaffected. Check the model credential (GOOGLE_GENERATIVE_AI_API_KEY, or the STUCK_MODEL_CMD seam) and the daily cap in the spend ledger"
+  fi
+  # The verdict describes THIS TICK, not whether we chose to wake anyone about
+  # it. Deduping the notice must not make a continuing outage read as "all-clear"
+  # in the state file -- that is the observability surface, and it would hide the
+  # outage from everything except the first tick of it.
+  [ "$verdict" = "all-clear" ] && verdict="classifier-unavailable"
+fi
+
+# --- always write the state file (observability) ---------------------------------
+# In report-only mode this file and the history log ARE the product. They are
+# written identically in both modes, so switching escalation on changes who gets
+# woken and changes nothing about what is recorded.
+rows=$(IFS=,; echo "${state_rows[*]}")
+jqnote=""; [ "$have_jq" = "1" ] || jqnote=',"note":"jq-missing: no tick history, no spend cap, model tier disabled"'
+snapshot=$(printf '{"swept":"%s","verdict":"%s","escalationMode":"%s","routeDefault":"%s","routeSelf":"%s","modelCalls":%d,"model":"%s","classifierNotice":"%s"%s,"agents":{%s}}' \
+  "$now" "$verdict" "$ESCALATION_MODE" "$ROUTE_DEFAULT" "$ROUTE_SELF" \
+  "$model_calls" "$STUCK_MODEL" "$notice_key" "$jqnote" "$rows")
+printf '%s\n' "$snapshot" > "$STATE_FILE"
+
+# --- append to history -----------------------------------------------------------
+# STATE_FILE holds only the LATEST tick, overwritten every run. An agent once sat
+# genuinely wedged for ten and a half hours, and by the time anyone looked, every
+# tick from the incident itself was already gone -- there was no way to tell
+# whether the sweep had judged it stuck and failed to escalate, or never
+# accumulated enough unchanged ticks to judge it at all. Same snapshot, appended
+# rather than overwritten, so a past incident is diagnosable from evidence
+# instead of reconstructed from silence. No rotation: at one line per tick this
+# is a few hundred bytes a day; add pruning only if it is ever actually a problem.
+printf '%s\n' "$snapshot" >> "$HISTORY_FILE"
+
+[ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "VERDICT: $verdict (escalation: $ESCALATION_MODE)"
+exit 0
