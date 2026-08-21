@@ -1,17 +1,20 @@
 /**
  * cards.tsx - Dedicated Decisions + Actions tab (Thread C).
  *
- * A second, purely-additive surface. The homepage (home.tsx), its merged
- * deriveNeedsYou ranked list, and the sidebar bell count are all left EXACTLY
+ * A second surface, additive when it landed: the homepage (home.tsx), its merged
+ * deriveNeedsYou ranked list, and the sidebar bell count were all left exactly
  * as they were (Option 1). This tab is a focused list of the LIVE (unresolved)
  * decision + action cards across every agent, reusing the existing DecisionCard
  * / ActionCard components so a card can be answered / done / dismissed /
  * superseded in place.
  *
- * Unlike deriveNeedsYou (frozen), deriveCardsTab checks EVERY terminal state
- * (answered/dismissed/superseded for decisions, done/dismissed/superseded for
- * actions), so a card closed here leaves this tab immediately. Blocked kanban
- * cards are NOT shown here - this tab is decisions + actions only.
+ * deriveCardsTab checks EVERY terminal state (answered/dismissed/superseded for
+ * decisions, done/dismissed/superseded for actions), so a card closed here
+ * leaves this tab immediately. deriveNeedsYou now agrees on all of them except a
+ * DISMISSED DECISION, which is the surviving half of the Option-1 freeze; the
+ * superseded half was lifted when the activity sweep began publishing its own
+ * open-card count from the same files. Blocked kanban cards are NOT shown here -
+ * this tab is decisions + actions only.
  *
  * Card mutation forms POST to the owning agent's thread action
  * (/threads/<agent>) via the postAction prop, so this route needs no action of

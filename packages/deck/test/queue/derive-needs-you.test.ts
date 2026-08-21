@@ -3,8 +3,8 @@
  *
  * Covers:
  * - Three kinds (decision, action, blocked) all appear in output
- * - Decisions: excludes answered cards
- * - Actions: excludes done actions
+ * - Decisions: excludes answered cards, and (since the sweep port) superseded ones
+ * - Actions: excludes done actions, dismissed ones, and superseded ones
  * - Blocked: filters to column "blocked" only
  * - Ranking: overdue desc, priority asc, age desc, lexicographic id
  * - Interleaved kinds in correct rank order
@@ -534,6 +534,85 @@ describe("deriveNeedsYou - TASK-440 dismissed exclusion", () => {
     const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
     expect(items).toHaveLength(1);
     expect(items[0]!.kind).toBe("action");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite: superseded exclusion
+//
+// A BEHAVIOUR CHANGE, made with the activity-sweep port. Before it, a
+// superseded card kept driving the homepage and the bell for the rest of its
+// 72h card window, while isDecisionResolved, isActionResolved, the card
+// components and the Cards tab all treated it as closed. One repository, three
+// answers. The port makes that visible to a person, because the sweep publishes
+// its own needs-you status read from the same files.
+//
+// A DISMISSED DECISION is deliberately NOT here: it remains visible on the
+// homepage, which is the surviving half of the Option-1 freeze. See
+// derive-cards-tab.test.ts, where the two filters are pinned against each other.
+// ---------------------------------------------------------------------------
+
+describe("deriveNeedsYou - superseded exclusion", () => {
+  it("excludes superseded decision cards", () => {
+    const entry = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "dec-superseded",
+    });
+    entry.block.card!.superseded = "2026-06-10T11:00:00Z";
+
+    const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
+    expect(items).toHaveLength(0);
+  });
+
+  it("excludes superseded action cards", () => {
+    const entry = makeActionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      actionId: "act-superseded",
+    });
+    entry.block.actionCard!.superseded = "2026-06-10T11:00:00Z";
+
+    const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
+    expect(items).toHaveLength(0);
+  });
+
+  it("a superseded card does not suppress its open neighbours", () => {
+    const superseded = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "dec-superseded",
+    });
+    superseded.block.card!.superseded = "2026-06-10T11:00:00Z";
+    const open = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:01:00Z",
+      decisionId: "dec-open",
+    });
+
+    const { items } = deriveNeedsYou(
+      [superseded, open],
+      [],
+      new Set(),
+      new Map(),
+      FIXED_NOW
+    );
+    expect(items.map((i) => i.decisionId)).toEqual(["dec-open"]);
+  });
+
+  it("an empty superseded value is not a resolution", () => {
+    // Protocol section 7.1.1: a reader MUST require a non-empty value. The
+    // parser drops an empty timestamp rather than storing "", so what reaches
+    // this function is undefined; assert the shape that actually arrives.
+    const entry = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "dec-blank",
+    });
+    entry.block.card!.superseded = undefined;
+
+    const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
+    expect(items).toHaveLength(1);
   });
 });
 

@@ -228,8 +228,9 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
             </span>
           ) : null}
           {/* Thread C: Decisions + Actions tab - always shown (unlike the
-              cron-gated Nudges link). Additive second surface; the homepage
-              and bell count are unchanged. */}
+              cron-gated Nudges link). A second surface, added without touching
+              the homepage or the bell count. The two lists have since been
+              harmonised on superseded; see queue-derive.ts. */}
           <NavLink
             to="/cards"
             className={({ isActive }) =>

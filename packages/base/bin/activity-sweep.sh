@@ -1090,14 +1090,37 @@ function flush(   kind, id, open, low) {
       # top-level keys, so the anchor matters: an indented `detail:` line
       # mentioning "done:" is body copy, not a resolution.
       #
-      # KNOWN DEVIATION, deliberately not fixed here: `superseded:` is also a
-      # terminal state in docs/protocol.md section 7.1 and is NOT in this list,
-      # so a superseded card still reads as open until the card window expires.
-      # Adding it would change the deterministic pill, which is a behaviour
-      # change rather than a port, so it is recorded here rather than made.
+      # THE TERMINAL SET IS PER CARD KIND, exactly as docs/protocol.md section
+      # 7.1.1 registers it. Three keys each, and they do not overlap except on
+      # `dismissed:`:
+      #   decision -> answered, dismissed, superseded
+      #   action   -> done,     dismissed, superseded
+      #
+      # `custom-answer:` is NOT one of them, and reading it as one was a real
+      # defect rather than a spelling of `answered:`. It is a PAYLOAD field that
+      # accompanies `answered: custom`, and the reference writer never emits it
+      # without that line. A block carrying it alone is malformed or half-written,
+      # and treating that as a resolution silently closes a card nobody answered
+      # -- the same failure mode as reading an empty `answered:` placeholder as an
+      # answer, which section 7.1.1 also forbids.
+      #
+      # `superseded:` was previously absent, and its absence was recorded as a
+      # deviation rather than fixed, on the reasoning that changing which cards
+      # count as open is a behaviour change rather than a transcription. That was
+      # right about the change and wrong about the cost of deferring it: a
+      # superseded card is closed in the reader application and went on driving
+      # the needs-you pill here for the rest of the card window, so the two
+      # readers of one document disagreed about a state a person can see.
+      #
+      # (No apostrophes anywhere in this awk source: it is a single-quoted bash
+      # string, and one would terminate it.)
       open = 1
-      if (metatext ~ /(^|\n)answered:/ || metatext ~ /(^|\n)custom-answer:/) open = 0
-      if (metatext ~ /(^|\n)done:/     || metatext ~ /(^|\n)dismissed:/)     open = 0
+      if (kind == "decision") {
+        if (metatext ~ /(^|\n)answered:/) open = 0
+      } else {
+        if (metatext ~ /(^|\n)done:/) open = 0
+      }
+      if (metatext ~ /(^|\n)dismissed:/ || metatext ~ /(^|\n)superseded:/) open = 0
       printf "CARD\t%s\t%s\t%s\t%d\t%s\n", ts, kind, tsv(id), open, tsv(subject)
     }
   }

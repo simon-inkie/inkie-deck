@@ -244,6 +244,125 @@ assert "an action card is a card too"        '.agents.alice.status' 'needs-you'
 assert "a done: action card does not count"  '.agents.alice.evidence | test("A-1")' 'true'
 drop_box
 
+# ---- the terminal-key vocabulary (docs/protocol.md 7.1.1) ------------------------
+# Three terminal keys per card kind, overlapping only on `dismissed:`. What is
+# graded below is the WHOLE set, in both directions, because the two failures
+# available here are opposite and both bad: a missing terminal key leaves a
+# closed card driving the needs-you pill for the rest of its 72h window, and a
+# spurious one silently closes a card nobody answered.
+
+# THE EXPECTED PILL FOR A CLOSED CARD IS `waiting-on-teammate`, NOT
+# `done-for-now`, and that is the assertion rather than an accident of the
+# fixture. Each thread below ends with an outbound block from the agent, so once
+# the card stops counting as open the cascade falls through to the last-block
+# rule, which reads exactly that. Asserting the pill it lands on is stricter than
+# asserting "not needs-you": it proves the card left the needs-you branch AND
+# that nothing else picked it up.
+#
+# card_case <label> <expected status> -- the card block arrives on stdin.
+card_case() {
+  new_box
+  pane alice "$IDLE_PANE"
+  thread alice hub
+  run_sweep >/dev/null
+  assert "$1" '.agents.alice.status' "$2"
+  drop_box
+}
+
+card_case "a superseded decision is not open" waiting-on-teammate <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-SUP
+superseded: 2026-08-21T09:40:00Z
+supersede-note: "asked a better question instead"
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Waiting on you.
+EOF
+
+card_case "a superseded action is not open" waiting-on-teammate <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-SUP
+superseded: 2026-08-21T09:40:00Z
+
+Do the thing.
+EOF
+
+card_case "a dismissed decision is not open" waiting-on-teammate <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-DIS
+dismissed: 2026-08-21T09:40:00Z
+dismiss-reason: "overtaken by events"
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Waiting on you.
+EOF
+
+card_case "a dismissed action is not open" waiting-on-teammate <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-DIS
+dismissed: 2026-08-21T09:40:00Z
+
+Do the thing.
+EOF
+
+# `custom-answer:` IS NOT A TERMINAL KEY. It is the payload that accompanies
+# `answered: custom`, and the reference writer never emits one without the
+# other. Reading it alone as a resolution closes a card nobody answered, which
+# is the same failure as reading an empty `answered:` placeholder as an answer.
+card_case "a bare custom-answer, with no answered line, does NOT close the card" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-HALF
+custom-answer: "half-written, or written by something that crashed"
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Waiting on you.
+EOF
+
+card_case "the pair that the writer actually emits DOES close it" waiting-on-teammate <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-CUSTOM
+answered: custom
+custom-answer: "neither, do the third thing"
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Waiting on you.
+EOF
+
+# The sets are PER KIND, not one pooled list. A decision has no `done:` state,
+# so an action key on a decision card is a malformed block rather than a
+# resolution, and the safe reading of a malformed card is "still open".
+card_case "an action terminal key on a decision card does not close it" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please decide")
+decision-id: D-WRONGKEY
+done: 2026-08-21T09:40:00Z
+options:
+  - key: A
+    label: yes
+    detail: ship it
+
+Waiting on you.
+EOF
+
+card_case "a decision terminal key on an action card does not close it" needs-you <<EOF
+$(hdr 2026-08-21T09:00:00Z alice sent "please act")
+action-id: A-WRONGKEY
+answered: A
+
+Do the thing.
+EOF
+
 new_box
 pane alice "$IDLE_PANE"
 # Older than CARD_WINDOW_H (72h) from the frozen clock.

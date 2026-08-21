@@ -247,6 +247,29 @@ present with a non-empty value, and RESOLVED otherwise. That definition is the
 whole point of the vocabulary: an observer counting outstanding requests reads
 these keys and nothing else, and never has to interpret the prose.
 
+**The terminal keys, in full.** There are three per kind, and the two sets
+overlap only on `dismissed`:
+
+| Kind | Terminal keys |
+|---|---|
+| decision | `answered`, `dismissed`, `superseded` |
+| action | `done`, `dismissed`, `superseded` |
+
+Everything else in the tables above is either a sender key or a PAYLOAD that
+accompanies a terminal key. `custom-answer` in particular is NOT terminal: it
+carries the text of a custom answer and is meaningful only alongside
+`answered: custom`, which the writer always emits with it. A reader MUST NOT
+treat a lone `custom-answer` as a resolution. A block carrying one without its
+`answered` line is malformed or half-written, and reading it as resolved
+silently closes a card nobody answered, which is the same failure the empty
+value rule below exists to prevent. `dismiss-reason`, `supersede-note` and
+`done-note` are payloads in the same sense.
+
+The sets are per kind rather than pooled. A decision has no `done` state and an
+action has no `answered` state, so such a key on such a card is a malformed
+block, not a resolution, and a reader SHOULD leave the card open rather than
+guess.
+
 **Terminal keys are mutually exclusive.** A writer MUST NOT add a terminal key
 to a block that already carries one. An answered card cannot then be dismissed,
 a dismissed action cannot then be marked done, and a superseded card cannot be
@@ -451,20 +474,29 @@ is most likely to be active.
 Both are preserved in the reference implementation for parity with the
 original, and are tracked as defects rather than as behaviour to copy.
 
-**`bin/activity-sweep.sh` does not treat `superseded:` as terminal.** Section
-7.1.1 lists four terminal keys per card kind; the sweep's own open-versus-
-resolved test checks `answered:`, `custom-answer:`, `done:` and `dismissed:`,
-and not `superseded:`. A superseded card therefore keeps counting as open in
-that reader, and keeps driving its `needs-you` status until the card ages out of
-its window. The web application in `packages/deck` writes the key and treats it
-as terminal, so the two readers of one document currently disagree about one
-state.
+**`deriveNeedsYou` still counts a dismissed DECISION as open.** This is the one
+place in the reference implementation where the terminal keys of section 7.1.1
+are not read in full, and it is a single state on a single card kind.
 
-Preserved deliberately in the initial port rather than fixed in passing: the
-sweep's classification was ported unchanged from a running deployment, and
-changing which cards count as open is a behaviour change with its own reasoning
-to do, not a transcription detail. A conforming reader SHOULD test all four
-terminal keys. Tracked as a defect, not as behaviour to copy.
+The web application has two card readers. The Decisions and Actions tab, the
+card components and the shared `isDecisionResolved` / `isActionResolved` helpers
+all test the complete set. The homepage ranked list and its bell count, derived
+by `deriveNeedsYou`, test one key fewer for decisions: a dismissed decision
+leaves the tab immediately and goes on appearing on the homepage until the card
+ages out of its window.
+
+The reason is a product decision rather than an oversight. When dismiss and
+supersede were added, what the homepage counted was deliberately frozen so that
+adding a way to close a card could not quietly change the number in the bell.
+`superseded` was carved out of that freeze once `bin/activity-sweep.sh` began
+publishing its own open-card count from the same files, because two readers
+disagreeing about a state is a different cost from one reader being
+conservative. `dismissed` on a decision was left where it was, and is pinned by
+a test so it stays a decision rather than becoming a drift.
+
+A conforming reader SHOULD test the full set for the kind of card it is reading.
+Tracked as a deliberate divergence in one implementation surface, not as
+behaviour to copy.
 
 ## 12. Versioning
 

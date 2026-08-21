@@ -1,15 +1,15 @@
 /**
- * Unit tests for deriveCardsTab + the Option-1 homepage-unchanged guard
+ * Unit tests for deriveCardsTab + the homepage terminal-state agreement
  * (app/lib/queue-derive.ts, Thread C).
  *
- * deriveCardsTab is the dedicated Decisions+Actions tab's OWN filter. Unlike
- * deriveNeedsYou (the frozen homepage/bell contract), it checks EVERY terminal
- * state so a card closed on the tab leaves it immediately.
+ * deriveCardsTab is the dedicated Decisions+Actions tab's OWN filter. It checks
+ * EVERY terminal state so a card closed on the tab leaves it immediately.
  *
- * The homepage-unchanged guard proves Option 1 stayed Option 1: deriveNeedsYou
- * is UNTOUCHED, so the new terminal states are invisible to it (a dismissed or
- * superseded decision, and a superseded action, still surface on the homepage /
- * bell). This is the deliberate consequence of not editing deriveNeedsYou.
+ * The second block below is where the two filters are held against each other.
+ * It used to assert that deriveNeedsYou ignored the new terminal states
+ * entirely (the Option-1 freeze). It now asserts the harmonised behaviour for
+ * SUPERSEDED on both card kinds, and pins the single state still divergent (a
+ * dismissed decision) so that it stays a decision rather than becoming a drift.
  *
  * ASCII only - no em-dashes per FND-05.
  */
@@ -198,22 +198,17 @@ describe("deriveCardsTab - filtering", () => {
 // Option-1 homepage-unchanged guard: deriveNeedsYou is UNTOUCHED
 // ---------------------------------------------------------------------------
 
-describe("Option 1 guard - deriveNeedsYou is unchanged by the new states", () => {
-  it("a DISMISSED decision still surfaces on the homepage (deriveNeedsYou only checks answered)", () => {
-    const entry = decisionEntry({
-      agentName: "quill",
-      timestamp: "2026-06-10T10:00:00Z",
-      decisionId: "d1",
-      dismissed: "2026-06-10T10:30:00Z",
-    });
-    const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
-    // Present on the homepage (the deliberate Option-1 consequence)...
-    expect(items.map((i) => i.decisionId)).toContain("d1");
-    // ...but absent from the dedicated tab, which checks every terminal state.
-    expect(deriveCardsTab([entry])).toHaveLength(0);
-  });
-
-  it("a SUPERSEDED decision still surfaces on the homepage", () => {
+describe("superseded is terminal on the homepage too (behaviour CHANGED by the sweep port)", () => {
+  // WHAT CHANGED AND WHY. These three cases used to assert the opposite, under
+  // the name "Option 1 guard - deriveNeedsYou is unchanged by the new states".
+  // Option 1 froze the homepage/bell contract when dismiss and supersede landed,
+  // so a superseded card went on driving the homepage while every other surface
+  // in this repository treated it as closed. That was invisible until the
+  // activity sweep arrived: the sweep publishes a needs-you status read from the
+  // same files, so a repository holding three answers to "is a superseded card
+  // open" now shows the disagreement to a person. Harmonised on the resolved
+  // helpers, which the card components and the Cards tab already used.
+  it("a SUPERSEDED decision is excluded from the homepage (was: still surfaced)", () => {
     const entry = decisionEntry({
       agentName: "quill",
       timestamp: "2026-06-10T10:00:00Z",
@@ -221,11 +216,13 @@ describe("Option 1 guard - deriveNeedsYou is unchanged by the new states", () =>
       superseded: "2026-06-10T10:30:00Z",
     });
     const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
-    expect(items.map((i) => i.decisionId)).toContain("d2");
+    expect(items.map((i) => i.decisionId)).not.toContain("d2");
+    // The two surfaces now agree, which is the whole point of the change.
     expect(deriveCardsTab([entry])).toHaveLength(0);
+    expect(isDecisionResolved(entry.block.card!)).toBe(true);
   });
 
-  it("a SUPERSEDED action still surfaces on the homepage (deriveNeedsYou checks only done + dismissed)", () => {
+  it("a SUPERSEDED action is excluded from the homepage (was: still surfaced)", () => {
     const entry = actionEntry({
       agentName: "quill",
       timestamp: "2026-06-10T10:00:00Z",
@@ -233,7 +230,36 @@ describe("Option 1 guard - deriveNeedsYou is unchanged by the new states", () =>
       superseded: "2026-06-10T10:30:00Z",
     });
     const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
-    expect(items.map((i) => i.actionId)).toContain("a1");
+    expect(items.map((i) => i.actionId)).not.toContain("a1");
+    expect(deriveCardsTab([entry])).toHaveLength(0);
+    expect(isActionResolved(entry.block.actionCard!)).toBe(true);
+  });
+
+  it("an open decision and an open action are untouched by the change", () => {
+    const entries = [
+      decisionEntry({ agentName: "quill", timestamp: "2026-06-10T10:00:00Z", decisionId: "d-open" }),
+      actionEntry({ agentName: "quill", timestamp: "2026-06-10T10:01:00Z", actionId: "a-open" }),
+    ];
+    const { items } = deriveNeedsYou(entries, [], new Set(), new Map(), FIXED_NOW);
+    expect(items).toHaveLength(2);
+  });
+
+  // THE ONE STATE STILL DIVERGENT, and pinned so it cannot drift silently. A
+  // dismissed DECISION is resolved everywhere except the homepage/bell, which is
+  // the surviving half of the Option-1 freeze: a product decision about what the
+  // homepage shows, not a transcription error, and out of scope for the port.
+  // Recorded in packages/base/docs/protocol.md section 7.1.1. A dismissed ACTION
+  // was always excluded here, so this is one state on one card kind.
+  it("a DISMISSED decision still surfaces on the homepage (surviving Option-1 divergence)", () => {
+    const entry = decisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "d1",
+      dismissed: "2026-06-10T10:30:00Z",
+    });
+    const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
+    expect(items.map((i) => i.decisionId)).toContain("d1");
+    // ...but absent from the dedicated tab, which checks every terminal state.
     expect(deriveCardsTab([entry])).toHaveLength(0);
   });
 
