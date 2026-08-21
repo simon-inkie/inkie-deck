@@ -580,5 +580,144 @@ echo "-----------------------------------------------"
 # every message fleet-wide the moment a statusline changes.
 ( export PANE_OVERRIDE="$IDLE_CLEAN"; run_case "ctx gate: unreadable ctx delivers (fail-open)" "pushed-unverified" 0 ); tally $?
 
+echo "-----------------------------------------------"
+# ===========================================================================
+# check_idle: "esc to cancel" must LEAD ITS CLAUSE  (2026-08-21)
+# ===========================================================================
+# THE INCIDENT. Codex renders an approval dialog whose footer reads "Press
+# enter to confirm or esc to cancel" -- captured live off a real pane. The
+# Gemini busy marker in bin/pane-idle was a BARE SUBSTRING match on "esc to
+# cancel", so it fired on that footer too, and a pane sitting on an UNANSWERED
+# confirmation dialog reported BUSY. That pane is stuck waiting on a human, and
+# every caller that asks "is this busy?" before escalating skipped it in
+# silence: one agent sat that way for over two hours before somebody noticed.
+#
+# THE FIX is positional, not an enumerated wording: the phrase counts as a busy
+# marker only when it opens its own line (a footer, indented or not) or sits
+# directly after "(" as an inline hint. That is the same structural style as
+# the end-of-line counter rule -- see the extensive history in bin/pane-idle
+# for why every enumerated variant of this file has eventually gone blind.
+#
+# These cases assert check_idle DIRECTLY, by sourcing the library, because the
+# verdict they are about is not observable through inbox-push (see the
+# end-to-end case at the bottom of this section for why). They live in this
+# suite rather than a pane-idle.test.sh of their own only because that filename
+# is already claimed by work in flight; moving them is a follow-up, and
+# colliding on the name now would cost a merge conflict for nothing.
+PANE_IDLE_LIB="${PANE_IDLE_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../bin" && pwd)/pane-idle}"
+# shellcheck source=../bin/pane-idle
+. "$PANE_IDLE_LIB" 2>/dev/null
+if [ -z "${PANE_IDLE_LIB_VERSION:-}" ]; then
+  # Assert the load rather than trusting that `.` succeeded: an undefined
+  # check_idle is "command not found" -> non-zero -> reads as IDLE, so every
+  # busy expectation below would fail LOUDLY but every idle one would pass for
+  # the wrong reason. Stop instead.
+  printf 'FAIL  %-42s -> %s\n' "check_idle: library sourced" "$PANE_IDLE_LIB"; tally 1
+  echo "inbox-push: $PASS passed, $((FAIL)) failed"
+  exit 1
+fi
+
+# idle_case <name> <pane> <busy|idle> -- assert check_idle's verdict directly.
+# Runs in THIS shell (not an isolation subshell) so it tallies inline; there is
+# no process to isolate, only a function call.
+idle_case() {
+  local name="$1" pane="$2" want="$3" got
+  if check_idle "$pane"; then got=busy; else got=idle; fi
+  if [ "$got" = "$want" ]; then
+    printf 'PASS  %-42s -> %s\n' "$name" "$got"; tally 0
+  else
+    printf 'FAIL  %-42s -> got %s, want %s\n' "$name" "$got" "$want"; tally 1
+  fi
+}
+
+# Gemini's REAL busy footer, reusing the live-captured fixture above: the phrase
+# opens the footer line, so it still reads BUSY. The core regression guard --
+# the narrowing exists to spare Codex, and must cost Gemini nothing.
+idle_case "agy: real busy footer still reads busy" "$AGY_BUSY" busy
+# ...and the same footer with the phase word swapped out. AGY_BUSY carries TWO
+# independent busy markers ("Generating" and the footer), so on its own it
+# cannot tell us which one answered: delete the esc-to-cancel branch entirely
+# and it stays green. Derived from AGY_BUSY by substitution rather than retyped,
+# so it cannot drift away from the fixture it is meant to isolate.
+AGY_BUSY_ALT_PHASE="${AGY_BUSY/Generating/Composing}"
+idle_case "agy: busy footer alone carries the verdict" "$AGY_BUSY_ALT_PHASE" busy
+# The hint rendered INLINE in parens rather than as its own footer line. SYNTHESIZED,
+# not a live capture: a plausible alternate/future Gemini rendering, flagged as such
+# per this suite's convention of being honest about fixture provenance. It exists to
+# pin the paren half of the anchor, which no captured fixture currently exercises --
+# and it can only pass through that branch: the glyph is outside the spinner class
+# and the parenthesised text does not open with a digit, so the counter rule cannot
+# answer for it either.
+AGY_BUSY_INLINE_HINT=$'\xe2\x9c\xa6 Cranking... (esc to cancel, 12s)\n────────────────────\n>\n────────────────────\n? for shortcuts                  Gemini 3.5 Flash (Medium)'
+idle_case "agy: inline (esc to cancel, 12s) hint -> busy" "$AGY_BUSY_INLINE_HINT" busy
+# THE BUG. The footer is VERBATIM from the live capture; the dialog body around
+# it is constructed, not captured -- only the footer line survived the incident
+# report, and inventing a "live capture" would be the exact mistake the
+# capped-paste fixture above was written to correct.
+CODEX_APPROVAL_DIALOG=$'some transcript\n\n  Codex wants to run:\n\n    rm -rf build/\n\n\xe2\x80\xba 1. Yes, run it\n  2. No, and tell Codex what to do differently\n\n  Press enter to confirm or esc to cancel'
+idle_case "codex: unanswered approval dialog -> idle" "$CODEX_APPROVAL_DIALOG" idle
+# And ordinary prose quoting the phrase mid-sentence, over an idle composer.
+# Panes are full of message text -- this is the same false-positive class the
+# counter rule is anchored against -- and it locks the narrowing against being
+# quietly widened back to a bare substring later.
+PROSE_QUOTING_CANCEL=$'  I read the capture back: the footer said or esc to cancel, mid-sentence\n────────────────────\n>\n────────────────────\n? for shortcuts                  Gemini 3.5 Flash (Medium)'
+idle_case "prose quoting the phrase mid-sentence -> idle" "$PROSE_QUOTING_CANCEL" idle
+# The existing agy fixtures, at the check_idle level rather than through the
+# push flow: neither carries a busy marker and neither may acquire one.
+idle_case "agy: idle pane -> idle" "$AGY_IDLE" idle
+idle_case "agy: staged pane is not busy" "$AGY_STAGED" idle
+
+# THE FIXTURE IS ONLY A REGRESSION TEST IF IT USED TO FAIL. Assert that
+# directly: the bare substring the fix replaced really does find the phrase in
+# this dialog. Without this, CODEX_APPROVAL_DIALOG could be quietly edited into
+# something that never collided and the case above would keep passing while
+# proving nothing.
+if printf '%s' "$CODEX_APPROVAL_DIALOG" | grep -qF 'esc to cancel'; then
+  printf 'PASS  %-42s -> %s\n' "codex dialog really did read busy before" "old bare substring matches it"; tally 0
+else
+  printf 'FAIL  %-42s -> %s\n' "codex dialog really did read busy before" "old rule would not have matched; fixture proves nothing"; tally 1
+fi
+
+# THE CONTAINMENT PROPERTY, as a test. The anchored rule is strictly NARROWER
+# than the bare substring it replaced: every string it matches, the old rule
+# matched too. WHAT THIS PINS IS THE DIRECTION OF THE CHANGE, not the
+# correctness of every classification it removes. The subset property bounds the
+# change to BUSY -> IDLE transitions and prevents new false-busy
+# classifications; it cannot tell us whether a match the anchor drops was a
+# false busy or a true one. The live Gemini footer-only control above
+# (AGY_BUSY_ALT_PHASE) plus the separate counter and "Generating" markers are
+# the evidence that known true-busy shapes remain covered. A future edit that
+# widens the anchor to catch something the old rule missed gives the direction
+# bound up, and fails here.
+_containment_broken=0
+for _f in "$AGY_BUSY" "$AGY_BUSY_ALT_PHASE" "$AGY_BUSY_INLINE_HINT" \
+          "$CODEX_APPROVAL_DIALOG" "$PROSE_QUOTING_CANCEL" "$AGY_IDLE" "$AGY_STAGED"; do
+  if printf '%s' "$_f" | grep -qE '(^[[:space:]]*|[(])esc to cancel' 2>/dev/null \
+     && ! printf '%s' "$_f" | grep -qF 'esc to cancel' 2>/dev/null; then
+    _containment_broken=1
+  fi
+done
+if [ "$_containment_broken" = "0" ]; then
+  printf 'PASS  %-42s -> %s\n' "anchored rule is strictly narrower" "no fixture matches anchored but not bare"; tally 0
+else
+  printf 'FAIL  %-42s -> %s\n' "anchored rule is strictly narrower" "a fixture matches the anchored rule the bare one missed"; tally 1
+fi
+
+# END-TO-END, and deliberately NOT under PUSH_DRY_RUN, so a wrong verdict shows
+# up as an attempted delivery rather than a classifier opinion. The push must
+# refuse to type into a live confirmation dialog: pressing Enter there ANSWERS
+# it, on a human's behalf, with whatever option happens to be selected.
+#
+# Honest about what this proves: the verdict is the SAME before and after the
+# narrowing (measured, both give skip:staged). inbox-push delivers-and-queues
+# into busy panes rather than skipping them, so check_idle's verdict was never
+# what stopped this one -- the composer gate is, and it must keep stopping it.
+# So this is the safety net for the change, not its red-green evidence; that
+# lives in the direct check_idle cases above. The skip REASON is pinned from an
+# observed run, not predicted: the dialog's selected option carries Codex's own
+# composer glyph, so find_composer_line reads it and calls the pane staged.
+( export PANE_OVERRIDE="$CODEX_APPROVAL_DIALOG" RUNTIME_OVERRIDE="codex"
+  run_case "codex approval dialog -> never delivered" "skip:staged" 2 ); tally $?
+
 echo "inbox-push: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
