@@ -190,7 +190,87 @@ to plain text.
 Any YAML scalar containing a colon MUST be quoted. An unquoted colon is
 interpreted as a nested mapping and silently changes the parsed shape.
 
-The meaning of particular keys is out of scope for this document.
+The meaning of most keys is out of scope for this document. The one registered
+vocabulary is cards, in section 7.1.1, because it has two independent
+implementations in this repository and a third party writing either half needs
+to know what the other reads.
+
+### 7.1.1 Card metadata (registered vocabulary, optional)
+
+A **card** is a message that asks for a specific answer and carries its own
+resolution state, so that a reader can tell an outstanding request from a
+settled one without parsing prose. Two kinds exist, distinguished by which
+identity key is present:
+
+| Kind | Identity key | Meaning |
+|---|---|---|
+| decision | `decision-id` | pick one of the offered options |
+| action | `action-id` | do a thing, then mark it done |
+
+A block is a card if and only if its metadata region carries one of those two
+keys at the top level with a non-empty value. A block carrying both is
+malformed; a reader SHOULD treat `decision-id` as winning, because that is what
+the reference reader does, and SHOULD NOT rewrite the block.
+
+**Decision card keys**
+
+| Key | Written by | Value |
+|---|---|---|
+| `decision-id` | sender | REQUIRED, non-empty. Stable identity for the card. |
+| `options` | sender | REQUIRED. A YAML list of mappings with `key`, `label` and `detail`. At least one. |
+| `answered` | reader | An option `key`, or `pushback`, or `custom`. TERMINAL. |
+| `custom-answer` | reader | A JSON-encoded string. Meaningful only alongside `answered: custom`. |
+| `dismissed` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `dismiss-reason` | reader | A JSON-encoded string. |
+| `superseded` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `supersede-note` | reader | A JSON-encoded string. |
+
+**Action card keys**
+
+| Key | Written by | Value |
+|---|---|---|
+| `action-id` | sender | REQUIRED, non-empty. |
+| `priority` | sender | OPTIONAL. `urgent`, `high` or `normal`. |
+| `ticket` | sender | OPTIONAL. Free text. |
+| `done` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `done-note` | reader | A JSON-encoded string. Meaningful only alongside `done`. |
+| `dismissed` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `dismiss-reason` | reader | A JSON-encoded string. |
+| `superseded` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `supersede-note` | reader | A JSON-encoded string. |
+
+Sender keys are written once, when the block is appended. Reader keys are added
+later, in place, by whatever surfaced the card to the person answering it.
+
+**Open versus resolved.** A card is OPEN when none of its terminal keys is
+present with a non-empty value, and RESOLVED otherwise. That definition is the
+whole point of the vocabulary: an observer counting outstanding requests reads
+these keys and nothing else, and never has to interpret the prose.
+
+**Terminal keys are mutually exclusive.** A writer MUST NOT add a terminal key
+to a block that already carries one. An answered card cannot then be dismissed,
+a dismissed action cannot then be marked done, and a superseded card cannot be
+resolved any other way. A writer encountering an existing terminal key MUST
+treat its own write as an idempotent no-op and report the existing state, rather
+than overwriting it.
+
+**Anchoring.** A reader looking for these keys MUST anchor them at the start of
+a line in the metadata region. An indented `detail:` inside an option, or prose
+elsewhere in the body, can contain the text `done:` without being a resolution,
+and an unanchored search reads a card as resolved that nobody has answered.
+
+**An empty value is not a resolution.** A card template may carry `answered:`
+with nothing after it. A reader MUST require a non-empty value; treating the
+placeholder as an answer silently resolves every card in a template's shape.
+
+**Values are JSON-encoded where noted.** A free-text note goes on one line, so
+it is written as a JSON string (quoted, with escapes) rather than as a raw YAML
+scalar. A reader MUST decode it, and MUST tolerate an undecodable value by
+falling back to showing it verbatim rather than dropping the card.
+
+Every part of this section is OPTIONAL. An implementation that ignores card
+metadata entirely is still conforming and renders such a block as ordinary
+text, exactly as section 7.1 requires.
 
 ### 7.2 Document links (optional, renderer-specific)
 
@@ -370,6 +450,21 @@ is most likely to be active.
 
 Both are preserved in the reference implementation for parity with the
 original, and are tracked as defects rather than as behaviour to copy.
+
+**`bin/activity-sweep.sh` does not treat `superseded:` as terminal.** Section
+7.1.1 lists four terminal keys per card kind; the sweep's own open-versus-
+resolved test checks `answered:`, `custom-answer:`, `done:` and `dismissed:`,
+and not `superseded:`. A superseded card therefore keeps counting as open in
+that reader, and keeps driving its `needs-you` status until the card ages out of
+its window. The web application in `packages/deck` writes the key and treats it
+as terminal, so the two readers of one document currently disagree about one
+state.
+
+Preserved deliberately in the initial port rather than fixed in passing: the
+sweep's classification was ported unchanged from a running deployment, and
+changing which cards count as open is a behaviour change with its own reasoning
+to do, not a transcription detail. A conforming reader SHOULD test all four
+terminal keys. Tracked as a defect, not as behaviour to copy.
 
 ## 12. Versioning
 
