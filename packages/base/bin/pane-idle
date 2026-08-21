@@ -37,15 +37,19 @@
 # "esc to interrupt" is the robust busy signal for Claude-family runtimes;
 # "Brewed for"/"Crunched for"/"Worked for" are COMPLETION markers (idle),
 # deliberately NOT matched. The composer-clean gate is the real net. Gemini
-# busy markers: "esc to cancel" in the footer, and a braille-spinner line
-# immediately followed by "Generating" -- matched on the word alone to be
-# robust to which braille glyph is displayed. "Compacting conversation" is a
-# distinct busy state during a context compaction: it shows neither "esc to
-# interrupt" nor a spinner_re-shaped line (two words, then a UNICODE ellipsis
-# U+2026, not a single word + three ASCII dots), so it fell through every
-# marker and read as idle -- the root cause of a "message dropped during
-# compaction" bug. Matched on the literal words, not the ellipsis glyph, so it
-# is robust either way.
+# busy markers: "esc to cancel" LEADING ITS CLAUSE (a footer line of its own,
+# or a parenthesised inline hint), and a braille-spinner line immediately
+# followed by "Generating" -- matched on the word alone to be robust to which
+# braille glyph is displayed. That positional anchor is load-bearing, not
+# tidiness: Codex's approval dialog ends "Press enter to confirm or esc to
+# cancel", carrying the phrase MID-SENTENCE, so an UNANSWERED dialog -- a pane
+# stuck waiting on a human -- read as BUSY. Reasoning at the branch itself.
+# "Compacting conversation" is a distinct busy state during a context
+# compaction: it shows neither "esc to interrupt" nor a spinner_re-shaped line
+# (two words, then a UNICODE ellipsis U+2026, not a single word + three ASCII
+# dots), so it fell through every marker and read as idle -- the root cause of
+# a "message dropped during compaction" bug. Matched on the literal words, not
+# the ellipsis glyph, so it is robust either way.
 # --------------------------------------------------------------------------
 check_idle() {
   local pane="$1"
@@ -101,7 +105,37 @@ check_idle() {
   # parens and are excluded for free.
   if echo "$pane" | grep -qE '\(([0-9]+m )?[0-9]+s( ·[^)]*)?\)[[:space:]]*$' 2>/dev/null; then return 0; fi
   # Gemini busy markers
-  if echo "$pane" | grep -qF 'esc to cancel' 2>/dev/null; then return 0; fi
+  #
+  # POSITIONAL, not a bare substring. A hint marker is set off by LAYOUT: it
+  # either opens its own line (a footer, indented or not) or sits in parens as
+  # an inline hint. Prose that merely contains the words does neither.
+  #
+  # WHY: Codex's approval-dialog footer -- "Press enter to confirm or esc to
+  # cancel", captured live off a real pane -- carries the phrase mid-sentence.
+  # A pane holding an UNANSWERED confirmation dialog is stuck waiting on a
+  # human, and the bare substring answered BUSY for it, so every caller skipped
+  # it quietly: the one state that most needs someone to look was the one this
+  # reported as healthy.
+  #
+  # Structural, like the counter rule above it, rather than a list of the
+  # wordings that collide today. ENUMERATE NOTHING: leading its clause is a
+  # property of how hints are rendered, not a phrase somebody can edit out from
+  # under us.
+  #
+  # STRICTLY NARROWER than the bare substring it replaces -- every string this
+  # matches, the old rule matched too. Be precise about what that buys: the
+  # subset property bounds the change to BUSY -> IDLE transitions and prevents
+  # new false-busy classifications. It does NOT, on its own, establish that a
+  # verdict it moves was a false busy rather than a true one -- containment is
+  # agnostic to which of the old matches were correct. That part is separate and
+  # empirical: the live Gemini footer-only control in the test suite (the
+  # captured footer with its phase word swapped, so the "Generating" match
+  # cannot answer for it) plus the redundant independent markers -- the
+  # "Generating" literal on the next line and the end-of-line counter rule above
+  # -- are the evidence that known true-busy shapes remain covered. Anything
+  # added here that matches what the old rule did not gives the direction bound
+  # up.
+  if echo "$pane" | grep -qE '(^[[:space:]]*|[(])esc to cancel' 2>/dev/null; then return 0; fi
   if echo "$pane" | grep -qF 'Generating' 2>/dev/null; then return 0; fi
   # Codex busy marker: reuses the same literal "esc to interrupt" text as the
   # Claude family (verified live, "Working (Ns * esc to interrupt)"), so no
