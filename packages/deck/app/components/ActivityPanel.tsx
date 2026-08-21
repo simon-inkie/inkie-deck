@@ -172,6 +172,19 @@ function AgentCard({
    * toward "there is something to show" opens the panel onto nothing.
    */
   const pinGuess = wt !== null && wt.pinned ? wt.guess : null;
+  /**
+   * Derived ONCE, for the same reason pinGuess is: the render below tests both
+   * the object and its task line, and reading them separately is how a card
+   * ends up showing a stale marker with nothing above it to mark. An empty
+   * string is treated as absent - a producer that writes "" is saying it has
+   * nothing, and rendering a blank line plus a "last known" caption underneath
+   * it would be worse than rendering neither.
+   */
+  const inference = agent.inference;
+  const taskLine =
+    inference !== null && inference.taskLine !== null && inference.taskLine !== ""
+      ? inference.taskLine
+      : null;
   const hasDetail =
     agent.recent.length > 0 ||
     pinGuess !== null ||
@@ -212,6 +225,58 @@ function AgentCard({
         </Link>
       </div>
 
+      {/*
+        The narration layer's sentence, above the evidence rather than instead
+        of it: rule 1 is unconditional, so prose never displaces the observation
+        it was written from.
+
+        NOT RENDERED ON A STALE CARD, and that is a hard gate rather than a tint
+        (design rule 3). A dead sweep freezes `current` at true and lets it age
+        silently, so the record's own freshness flag stops meaning anything the
+        moment the producer dies; the document-level staleness is the only thing
+        that can catch it. Worktrees and completions stay because they are facts;
+        a task line is a claim about now.
+      */}
+      {!stale && taskLine !== null ? (
+        <div className="flex flex-col gap-0.5">
+          <p
+            data-testid={`activity-task-${agent.agent}`}
+            title={taskLine}
+            className="line-clamp-2 text-[11px] leading-snug text-foreground"
+          >
+            {taskLine}
+          </p>
+          {inference !== null && !inference.current ? (
+            <p
+              data-testid={`activity-task-stale-${agent.agent}`}
+              data-reason={inference.staleReason ?? "stale"}
+              className="label-mono text-[10px] text-accent"
+            >
+              {/*
+                NEVER BARE. The reason AND the age together are what let a reader
+                judge a retained sentence; a bare "(stale)" loses the half that
+                matters, since a four-minute-old read and a four-hour-old one are
+                not the same claim.
+              */}
+              last known: {inference.staleReason ?? "stale"}
+              {inference.ageSeconds !== null
+                ? `, read ${Math.floor(inference.ageSeconds / 60)}m ago`
+                : ""}
+            </p>
+          ) : null}
+          {inference !== null &&
+          inference.progressNote !== null &&
+          inference.progressNote !== "" ? (
+            <p
+              data-testid={`activity-progress-${agent.agent}`}
+              className="line-clamp-2 text-[11px] leading-snug text-muted-foreground"
+            >
+              {inference.progressNote}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Rule 1: the evidence behind the pill, always visible. */}
       <p
         data-testid={`activity-evidence-${agent.agent}`}
@@ -222,6 +287,21 @@ function AgentCard({
           ? `signal: ${agent.signal === "" ? "none recorded" : agent.signal}`
           : agent.evidence}
       </p>
+
+      {/*
+        Positive counts only. Absent (no live UI region to read) and zero (read
+        it, nothing listed) are different facts to a consumer and the same
+        silence to a reader: "0 sub-agents" would cost a line on every card to
+        say nothing.
+      */}
+      {agent.subagentCount !== null && agent.subagentCount > 0 ? (
+        <p
+          data-testid={`activity-subagents-${agent.agent}`}
+          className="label-mono text-[10px] text-muted-foreground"
+        >
+          {agent.subagentCount} sub-agent{agent.subagentCount === 1 ? "" : "s"} running
+        </p>
+      ) : null}
 
       <WorktreeChip agent={agent.agent} worktree={wt} />
 

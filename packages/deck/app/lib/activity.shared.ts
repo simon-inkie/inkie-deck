@@ -104,6 +104,47 @@ export interface RecentCompletion {
   ref: string;
 }
 
+/**
+ * The prose half, when a deployment runs a narration layer beside the sweep.
+ *
+ * PROSE ONLY, NO PILL AUTHORITY. The producer builds this object from an
+ * allowlist rather than by spreading its sidecar record, precisely so a model's
+ * own read of the STATUS can never reach this document. This type does the same
+ * on the reading side: there is no field here for a status, so even a producer
+ * that started emitting one could not get it in front of a reader through this
+ * seam. Whether a model gets pill authority is a decision to be taken
+ * explicitly, not one that arrives by a field appearing.
+ *
+ * `current: false` with a `taskLine` present is NOT a producer bug: past a
+ * staleness verdict the sweep RETAINS the last known sentence and marks it,
+ * dropping it to null itself once it passes an age ceiling. The danger was never
+ * stale prose, it was UNMARKED stale prose, so a renderer MUST show the reason
+ * and the age beside it rather than quietly presenting it as current.
+ */
+export interface AgentInference {
+  /** One sentence: what this agent is working on. */
+  taskLine: string | null;
+  /** An optional second line: how far along it is. */
+  progressNote: string | null;
+  /** Whether the read still describes the signals as they are now. */
+  current: boolean;
+  /** Opaque diagnostic text, rendered verbatim. Never switched on. */
+  staleReason: string | null;
+  /**
+   * The producer's signals digest changed since the read. Named for the pane
+   * hash it was originally computed from; the key was deliberately NOT renamed
+   * when the signal source changed, because a producer-side rename with no
+   * coordinated reader release drops it to a default over here and silently
+   * stops marking held reads.
+   */
+  paneMoved: boolean;
+  /** How old the read is, in seconds. Null when the producer could not say. */
+  ageSeconds: number | null;
+  generatedAt: string | null;
+  sourceSwept: string | null;
+  outcome: string | null;
+}
+
 export interface AgentActivity {
   agent: string;
   status: ActivityStatus;
@@ -116,6 +157,25 @@ export interface AgentActivity {
   worktree: AgentWorktree | null;
   recent: RecentCompletion[];
   updated: string | null;
+  /**
+   * How many sub-agents this agent has running, counted off its pane's live UI
+   * region. THREE-VALUED ON PURPOSE, and the third value is the point:
+   *
+   *   null - there was no live UI region to read. No evidence either way.
+   *   0    - the region was read and listed nothing.
+   *   n    - n sub-agents are running.
+   *
+   * A renderer must collapse null and 0 into the same silence ("0 sub-agents"
+   * is a true line that tells a reader nothing), but a CONSUMER must not, since
+   * only a positive count is evidence. The producer's own `waiting-on-machine`
+   * branch turns on exactly this distinction.
+   */
+  subagentCount: number | null;
+  /**
+   * The narration layer's read, when one is configured and publishing. Null on
+   * every deployment that runs the sweep alone, which is the default.
+   */
+  inference: AgentInference | null;
   /**
    * ISO-8601 instant the agent's CURRENT `status` was first observed (top-bar
    * escalation SPEC, Part A - a producer field, not written by every sweep).
@@ -313,6 +373,47 @@ function asRecent(v: unknown): RecentCompletion[] {
   return out;
 }
 
+/**
+ * Coerce the narration object, or null.
+ *
+ * Every field degrades independently, same posture as the rest of this module:
+ * a producer on a different release cycle may add fields, drop optional ones,
+ * or write a null where a string was expected, and none of that may cost the
+ * panel a row. `current` defaults to FALSE on anything non-boolean, which is
+ * the safe direction: an unreadable freshness flag must make the renderer mark
+ * the prose, never present it as current.
+ *
+ * Nothing here reads a status field, by construction. See AgentInference.
+ */
+function asInference(v: unknown): AgentInference | null {
+  if (!isRecord(v)) return null;
+  return {
+    taskLine: str(v["taskLine"]),
+    progressNote: str(v["progressNote"]),
+    current: v["current"] === true,
+    staleReason: str(v["staleReason"]),
+    paneMoved: bool(v["paneMoved"]),
+    ageSeconds: num(v["ageSeconds"]),
+    generatedAt: str(v["generatedAt"]),
+    sourceSwept: str(v["sourceSwept"]),
+    outcome: str(v["outcome"]),
+  };
+}
+
+/**
+ * A non-negative integer count, or null.
+ *
+ * Stricter than `num` on purpose. This value drives a "2 running" line, and a
+ * negative or fractional count is not a smaller version of that claim, it is a
+ * producer that cannot be believed about this field. Null (no observation) is
+ * the honest reading of a value that cannot be one.
+ */
+function count(v: unknown): number | null {
+  const n = num(v);
+  if (n === null) return null;
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 // ---------------------------------------------------------------------------
 // parseActivityDocument
 // ---------------------------------------------------------------------------
@@ -397,6 +498,8 @@ export function parseActivityDocument(text: string): ParseActivityResult {
         worktree: asWorktree(value["worktree"]),
         recent: asRecent(value["recent"]),
         updated: str(value["updated"]),
+        subagentCount: count(value["subagentCount"]),
+        inference: asInference(value["inference"]),
         // Coerced to undefined rather than left as a stored null, so a
         // document written by a sweep that does not emit this field yet
         // leaves the optional property genuinely ABSENT.
@@ -430,11 +533,13 @@ export const NOT_SWEPT_SIGNAL = "not-swept";
  * Join the swept agents with the live tmux windows.
  *
  * The sweep does NOT necessarily cover every window: it enumerates
- * `tmux list-windows` at ITS tick and honours ACTIVITY_SKIP_AGENTS, which
- * defaults to skipping `nova`. So "a window with no record" is a real, everyday
- * state on this box, not a theoretical one, and it must render as `unknown`
- * ("no observation") rather than being silently dropped - a missing row would
- * read as "that agent does not exist".
+ * `tmux list-windows` at ITS tick, honours ACTIVITY_SKIP_AGENTS (empty by
+ * default, but a deployment may exclude a window running a runtime the sweep's
+ * pane markers do not cover), and refuses whole ticks rather than publishing a
+ * partial roster. So "a window with no record" is a real, everyday state, not a
+ * theoretical one, and it must render as `unknown` ("no observation") rather
+ * than being silently dropped - a missing row would read as "that agent does
+ * not exist".
  *
  * Order: swept agents first, in the file's own order (which is the sweep's tmux
  * window order), then any live window with no record. Keeping the file's order
@@ -462,6 +567,8 @@ export function activityRows(
       worktree: null,
       recent: [],
       updated: null,
+      subagentCount: null,
+      inference: null,
     });
   }
   return [...agents, ...extra];
