@@ -46,9 +46,13 @@ jobs:
       # a hard dependency of bin/activity-sweep.sh (it refuses to write rather
       # than hand-print JSON carrying human text) and of both sweep suites, so
       # without it those suites fail for an environmental reason rather than a
-      # real one.
-      - name: Install ripgrep and jq
-        run: sudo apt-get update && sudo apt-get install -y ripgrep jq
+      # real one. python3-yaml is the base package's inbox CLI checking a
+      # card's metadata region parses as YAML before it writes the block.
+      # Installed explicitly rather than relied on: the runner image happens
+      # to carry PyYAML today, and a suite that is green because of what an
+      # image happens to include is measuring the image.
+      - name: Install ripgrep, jq and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y ripgrep jq python3-yaml
 
       - name: Typecheck
         run: pnpm typecheck

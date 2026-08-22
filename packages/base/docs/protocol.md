@@ -119,6 +119,11 @@ which is an editorial policy of the project it came from rather than a
 requirement of this protocol. An implementation without that policy is still
 conforming.
 
+The same is true of its optional refusal to send a subject or body carrying an
+issue or change-request id outside a markdown link. That is a writer-side
+house rule about legibility, off unless configured, and carries no weight
+here: a message with a bare id in it is a perfectly conforming message.
+
 ### 5.2 Case
 
 Matching is case insensitive, so `STATUS: SENT` parses. Writers MUST
@@ -189,6 +194,15 @@ to plain text.
 
 Any YAML scalar containing a colon MUST be quoted. An unquoted colon is
 interpreted as a nested mapping and silently changes the parsed shape.
+
+A writer SHOULD verify the region parses before appending the block, and
+SHOULD refuse to write it if it does not. Every way this goes wrong is silent
+at the far end: a reader that cannot parse the region has no way to
+distinguish "this was meant as prose" from "this was meant as a card and is
+broken", so it renders prose, correctly, and the writer never learns. The
+reference implementation refuses, and the check is why it has an optional
+PyYAML dependency. A writer that cannot parse YAML at all SHOULD NOT emit a
+metadata region.
 
 The meaning of most keys is out of scope for this document. The one registered
 vocabulary is cards, in section 7.1.1, because it has two independent
