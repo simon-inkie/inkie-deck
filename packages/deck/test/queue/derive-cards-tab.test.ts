@@ -7,9 +7,9 @@
  *
  * The second block below is where the two filters are held against each other.
  * It used to assert that deriveNeedsYou ignored the new terminal states
- * entirely (the Option-1 freeze). It now asserts the harmonised behaviour for
- * SUPERSEDED on both card kinds, and pins the single state still divergent (a
- * dismissed decision) so that it stays a decision rather than becoming a drift.
+ * entirely (the Option-1 freeze), then that it ignored only a dismissed
+ * decision. It now pins that the tab and the homepage AGREE on every terminal
+ * state, which is the property actually worth guarding.
  *
  * ASCII only - no em-dashes per FND-05.
  */
@@ -195,19 +195,28 @@ describe("deriveCardsTab - filtering", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Option-1 homepage-unchanged guard: deriveNeedsYou is UNTOUCHED
+// One-definition-of-resolved guard: the tab and the homepage never disagree
 // ---------------------------------------------------------------------------
 
-describe("superseded is terminal on the homepage too (behaviour CHANGED by the sweep port)", () => {
-  // WHAT CHANGED AND WHY. These three cases used to assert the opposite, under
-  // the name "Option 1 guard - deriveNeedsYou is unchanged by the new states".
-  // Option 1 froze the homepage/bell contract when dismiss and supersede landed,
-  // so a superseded card went on driving the homepage while every other surface
-  // in this repository treated it as closed. That was invisible until the
-  // activity sweep arrived: the sweep publishes a needs-you status read from the
-  // same files, so a repository holding three answers to "is a superseded card
-  // open" now shows the disagreement to a person. Harmonised on the resolved
-  // helpers, which the card components and the Cards tab already used.
+describe("resolved means the same thing on the Cards tab and the homepage", () => {
+  // WHAT CHANGED AND WHY, TWICE, because a reader should see two intentional
+  // inversions rather than a quietly rewritten assertion.
+  //
+  // These cases first asserted that deriveNeedsYou ignored the new terminal
+  // states entirely, under the name "Option 1 guard - deriveNeedsYou is
+  // unchanged by the new states". Option 1 froze the homepage/bell contract
+  // when dismiss and supersede landed, so a closed card went on driving the
+  // homepage while every other surface in this repository treated it as
+  // closed. That was invisible until the activity sweep arrived: the sweep
+  // publishes a needs-you status read from the same files, so the disagreement
+  // started showing to a person. SUPERSEDED was harmonised then.
+  //
+  // DISMISSED on a decision was left divergent at that point, deliberately and
+  // separately, and pinned by a case in this suite. That is what has now been
+  // inverted: the fence was a landing constraint, not an intent that closed
+  // work should sit on the homepage until it ages out of its card window. Both
+  // derives call isDecisionResolved / isActionResolved, so the surfaces cannot
+  // drift apart again.
   it("a SUPERSEDED decision is excluded from the homepage (was: still surfaced)", () => {
     const entry = decisionEntry({
       agentName: "quill",
@@ -235,22 +244,23 @@ describe("superseded is terminal on the homepage too (behaviour CHANGED by the s
     expect(isActionResolved(entry.block.actionCard!)).toBe(true);
   });
 
-  it("an open decision and an open action are untouched by the change", () => {
+  it("an open decision and an open action stay on BOTH surfaces", () => {
+    // Positive control: neither derive passes by excluding everything.
     const entries = [
       decisionEntry({ agentName: "quill", timestamp: "2026-06-10T10:00:00Z", decisionId: "d-open" }),
       actionEntry({ agentName: "quill", timestamp: "2026-06-10T10:01:00Z", actionId: "a-open" }),
     ];
     const { items } = deriveNeedsYou(entries, [], new Set(), new Map(), FIXED_NOW);
     expect(items).toHaveLength(2);
+    expect(deriveCardsTab(entries)).toHaveLength(2);
   });
 
-  // THE ONE STATE STILL DIVERGENT, and pinned so it cannot drift silently. A
-  // dismissed DECISION is resolved everywhere except the homepage/bell, which is
-  // the surviving half of the Option-1 freeze: a product decision about what the
-  // homepage shows, not a transcription error, and out of scope for the port.
-  // Recorded in packages/base/docs/protocol.md section 11. A dismissed ACTION
-  // was always excluded here, so this is one state on one card kind.
-  it("a DISMISSED decision still surfaces on the homepage (surviving Option-1 divergence)", () => {
+  // THE LAST STATE TO BE HARMONISED. This case asserted the opposite until the
+  // dismissed half of the Option-1 freeze was lifted: a dismissed DECISION was
+  // resolved on every surface except the homepage and the bell. A dismissed
+  // ACTION was already excluded there, so the divergence was one state on one
+  // card kind, and this is the case that used to hold it in place.
+  it("a DISMISSED decision leaves BOTH the tab and the homepage (was: still surfaced)", () => {
     const entry = decisionEntry({
       agentName: "quill",
       timestamp: "2026-06-10T10:00:00Z",
@@ -258,9 +268,9 @@ describe("superseded is terminal on the homepage too (behaviour CHANGED by the s
       dismissed: "2026-06-10T10:30:00Z",
     });
     const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
-    expect(items.map((i) => i.decisionId)).toContain("d1");
-    // ...but absent from the dedicated tab, which checks every terminal state.
+    expect(items.map((i) => i.decisionId)).not.toContain("d1");
     expect(deriveCardsTab([entry])).toHaveLength(0);
+    expect(isDecisionResolved(entry.block.card!)).toBe(true);
   });
 
   it("an ANSWERED decision and a DONE/DISMISSED action stay excluded from the homepage (existing behaviour intact)", () => {

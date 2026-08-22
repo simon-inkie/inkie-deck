@@ -238,12 +238,20 @@ export function isActionResolved(actionCard: {
  * Derive the dedicated Decisions+Actions tab list from raw inbox entries.
  *
  * Pure function: no IO, no clock reads. This filter checks EVERY terminal state
- * - answered/dismissed/superseded for decisions, done/dismissed/superseded for
- * actions - so a card closed via the dismiss/supersede buttons leaves this tab
- * immediately. deriveNeedsYou now agrees on every one of those except a
- * DISMISSED DECISION, which the homepage/bell contract still surfaces (the
- * Option-1 freeze; see the comment at that check).
+ * via isDecisionResolved / isActionResolved - answered/dismissed/superseded for
+ * decisions, done/dismissed/superseded for actions - so a card closed via the
+ * dismiss/supersede buttons leaves this tab immediately.
  * Blocked kanban cards are NOT included (this tab is decisions + actions only).
+ *
+ * CONTRACT: there is ONE definition of "resolved", and every reader of a card
+ * uses it. deriveNeedsYou (the homepage ranked list and the sidebar bell count)
+ * calls the same two helpers, as do the card components and the activity
+ * sweep's classifier, so a card that leaves this tab also leaves the homepage.
+ * The surfaces cannot drift apart again. This replaces the last of the earlier
+ * "Option 1" freeze, under which deriveNeedsYou tested one key fewer for
+ * decisions: that freeze was a scope fence while dismiss, supersede and this
+ * tab landed together, not a standing intent that closed cards should sit on
+ * the homepage until they age out of their window.
  *
  * Own messages (header.from === user) are excluded.
  * Sort: oldest createdAt first (stalest at the top), tie-broken by agentName
@@ -308,7 +316,7 @@ export function deriveCardsTab(
 
 /**
  * A single item in the "Needs you" ranked list.
- * Covers three kinds: unanswered decisions, un-done action cards, blocked kanban cards.
+ * Covers three kinds: unresolved decisions, unresolved action cards, blocked kanban cards.
  */
 export interface NeedsYouItem {
   /** Stable identity for React keying and queue-store SLA tracking. */
@@ -371,14 +379,14 @@ function priorityWeight(p?: string): number {
  * `now` parameter so tests can assert deterministic results.
  *
  * Three kinds of items:
- *   1. Open decision cards (block.card defined, not answered, not superseded)
- *   2. Open action cards (block.actionCard defined, not done, not dismissed,
- *      not superseded)
+ *   1. Unresolved decision cards (block.card defined, !isDecisionResolved)
+ *   2. Unresolved action cards (block.actionCard defined, !isActionResolved)
  *   3. Blocked kanban cards (blockedCards passed in, filtered to column "blocked")
  *
- * A DISMISSED DECISION is the one terminal state this function does not honour;
- * see the comment at that check for why it is a deliberate divergence rather
- * than an oversight.
+ * "Resolved" is the SAME definition deriveCardsTab uses (the shared helpers), so
+ * the homepage list, the sidebar bell (which is this list's length) and the
+ * Cards tab agree on what is still open. See the deriveCardsTab docblock for
+ * why the earlier Option-1 freeze on this function was lifted.
  *
  * Items from Alex (header.from === "alex") are excluded.
  * Items whose id is in handledIds are excluded.
@@ -419,25 +427,16 @@ export function deriveNeedsYou(
 
     // --- Decision card ---
     if (block.card !== undefined) {
-      if (block.card.answered !== undefined) continue; // already answered
-      // SUPERSEDED IS TERMINAL HERE TOO, as of the activity-sweep port. It was
-      // not, and that was one repository holding three answers to one question:
-      // isDecisionResolved, the card components and the Cards tab all treated a
-      // superseded card as resolved, while this function did not, and neither
-      // did the ported sweep's classifier. Harmless while the divergence was
-      // invisible; not harmless once a second reader publishes a needs-you
-      // status from the same files, because a card the reader has already
-      // closed goes on driving that status for the rest of the card window.
-      //
-      // STILL DIVERGENT, deliberately and separately: a DISMISSED decision.
-      // deriveCardsTab and the card components treat it as resolved; this
-      // function does not, which is the Option-1 freeze of the homepage/bell
-      // contract made when dismiss landed, pinned by its own guard test, and a
-      // product decision about the homepage rather than a transcription error.
-      // Recorded in docs/protocol.md section 11 (known deviations) rather
-      // than changed in passing. A dismissed ACTION was already excluded below, so the
-      // divergence is one state on one card kind.
-      if (block.card.superseded !== undefined) continue; // superseded in place
+      // EVERY terminal state of section 7.1.1, through the shared helper. The
+      // three keys used to be tested here by hand and the set was incomplete:
+      // first `superseded` was missing, then `dismissed` alone was, and one
+      // repository held two answers to "is this card still open". The Cards
+      // tab, the card components and the sweep's classifier all read the full
+      // set; this function did not, so a card closed on one surface went on
+      // driving the homepage and the bell for the rest of its card window.
+      // Calling the helper rather than restating its keys is the fix: a state
+      // added to the protocol lands on both surfaces at once, or on neither.
+      if (isDecisionResolved(block.card)) continue; // answered / dismissed / superseded
 
       const id = `${agentName}/${block.header.timestamp}/${block.card.decisionId}`;
       if (handledIds.has(id)) continue;
@@ -471,12 +470,8 @@ export function deriveNeedsYou(
 
     // --- Action card ---
     if (block.actionCard !== undefined) {
-      if (block.actionCard.done !== undefined) continue; // already done
-      if (block.actionCard.dismissed !== undefined) continue; // dismissed
-      // Superseded: see the decision branch above. An action's three terminal
-      // states are now all checked here, so isActionResolved and this function
-      // agree completely.
-      if (block.actionCard.superseded !== undefined) continue; // superseded in place
+      // Same shared helper as the decision branch above, for the same reason.
+      if (isActionResolved(block.actionCard)) continue; // done / dismissed / superseded
 
       const id = `${agentName}/${block.header.timestamp}/${block.actionCard.actionId}`;
       if (handledIds.has(id)) continue;

@@ -230,7 +230,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           {/* Thread C: Decisions + Actions tab - always shown (unlike the
               cron-gated Nudges link). A second surface, added without touching
               the homepage or the bell count. The two lists have since been
-              harmonised on superseded; see queue-derive.ts. */}
+              harmonised on every terminal state; see queue-derive.ts. */}
           <NavLink
             to="/cards"
             className={({ isActive }) =>

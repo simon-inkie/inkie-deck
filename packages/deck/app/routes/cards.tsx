@@ -1,20 +1,20 @@
 /**
  * cards.tsx - Dedicated Decisions + Actions tab (Thread C).
  *
- * A second surface, additive when it landed: the homepage (home.tsx), its merged
- * deriveNeedsYou ranked list, and the sidebar bell count were all left exactly
- * as they were (Option 1). This tab is a focused list of the LIVE (unresolved)
- * decision + action cards across every agent, reusing the existing DecisionCard
- * / ActionCard components so a card can be answered / done / dismissed /
- * superseded in place.
+ * A second surface alongside the homepage (home.tsx), additive when it landed.
+ * This tab is a focused list of the LIVE (unresolved) decision + action cards
+ * across every agent, reusing the existing DecisionCard / ActionCard components
+ * so a card can be answered / done / dismissed / superseded in place.
  *
- * deriveCardsTab checks EVERY terminal state (answered/dismissed/superseded for
+ * deriveCardsTab and deriveNeedsYou share ONE definition of "resolved"
+ * (isDecisionResolved / isActionResolved: answered/dismissed/superseded for
  * decisions, done/dismissed/superseded for actions), so a card closed here
- * leaves this tab immediately. deriveNeedsYou now agrees on all of them except a
- * DISMISSED DECISION, which is the surviving half of the Option-1 freeze; the
- * superseded half was lifted when the activity sweep began publishing its own
- * open-card count from the same files. Blocked kanban cards are NOT shown here -
- * this tab is decisions + actions only.
+ * leaves this tab AND the homepage list AND the sidebar bell. The Option-1
+ * freeze that kept deriveNeedsYou on a shorter set of keys was a scope fence
+ * for the landing that added dismiss, supersede and this tab; its superseded
+ * half was lifted when the activity sweep began publishing its own open-card
+ * count from the same files, and its dismissed half is lifted here. Blocked
+ * kanban cards are NOT shown here - this tab is decisions + actions only.
  *
  * Card mutation forms POST to the owning agent's thread action
  * (/threads/<agent>) via the postAction prop, so this route needs no action of
@@ -61,8 +61,10 @@ export async function loader() {
   const user = mcUser(process.env);
 
   // Same block scan the homepage loader does (listAgents + readBlocks per
-  // agent). Kept local rather than shared with home.tsx so home stays a
-  // zero-edit file under Option 1.
+  // agent). Kept local rather than shared with home.tsx because Option 1 wanted
+  // home.tsx to be a zero-edit file while this tab landed. That reason has
+  // expired; the duplication has not been collapsed yet, and doing so is a
+  // refactor rather than part of the terminal-state fix.
   const allEntries = (
     await Promise.all(
       agents.map(async (agent) => {
