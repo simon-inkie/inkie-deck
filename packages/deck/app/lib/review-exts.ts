@@ -50,6 +50,13 @@
  *   *-secret*.json / *.secrets.json
  *     GCP service accounts, OAuth credentials, and similar credential JSON files.
  *
+ *   mcp.json / .mcp.json
+ *     MCP server configuration. Routinely holds live credentials inline: a
+ *     bearer value under headers.Authorization, or OAuth material in an `env`
+ *     block. Needs an EXACT name deny because the generic config-extension
+ *     check below tests the basename for a secret-shaped token, and neither
+ *     spelling contains one.
+ *
  * Note: the check is on the BASENAME only (not the full path) and is
  * case-insensitive. Callers must lower-case the basename before calling.
  */
@@ -65,7 +72,16 @@ export function isSecretBasename(basename: string): boolean {
     ".netrc",
     ".git-credentials",
     "htpasswd",
-    "wp-config.php"
+    "wp-config.php",
+    // MCP server configs. These hold credentials inline: a bearer value under
+    // headers.Authorization, or OAuth material (client secret, refresh token)
+    // in a server's `env` block. An exact name entry is required because the
+    // generic isConfigExt check further down tests the BASENAME for a
+    // secret-shaped token, and neither spelling contains one. Both spellings
+    // occur in real trees: ".mcp.json" at a repository root, "mcp.json" inside
+    // an editor's dot-directory.
+    "mcp.json",
+    ".mcp.json",
   ]);
   if (exactDeny.has(lowerBasename)) return true;
 
