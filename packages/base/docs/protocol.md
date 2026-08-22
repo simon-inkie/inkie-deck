@@ -204,7 +204,110 @@ reference implementation refuses, and the check is why it has an optional
 PyYAML dependency. A writer that cannot parse YAML at all SHOULD NOT emit a
 metadata region.
 
-The meaning of particular keys is out of scope for this document.
+The meaning of most keys is out of scope for this document. The one registered
+vocabulary is cards, in section 7.1.1, because it has two independent
+implementations in this repository and a third party writing either half needs
+to know what the other reads.
+
+### 7.1.1 Card metadata (registered vocabulary, optional)
+
+A **card** is a message that asks for a specific answer and carries its own
+resolution state, so that a reader can tell an outstanding request from a
+settled one without parsing prose. Two kinds exist, distinguished by which
+identity key is present:
+
+| Kind | Identity key | Meaning |
+|---|---|---|
+| decision | `decision-id` | pick one of the offered options |
+| action | `action-id` | do a thing, then mark it done |
+
+A block is a card if and only if its metadata region carries one of those two
+keys at the top level with a non-empty value. A block carrying both is
+malformed; a reader SHOULD treat `decision-id` as winning, because that is what
+the reference reader does, and SHOULD NOT rewrite the block.
+
+**Decision card keys**
+
+| Key | Written by | Value |
+|---|---|---|
+| `decision-id` | sender | REQUIRED, non-empty. Stable identity for the card. |
+| `options` | sender | REQUIRED. A YAML list of mappings with `key`, `label` and `detail`. At least one. |
+| `answered` | reader | An option `key`, or `pushback`, or `custom`. TERMINAL. |
+| `custom-answer` | reader | A JSON-encoded string. Meaningful only alongside `answered: custom`. |
+| `dismissed` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `dismiss-reason` | reader | A JSON-encoded string. |
+| `superseded` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `supersede-note` | reader | A JSON-encoded string. |
+
+**Action card keys**
+
+| Key | Written by | Value |
+|---|---|---|
+| `action-id` | sender | REQUIRED, non-empty. |
+| `priority` | sender | OPTIONAL. `urgent`, `high` or `normal`. |
+| `ticket` | sender | OPTIONAL. Free text. |
+| `done` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `done-note` | reader | A JSON-encoded string. Meaningful only alongside `done`. |
+| `dismissed` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `dismiss-reason` | reader | A JSON-encoded string. |
+| `superseded` | reader | An ISO 8601 UTC instant. TERMINAL. |
+| `supersede-note` | reader | A JSON-encoded string. |
+
+Sender keys are written once, when the block is appended. Reader keys are added
+later, in place, by whatever surfaced the card to the person answering it.
+
+**Open versus resolved.** A card is OPEN when none of its terminal keys is
+present with a non-empty value, and RESOLVED otherwise. That definition is the
+whole point of the vocabulary: an observer counting outstanding requests reads
+these keys and nothing else, and never has to interpret the prose.
+
+**The terminal keys, in full.** There are three per kind, and the two sets
+overlap only on `dismissed`:
+
+| Kind | Terminal keys |
+|---|---|
+| decision | `answered`, `dismissed`, `superseded` |
+| action | `done`, `dismissed`, `superseded` |
+
+Everything else in the tables above is either a sender key or a PAYLOAD that
+accompanies a terminal key. `custom-answer` in particular is NOT terminal: it
+carries the text of a custom answer and is meaningful only alongside
+`answered: custom`, which the writer always emits with it. A reader MUST NOT
+treat a lone `custom-answer` as a resolution. A block carrying one without its
+`answered` line is malformed or half-written, and reading it as resolved
+silently closes a card nobody answered, which is the same failure the empty
+value rule below exists to prevent. `dismiss-reason`, `supersede-note` and
+`done-note` are payloads in the same sense.
+
+The sets are per kind rather than pooled. A decision has no `done` state and an
+action has no `answered` state, so such a key on such a card is a malformed
+block, not a resolution, and a reader SHOULD leave the card open rather than
+guess.
+
+**Terminal keys are mutually exclusive.** A writer MUST NOT add a terminal key
+to a block that already carries one. An answered card cannot then be dismissed,
+a dismissed action cannot then be marked done, and a superseded card cannot be
+resolved any other way. A writer encountering an existing terminal key MUST
+treat its own write as an idempotent no-op and report the existing state, rather
+than overwriting it.
+
+**Anchoring.** A reader looking for these keys MUST anchor them at the start of
+a line in the metadata region. An indented `detail:` inside an option, or prose
+elsewhere in the body, can contain the text `done:` without being a resolution,
+and an unanchored search reads a card as resolved that nobody has answered.
+
+**An empty value is not a resolution.** A card template may carry `answered:`
+with nothing after it. A reader MUST require a non-empty value; treating the
+placeholder as an answer silently resolves every card in a template's shape.
+
+**Values are JSON-encoded where noted.** A free-text note goes on one line, so
+it is written as a JSON string (quoted, with escapes) rather than as a raw YAML
+scalar. A reader MUST decode it, and MUST tolerate an undecodable value by
+falling back to showing it verbatim rather than dropping the card.
+
+Every part of this section is OPTIONAL. An implementation that ignores card
+metadata entirely is still conforming and renders such a block as ordinary
+text, exactly as section 7.1 requires.
 
 ### 7.2 Document links (optional, renderer-specific)
 
@@ -384,6 +487,30 @@ is most likely to be active.
 
 Both are preserved in the reference implementation for parity with the
 original, and are tracked as defects rather than as behaviour to copy.
+
+**`deriveNeedsYou` still counts a dismissed DECISION as open.** This is the one
+place in the reference implementation where the terminal keys of section 7.1.1
+are not read in full, and it is a single state on a single card kind.
+
+The web application has two card readers. The Decisions and Actions tab, the
+card components and the shared `isDecisionResolved` / `isActionResolved` helpers
+all test the complete set. The homepage ranked list and its bell count, derived
+by `deriveNeedsYou`, test one key fewer for decisions: a dismissed decision
+leaves the tab immediately and goes on appearing on the homepage until the card
+ages out of its window.
+
+The reason is a product decision rather than an oversight. When dismiss and
+supersede were added, what the homepage counted was deliberately frozen so that
+adding a way to close a card could not quietly change the number in the bell.
+`superseded` was carved out of that freeze once `bin/activity-sweep.sh` began
+publishing its own open-card count from the same files, because two readers
+disagreeing about a state is a different cost from one reader being
+conservative. `dismissed` on a decision was left where it was, and is pinned by
+a test so it stays a decision rather than becoming a drift.
+
+A conforming reader SHOULD test the full set for the kind of card it is reading.
+Tracked as a deliberate divergence in one implementation surface, not as
+behaviour to copy.
 
 ## 12. Versioning
 

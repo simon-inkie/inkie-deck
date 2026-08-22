@@ -37,6 +37,8 @@ function agent(over: Partial<AgentActivity> = {}): AgentActivity {
     worktree: null,
     recent: [],
     updated: "2026-08-14T11:00:00Z",
+    subagentCount: null,
+    inference: null,
     ...over,
   };
 }

@@ -26,10 +26,27 @@
 #   pane-idle < some-capture.txt
 #   pane-idle --verbose < some-capture.txt            # also prints busy/idle
 #
+# ALSO HERE SINCE v2: find_composer_line() and raw_line_for(), the two composer
+# IDENTIFICATION primitives, lifted verbatim out of inbox-push so that a third
+# caller (the stuck-pane sweep's composer-pending tier) can identify a composer
+# line without growing a third copy of the rule. They are pure lookups -- "which
+# line is the composer" and "what does that same line look like with its ANSI
+# codes still on it" -- with no policy in them, which is exactly what makes them
+# shareable.
+#
 # Deliberately NOT moved here: check_composer_clean(). It has diverged on
 # PURPOSE, not by accident (inbox-push's copy takes a second raw-capture arg
 # and publishes COMPOSER_TEXT for its identity check), so folding the variants
 # together would be a behaviour change, not a de-duplication.
+#
+# The third caller makes that split load-bearing rather than incidental, because
+# its decision function needs the OPPOSITE failure polarity. inbox-push must read
+# uncertainty as "staged" (skip the push: the safe default when the cost of being
+# wrong is typing over a human's half-written line); the sweep must read
+# uncertainty as "not pending" (the safe default when the cost of being wrong is
+# escalating at a healthy pane every tick). One shared decision function would
+# have to pick one of those and be wrong for the other caller. The PRIMITIVES are
+# shared; the polarity stays at the call site.
 
 # --------------------------------------------------------------------------
 # check_idle <pane>  -- return 0 (busy) / 1 (idle).
@@ -168,11 +185,123 @@ pane_ctx_pct() {
   printf '%s\n' "$line" | grep -oE '[0-9]+%' | tail -1 | tr -d '%'
 }
 
+# --------------------------------------------------------------------------
+# find_composer_line <pane>  -- print the pane line carrying the REAL composer
+# prompt, or nothing if the pane has no prompt line at all.
+#
+# WHY NOT `grep '^[[:space:]]*(❯|›|>)' | tail -1` (the bug fixed 2026-07-29):
+# Claude Code renders its background-task list BELOW the composer and prefixes
+# the selected entry with the SAME ❯ glyph. Real capture off a live pane:
+#
+#   ──────────────────────────────────────────── alice ──
+#   ❯                                    <- the REAL composer, genuinely empty
+#   ─────────────────────────────────────────────────────
+#     alice │ Sonnet 5 │ ~/agents/alice │ ██░░░░░░░░ 29%
+#     ● main
+#   ❯ ◯ general-purpose  MR opener   32m 4s   <- LAST ❯ line in the capture
+#
+# so `tail -1` read the task entry, treated its text as staged, and the push was
+# skipped for as long as that subagent stayed visible -- confirmed live on one
+# agent's pane TWICE on 2026-07-29 (three human DMs persisted to that agent's
+# inbox but never pushed, unstuck by hand). The failure was silent and total,
+# not intermittent:
+# any agent with a visible subagent was unreachable by live push.
+#
+# The composer sits directly under its own horizontal-rule border; nothing below
+# it does. Anchor on that: the composer is the LAST prompt line whose PRECEDING
+# line contains a box-drawing rule. A run of U+2500 is chrome, never content --
+# ASCII "-----" separators in ordinary tool output do not match it -- which is
+# what makes it usable as a structural anchor rather than a word list.
+#
+# Agy (Gemini) shares the convention: its bare ">" sits between two rules (see
+# AGY_IDLE in the test suite), so ONE rule covers both runtimes. Codex does NOT
+# render rules around its composer (CODEX_IDLE), and neither does a plain "> "
+# pane, so when no rule-anchored candidate exists we FALL BACK to the old
+# whole-pane tail -1 -- those panes keep their exact previous behaviour instead
+# of newly failing closed on an unknown format.
+# --------------------------------------------------------------------------
+find_composer_line() {
+  local pane="$1"
+  # 8x U+2500 BOX DRAWINGS LIGHT HORIZONTAL. Short enough to match a narrow
+  # pane's border (agy's rule is 20 wide) and to match a rule with text embedded
+  # in it (Claude's carries the agent name: "──── alice ──"); long enough that
+  # only chrome can produce it.
+  local rule='────────'
+  local line trimmed is_prompt prev_rule=0 anchored='' last=''
+  while IFS= read -r line; do
+    is_prompt=0
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    case "$trimmed" in '❯'*|'›'*|'>'*) is_prompt=1 ;; esac
+    if [ "$is_prompt" = 1 ]; then
+      last="$line"
+      if [ "$prev_rule" = 1 ]; then anchored="$line"; fi
+    fi
+    case "$line" in *"$rule"*) prev_rule=1 ;; *) prev_rule=0 ;; esac
+  done <<< "$pane"
+  if [ -n "$anchored" ]; then printf '%s' "$anchored"; else printf '%s' "$last"; fi
+}
+
+# --------------------------------------------------------------------------
+# raw_line_for <pane_raw> <plain_line>  -- print the raw (-e) capture's own
+# rendering of a line we have ALREADY identified in the plain (-p) capture,
+# matched by CONTENT: strip the ANSI escapes from each raw line and compare.
+# Prints nothing if no raw line corresponds; callers must then apply no
+# raw-only exemption (fail towards "staged", never towards "clean").
+#
+# WHY NOT `grep '(❯|›|>)' | tail -1` (what this replaces): that returns the last
+# glyph-bearing raw line, which need not be the composer at all. Claude renders
+# background-task entries DIM and BELOW the composer, and the caller reads dim as
+# "not real text" -- so a genuinely staged composer answered CLEAN and the push
+# would have typed onto a human's half-written line.
+#
+# WHY NOT the rule-anchoring find_composer_line uses: in the raw capture the SGR
+# codes come BEFORE the glyph, so a start-anchored glyph match cannot fire and
+# the glyph has to be matched anywhere in the line -- which makes every boxed
+# line a candidate. Measured live off a real Codex pane: Codex's banner box
+# "│ >_ OpenAI Codex (v0.145.0) │" sits directly under a rule, so it won the
+# anchor, and being dim chrome it declared that pane's genuinely-staged composer
+# clean. Anchoring found a DIFFERENT WRONG LINE than tail -1 did, in the
+# dangerous direction. Correspondence with the line already identified in the
+# plain capture is the only form of this lookup that cannot pick another line.
+# --------------------------------------------------------------------------
+raw_line_for() {
+  local pane_raw="$1" want="$2"
+  local -a raw_lines=() bare_lines=()
+  local i s found=''
+  # -p trims trailing whitespace per line; -e leaves whatever the SGR run puts
+  # after the text, so the two captures differ on the tail. Compare trimmed.
+  want="${want%"${want##*[![:space:]]}"}"
+  [ -z "$want" ] && return 0
+  mapfile -t raw_lines <<< "$pane_raw"
+  # One sed pass, so the strip costs a single fork rather than one per line, and
+  # sed never adds or drops a line -- the two arrays stay index-aligned.
+  mapfile -t bare_lines < <(printf '%s\n' "$pane_raw" \
+    | sed -E $'s/\033\\[[0-9;?]*[a-zA-Z]//g; s/\033\\][^\007]*\007//g' 2>/dev/null)
+  for i in "${!raw_lines[@]}"; do
+    s="${bare_lines[i]-}"
+    s="${s%"${s##*[![:space:]]}"}"
+    if [ "$s" = "$want" ]; then found="${raw_lines[i]}"; fi
+  done
+  printf '%s' "$found"
+}
+
 # Loaded-marker: callers assert this rather than trusting that `.` succeeded, so
 # a half-read or wrong-path source fails loudly at the call site instead of
 # silently leaving check_idle undefined (which bash reports as "command not
 # found" -> non-zero -> reads as IDLE -> types into a busy pane).
-PANE_IDLE_LIB_VERSION=1
+# VERSIONED, not just present: v2 added find_composer_line + raw_line_for, and a
+# caller that needs them against a v1 lib would find them undefined -- which in
+# bash is "command not found", i.e. an empty result and a non-zero rc, which both
+# callers would read as "no composer text here". Callers assert a MINIMUM version
+# (`-ge 2`) so a stale lib fails loudly instead of silently answering "all clear"
+# forever. Bump this whenever a function is ADDED; callers pin the version they
+# actually need.
+#
+# THE VALUE IS ALSO GATED IN CI (scripts/lib-version-gate.mjs). A branch that
+# bumps this without the callers, or that re-uses a number already shipped, is a
+# silent no-op at best and a silently-quiet safety gate at worst, so the number
+# is checked mechanically rather than by review.
+PANE_IDLE_LIB_VERSION=2
 
 # --------------------------------------------------------------------------
 # CLI mode. Only runs when executed directly, never when sourced.

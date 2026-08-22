@@ -119,6 +119,8 @@ function agent(over: Partial<AgentActivity> = {}): AgentActivity {
       },
     ],
     updated: SWEPT,
+    subagentCount: null,
+    inference: null,
     ...over,
   };
 }
@@ -640,5 +642,141 @@ describe("ActivityPanel - hostile inputs", () => {
     expect(el("activity-latest-summit")?.textContent).toContain("no timestamp");
     click("activity-details-toggle-summit");
     expect(el("activity-recent-summit")?.textContent).toContain("no timestamp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The narration line and the sub-agent count
+// ---------------------------------------------------------------------------
+
+/**
+ * Both fields were being written by the producer before the panel had anywhere
+ * to show them. What is graded here is not "does it appear" but the three rules
+ * that make showing it safe: prose never displaces the evidence behind the
+ * pill, a retained sentence is never rendered bare, and a stale document shows
+ * no sentence at all.
+ */
+describe("ActivityPanel - narration and sub-agents", () => {
+  /** A stale view carrying the last document the sweep managed to write. */
+  function staleView(agents: AgentActivity[]): ActivityView {
+    return {
+      state: "offline",
+      reason: "stale",
+      sweptAt: "2026-07-30T07:14:30Z",
+      detail: "last sweep was 180 minutes ago (/srv/activity/activity.json)",
+      agents,
+    };
+  }
+
+  const inference = {
+    taskLine: "wiring thread windowing into the message list",
+    progressNote: "three of five call sites done",
+    current: true,
+    staleReason: null,
+    paneMoved: false,
+    ageSeconds: 240,
+    generatedAt: "2026-07-30T10:10:00Z",
+    sourceSwept: SWEPT,
+    outcome: "ok",
+  };
+
+  it("shows the task line and its progress note", () => {
+    render(live([agent({ inference })]));
+    expect(el("activity-task-summit")?.textContent).toContain("thread windowing");
+    expect(el("activity-progress-summit")?.textContent).toContain("three of five");
+    expect(el("activity-task-stale-summit")).toBeNull();
+  });
+
+  // RULE 1 IS UNCONDITIONAL. Prose sits ABOVE the evidence, never instead of
+  // it: the panel's whole value is that a wrong inference is cheap to spot, and
+  // a sentence written by a model is the single most important thing to be able
+  // to check against what was actually observed.
+  it("never displaces the evidence behind the pill", () => {
+    render(live([agent({ inference })]));
+    const evidence = el("activity-evidence-summit");
+    expect(evidence?.textContent).toContain("idle since 10:12");
+    const card = el("activity-agent-summit")!;
+    const nodes = Array.from(card.querySelectorAll("[data-testid]"));
+    const taskAt = nodes.findIndex((n) => n.getAttribute("data-testid") === "activity-task-summit");
+    const evAt = nodes.findIndex((n) => n.getAttribute("data-testid") === "activity-evidence-summit");
+    expect(taskAt).toBeGreaterThanOrEqual(0);
+    expect(evAt).toBeGreaterThan(taskAt);
+  });
+
+  // RETAINED PROSE IS NEVER BARE. The producer keeps a stale-but-provably-aged
+  // sentence on purpose and marks it; the danger was never stale prose, it was
+  // UNMARKED stale prose. The reason AND the age both have to show, because a
+  // four-minute-old read and a ninety-minute-old one are not the same claim.
+  it("marks a retained sentence with its reason and its age", () => {
+    render(
+      live([
+        agent({
+          inference: {
+            ...inference,
+            current: false,
+            staleReason: "signal-moved",
+            paneMoved: true,
+            ageSeconds: 5400,
+          },
+        }),
+      ])
+    );
+    expect(el("activity-task-summit")?.textContent).toContain("thread windowing");
+    const marker = el("activity-task-stale-summit");
+    expect(marker).not.toBeNull();
+    expect(marker!.getAttribute("data-reason")).toBe("signal-moved");
+    expect(marker!.textContent).toContain("signal-moved");
+    expect(marker!.textContent).toContain("90m ago");
+  });
+
+  // A DEAD SWEEP FREEZES `current` AT TRUE and lets it age silently, so the
+  // record's own freshness flag stops meaning anything the moment the producer
+  // dies. Document-level staleness is the only thing that can catch that, which
+  // is why this is a hard gate rather than a tint. The worktree survives,
+  // because a worktree is a fact and a task line is a claim about now.
+  it("shows no task line at all on a stale document", () => {
+    render(staleView([agent({ inference })]));
+    expect(el("activity-task-summit")).toBeNull();
+    expect(el("activity-task-stale-summit")).toBeNull();
+    expect(el("activity-progress-summit")).toBeNull();
+    expect(el("activity-worktree-summit")).not.toBeNull();
+    expect(el("activity-evidence-summit")).not.toBeNull();
+  });
+
+  it("shows nothing when there is no narration layer, which is the default", () => {
+    render(live([agent()]));
+    expect(el("activity-task-summit")).toBeNull();
+    expect(el("activity-task-stale-summit")).toBeNull();
+  });
+
+  // An empty task line is a producer saying it has nothing. Rendering a blank
+  // line with a "last known" caption under it would be worse than rendering
+  // neither.
+  it("treats an empty task line as absent, marker and all", () => {
+    render(
+      live([
+        agent({
+          inference: { ...inference, taskLine: "", current: false, staleReason: "too-old" },
+        }),
+      ])
+    );
+    expect(el("activity-task-summit")).toBeNull();
+    expect(el("activity-task-stale-summit")).toBeNull();
+  });
+
+  it("counts running sub-agents when there are any", () => {
+    render(live([agent({ subagentCount: 2 })]));
+    expect(el("activity-subagents-summit")?.textContent).toContain("2 sub-agents running");
+    render(live([agent({ subagentCount: 1 })]));
+    expect(el("activity-subagents-summit")?.textContent).toContain("1 sub-agent running");
+  });
+
+  // Absent and zero are different FACTS to a consumer and the same SILENCE to a
+  // reader: "0 sub-agents" costs a line on every card to say nothing.
+  it("says nothing for zero, and nothing for absent", () => {
+    render(live([agent({ subagentCount: 0 })]));
+    expect(el("activity-subagents-summit")).toBeNull();
+    render(live([agent({ subagentCount: null })]));
+    expect(el("activity-subagents-summit")).toBeNull();
   });
 });

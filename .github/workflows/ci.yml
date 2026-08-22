@@ -42,14 +42,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # dashes.test.ts shells out to rg; ubuntu-latest doesn't carry it.
-      # python3-yaml is the base package's inbox CLI checking a card's
-      # metadata region parses as YAML before it writes the block. Installed
-      # explicitly rather than relied on: the runner image happens to carry
-      # PyYAML today, and a suite that is green because of what an image
-      # happens to include is measuring the image.
-      - name: Install ripgrep and PyYAML
-        run: sudo apt-get update && sudo apt-get install -y ripgrep python3-yaml
+      # dashes.test.ts shells out to rg; ubuntu-latest doesn't carry it. jq is
+      # a hard dependency of bin/activity-sweep.sh (it refuses to write rather
+      # than hand-print JSON carrying human text) and of both sweep suites, so
+      # without it those suites fail for an environmental reason rather than a
+      # real one. python3-yaml is the base package's inbox CLI checking a
+      # card's metadata region parses as YAML before it writes the block.
+      # Installed explicitly rather than relied on: the runner image happens
+      # to carry PyYAML today, and a suite that is green because of what an
+      # image happens to include is measuring the image.
+      - name: Install ripgrep, jq and PyYAML
+        run: sudo apt-get update && sudo apt-get install -y ripgrep jq python3-yaml
 
       - name: Typecheck
         run: pnpm typecheck
@@ -87,6 +90,16 @@ jobs:
 
       - name: Leak gate
         run: node scripts/leak-gate.mjs
+
+      # PANE_IDLE_LIB_VERSION is a safety assertion that only holds while one
+      # number means one function surface; see scripts/lib-version-gate.mjs.
+      # The self-test proves the gate still catches a collision before the real
+      # check certifies the tree, same discipline as the leak gate above.
+      - name: Library version gate self-test
+        run: node scripts/lib-version-gate.mjs --self-test
+
+      - name: Library version gate
+        run: node scripts/lib-version-gate.mjs
 
       - name: gitleaks (credential scan)
         uses: gitleaks/gitleaks-action@v2

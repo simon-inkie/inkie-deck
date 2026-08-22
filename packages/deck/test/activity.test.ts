@@ -698,6 +698,8 @@ describe("activityRows", () => {
       idleMinutes: 0,
       worktree: null,
       recent: [],
+      subagentCount: null,
+      inference: null,
       updated: SWEPT,
     },
   ];
@@ -772,5 +774,157 @@ describe("display helpers", () => {
       { status: "done-for-now", count: 1 },
     ]);
     expect(countStatuses([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two producer fields the reader was missing
+// ---------------------------------------------------------------------------
+
+/**
+ * `subagentCount` and `inference` were written by the producer before this
+ * reader had anywhere to put them, so a record carrying both parsed cleanly and
+ * dropped them on the floor. These cases pin the shapes rather than the
+ * rendering (activity-panel.test.tsx owns that half), and they lean on the
+ * degrade paths: both fields cross a JSON boundary from a program on its own
+ * release cycle, so the question that matters is what a malformed one costs.
+ */
+describe("subagentCount", () => {
+  function parseOne(value: unknown): AgentActivity {
+    const doc = liveDocument() as {
+      agents: Record<string, Record<string, unknown>>;
+    };
+    doc.agents["summit"]!["subagentCount"] = value;
+    const res = parseActivityDocument(JSON.stringify(doc));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    return res.doc.agents.find((a) => a.agent === "summit")!;
+  }
+
+  it("carries a positive count", () => {
+    expect(parseOne(3).subagentCount).toBe(3);
+  });
+
+  // THE THREE-VALUED SPLIT, which is the whole point of the field: zero is a
+  // positive claim ("the live UI region was read and listed nothing"), null is
+  // the absence of one ("there was no region to read"). A producer's
+  // waiting-on-machine branch turns on that difference, so a reader that folded
+  // them together would be unable to explain its own pills.
+  it("keeps 0 distinct from absent", () => {
+    expect(parseOne(0).subagentCount).toBe(0);
+    const doc = liveDocument() as { agents: Record<string, Record<string, unknown>> };
+    delete doc.agents["summit"]!["subagentCount"];
+    const res = parseActivityDocument(JSON.stringify(doc));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.doc.agents.find((a) => a.agent === "summit")!.subagentCount).toBeNull();
+  });
+
+  // A count that cannot be one is a producer that cannot be believed about this
+  // field, and "no observation" is the honest reading of that. Degrading to 0
+  // would be worse: 0 is a CLAIM here, and inventing one from garbage is
+  // exactly the confident-wrong-answer this panel exists to avoid.
+  it("degrades a value that cannot be a count to null, never to 0", () => {
+    for (const bad of [-1, 1.5, "2", true, null, {}, Number.NaN]) {
+      expect(parseOne(bad).subagentCount, JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  it("does not reject the record, or the document, over a bad count", () => {
+    const row = parseOne("nonsense");
+    expect(row.status).toBe("done-for-now");
+    expect(row.evidence).not.toBe("");
+  });
+});
+
+describe("inference", () => {
+  function parseWith(value: unknown): AgentActivity {
+    const doc = liveDocument() as {
+      agents: Record<string, Record<string, unknown>>;
+    };
+    doc.agents["summit"]!["inference"] = value;
+    const res = parseActivityDocument(JSON.stringify(doc));
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("unreachable");
+    return res.doc.agents.find((a) => a.agent === "summit")!;
+  }
+
+  const full = {
+    taskLine: "wiring thread windowing into the message list",
+    progressNote: "three of five call sites done",
+    current: true,
+    staleReason: null,
+    paneMoved: false,
+    ageSeconds: 240,
+    generatedAt: "2026-07-30T10:10:00Z",
+    sourceSwept: SWEPT,
+    outcome: "ok",
+  };
+
+  it("parses a complete record", () => {
+    expect(parseWith(full).inference).toEqual(full);
+  });
+
+  it("is null when the producer publishes none", () => {
+    expect(parseWith(undefined).inference).toBeNull();
+    expect(parseWith(null).inference).toBeNull();
+    expect(parseWith("prose").inference).toBeNull();
+    expect(parseWith([]).inference).toBeNull();
+  });
+
+  // The producer RETAINS a stale-but-provably-aged sentence and marks it, so
+  // current:false with a taskLine present is the normal marked case rather than
+  // a contradiction. Both halves have to survive parsing, or the marker arrives
+  // without the thing it marks.
+  it("keeps a retained sentence alongside its staleness reason and age", () => {
+    const row = parseWith({
+      ...full,
+      current: false,
+      staleReason: "signal-moved",
+      paneMoved: true,
+      ageSeconds: 5400,
+    });
+    expect(row.inference?.taskLine).toBe(full.taskLine);
+    expect(row.inference?.current).toBe(false);
+    expect(row.inference?.staleReason).toBe("signal-moved");
+    expect(row.inference?.ageSeconds).toBe(5400);
+  });
+
+  // FRESHNESS DEGRADES TOWARDS MARKED, never towards current. An unreadable
+  // flag means the reader cannot show the sentence as a claim about now.
+  it("treats an unreadable `current` as not current", () => {
+    for (const bad of ["true", 1, null, undefined]) {
+      expect(parseWith({ ...full, current: bad }).inference?.current, String(bad)).toBe(false);
+    }
+  });
+
+  it("degrades each field independently rather than dropping the object", () => {
+    const row = parseWith({
+      taskLine: 42,
+      progressNote: null,
+      current: true,
+      staleReason: { nested: true },
+      paneMoved: "yes",
+      ageSeconds: "240",
+    });
+    expect(row.inference).not.toBeNull();
+    expect(row.inference?.taskLine).toBeNull();
+    expect(row.inference?.staleReason).toBeNull();
+    // Only a literal `true` is true; a truthy string is not a boolean.
+    expect(row.inference?.paneMoved).toBe(false);
+    expect(row.inference?.ageSeconds).toBeNull();
+    // And the deterministic half of the record is untouched by any of it.
+    expect(row.status).toBe("done-for-now");
+  });
+
+  // PROSE ONLY, NO PILL AUTHORITY. The producer builds this object from an
+  // allowlist so a model's own status read cannot reach the document; the
+  // reader has no field for one either, so even a producer that started
+  // emitting one could not get it in front of a consumer through this seam.
+  it("has nowhere to put a model's own status read", () => {
+    const row = parseWith({ ...full, statusRead: "needs-you", statusWhy: "it asked me" });
+    expect(row.status).toBe("done-for-now");
+    expect(JSON.stringify(row)).not.toContain("statusRead");
+    expect(JSON.stringify(row)).not.toContain("needs-you");
   });
 });

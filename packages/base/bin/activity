@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# activity -- query what each agent is doing, from the activity sweep's state file.
+#
+# An agent (or a person) asking "what state is agent X in, what is it working on,
+# is it stuck" otherwise does it by hand: capture the teammate's pane, then make
+# a judgement call. This replaces that with one command.
+#
+# It is a THIN READER and must stay one. It polls nothing, captures nothing,
+# spends nothing, and costs no model call -- it is a second consumer of the file
+# bin/activity-sweep.sh already writes, exactly as bin/inbox reads INBOX_ROOT
+# without going through the web application. If you find yourself adding a
+# capture or a fetch here, it belongs in the sweep instead.
+#
+#   activity status <agent>        one agent, in detail
+#   activity status --all          every agent, one line each plus evidence
+#   activity status ... --json     the raw per-agent record(s), for scripts
+#   activity pin <agent> <path>    pin that agent's worktree (always beats the guesser)
+#   activity unpin <agent>         drop the pin, hand the agent back to the guesser
+#   activity agents                list the agents present in the state file
+#   activity inference-report      the freshness/merge review surface
+#
+# A MODEL LAYER'S PROSE IS GATED HERE AS WELL AS AT THE PUBLISHER, and the gate
+# is `!documentStale` alone. It is deliberately NOT also `current`: the sweep
+# RETAINS a stale-but-provably-aged task line on purpose and marks it with
+# `current:false` plus a `staleReason`, dropping it to null itself past the age
+# ceiling. Re-nulling it here would make this tool the one consumer that silently
+# discarded prose the producer had already judged fit to show, and two consumers
+# of one document disagreeing about what it says is a worse failure than the one
+# that gate was written for. What remains is the half no producer can cover: "the
+# sweep itself died", where `current` freezes at true and ages, which the
+# document-staleness banner catches. Retained prose is rendered with an explicit
+# LAST KNOWN marker naming the reason and the age, never bare.
+#
+# A sidecar may also carry a model's own read of the STATUS. Those fields are
+# stripped unconditionally: whether a model gets pill authority is a decision for
+# a deployment to make explicitly, and until it does, a consumer must never be
+# able to act on a model's status read as though it were the pill.
+#
+# FRESHNESS IS PART OF THE ANSWER. The sweep runs on a timer; if it has stopped,
+# this file keeps saying whatever was true when it died. Every output therefore
+# leads with how old the data is, and anything past ACTIVITY_STALE_MIN is flagged
+# loudly rather than served silently. An agent about to type into someone's pane
+# on the strength of a `done-for-now` from forty minutes ago is the exact failure
+# this guards.
+#
+# Detail is shown BY DEFAULT here, unlike a web panel: a terminal is not fighting
+# for column width, so there is no reason to withhold the note behind a flag.
+#
+# Env:
+#   ACTIVITY_ROOT       state home (default $HOME/.the-vault/activity)
+#   ACTIVITY_FILE       override the state file path directly
+#   ACTIVITY_PINS_FILE  override the pins sidecar path
+#   ACTIVITY_STALE_MIN  minutes before data is called stale (default 5)
+#   ACTIVITY_INFERENCES_FILE, ACTIVITY_MERGE_PREVIEW_FILE
+#                       the model-layer sidecar and the sweep's shadow-mode
+#                       preview, read only by `inference-report`
+set -u
+
+# Same reason as the sweep: a minimal PATH (schedulers, supervisors) omits
+# ~/.local/bin, where jq is commonly installed.
+export PATH="$HOME/.local/bin:$PATH"
+
+ACTIVITY_ROOT="${ACTIVITY_ROOT:-$HOME/.the-vault/activity}"
+ACTIVITY_FILE="${ACTIVITY_FILE:-$ACTIVITY_ROOT/activity.json}"
+PINS_FILE="${ACTIVITY_PINS_FILE:-$ACTIVITY_ROOT/pins.json}"
+STALE_MIN="${ACTIVITY_STALE_MIN:-5}"
+# Read-only inputs for `inference-report`. Same defaults as the sweep's.
+INFERENCES_FILE="${ACTIVITY_INFERENCES_FILE:-$ACTIVITY_ROOT/inferences.json}"
+MERGE_PREVIEW_FILE="${ACTIVITY_MERGE_PREVIEW_FILE:-$ACTIVITY_ROOT/merge-preview.json}"
+
+usage() {
+  cat <<'EOF'
+activity -- what is each agent doing, read from the activity sweep's state file.
+
+  activity status <agent>        one agent, in detail
+  activity status --all          every agent, one line each plus its evidence
+  activity status ... --json     the raw record(s), for scripts
+  activity pin <agent> <path>    pin that agent's worktree (always beats the guesser)
+  activity unpin <agent>         drop the pin, hand the agent back to the guesser
+  activity agents                list the agents present in the state file
+  activity inference-report      freshness counters, merge mode, and any sidecar
+                                 fault, from whichever of activity.json or
+                                 merge-preview.json is current
+
+Every output states how old the data is; past ACTIVITY_STALE_MIN (default 5m)
+it says so loudly rather than serving it silently. Verify before acting on
+stale data -- the sweep may be down. A model-written task line that is no
+longer current is shown as LAST KNOWN with its reason and age; if the document
+itself is stale, no task line is shown at all.
+
+Env: ACTIVITY_ROOT, ACTIVITY_FILE, ACTIVITY_PINS_FILE, ACTIVITY_STALE_MIN,
+     ACTIVITY_INFERENCES_FILE, ACTIVITY_MERGE_PREVIEW_FILE
+Exit: 0 ok, 1 usage, 2 no/invalid state file, 3 unknown agent
+EOF
+  exit "${1:-0}"
+}
+
+command -v jq >/dev/null 2>&1 || { echo "activity: jq not found on PATH" >&2; exit 1; }
+
+need_file() {
+  if [ ! -f "$ACTIVITY_FILE" ]; then
+    echo "activity: engine offline -- no state file at $ACTIVITY_FILE" >&2
+    echo "activity: (is bin/activity-sweep.sh scheduled yet?)" >&2
+    exit 2
+  fi
+  if ! jq -e . "$ACTIVITY_FILE" >/dev/null 2>&1; then
+    echo "activity: state file at $ACTIVITY_FILE is not valid JSON" >&2
+    exit 2
+  fi
+}
+
+# Age of the data, in whole minutes. `date -d` on the swept timestamp, not on the
+# file's mtime: the sweep rewrites the file every tick regardless of whether it
+# managed to observe anything, so mtime answers "did the process run" while the
+# swept field answers "how old is what it is telling me".
+data_age_min() {
+  local swept epoch now
+  swept=$(jq -r '.swept // empty' "$ACTIVITY_FILE" 2>/dev/null)
+  [ -n "$swept" ] || { echo 99999; return; }
+  epoch=$(date -u -d "$swept" +%s 2>/dev/null) || { echo 99999; return; }
+  now=$(date +%s)
+  echo $(( (now - epoch) / 60 ))
+}
+
+freshness_line() {
+  local age="$1" swept
+  swept=$(jq -r '.swept // "unknown"' "$ACTIVITY_FILE" 2>/dev/null)
+  if [ "$age" -ge "$STALE_MIN" ]; then
+    echo "!! STALE: last swept $swept (${age}m ago, threshold ${STALE_MIN}m) -- the activity engine may be down. Verify before acting on this."
+  else
+    echo "swept $swept (${age}m ago)"
+  fi
+}
+
+# ---- rendering -------------------------------------------------------------------
+# All formatting lives in jq so the layout is one artefact rather than a pile of
+# printf calls, and so the --json path is the same data minus the presentation.
+# rpad never TRUNCATES. A fixed-width slice would silently mangle a long worktree
+# name into a different-looking path, and a path that reads wrong is worse than a
+# ragged column.
+RPAD='def rpad(n): . + (" " * (if (n - length) > 0 then (n - length) else 0 end));'
+
+# THE NORMALISER. Applied on EVERY path -- rendered and --json, single-agent and
+# --all -- because the two --json paths are raw passthroughs of the whole agent
+# record and a key that reaches one reaches every script anyone has written.
+#
+# Two jobs, and they are different jobs:
+#   1. strip a model's own status read unconditionally. Publishing it would let a
+#      consumer act on it before any deployment has decided a model gets pill
+#      authority.
+#   2. null the prose when the DOCUMENT is stale. That half is a hard gate: if
+#      the SWEEP dies, `current` freezes at true and ages silently, so a dead
+#      producer must blank the prose no matter what the record claims.
+#
+# The gate is not weaker than a `current != true` test, it MOVED. Retained prose
+# is never rendered bare -- the render paths below mark it with its reason and
+# its age, and --json carries `current:false`, `staleReason` and `ageSeconds`
+# untouched for anything scripting against it.
+NORMALISE='
+def norm_inference($stale):
+  if (.inference | type) != "object" then .
+  else .inference |= ( del(.statusRead, .statusWhy)
+       | if $stale
+         then (.taskLine = null | .progressNote = null)
+         else . end )
+  end;
+'
+
+RENDER_ONE='
+def wt: .worktree;
+"\(.agent) -- \(.status)",
+"  why       \(.evidence)",
+(if (.inference | type) == "object" then
+   (if .inference.taskLine != null
+    then "  task      \(.inference.taskLine)",
+         # RETAINED PROSE IS NEVER RENDERED BARE. current:false with a task line
+         # present means the sweep kept the last known read past a staleness
+         # verdict, so the marker names the reason AND the age -- the age is what
+         # lets a reader judge it, and it is the half a bare "(stale)" loses.
+         (if .inference.current != true
+          then "            ^^ LAST KNOWN, not current: \(.inference.staleReason // "stale")" +
+               (if (.inference.ageSeconds // null) != null
+                then " (read \((.inference.ageSeconds / 60) | floor)m ago)" else "" end)
+          else empty end),
+         (if .inference.progressNote != null and .inference.progressNote != ""
+          then "  progress  \(.inference.progressNote)" else empty end),
+         (if .inference.current == true and .inference.paneMoved
+          then "  (task line held through a signal change, within the grace window)" else empty end)
+    else "  task      (none current: \(.inference.staleReason // "stale"))" end)
+ else empty end),
+"  pane      " + (if .busy then "BUSY (mid-turn)" else "idle \(.idleMinutes // 0)m (unchanged since \(.paneUnchangedSince))" end),
+(if (.inboxUnreadInbound // 0) > 0
+ then "  inbox     \(.inboxUnreadInbound) inbound unread"
+ else empty end),
+# Same render gate as inbox unread, for the same reason: absent and zero must
+# read identically, so "0 sub-agents" never costs a line on every card to say
+# nothing. null (no live UI region to read) collapses into the same silence.
+(if (.subagentCount // 0) > 0
+ then "  subagents \(.subagentCount) running"
+ else empty end),
+(if wt.path == null
+ then "  worktree  (none identified)  [\(wt.confidence)]"
+ else "  worktree  \(wt.path)  [\(wt.confidence)]",
+      "            branch  \(wt.branch // "-")",
+      "            why     \(wt.reasons | join(", "))"
+ end),
+(if (wt.alternatives // []) | length > 0
+ then "            other   " + ((wt.alternatives | map("\(.path) (\(.score))")) | join(", "))
+ else empty end),
+(if wt.guess != null and wt.guess.path != wt.path
+ then "            NOTE    pinned, but the scorer would have said \(wt.guess.path) [\(wt.guess.confidence)]"
+ else empty end),
+(if (.recent // []) | length > 0
+ then "  recent    " + ((.recent | map("\(.at)  \(.kind | rpad(7))  \(.label)")) | join("\n            "))
+ else "  recent    (nothing recorded)" end)
+'
+
+RENDER_ALL='
+.agents | to_entries | sort_by(.key)[] |
+  (.key | rpad(12)) + " " + (.value.status | rpad(20)) + " " +
+  ((if .value.busy then "busy" else "idle \(.value.idleMinutes // 0)m" end) | rpad(10)) + " " +
+  ((.value.worktree.path // "-" | split("/") | last) | rpad(28)) + " " +
+  "[\(.value.worktree.confidence)]",
+  (if (.value.inference | type) == "object" and .value.inference.taskLine != null
+   then "             task: \(.value.inference.taskLine)" +
+        (if .value.inference.current != true
+         then "  [LAST KNOWN: \(.value.inference.staleReason // "stale")]" else "" end)
+   else empty end),
+  "             \(.value.evidence)"
+'
+
+cmd_status() {
+  local agent="" json=0 all=0 a
+  for a in "$@"; do
+    case "$a" in
+      --all)  all=1 ;;
+      --json) json=1 ;;
+      -*)     echo "activity: unknown flag $a" >&2; exit 1 ;;
+      # A SECOND agent name used to overwrite the first in silence, answering
+      # about whichever happened to be last. Refusing is the only honest option:
+      # this tool's whole point is not serving a confident answer to a question
+      # nobody asked.
+      *)      [ -z "$agent" ] || { echo "activity: one agent at a time (got '$agent' and '$a')" >&2; exit 1; }
+              agent="$a" ;;
+    esac
+  done
+  # `status --all <agent>` used to set both, and --all won: the named agent was
+  # silently dropped and every agent printed instead. An over-answer still reads
+  # as an answer, and anything scripting this would never see the difference.
+  if [ -n "$agent" ] && [ "$all" = "1" ]; then
+    echo "activity: --all and an agent name ('$agent') ask different questions; pick one" >&2
+    exit 1
+  fi
+  [ -n "$agent" ] || [ "$all" = "1" ] || { echo "activity: status needs an agent name or --all" >&2; exit 1; }
+  need_file
+  local age; age=$(data_age_min)
+
+  local stale; stale=$( [ "$age" -ge "$STALE_MIN" ] && echo true || echo false )
+
+  if [ "$all" = "1" ]; then
+    if [ "$json" = "1" ]; then
+      # The def block and the filter are ONE program string. Passing them as two
+      # arguments makes jq read the second as a FILENAME and fail with "top-level
+      # program not given" -- silently, because it still exits through the
+      # pipeline.
+      jq --argjson stale "$stale" --argjson ageMin "$age" \
+         "$NORMALISE"'. + {stale:$stale, staleMinutes:$ageMin}
+          | .agents |= with_entries(.value |= norm_inference($stale))' "$ACTIVITY_FILE"
+      return 0
+    fi
+    echo "activity -- $(freshness_line "$age")"
+    echo
+    jq -r --argjson stale "$stale" \
+       "$RPAD $NORMALISE"'.agents |= with_entries(.value |= norm_inference($stale)) | '"$RENDER_ALL" \
+       "$ACTIVITY_FILE"
+    return 0
+  fi
+
+  if ! jq -e --arg a "$agent" '.agents | has($a)' "$ACTIVITY_FILE" >/dev/null 2>&1; then
+    echo "activity: no record for '$agent'. Known: $(jq -r '.agents | keys | join(", ")' "$ACTIVITY_FILE")" >&2
+    exit 3
+  fi
+  if [ "$json" = "1" ]; then
+    jq --arg a "$agent" --argjson stale "$stale" --argjson ageMin "$age" \
+       "$NORMALISE"'(.agents[$a] | norm_inference($stale))
+        + {agent:$a, swept:.swept, stale:$stale, staleMinutes:$ageMin}' "$ACTIVITY_FILE"
+    return 0
+  fi
+  jq -r --arg a "$agent" --argjson stale "$stale" \
+     "$RPAD $NORMALISE"'(.agents[$a] | norm_inference($stale)) + {agent:$a} | '"$RENDER_ONE" \
+     "$ACTIVITY_FILE"
+  echo "  freshness $(freshness_line "$age")"
+}
+
+# ---- inference-report -------------------------------------------------------------
+# The repeatable command to review a shadow window with, rather than an ad-hoc jq
+# recipe reinvented each morning. READ-ONLY, and deliberately unopinionated: it
+# renders what happened, it does not grade it.
+#
+# It reports on the SWEEP's own merge, which is the half this package ships. A
+# model layer that writes the sidecar would add its own spend and agreement
+# surfaces, and those belong with it rather than here, where they would read
+# files nothing in this package ever writes.
+cmd_inference_report() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) echo "activity inference-report"; return 0 ;;
+      *) echo "activity: unknown flag $1" >&2; exit 1 ;;
+    esac
+  done
+
+  local meta='null' src="none"
+  if [ -f "$MERGE_PREVIEW_FILE" ] && jq -e . "$MERGE_PREVIEW_FILE" >/dev/null 2>&1; then
+    meta=$(jq -c '.inferenceMeta // null' "$MERGE_PREVIEW_FILE"); src="shadow (merge-preview.json)"
+  elif [ -f "$ACTIVITY_FILE" ] && jq -e '.inferenceMeta' "$ACTIVITY_FILE" >/dev/null 2>&1; then
+    meta=$(jq -c '.inferenceMeta' "$ACTIVITY_FILE"); src="live (activity.json)"
+  fi
+
+  echo "activity inference-report"
+  echo "  source    $src"
+  if [ "$meta" = "null" ]; then
+    echo
+    echo "  Nothing to report: no merge has been computed yet. Either the sweep has not"
+    echo "  run since a model layer was wired in, or ACTIVITY_MODEL_MODE is unset."
+  else
+    printf '%s' "$meta" | jq -r '
+      "  sweep     mode=\(.sweepMode // "?")  merged=\(.mergedAt // "?")",
+      (if .sidecar == null then "  model     no sidecar read this tick" + (if .sidecarFault then " (\(.sidecarFault))" else "" end)
+       else "  model     ran=\(.sidecar.ranAt // "?")  mode=\(.sidecar.mode // "?")  id=\(.sidecar.modelId // "?")  version=\(.sidecar.modelVersion // "unresolved")",
+            "            keyPresent=\(.sidecar.keyPresent)  modelPinOk=\(.sidecar.modelPinOk)"
+       end),
+      "",
+      "Sweep-side freshness counters (why prose was or was not published)",
+      ( (.counters // {}) | to_entries | sort_by(.key)[] | "  \(.key)\(" " * (20 - (.key | length)))\(.value)" ),
+      (if ((.counters // {}) | length) == 0 then "  (none yet)" else empty end),
+      (if ((.counters.clockSkew // 0) + (.counters.badTimestamp // 0)) > 0
+       then "  NOTE: a persistent clockSkew/badTimestamp reading means either the box clock is",
+            "        faulty or something other than the model layer is writing the sidecar."
+       else empty end),
+      (if ((.counters.sourceSweptSkew // 0) + (.counters.badSourceSwept // 0)) > 0
+       then "  NOTE: sourceSwept faults point at the model layer'"'"'s READ of activity.json,",
+            "        not at the box clock. Different fault, different remedy."
+       else empty end)'
+    echo
+    echo "Model-side outcomes this run"
+    printf '%s' "$meta" | jq -r '
+      (.sidecar.counters // {}) | to_entries | sort_by(.key)[] | "  \(.key)\(" " * (20 - (.key | length)))\(.value)"' 2>/dev/null
+    printf '%s' "$meta" | jq -r 'if (.sidecar.counters // {} | length) == 0 then "  (none yet)" else empty end'
+  fi
+
+  if [ -f "$INFERENCES_FILE" ] && jq -e . "$INFERENCES_FILE" >/dev/null 2>&1; then
+    # Every unreconciled charge is EXPLAINED, not just counted. A reservation
+    # kept because the provider returned no usage data is a different thing from
+    # one kept because the call died, and a total alone cannot tell them apart.
+    local unrec
+    unrec=$(jq -r '.agents // {} | to_entries[] | select(.value.unreconciled == true)
+                   | "  \(.key)  kept $\(.value.reservedUsd // 0)  outcome=\(.value.outcome // "?")  reason=\(.value.unreconciledReason // .value.lastError // "no usage data in the response")"' \
+            "$INFERENCES_FILE")
+    if [ -n "$unrec" ]; then
+      echo
+      echo "Unreconciled reservations, each explained:"
+      printf '%s\n' "$unrec"
+    fi
+  fi
+}
+
+cmd_pin() {
+  local agent="${1:-}" path="${2:-}"
+  [ -n "$agent" ] && [ -n "$path" ] || { echo "activity: pin needs <agent> <worktree-path>" >&2; exit 1; }
+  [ -d "$path" ] || { echo "activity: $path is not a directory" >&2; exit 1; }
+  # A warning, not a refusal: pinning a directory that is not (yet) a git
+  # worktree is odd but not this tool's call to forbid, and refusing would make
+  # the override useless in exactly the cases it exists for.
+  [ -e "$path/.git" ] || echo "activity: warning -- $path has no .git, pinning anyway" >&2
+  mkdir -p "$(dirname "$PINS_FILE")"
+  [ -s "$PINS_FILE" ] || echo '{}' > "$PINS_FILE"
+  jq -e . "$PINS_FILE" >/dev/null 2>&1 || echo '{}' > "$PINS_FILE"
+  local tmp; tmp=$(mktemp) || exit 1
+  jq --arg a "$agent" --arg p "$path" --arg by "${AGENT_NAME:-$USER}" \
+     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '.[$a] = {path:$p, by:$by, at:$at}' "$PINS_FILE" > "$tmp" && mv "$tmp" "$PINS_FILE"
+  echo "pinned $agent -> $path (takes effect on the next sweep tick)"
+}
+
+cmd_unpin() {
+  local agent="${1:-}"
+  [ -n "$agent" ] || { echo "activity: unpin needs <agent>" >&2; exit 1; }
+  [ -s "$PINS_FILE" ] || { echo "activity: no pins file, nothing to unpin"; return 0; }
+  local tmp; tmp=$(mktemp) || exit 1
+  jq --arg a "$agent" 'del(.[$a])' "$PINS_FILE" > "$tmp" && mv "$tmp" "$PINS_FILE"
+  echo "unpinned $agent (takes effect on the next sweep tick)"
+}
+
+case "${1:-}" in
+  status)            shift; cmd_status "$@" ;;
+  inference-report)  shift; cmd_inference_report "$@" ;;
+  pin)         shift; cmd_pin "$@" ;;
+  unpin)       shift; cmd_unpin "$@" ;;
+  agents)      need_file; jq -r '.agents | keys[]' "$ACTIVITY_FILE" ;;
+  -h|--help|"") usage 0 ;;
+  *)           echo "activity: unknown command '$1'" >&2; usage 1 ;;
+esac

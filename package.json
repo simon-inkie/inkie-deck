@@ -23,7 +23,9 @@
     "check:leaks": "node scripts/leak-gate.mjs",
     "check:leaks:history": "node scripts/leak-gate.mjs --history",
     "check:leaks:messages": "node scripts/leak-gate.mjs --messages",
-    "check:licence": "node scripts/licence-gate.mjs"
+    "check:licence": "node scripts/licence-gate.mjs",
+    "_comment:check:lib-version": "PANE_IDLE_LIB_VERSION is a safety assertion, not a label: two callers refuse to run against a library older than the version they pin, precisely because an absent function reads as an empty answer rather than as an error. That only holds while one number means one function surface, and nothing else in the build has an opinion about it. The collision this catches was found by hand on a real tree, where a dormant branch had claimed the same version for a different surface.",
+    "check:lib-version": "node scripts/lib-version-gate.mjs"
   },
   "devDependencies": {
     "dependency-cruiser": "^16.10.0",

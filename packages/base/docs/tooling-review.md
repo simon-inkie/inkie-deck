@@ -66,6 +66,79 @@ reaches the model anyway through the working directory, so a session carrying no
 persona at all answers a name question correctly, and a check built on the name
 would report success in exactly the case it exists to catch.
 
+## Ported whole: `bin/activity-sweep.sh` and `bin/activity`
+
+A pure observer, and that is what made it portable whole. It reads panes, inbox
+threads and git metadata, and it writes one file. It has no side effects to
+reason about, no escalation path to reshape, and the real names in it turned
+out to be a small parameterisable slice rather than a design assumption:
+where the state lives, where the inboxes live, what the tmux session is called,
+which windows to skip, and which correspondents are people.
+
+Two of those defaults changed rather than being carried across.
+
+The skip list ships EMPTY. A skip list is a statement about one deployment's
+roster, and shipping one would silently drop somebody's agent from their panel
+for a reason found nowhere in their own configuration.
+
+`ACTIVITY_HUMANS` ships empty and means UNRESTRICTED, not disabled. Two branches
+of the pill cascade care whether a correspondent is a person: an unanswered card
+counts as `needs-you`, and a person who has not read a status note is
+deliberately not a block. Restricting to a configured list by default would have
+left a fresh install with a `needs-you` pill that can never fire and no error
+anywhere saying why, which is a feature that looks present and is inert.
+
+One behavioural difference, and it is deliberate. The sweep assembles a per-agent
+SIGNALS DIGEST -- bounded, credential-redacted excerpts of inbox messages plus a
+git summary -- for a narration layer to read. That layer is not in this package,
+so `ACTIVITY_SIGNAL_PERSIST` defaults to 0 here where the source defaults to 1.
+Writing excerpts of every message an agent has exchanged to disk by default, for
+a reader that does not exist, is a privacy cost with no benefit attached. The
+plumbing stays, because the plumbing is the half with the safety properties in
+it (the hashes that decide whether prose is still about the same thing, the
+freshness verdict, the rule that a hash is published only when the bytes it
+names actually reached disk) and those belong with the producer.
+
+Not ported: the narration layer itself. The public panel cannot render prose
+yet, and it costs real money per run. Deferred, not excluded.
+
+`bin/activity`'s `inference-report` came across trimmed. Its spend and
+agreement sections read ledgers that only the narration layer writes, so here
+they would have reported on files nothing in this package ever creates. What
+remains reports on the sweep's own merge, which is the half that ships.
+
+## Ported reshaped: `bin/stuck-pane-sweep.sh`
+
+The detection logic came across unchanged; the ROUTING did not, because routing
+is the part that was entirely about one deployment's org chart. Internally it
+named two specific agents in the source: one that decides, and one that
+deputises when the first one is itself the wedged pane.
+
+Here both are required configuration with no default recipient, and the second
+is derived from the first rather than configured independently. Unconfigured, it
+runs report-only: it detects, it records every finding in its state file and its
+append-only history log, and it types into nobody's pane. That is not a degraded
+mode. It is how the source deployment ran this system for weeks before live
+escalation was turned on deliberately, and defaulting a stranger's install to
+silently typing into panes they never asked it to touch is not a decision this
+package gets to make for them.
+
+The composer-pending tier came across with its calibration stated rather than
+implied. It was verified empirically against two specific runtime versions on
+live panes on one specific day; there is no specification for how a terminal
+composer renders, so it is reverse-engineered fact with a shelf life. What makes
+it safe to ship anyway is the polarity, which the suite pins: an unrecognised
+composer format falls through and can never produce an escalation.
+
+## Not ported at all: the context sweep
+
+The internal platform has a third sibling sweep that watches how full each
+agent's context window is and acts on the answer. It fails the bar the other two
+pass: it is not an observer, and what it does about what it finds is specific to
+one deployment's runtime, thresholds and escalation conventions. There was no
+version of it that was a pattern rather than a configuration, so there is no
+version of it here.
+
 ## Ported, removed, restored: the `inbox` CLI
 
 The inbox DM protocol implementation, the concrete counterpart to the

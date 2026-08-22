@@ -237,11 +237,12 @@ export function isActionResolved(actionCard: {
 /**
  * Derive the dedicated Decisions+Actions tab list from raw inbox entries.
  *
- * Pure function: no IO, no clock reads. Unlike deriveNeedsYou (the homepage /
- * bell contract, which is frozen under Option 1 and only checks answered/done/
- * dismissed), this filter checks EVERY terminal state - answered/dismissed/
- * superseded for decisions, done/dismissed/superseded for actions - so a card
- * closed via the new dismiss/supersede buttons leaves this tab immediately.
+ * Pure function: no IO, no clock reads. This filter checks EVERY terminal state
+ * - answered/dismissed/superseded for decisions, done/dismissed/superseded for
+ * actions - so a card closed via the dismiss/supersede buttons leaves this tab
+ * immediately. deriveNeedsYou now agrees on every one of those except a
+ * DISMISSED DECISION, which the homepage/bell contract still surfaces (the
+ * Option-1 freeze; see the comment at that check).
  * Blocked kanban cards are NOT included (this tab is decisions + actions only).
  *
  * Own messages (header.from === user) are excluded.
@@ -370,9 +371,14 @@ function priorityWeight(p?: string): number {
  * `now` parameter so tests can assert deterministic results.
  *
  * Three kinds of items:
- *   1. Unanswered decision cards (block.card defined, not answered)
- *   2. Un-done action cards (block.actionCard defined, not done)
+ *   1. Open decision cards (block.card defined, not answered, not superseded)
+ *   2. Open action cards (block.actionCard defined, not done, not dismissed,
+ *      not superseded)
  *   3. Blocked kanban cards (blockedCards passed in, filtered to column "blocked")
+ *
+ * A DISMISSED DECISION is the one terminal state this function does not honour;
+ * see the comment at that check for why it is a deliberate divergence rather
+ * than an oversight.
  *
  * Items from Alex (header.from === "alex") are excluded.
  * Items whose id is in handledIds are excluded.
@@ -414,6 +420,24 @@ export function deriveNeedsYou(
     // --- Decision card ---
     if (block.card !== undefined) {
       if (block.card.answered !== undefined) continue; // already answered
+      // SUPERSEDED IS TERMINAL HERE TOO, as of the activity-sweep port. It was
+      // not, and that was one repository holding three answers to one question:
+      // isDecisionResolved, the card components and the Cards tab all treated a
+      // superseded card as resolved, while this function did not, and neither
+      // did the ported sweep's classifier. Harmless while the divergence was
+      // invisible; not harmless once a second reader publishes a needs-you
+      // status from the same files, because a card the reader has already
+      // closed goes on driving that status for the rest of the card window.
+      //
+      // STILL DIVERGENT, deliberately and separately: a DISMISSED decision.
+      // deriveCardsTab and the card components treat it as resolved; this
+      // function does not, which is the Option-1 freeze of the homepage/bell
+      // contract made when dismiss landed, pinned by its own guard test, and a
+      // product decision about the homepage rather than a transcription error.
+      // Recorded in docs/protocol.md section 11 (known deviations) rather
+      // than changed in passing. A dismissed ACTION was already excluded below, so the
+      // divergence is one state on one card kind.
+      if (block.card.superseded !== undefined) continue; // superseded in place
 
       const id = `${agentName}/${block.header.timestamp}/${block.card.decisionId}`;
       if (handledIds.has(id)) continue;
@@ -449,6 +473,10 @@ export function deriveNeedsYou(
     if (block.actionCard !== undefined) {
       if (block.actionCard.done !== undefined) continue; // already done
       if (block.actionCard.dismissed !== undefined) continue; // dismissed
+      // Superseded: see the decision branch above. An action's three terminal
+      // states are now all checked here, so isActionResolved and this function
+      // agree completely.
+      if (block.actionCard.superseded !== undefined) continue; // superseded in place
 
       const id = `${agentName}/${block.header.timestamp}/${block.actionCard.actionId}`;
       if (handledIds.has(id)) continue;
