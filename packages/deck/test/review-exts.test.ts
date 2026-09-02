@@ -407,6 +407,37 @@ describe("isSecretBasename", () => {
     expect(isSecretBasename("Signing_Key.json")).toBe(true);
   });
 
+  // MCP server configs. Named for the OUTCOME (credentials stay unservable),
+  // not for the input, so the assertion cannot be inverted quietly.
+  it("denies MCP configs, which carry live credentials under an innocent name", () => {
+    // Both spellings occur in real trees: ".mcp.json" at a repository root,
+    // "mcp.json" inside an editor's dot-directory.
+    expect(isSecretBasename(".mcp.json")).toBe(true);
+    expect(isSecretBasename("mcp.json")).toBe(true);
+    expect(isSecretBasename(".MCP.json")).toBe(true);
+  });
+
+  it("the deny reaches the panel gate, not only the predicate", () => {
+    // Regression guard for the actual hole. isSecretBasename is consulted by
+    // isReviewablePath on the last path segment, so a rooted path to an MCP
+    // config must not advertise itself as panel-openable either. Asserting the
+    // predicate alone would pass even if the deny were unwired from the gate.
+    expect(isReviewablePath("/home/you/project/.mcp.json")).toBe(false);
+    expect(isReviewablePath("/home/you/project/.cursor/mcp.json")).toBe(false);
+    expect(isReviewablePath("~/project/.mcp.json")).toBe(false);
+  });
+
+  it("still allows ordinary config JSON that is not a known credential store", () => {
+    // The deny must stay targeted. Over-denying would silently make normal
+    // project files unreadable in the review panel, which is the failure mode
+    // this whole allowlist exists to avoid.
+    expect(isSecretBasename("package.json")).toBe(false);
+    expect(isSecretBasename("tsconfig.json")).toBe(false);
+    expect(isSecretBasename("settings.json")).toBe(false);
+    // A basename that merely CONTAINS "mcp" is not an MCP config.
+    expect(isSecretBasename("mcp-client.json")).toBe(false);
+  });
+
   // .env variants.
   it("denies .env", () => {
     expect(isSecretBasename(".env")).toBe(true);

@@ -3,7 +3,7 @@
  *
  * Covers:
  * - Three kinds (decision, action, blocked) all appear in output
- * - Decisions: excludes answered cards, and (since the sweep port) superseded ones
+ * - Decisions: excludes answered, dismissed and superseded cards
  * - Actions: excludes done actions, dismissed ones, and superseded ones
  * - Blocked: filters to column "blocked" only
  * - Ranking: overdue desc, priority asc, age desc, lexicographic id
@@ -547,9 +547,9 @@ describe("deriveNeedsYou - TASK-440 dismissed exclusion", () => {
 // answers. The port makes that visible to a person, because the sweep publishes
 // its own needs-you status read from the same files.
 //
-// A DISMISSED DECISION is deliberately NOT here: it remains visible on the
-// homepage, which is the surviving half of the Option-1 freeze. See
-// derive-cards-tab.test.ts, where the two filters are pinned against each other.
+// A DISMISSED DECISION used to be deliberately absent from this suite, because
+// it stayed visible on the homepage under the surviving half of that freeze.
+// That half is lifted too now, and the case lives in the suite below.
 // ---------------------------------------------------------------------------
 
 describe("deriveNeedsYou - superseded exclusion", () => {
@@ -613,6 +613,166 @@ describe("deriveNeedsYou - superseded exclusion", () => {
 
     const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
     expect(items).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite: every terminal state clears the homepage queue
+//
+// The last of the Option-1 freeze. deriveNeedsYou tested one terminal key fewer
+// for decisions than the protocol defines, and the cost was closed work sitting
+// on the homepage and in the bell until the card aged out of its window. Both
+// derives now share ONE definition of resolved (isDecisionResolved /
+// isActionResolved). These cases are named for the OUTCOME they protect: work
+// that has been closed is off the homepage, and work that has not is still on
+// it.
+// ---------------------------------------------------------------------------
+
+describe("deriveNeedsYou - closed work leaves the homepage queue", () => {
+  it("a dismissed decision is off the homepage queue", () => {
+    const entry = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "dec-dismissed",
+    });
+    entry.block.card!.dismissed = "2026-06-10T11:00:00Z";
+
+    const { items } = deriveNeedsYou([entry], [], new Set(), new Map(), FIXED_NOW);
+    expect(items).toHaveLength(0);
+  });
+
+  it("an open decision and an open action are still on the homepage queue", () => {
+    // Positive control: the fix must not clear the queue by excluding everything.
+    const decEntry = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "dec-open",
+    });
+    const actEntry = makeActionEntry({
+      agentName: "atlas",
+      timestamp: "2026-06-10T10:01:00Z",
+      actionId: "act-open",
+    });
+
+    const { items } = deriveNeedsYou(
+      [decEntry, actEntry],
+      [],
+      new Set(),
+      new Map(),
+      FIXED_NOW
+    );
+    expect(items).toHaveLength(2);
+    expect(items.map((i) => i.decisionId ?? i.actionId).sort()).toEqual([
+      "act-open",
+      "dec-open",
+    ]);
+  });
+
+  it("only the open cards survive when open and closed are mixed", () => {
+    // Every terminal state of both card kinds in one call, so a partial fix
+    // that honours some keys and not others cannot pass.
+    const openDec = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "keep-dec",
+    });
+    const openAct = makeActionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:01:00Z",
+      actionId: "keep-act",
+    });
+    const answeredDec = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:02:00Z",
+      decisionId: "drop-answered",
+      answered: "A",
+    });
+    const dismissedDec = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:03:00Z",
+      decisionId: "drop-dismissed",
+    });
+    dismissedDec.block.card!.dismissed = "2026-06-10T11:00:00Z";
+    const supersededDec = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:04:00Z",
+      decisionId: "drop-superseded",
+    });
+    supersededDec.block.card!.superseded = "2026-06-10T11:00:00Z";
+    const doneAct = makeActionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:05:00Z",
+      actionId: "drop-done",
+      done: "2026-06-10T11:00:00Z",
+    });
+    const dismissedAct = makeActionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:06:00Z",
+      actionId: "drop-dismissed-act",
+    });
+    dismissedAct.block.actionCard!.dismissed = "2026-06-10T11:00:00Z";
+    const supersededAct = makeActionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:07:00Z",
+      actionId: "drop-superseded-act",
+    });
+    supersededAct.block.actionCard!.superseded = "2026-06-10T11:00:00Z";
+
+    const { items } = deriveNeedsYou(
+      [
+        openDec,
+        openAct,
+        answeredDec,
+        dismissedDec,
+        supersededDec,
+        doneAct,
+        dismissedAct,
+        supersededAct,
+      ],
+      [],
+      new Set(),
+      new Map(),
+      FIXED_NOW
+    );
+    expect(items.map((i) => i.decisionId ?? i.actionId).sort()).toEqual([
+      "keep-act",
+      "keep-dec",
+    ]);
+  });
+
+  it("the sidebar bell count cannot diverge from the homepage list", () => {
+    // shell.tsx and home.tsx both call deriveNeedsYou, and the badge count IS
+    // items.length (AppShell.tsx), so the bell is the list's length by
+    // construction. What this pins is that the length is the CLOSED-AWARE one:
+    // three cards in, one open, and the number the bell would render is 1.
+    const openDec = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:00:00Z",
+      decisionId: "bell-open",
+    });
+    const dismissedDec = makeDecisionEntry({
+      agentName: "quill",
+      timestamp: "2026-06-10T10:01:00Z",
+      decisionId: "bell-dismissed",
+    });
+    dismissedDec.block.card!.dismissed = "2026-06-10T11:00:00Z";
+    const supersededAct = makeActionEntry({
+      agentName: "atlas",
+      timestamp: "2026-06-10T10:02:00Z",
+      actionId: "bell-superseded",
+    });
+    supersededAct.block.actionCard!.superseded = "2026-06-10T11:00:00Z";
+
+    const { items } = deriveNeedsYou(
+      [openDec, dismissedDec, supersededAct],
+      [],
+      new Set(),
+      new Map(),
+      FIXED_NOW
+    );
+    const bellCount = items.length;
+    expect(bellCount).toBe(1);
+    expect(items[0]!.decisionId).toBe("bell-open");
   });
 });
 

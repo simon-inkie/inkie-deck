@@ -488,29 +488,22 @@ is most likely to be active.
 Both are preserved in the reference implementation for parity with the
 original, and are tracked as defects rather than as behaviour to copy.
 
-**`deriveNeedsYou` still counts a dismissed DECISION as open.** This is the one
-place in the reference implementation where the terminal keys of section 7.1.1
-are not read in full, and it is a single state on a single card kind.
-
-The web application has two card readers. The Decisions and Actions tab, the
-card components and the shared `isDecisionResolved` / `isActionResolved` helpers
-all test the complete set. The homepage ranked list and its bell count, derived
-by `deriveNeedsYou`, test one key fewer for decisions: a dismissed decision
-leaves the tab immediately and goes on appearing on the homepage until the card
-ages out of its window.
-
-The reason is a product decision rather than an oversight. When dismiss and
-supersede were added, what the homepage counted was deliberately frozen so that
+A third deviation used to be recorded here: `deriveNeedsYou`, the derivation
+behind the web application's homepage ranked list and its bell count, tested one
+terminal key fewer for decisions than section 7.1.1 defines, so a dismissed
+decision left the Decisions and Actions tab and went on appearing on the
+homepage until the card aged out of its window. It was a scope fence from the
+landing that added `dismissed`, `superseded` and that tab together, kept so
 adding a way to close a card could not quietly change the number in the bell.
-`superseded` was carved out of that freeze once `bin/activity-sweep.sh` began
-publishing its own open-card count from the same files, because two readers
-disagreeing about a state is a different cost from one reader being
-conservative. `dismissed` on a decision was left where it was, and is pinned by
-a test so it stays a decision rather than becoming a drift.
+`superseded` was carved out of it once `bin/activity-sweep.sh` began publishing
+its own open-card count from the same files, and `dismissed` has now followed:
+every reader of a card in this repository tests the full set for the kind of
+card it is reading, through the shared `isDecisionResolved` /
+`isActionResolved` helpers.
 
-A conforming reader SHOULD test the full set for the kind of card it is reading.
-Tracked as a deliberate divergence in one implementation surface, not as
-behaviour to copy.
+The entry is noted as resolved rather than simply deleted because the freeze it
+described was deliberate, and a reader who met it once should be able to see
+that it was lifted on purpose rather than wonder whether it was forgotten.
 
 ## 12. Versioning
 
