@@ -189,7 +189,7 @@ check_idle() {
 # permission prompt Codex deliberately stopped to ask a human about -- silently,
 # unattended, and in the YES direction.
 #
-# TAIL-ANCHORED, deliberately, and for the same reason bin/stuck-pane-sweep.sh
+# BOTTOM-ANCHORED, deliberately, and for the same reason bin/stuck-pane-sweep.sh
 # matches its own stuck literals inside a TAIL_LINES window rather than over the
 # whole capture: a dialog that has ALREADY been answered, and transcript prose
 # that merely QUOTES the footer -- an agent discussing this bug, or this file --
@@ -198,6 +198,50 @@ check_idle() {
 # deliver, that is a silent delivery outage aimed squarely at whoever is working
 # on the dialog problem. A LIVE dialog is always at the bottom because it IS the
 # bottom: Codex renders it where the composer would be.
+#
+# THE LAST NON-BLANK LINE, not "somewhere inside the tail window" (the false
+# positive found by independent review, fixed 2026-09). A window is a distance,
+# and distance is the wrong test for "is this the bottom of the pane". Prose
+# quoting the footer does not have to be far up to be prose: a reply that
+# mentions the literal four lines above a ready composer sits ENTIRELY inside the
+# 20-line window, so the window test answers "dialog pending" while the pane is
+# idle, reachable, and showing a composer waiting for input. The caller's
+# response is to refuse delivery (skip:dialog-pending), so the outage lands, once
+# again, on precisely the agent discussing dialogs -- the shape tail-anchoring
+# was supposed to close, surviving the fix because the fix only moved it further
+# down the pane.
+#
+# The property that actually separates a live dialog from a quotation is not
+# proximity to the bottom, it IS the bottom: Codex draws the dialog where the
+# composer would be, so its footer is the last rendered content and there is
+# nothing below it. A quotation always has something below it -- the composer at
+# minimum -- because a pane with nothing below the quote is a pane with no
+# composer, which is not an idle pane anyone can deliver to anyway.
+#
+# STRICTLY NARROWER than the window test it replaces: if the last non-blank line
+# ends with the literal then the literal is inside the window, so every pane this
+# matches, the old test matched too. The change can therefore only move verdicts
+# from dialog-pending to no-dialog, never the reverse, which bounds it to the
+# false-positive direction and cannot introduce a NEW pane at which a caller
+# would press Enter.
+#
+# TRAILING BLANK ROWS ARE STRIPPED FIRST, and this is a LIBRARY-level guarantee
+# rather than a bug seen in the field: inbox-push captures with
+# PANE="$(capture ...)", and command substitution eats trailing newlines, so its
+# panes happen to arrive already stripped. A strictly-last-line test would
+# therefore work for today's caller and answer "no dialog" for a real dialog the
+# first time somebody feeds this a capture read from a file, or one whose bottom
+# rows carry a space rather than nothing. That is the fail direction this
+# function must never take, and it must not be the caller's quoting style that
+# decides. The window is what BOUNDS the strip: blank rows past it are not looked
+# through, so the window still means something after this change, just something
+# narrower than it meant before.
+#
+# ENDS WITH, rather than equals, after trimming: the real capture indents the
+# footer by two spaces, and a boxed or bulleted rendering would prefix something
+# else again. What is not negotiable is that the literal TERMINATES the line,
+# which is what a quotation inside a sentence ("... or esc to cancel", which
+# collides with...) cannot do.
 #
 # THE LITERAL, not a regex over its words. This is Codex's own stable footer, and
 # a curated literal that gets re-captured when the vendor changes the wording
@@ -218,17 +262,20 @@ check_idle() {
 #
 # ZERO IS INVALID, not a valid tiny window. An all-digits test on its own treats
 # "0" as VALID input, so CODEX_DIALOG_TAIL_LINES=0 sails straight through,
-# `tail -n 0` emits nothing, and the grep below always misses: a REAL, on-screen
-# dialog reads as "no dialog here", exactly backwards from this function's
-# fail-towards-LOOKING contract. Checked as a NUMERIC zero rather than against a
-# literal "0", because "00" and "000" are equally zero and equally broken, and a
-# string compare would have left the same hole open one digit over.
+# `tail -n 0` emits nothing, the scan below sees no lines at all: a REAL,
+# on-screen dialog reads as "no dialog here", exactly backwards from this
+# function's fail-towards-LOOKING contract. Checked as a NUMERIC zero rather than
+# against a literal "0", because "00" and "000" are equally zero and equally
+# broken, and a string compare would have left the same hole open one digit over.
 #
-# UPPER BOUND, for the mirror-image reason: an absurdly large window pulls in the
-# transcript PROSE that merely quotes the footer, which defeats the entire reason
-# this function tail-anchors. 200 is generous headroom over any real terminal
-# viewport -- Codex's own dialog body is well under 20 lines end to end -- while
-# still bounding a caller, or a future config knob, that passes something silly.
+# UPPER BOUND, kept, though what it bounds is narrower since the last-line fix:
+# not how much PROSE is in scope (prose is excluded by position now, at any
+# distance) but how far up the trailing-blank strip will reach, plus a caller or
+# a future config knob passing something silly to `tail`. 200 is generous
+# headroom over any real terminal viewport -- Codex's own dialog body is well
+# under 20 lines end to end -- and the validation is retained verbatim because it
+# closes bug classes (zero, overflow) that are independent of what the window is
+# for.
 #
 # OVERFLOW is the same bug class as the zero bypass, one layer out: an all-digit
 # value past the shell's integer range (say twenty nines) makes
@@ -250,8 +297,24 @@ pane_has_codex_approval_dialog() {
     *) [ "$tail_lines" -eq 0 ] 2>/dev/null && tail_lines=20 ;;
   esac
   [ "$tail_lines" -gt 200 ] 2>/dev/null && tail_lines=200
-  printf '%s\n' "$pane" | tail -n "$tail_lines" \
-    | grep -qF 'Press enter to confirm or esc to cancel' 2>/dev/null
+  # The last NON-BLANK line of the window, found the way find_composer_line finds
+  # its candidate: walk the lines and keep the last one that qualifies, rather
+  # than grepping and taking tail -1. Same idiom, same reason -- the answer is a
+  # POSITION in the capture, and a content search cannot express one.
+  local footer='Press enter to confirm or esc to cancel'
+  local line trimmed last=''
+  while IFS= read -r line; do
+    # Leading strip, then trailing strip: the two whitespace idioms already used
+    # by find_composer_line and raw_line_for respectively.
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    # An `if`, not `[ ... ] && last=...`, so the body cannot end on a non-zero
+    # status: a caller running under `set -e` would abort the whole script on the
+    # first blank row, and blank rows are the common case at the bottom of a pane.
+    if [ -n "$trimmed" ]; then last="$trimmed"; fi
+  done < <(printf '%s\n' "$pane" | tail -n "$tail_lines" 2>/dev/null)
+  case "$last" in *"$footer") return 0 ;; esac
+  return 1
 }
 
 # --------------------------------------------------------------------------

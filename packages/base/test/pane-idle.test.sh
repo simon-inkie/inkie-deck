@@ -214,7 +214,37 @@ else
   pass "dialog detector: footer quoted high in the transcript -> no"
 fi
 
-# NEGATIVE 2: a genuinely busy Codex pane, and NEGATIVE 3: an ordinary idle one
+# NEGATIVE 2, the false positive found by independent review, and the case
+# NEGATIVE 1 above cannot express. That one pads 24 filler lines between the
+# quote and the composer, which puts the quote entirely OUTSIDE the 20-line tail
+# window -- so it grades "a quote far above the tail is excluded" and is
+# structurally incapable of failing while the detector is a window test.
+#
+# This is the same pane with the padding removed: quote four lines up, every line
+# of it INSIDE the default window, and a ready composer as the last line. Nothing
+# about it is exotic -- a short reply mentioning the literal is far more common
+# than one buried two dozen lines up -- and the window test answered "dialog
+# pending" for it, so inbox-push refused delivery (skip:dialog-pending) at an
+# agent that was idle, reachable, and waiting at a composer. Distance from the
+# bottom was never the property; BEING the bottom is.
+CODEX_QUOTED_NEAR=$'\xe2\x80\xa2 Right -- the guard looks for Press enter to confirm or esc to cancel\n\n  anywhere inside the tail window, so it refused to deliver here.\n\n\xe2\x80\xba Use /skills to list available skills'
+if pane_has_codex_approval_dialog "$CODEX_QUOTED_NEAR"; then
+  fail "dialog detector: footer quoted just above a ready composer -> no" \
+    "matched a quote inside the tail window"
+else
+  pass "dialog detector: footer quoted just above a ready composer -> no"
+fi
+# The mechanism on its own, with the prose taken away: ONE line of anything below
+# the footer is enough, because Codex draws a live dialog at the bottom and there
+# is nothing under it by construction. Pinned separately so the case above cannot
+# pass for an incidental reason (a closing quote mark, the bullet, the wording).
+if pane_has_codex_approval_dialog $'  Press enter to confirm or esc to cancel\n\xe2\x80\xba '; then
+  fail "dialog detector: any content below the footer -> no" "the footer was not the last line"
+else
+  pass "dialog detector: any content below the footer -> no"
+fi
+
+# NEGATIVE 3: a genuinely busy Codex pane, and NEGATIVE 4: an ordinary idle one
 # plus an empty capture. The detector must answer no to both ends of the
 # busy/idle axis, or it is just check_idle wearing a different name.
 CODEX_BUSY_PANE=$'\xe2\x97\xa6 Working (2s \xe2\x80\xa2 esc to interrupt)\n\n\n\xe2\x80\xba Implement {feature}'
@@ -234,30 +264,49 @@ else
   pass "dialog detector: empty capture -> no"
 fi
 
-# THE WINDOW ITSELF, both sides of the boundary. Tail-anchoring IS the
-# mechanism, so it is pinned as a number rather than left for the two fixtures
-# above to imply: the footer 20 lines from the bottom is live, 21 lines from the
-# bottom is scrollback. Built by construction rather than by counting lines in a
-# fixture by eye.
-_tail_pane() { # _tail_pane <lines-after-the-footer>
-  local n="$1" i out='  Press enter to confirm or esc to cancel'
-  for ((i = 1; i <= n; i++)); do out+=$'\n  trailing line '"$i"; done
-  printf '%s' "$out"
+# THE WINDOW ITSELF, both sides of the boundary, pinned as a number rather than
+# left for the fixtures above to imply. Built by construction rather than by
+# counting lines in a fixture by eye.
+#
+# The padding is BLANK rows, and since the last-line fix it has to be. What the
+# window bounds now is how far up the trailing-blank strip reaches; a pane padded
+# with CONTENT is not a dialog at any distance (NEGATIVE 2 above -- that IS the
+# fix), so content filler can no longer express a boundary at all: both sides of
+# it would answer no, and the ceiling cases below would stop distinguishing a
+# clamp from a no-op. Blank rows are the honest shape for the property under
+# test, and the shape a `capture-pane -p` of a pane taller than its content
+# produces (it trims each row's trailing whitespace rather than dropping the
+# row).
+#
+# IT ASSIGNS RATHER THAN PRINTS, which is not a style choice: `$(...)` strips
+# trailing newlines, so a printed fixture arrives with its entire padding removed
+# and every case below silently grades the un-padded string instead. Worth
+# knowing beyond this helper -- inbox-push captures with PANE="$(capture ...)",
+# so its panes reach the detector already stripped, and the strip in the library
+# is there for callers that do not launder their input that way (a capture read
+# from a file, a row of spaces rather than an empty row).
+_tail_pane() { # _tail_pane <blank-rows-after-the-footer> -> sets TAIL_PANE
+  local n="$1" i
+  TAIL_PANE='  Press enter to confirm or esc to cancel'
+  for ((i = 1; i <= n; i++)); do TAIL_PANE+=$'\n'; done
 }
-if pane_has_codex_approval_dialog "$(_tail_pane 19)"; then
-  pass "dialog detector: footer on the 20th-from-last line -> yes"
+_tail_pane 19
+if pane_has_codex_approval_dialog "$TAIL_PANE"; then
+  pass "dialog detector: footer above 19 blank rows -> yes (inside the window)"
 else
-  fail "dialog detector: footer on the 20th-from-last line -> yes"
+  fail "dialog detector: footer above 19 blank rows -> yes (inside the window)"
 fi
-if pane_has_codex_approval_dialog "$(_tail_pane 20)"; then
-  fail "dialog detector: footer on the 21st-from-last line -> no" "matched outside the window"
+_tail_pane 20
+if pane_has_codex_approval_dialog "$TAIL_PANE"; then
+  fail "dialog detector: footer above 20 blank rows -> no" "looked outside the window"
 else
-  pass "dialog detector: footer on the 21st-from-last line -> no"
+  pass "dialog detector: footer above 20 blank rows -> no"
 fi
 # The window is a CALL-time override, not a load-time constant: this library is
 # sourced once per process, so a default bound at source time could never be
 # moved by a caller or a test afterwards.
-if CODEX_DIALOG_TAIL_LINES=25 pane_has_codex_approval_dialog "$(_tail_pane 20)"; then
+_tail_pane 20
+if CODEX_DIALOG_TAIL_LINES=25 pane_has_codex_approval_dialog "$TAIL_PANE"; then
   pass "dialog detector: CODEX_DIALOG_TAIL_LINES widens the window at call time"
 else
   fail "dialog detector: CODEX_DIALOG_TAIL_LINES widens the window at call time"
@@ -288,20 +337,22 @@ else
   fail "dialog detector: window 00 (numeric zero) still detects a real dialog"
 fi
 # UPPER BOUND, proven by actually distinguishing clamped from unclamped rather
-# than just asserting "still works": footer at the 250th-from-last line, i.e. 49
-# lines OUTSIDE the 200-line ceiling, with the override set to something absurd.
+# than just asserting "still works": footer at the 250th-from-last row, i.e. 49
+# rows OUTSIDE the 200-line ceiling, with the override set to something absurd.
 # If the ceiling did not clamp, `tail -n 999999` would simply emit the whole
 # (much shorter) input and still find the footer, so the clamp is only
 # observable on a fixture whose footer sits beyond 200 but well within the input.
-if CODEX_DIALOG_TAIL_LINES=999999 pane_has_codex_approval_dialog "$(_tail_pane 249)"; then
+_tail_pane 249
+if CODEX_DIALOG_TAIL_LINES=999999 pane_has_codex_approval_dialog "$TAIL_PANE"; then
   fail "dialog detector: an oversized window is clamped to the 200-line ceiling" \
-    "matched a footer 250 lines from the bottom -- the clamp did not apply"
+    "matched a footer 250 rows from the bottom -- the clamp did not apply"
 else
   pass "dialog detector: an oversized window is clamped to the 200-line ceiling"
 fi
 # ...and the ceiling is exactly 200, not off-by-one: a footer on the
-# 200th-from-last line must still be found with the same huge override.
-if CODEX_DIALOG_TAIL_LINES=999999 pane_has_codex_approval_dialog "$(_tail_pane 199)"; then
+# 200th-from-last row must still be found with the same huge override.
+_tail_pane 199
+if CODEX_DIALOG_TAIL_LINES=999999 pane_has_codex_approval_dialog "$TAIL_PANE"; then
   pass "dialog detector: the 200-line ceiling itself catches a footer at line 200"
 else
   fail "dialog detector: the 200-line ceiling itself catches a footer at line 200" \
