@@ -18,12 +18,17 @@
 # Exit codes (caller maps these to a status line):
 #   0  -- delivered. stdout is one of:
 #         "pushed"            -- positively landed (a new turn started).
-#         "queued"            -- pane was BUSY at the gate; CC (Claude Code) queued
-#                                our message and auto-submits it when the turn ends
-#                                (verified live 2026-06-23). We never clear it. NOT
-#                                trusted for Codex (see below) -- a Codex recipient
-#                                busy at the gate instead falls through to the same
-#                                identify-and-retry logic as an idle-at-gate send.
+#         "queued"            -- pane was BUSY at the gate AND still busy after the
+#                                send; the runtime queued our message and auto-
+#                                submits it when the turn ends (verified live for
+#                                Claude Code 2026-06-23). We never clear it.
+#                                A Codex pane that was busy at the gate but reads
+#                                IDLE-with-staged-text afterwards is a DIFFERENT
+#                                case and is not covered by this verdict: it falls
+#                                through to the same identify-and-retry logic as an
+#                                idle-at-gate send, because a turn that has ENDED
+#                                leaving our text unsubmitted is a strand, not a
+#                                queue. See the paste-collapse note below.
 #         "pushed-unverified" -- sent, transition not positively confirmed (or our
 #                                text is still staged on a pane whose busy state we
 #                                missed). Left in place, NOT cleared -- the inbox
@@ -41,14 +46,52 @@
 # the char count Codex reports in the placeholder and compare it to the length
 # of the message we just sent (see the "codex paste identity" block below).
 # The same underlying assumption -- "Codex has no verified queue-and-
-# autosubmit the way Claude Code does" -- is why a Codex pane busy at the gate
-# no longer takes the trust-and-walk-away "queued" shortcut either.
+# autosubmit the way Claude Code does" -- is why a Codex pane that reads
+# idle-with-staged-text AFTER the send takes the identify-and-retry path rather
+# than the trust-the-queue shortcut: the turn has demonstrably ended, so there
+# is no queue left to trust.
+#
+# CODEX APPROVAL DIALOGS (fixed 2026-09). Codex prints "Press enter to confirm
+# or esc to cancel" under every one of its native approval dialogs (shell
+# commands, file writes, everything). A pane wedged on an UNANSWERED dialog is
+# running nothing and waiting on a human, so check_idle answers IDLE for it --
+# and IDLE is the verdict that sends us straight down the deliver path. The
+# deliver block is text + Enter, and Enter is the DIALOG'S CONFIRM KEY: the
+# text is swallowed by a modal that is not a text field, and the keypress
+# answers a permission prompt unattended, in the yes direction. Two guards,
+# both Codex-only (gate 3c and the POST guard): a dialog visible before the
+# send skips as "dialog-pending" without typing anything; a dialog that appears
+# during the send window ends the run at "pushed-unverified" without reaching
+# any retry Enter.
+#
+# The same collision has a second, milder shape on the label side. Before
+# bin/pane-idle narrowed its "esc to cancel" marker to lead-of-clause, the
+# dialog footer read as BUSY, and busy-at-gate + busy-after-send emits "queued"
+# -- a success verdict for a message a modal swallowed, with nothing running to
+# queue behind. That reading is gone from this tree, but the POST guard is
+# placed so it fires either way; a guard whose job is to withhold a keystroke
+# must not depend on a busy classification it exists to distrust.
+#
+# KNOWN RESIDUAL, documented rather than papered over: the guards close the
+# DIALOG shape of a wrong verdict, not the category. Any other pane text that
+# makes check_idle answer busy at both captures without a turn actually running
+# still yields "queued" -- a message whose composer-visible tail happens to end
+# in the elapsed-counter shape, for instance (see the counter regex in
+# bin/pane-idle). The send side cannot distinguish that from a real busy turn:
+# it has exactly two captures ~1.2s apart and no history. The designed net for
+# that residual is the detection side (bin/stuck-pane-sweep.sh), not a wider
+# guess here.
 #   2  -- skip:<reason>  not pushed; caller treats as persist-only. Reasons:
-#         self, no-window, unknown-runtime (runtime is not claude or agy), staged
-#         (real text in the composer at the gate), unknown-format,
-#         no-pane-idle-lib (the shared bin/pane-idle library is missing/unreadable,
-#         so there is no idle gate -- skip rather than type blind). NB: a BUSY pane
-#         no longer skips -- we deliver and it queues.
+#         self, no-window, unknown-runtime (runtime is not claude, agy or codex),
+#         staged (real text in the composer at the gate), unknown-format,
+#         dialog-pending (a Codex approval dialog is up: Enter would confirm it,
+#         not deliver -- see the dialog block above), ctx-over (recipient's
+#         context is at/over the block threshold and the message is not a
+#         handover/compaction carve-out),
+#         no-pane-idle-lib (the shared bin/pane-idle library is missing/unreadable
+#         or older than v3, so there is no idle gate and no dialog detector --
+#         skip rather than type blind). NB: a BUSY pane no longer skips -- we
+#         deliver and it queues.
 #   1  -- error (bad invocation).
 #
 # Test seams (no live tmux needed for full-flow coverage):
@@ -163,17 +206,25 @@ PANE_IDLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/pane-id
 # fleet-wide delivery outage. The version is compared only after confirming it is
 # all digits: a garbage value must fail the check, never crash `[` into an error
 # that reads as a pass.
+#
+# RAISED to -ge 3 (2026-09): this file now depends on the v3 function
+# pane_has_codex_approval_dialog, and THAT one fails in the dangerous direction.
+# Undefined in bash means non-zero, which reads as "no dialog on this pane", so
+# against a v2 lib the dialog guards would answer all clear every time and we
+# would press Enter at pending approval dialogs -- the exact keystroke they exist
+# to withhold. The library's other callers do not use it and keep their own pins:
+# each caller asserts the version it actually uses.
 _lib_ok=0
 case "${PANE_IDLE_LIB_VERSION:-}" in
   ''|*[!0-9]*) _lib_ok=0 ;;
-  *) [ "$PANE_IDLE_LIB_VERSION" -ge 2 ] && _lib_ok=1 ;;
+  *) [ "$PANE_IDLE_LIB_VERSION" -ge 3 ] && _lib_ok=1 ;;
 esac
 if [ "$_lib_ok" != "1" ]; then
   # Fail SAFE, not silent: with no busy-detection there is no idle gate, and an
   # undefined check_idle returns non-zero (= "idle") -- which would type into
   # every busy pane. The inbox block is already persisted, so skipping the live
   # push costs a notification, not a message.
-  echo "inbox-push: pane-idle lib missing or too old (need >=2, got '${PANE_IDLE_LIB_VERSION:-none}') at $PANE_IDLE_LIB" >&2
+  echo "inbox-push: pane-idle lib missing or too old (need >=3, got '${PANE_IDLE_LIB_VERSION:-none}') at $PANE_IDLE_LIB" >&2
   emit "skip:no-pane-idle-lib"
 fi
 
@@ -357,6 +408,47 @@ if [ "${INBOX_PUSH_ALLOW_CTX_OVER:-0}" != "1" ] && [ "$CTX_BLOCK_AT" != "off" ];
   fi
 fi
 
+# 3c. CODEX APPROVAL-DIALOG gate (2026-09). A Codex pane showing one of its own
+#     native approval dialogs is not busy and not idle -- it is WAITING ON A
+#     HUMAN, and it is modal. Two things follow, and only the second is about
+#     verdict accuracy:
+#
+#     ENTER IS THE DIALOG'S CONFIRM KEY. The deliver block below is an
+#     unconditional send-keys text + Enter. Aimed at a pending dialog, the text
+#     is swallowed by a modal that is not a text field and the Enter answers the
+#     permission prompt -- in the YES direction, unattended, for a command Codex
+#     deliberately stopped to ask a human about. That is a strictly worse
+#     outcome than not delivering a notification.
+#
+#     GATE 4 CANNOT STAND IN FOR THIS. It reads such a pane as IDLE (nothing is
+#     running, and the esc-to-cancel marker in bin/pane-idle is anchored so the
+#     dialog footer no longer trips it), and IDLE is precisely the verdict that
+#     licenses the deliver path. The busy/idle question and the "is a human
+#     being asked something" question are independent, and only one of them
+#     governs whether it is safe to press a key.
+#
+#     Skip = persisted-not-pushed, which is the floor the whole script sits on:
+#     the inbox block is already written and the caller prints the skip reason
+#     generically, so nothing downstream needs teaching about this new one. The
+#     dialog itself is not this script's problem to solve -- the stuck-pane
+#     sweep's deterministic tier is where a wedged pane gets escalated.
+#
+#     CODEX-ONLY, deliberately narrow. Claude's own auto-mode confirmation
+#     carries the identical Enter hazard, but it is a different literal and a
+#     different runtime's dialog, so it is a separate change with its own
+#     fixtures rather than something guessed at here. The test suite pins
+#     today's behaviour for it so the day it is taken on, the change is visible.
+#
+#     Runs BEFORE gate 5. Today a dialog pane happens to skip anyway, as
+#     "skip:staged" -- find_composer_line lands on the marked selected OPTION
+#     line and its text reads as staged. That is an accident of one glyph being
+#     reused for two purposes, not a guard: it says nothing about a dialog and
+#     would evaporate the moment Codex renders its selection differently. This
+#     gate makes the refusal deliberate and the reason honest.
+if [ "${_RUNTIME:-}" = "codex" ] && pane_has_codex_approval_dialog "$PANE"; then
+  emit "skip:dialog-pending"
+fi
+
 # 4. BUSY pane -> deliver-and-QUEUE (2026-06-23). A busy CC pane queues
 #    typed input and runs it when the current turn ends, so we no longer skip a
 #    busy pane -- we deliver and report "queued". The composer-clean gate (5)
@@ -394,6 +486,33 @@ tx send-keys -t "${TMUX_SESSION}:${RECIPIENT}" Enter
 [ "$TEST_MODE" = "1" ] || sleep "$VERIFY_SLEEP"
 POST="$(capture "$RECIPIENT")"
 POST_RAW="$(capture_raw "$RECIPIENT")"
+
+# A Codex approval dialog on the POST capture (2026-09). Belt-and-braces for the
+# case gate 3c cannot see: the dialog was NOT up when we captured the gate pane
+# (a turn was running, or the pane was idle) and it came up during the ~1.2s send
+# window, so our text and our Enter arrived at a modal.
+#
+# Everything below this line is wrong for that pane:
+#   - the staged/retry machinery would fire Enter #2 at the dialog, and Enter is
+#     its CONFIRM key, so a "retry" there is an unattended yes to a permission
+#     prompt. Control must not reach that code, which is why this emits rather
+#     than setting a flag.
+#   - if the pane was busy at the gate and the dialog footer were still being
+#     read as busy, the branch below would claim "queued" for a delivery that did
+#     not happen: there is no queue behind a modal.
+#
+# Today only the first of those is live here, because a dialog pane reads IDLE
+# (see gate 3c). Do NOT therefore fold this into the check_idle branch below. The
+# guard's job is to withhold a keystroke, and it must not depend on a busy
+# classification it exists to distrust -- in either direction, since the marker
+# that reads this footer has already moved once. The test suite pins the
+# ORDERING, not just the verdict, for that reason.
+#
+# "pushed-unverified" is the honest verdict: keystrokes went to the pane, and
+# what became of them is genuinely unknown. The inbox block is the floor.
+if [ "${_RUNTIME:-}" = "codex" ] && pane_has_codex_approval_dialog "$POST"; then
+  emit "pushed-unverified"
+fi
 
 # Positive signal: the pane is busy after delivery. If it was IDLE at the gate,
 # the Enter started a NEW turn (delivered + running now = "pushed"). If it was

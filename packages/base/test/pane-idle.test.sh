@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for bin/pane-idle -- the shared busy/idle classifier, and the two
-# composer-identification primitives that joined it at lib v2.
+# Tests for bin/pane-idle -- the shared busy/idle classifier, the two
+# composer-identification primitives that joined it at lib v2, and the Codex
+# approval-dialog detector that joined it at lib v3.
 #
 #   bash packages/base/test/pane-idle.test.sh
 #     -> prints PASS/FAIL per case, exits non-zero on any fail.
@@ -147,13 +148,176 @@ for fn in find_composer_line raw_line_for check_idle; do
     pass "inbox-push no longer defines its own $fn"
   fi
 done
-# ...and it pins the MINIMUM version, not merely "the lib loaded": against a v1
-# lib those two functions are undefined, which check_composer_clean would read
-# as "unknown format" and skip every push, forever, in silence.
-if grep -q 'PANE_IDLE_LIB_VERSION" -ge 2' "$BIN/inbox-push"; then
-  pass "inbox-push asserts a MINIMUM lib version (>=2), not just presence"
+# ...and it pins the MINIMUM version, not merely "the lib loaded": against an
+# older lib the functions it calls are undefined, which check_composer_clean
+# reads as "unknown format" (the v2 primitives) or which answers "no dialog
+# here" (the v3 detector). Silent in both cases, and dangerous in the second.
+#
+# RAISED to 3 alongside inbox-push's own assertion, and this grep is why the
+# bump cannot be half-done in either direction: a caller still pinning 2 would
+# keep running happily against a library that no longer carries what it calls,
+# which is exactly the silence the version scheme exists to break.
+if grep -q 'PANE_IDLE_LIB_VERSION" -ge 3' "$BIN/inbox-push"; then
+  pass "inbox-push asserts a MINIMUM lib version (>=3), not just presence"
 else
-  fail "inbox-push asserts a MINIMUM lib version (>=2), not just presence"
+  fail "inbox-push asserts a MINIMUM lib version (>=3), not just presence"
+fi
+
+# ---- 6. the codex approval-dialog detector (lib v3) ------------------------------
+# check_idle answers IDLE for a pane wedged on an unanswered Codex approval
+# dialog: nothing is running, and the "esc to cancel" marker is anchored to
+# lead-of-clause so the dialog footer no longer trips it. That verdict is
+# correct and useless to a caller about to press a key, because IDLE is exactly
+# what licenses typing into a pane -- and Enter is the dialog's CONFIRM key. The
+# busy/idle question and the "is a human being asked something" question are
+# independent; this function is the second one.
+[ "${PANE_IDLE_LIB_VERSION:-0}" -ge 3 ] \
+  && pass "lib publishes version >= 3 (the codex dialog detector is present)" \
+  || fail "lib publishes version >= 3" "got '${PANE_IDLE_LIB_VERSION:-none}'"
+if declare -F pane_has_codex_approval_dialog >/dev/null 2>&1; then
+  pass "lib defines pane_has_codex_approval_dialog"
+else
+  fail "lib defines pane_has_codex_approval_dialog"
+fi
+
+# POSITIVE. ONE genuine end-to-end `tmux capture-pane -p` of a real Codex
+# approval dialog, not spliced and not imagined: a real Codex CLI (v0.149.1) was
+# run in a scratch tmux session with `--sandbox read-only --ask-for-approval
+# on-request`, in a scratch working directory, and asked through its TUI to run
+# `touch approval-dialog-test.txt` -- a write, which read-only plus on-request
+# must escalate for. It raised exactly this. The 20-line default window covers
+# the dialog comfortably.
+CODEX_DIALOG=$'\xe2\x80\xa2 Running touch approval-dialog-test.txt\n\n\n  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: Allow creating the requested empty file approval-dialog-test.txt in the current directory?\n\n  $ touch approval-dialog-test.txt\n\n\xe2\x80\xba 1. Yes, proceed (y)\n  2. Yes, and don\'t ask again for commands that start with `touch approval-dialog-test.txt` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel'
+if pane_has_codex_approval_dialog "$CODEX_DIALOG"; then
+  pass "dialog detector: live approval dialog -> yes"
+else
+  fail "dialog detector: live approval dialog -> yes"
+fi
+
+# THE CONTROL, and the entire reason this function exists: check_idle calls that
+# SAME pane IDLE. Not a spare assertion about the narrowing -- it is the premise
+# the two guards in inbox-push are built on. If it ever flips to busy, the
+# esc-to-cancel anchor has been widened back out and every guard that consults
+# check_idle first has to be re-read. The detector itself stays correct either
+# way, which is the point of asking a separate question.
+expect_idle "control: the dialog pane reads IDLE to check_idle" "$CODEX_DIALOG"
+
+# NEGATIVE 1: prose QUOTING the footer, high in the viewport. An agent
+# discussing this bug must stay reachable; a whole-pane substring test refuses
+# every push to whoever is working on it, silently, for as long as the quote
+# stays on screen.
+_QUOTE_FILLER=$(for _i in $(seq 1 24); do printf '  ... transcript line %s\n' "$_i"; done)
+CODEX_QUOTED=$'I said: the footer is "Press enter to confirm or esc to cancel", which\ncollides with the Gemini busy marker.\n'"$_QUOTE_FILLER"$'\n\xe2\x80\xba Implement {feature}'
+if pane_has_codex_approval_dialog "$CODEX_QUOTED"; then
+  fail "dialog detector: footer quoted high in the transcript -> no" "matched a quote"
+else
+  pass "dialog detector: footer quoted high in the transcript -> no"
+fi
+
+# NEGATIVE 2: a genuinely busy Codex pane, and NEGATIVE 3: an ordinary idle one
+# plus an empty capture. The detector must answer no to both ends of the
+# busy/idle axis, or it is just check_idle wearing a different name.
+CODEX_BUSY_PANE=$'\xe2\x97\xa6 Working (2s \xe2\x80\xa2 esc to interrupt)\n\n\n\xe2\x80\xba Implement {feature}'
+if pane_has_codex_approval_dialog "$CODEX_BUSY_PANE"; then
+  fail "dialog detector: genuinely busy codex pane -> no" "matched a busy pane"
+else
+  pass "dialog detector: genuinely busy codex pane -> no"
+fi
+if pane_has_codex_approval_dialog $'some transcript\n\n\xe2\x80\xba Implement {feature}'; then
+  fail "dialog detector: idle codex pane -> no"
+else
+  pass "dialog detector: idle codex pane -> no"
+fi
+if pane_has_codex_approval_dialog ""; then
+  fail "dialog detector: empty capture -> no"
+else
+  pass "dialog detector: empty capture -> no"
+fi
+
+# THE WINDOW ITSELF, both sides of the boundary. Tail-anchoring IS the
+# mechanism, so it is pinned as a number rather than left for the two fixtures
+# above to imply: the footer 20 lines from the bottom is live, 21 lines from the
+# bottom is scrollback. Built by construction rather than by counting lines in a
+# fixture by eye.
+_tail_pane() { # _tail_pane <lines-after-the-footer>
+  local n="$1" i out='  Press enter to confirm or esc to cancel'
+  for ((i = 1; i <= n; i++)); do out+=$'\n  trailing line '"$i"; done
+  printf '%s' "$out"
+}
+if pane_has_codex_approval_dialog "$(_tail_pane 19)"; then
+  pass "dialog detector: footer on the 20th-from-last line -> yes"
+else
+  fail "dialog detector: footer on the 20th-from-last line -> yes"
+fi
+if pane_has_codex_approval_dialog "$(_tail_pane 20)"; then
+  fail "dialog detector: footer on the 21st-from-last line -> no" "matched outside the window"
+else
+  pass "dialog detector: footer on the 21st-from-last line -> no"
+fi
+# The window is a CALL-time override, not a load-time constant: this library is
+# sourced once per process, so a default bound at source time could never be
+# moved by a caller or a test afterwards.
+if CODEX_DIALOG_TAIL_LINES=25 pane_has_codex_approval_dialog "$(_tail_pane 20)"; then
+  pass "dialog detector: CODEX_DIALOG_TAIL_LINES widens the window at call time"
+else
+  fail "dialog detector: CODEX_DIALOG_TAIL_LINES widens the window at call time"
+fi
+# A garbage override falls back to the default instead of crashing `tail` into
+# an error whose non-zero exit would read as "no dialog here" -- fail towards
+# LOOKING, never towards missing one.
+if CODEX_DIALOG_TAIL_LINES="banana" pane_has_codex_approval_dialog "$CODEX_DIALOG"; then
+  pass "dialog detector: a garbage window value falls back to the default"
+else
+  fail "dialog detector: a garbage window value falls back to the default"
+fi
+
+# ZERO-WINDOW BYPASS. "0" IS all-digits, so an all-digits-only validation lets
+# it straight through, `tail -n 0` emits nothing, and a REAL, currently-on-screen
+# dialog reads as "no dialog here" -- exactly backwards from the contract above.
+if CODEX_DIALOG_TAIL_LINES=0 pane_has_codex_approval_dialog "$CODEX_DIALOG"; then
+  pass "dialog detector: window 0 still detects a real dialog (not a silent bypass)"
+else
+  fail "dialog detector: window 0 still detects a real dialog (not a silent bypass)" \
+    "tail -n 0 emitted nothing and a real dialog read as absent"
+fi
+# "00" is numerically zero too, and a string compare against the literal "0"
+# would have missed it -- the check is on the NUMERIC value.
+if CODEX_DIALOG_TAIL_LINES=00 pane_has_codex_approval_dialog "$CODEX_DIALOG"; then
+  pass "dialog detector: window 00 (numeric zero) still detects a real dialog"
+else
+  fail "dialog detector: window 00 (numeric zero) still detects a real dialog"
+fi
+# UPPER BOUND, proven by actually distinguishing clamped from unclamped rather
+# than just asserting "still works": footer at the 250th-from-last line, i.e. 49
+# lines OUTSIDE the 200-line ceiling, with the override set to something absurd.
+# If the ceiling did not clamp, `tail -n 999999` would simply emit the whole
+# (much shorter) input and still find the footer, so the clamp is only
+# observable on a fixture whose footer sits beyond 200 but well within the input.
+if CODEX_DIALOG_TAIL_LINES=999999 pane_has_codex_approval_dialog "$(_tail_pane 249)"; then
+  fail "dialog detector: an oversized window is clamped to the 200-line ceiling" \
+    "matched a footer 250 lines from the bottom -- the clamp did not apply"
+else
+  pass "dialog detector: an oversized window is clamped to the 200-line ceiling"
+fi
+# ...and the ceiling is exactly 200, not off-by-one: a footer on the
+# 200th-from-last line must still be found with the same huge override.
+if CODEX_DIALOG_TAIL_LINES=999999 pane_has_codex_approval_dialog "$(_tail_pane 199)"; then
+  pass "dialog detector: the 200-line ceiling itself catches a footer at line 200"
+else
+  fail "dialog detector: the 200-line ceiling itself catches a footer at line 200" \
+    "clamp is off-by-one (narrower than 200)"
+fi
+
+# OVERFLOW, the same bug class as the zero bypass one layer out: a value the
+# shell's integer type cannot hold makes the `-eq 0` and `-gt 200` tests
+# themselves fail, silenced by their own 2>/dev/null, so neither the fallback
+# nor the clamp fires, `tail -n <value>` errors, and a real dialog reads as
+# absent again. Twenty nines is comfortably past a 64-bit range.
+if CODEX_DIALOG_TAIL_LINES=99999999999999999999 pane_has_codex_approval_dialog "$CODEX_DIALOG"; then
+  pass "dialog detector: an out-of-range window still detects a real dialog"
+else
+  fail "dialog detector: an out-of-range window still detects a real dialog" \
+    "the numeric validation itself errored past the integer range, and both fallbacks were silenced"
 fi
 
 echo

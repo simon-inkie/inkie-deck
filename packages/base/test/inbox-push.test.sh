@@ -179,6 +179,47 @@ CODEX_STAGED_PASTE_FOREIGN=$'some transcript\n\n\xe2\x80\xba [Pasted Content 500
 CODEX_STAGED_BANNER_BOX=$' codex\n╭────────────────────────────╮\n│ >_ OpenAI Codex (v0.145.0) │\n╰────────────────────────────╯\n\n  Tip: Press Tab to queue a message when a task is running\n\n› [Pasted Content 1024 chars] explicit in your review: refetchInterval scoped\n  to "any row still pending", 10-30s range\n\n  gpt-5.6-sol default · ~/agents/dana'
 CODEX_STAGED_BANNER_BOX_RAW=$' codex\n\033[2m╭────────────────────────────╮\033[0m\n\033[2m│ >_ \033[0;1mOpenAI Codex\033[0;2m (v0.145.0) │\033[0m\n\033[2m╰────────────────────────────╯\033[0m\n\n  Tip: Press Tab to queue a message when a task is running\n\n\033[1m›\033[0m \033[38;5;6m[Pasted Content 1024 chars]\033[39m explicit in your review: refetchInterval scoped\n  to "any row still pending", 10-30s range\n\n  gpt-5.6-sol default · ~/agents/dana'
 
+# CODEX APPROVAL DIALOG. The pane state that is neither busy nor idle: Codex is
+# running nothing and waiting on a human, and the dialog is modal, so the
+# composer is not a text field at all. check_idle answers IDLE for it, and IDLE
+# is the verdict that licenses the deliver path -- which is text then Enter,
+# where Enter is the dialog's CONFIRM key. That is the hazard these cases pin.
+#
+# PROVENANCE, stated because this suite has been burned twice by imagined
+# fixtures (the 26-char paste count above, and the first attempt at the
+# capped-paste tail below): this is ONE genuine end-to-end `tmux capture-pane -p`
+# of a real Codex approval dialog, no splicing. A real Codex CLI (v0.149.1) was
+# run in a scratch tmux session with `--sandbox read-only --ask-for-approval
+# on-request`, in a scratch working directory, and asked through its TUI to run
+# `touch approval-dialog-test.txt` -- a write, which read-only plus on-request
+# must escalate for. It raised exactly this. Driving inbox-push at that live pane
+# returned skip:dialog-pending, and a capture taken straight afterwards was
+# byte-for-byte identical to the one before, which is what proves no keystroke
+# reached the dialog.
+#
+# NB the older CODEX_APPROVAL_DIALOG fixture near the bottom of this file stays
+# where it is: its body is constructed around a verbatim footer and it belongs to
+# the check_idle anchoring cases it was written for. This one is the fixture of
+# record for dialog DETECTION.
+CODEX_DIALOG=$'\xe2\x80\xa2 Running touch approval-dialog-test.txt\n\n\n  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: Allow creating the requested empty file approval-dialog-test.txt in the current directory?\n\n  $ touch approval-dialog-test.txt\n\n\xe2\x80\xba 1. Yes, proceed (y)\n  2. Yes, and don\'t ask again for commands that start with `touch approval-dialog-test.txt` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel'
+
+# The SAME literal, quoted in the TRANSCRIPT rather than rendered as a live
+# dialog, with a clean composer below it: an agent talking about this bug. The
+# filler is what makes it a test -- the quote has to fall outside the 20-line
+# tail window, which is the only thing separating "a dialog is up" from "somebody
+# mentioned one". Without tail-anchoring this pane is refused, and every agent
+# discussing dialogs becomes unreachable by live push: the same shape as the
+# background-task-list outage the composer anchor was written for.
+_DIALOG_QUOTE_FILLER=$(for _i in $(seq 1 24); do printf '  ... transcript line %s of the reply\n' "$_i"; done)
+CODEX_DIALOG_QUOTED=$'some transcript\n  I said: the footer is "Press enter to confirm or esc to cancel", which\n  collides with the Gemini busy marker.\n'"$_DIALOG_QUOTE_FILLER"$'\n\xe2\x80\xba Implement {feature}\n\n  gpt-5.6-sol default \xc2\xb7 ~/agents/dana'
+
+# Claude's own auto-mode confirmation, for the scope pin. The same Enter hazard,
+# a different literal on a different runtime, and deliberately NOT guarded by
+# this change: that is a separate fix with its own fixtures and its own live
+# capture. The literal is the one entry in the stuck sweep's built-in pattern
+# list.
+CLAUDE_AUTO_DIALOG=$'  Auto mode classifier requires confirmation\n\n  Bash command\n    rm -rf /tmp/scratch-dir\n\n  Do you want to proceed?\n\xe2\x9d\xaf 1. Yes\n  2. No, and tell Claude what to do differently (esc)'
+
 REC="alice"
 MSG="[inbox from courier] hello"
 
@@ -464,6 +505,104 @@ STUB
          PANE_OVERRIDE_3="$STAGED_OURS" PANE_OVERRIDE_4="$BUSY"
   run_case "runtime unset: two Enters fail -> NO third attempt" "pushed-unverified" 0 ); tally $?
 
+# ---- codex approval dialog (2026-09) --------------------------------------
+# THE HAZARD. A pane wedged on an UNANSWERED Codex approval dialog is running
+# nothing and waiting on a human, so check_idle answers IDLE -- and IDLE is what
+# sends this script down the deliver path. Deliver is text + Enter, and Enter is
+# the dialog's CONFIRM key, so the push answers a permission prompt Codex
+# deliberately stopped to ask about, unattended and in the yes direction.
+#
+# BE HONEST ABOUT WHAT EACH CASE PROVES, because these two guards are not
+# equally observable from a verdict.
+#   - T1 (the pre-send gate) IS red-green here: measured against the pre-change
+#     script, this exact fixture gave skip:staged, and it now gives
+#     skip:dialog-pending.
+#   - T2 (the post-send guard) is NOT, measured the same way: that case already
+#     emitted pushed-unverified before the change, because find_composer_line
+#     lands on the marked selected OPTION line and the identity check then
+#     refuses to press Enter at text that is not ours. That is one glyph doing
+#     double duty, not a guard -- it knows nothing about dialogs and evaporates
+#     the moment Codex renders its selection differently -- so T2 pins the
+#     verdict rather than proving the guard. The guard shows up in a verdict at
+#     T4(c) (codex answers pushed-unverified where claude answers queued), and
+#     its PLACEMENT, which is the part a verdict cannot see at all, is pinned by
+#     the structural case at the end of this section.
+
+# T1. Dialog up at the gate -> named refusal, nothing typed. The assertion is
+# the REASON as much as the outcome: the refusal is now deliberate rather than
+# an accident of glyph reuse.
+( export PANE_OVERRIDE="$CODEX_DIALOG" RUNTIME_OVERRIDE="codex"
+  run_case "codex: dialog at gate -> skip:dialog-pending" "skip:dialog-pending" 2 ); tally $?
+# ...and it is a GATE, upstream of the dry-run classifier's stop, so the
+# classifier reports the refusal too rather than "would push".
+( export PANE_OVERRIDE="$CODEX_DIALOG" RUNTIME_OVERRIDE="codex" PUSH_DRY_RUN=1
+  run_case "codex: dry-run reports dialog-pending, not pushed" "skip:dialog-pending" 2 ); tally $?
+
+# T2. Busy at the gate (a real turn was running), and by the post-send capture
+# that turn has raised an approval dialog -- so our text and our Enter arrived at
+# a modal. PANE_OVERRIDE_3/_4 are BUSY on purpose: any Enter after this point
+# would be observed landing and would emit "pushed", so "pushed-unverified" is a
+# positive assertion that no further keystroke was sent at the dialog (the same
+# trick as the third-Enter cases above).
+( export PANE_OVERRIDE="$CODEX_BUSY" PANE_OVERRIDE_2="$CODEX_DIALOG" \
+         PANE_OVERRIDE_3="$CODEX_BUSY" PANE_OVERRIDE_4="$CODEX_BUSY" \
+         RUNTIME_OVERRIDE="codex"
+  run_case "codex: dialog on POST -> pushed-unverified, no Enter #2" "pushed-unverified" 0 ); tally $?
+
+# T3 is the EXISTING "codex: busy pane -> queued" case above, and it must stay
+# green UNMODIFIED. That is the design decision this change rests on: a message
+# queued behind a genuinely busy Codex turn does auto-submit when the turn ends,
+# so the categorical "exempt codex from queued" shape was rejected. Only the
+# dialog shape is carved out.
+
+# T4. SCOPE. Codex-only, both guards.
+# (a) Claude's own auto-mode confirmation carries the identical Enter hazard and
+#     is deliberately NOT guarded here. Unchanged behaviour, pinned so that the
+#     day it is taken on, the change is visible.
+( export PANE_OVERRIDE="$CLAUDE_AUTO_DIALOG" RUNTIME_OVERRIDE="claude"
+  run_case "claude: auto-mode dialog -> unchanged (skip:staged)" "skip:staged" 2 ); tally $?
+# (b) The sharper pin, and the one that is genuinely discriminating: the CODEX
+#     dialog fixture on a CLAUDE-runtime pane must not take the new gate. Same
+#     bytes, different runtime, different reason -- so this fails if the guard is
+#     ever written runtime-blind.
+( export PANE_OVERRIDE="$CODEX_DIALOG" RUNTIME_OVERRIDE="claude"
+  run_case "claude runtime + codex dialog bytes -> not dialog-pending" "skip:staged" 2 ); tally $?
+# (c) ...and the POST guard is runtime-scoped too: the same POST dialog on a
+#     claude pane still reports queued, unchanged. This one IS discriminating,
+#     and it is the only place the post-send guard shows up in a verdict: the
+#     codex case above answers pushed-unverified where this answers queued.
+( export PANE_OVERRIDE="$CODEX_BUSY" PANE_OVERRIDE_2="$CODEX_DIALOG" \
+         PANE_OVERRIDE_3="$CODEX_BUSY" RUNTIME_OVERRIDE="claude"
+  run_case "claude: dialog on POST -> still queued (codex-only)" "queued" 0 ); tally $?
+
+# T5. TAIL-ANCHORING. An agent whose transcript merely QUOTES the footer, with a
+# clean composer, must still be reachable. A whole-pane substring test would
+# refuse every push to whoever is discussing this bug, silently, for as long as
+# the quote stayed on screen.
+( export PANE_OVERRIDE="$CODEX_DIALOG_QUOTED" RUNTIME_OVERRIDE="codex" PUSH_DRY_RUN=1
+  run_case "codex: footer quoted high in transcript -> gates pass" "pushed" 0 ); tally $?
+# Same pane through the full flow: idle at the gate, busy after the send, so the
+# Enter started a new turn. It DELIVERS rather than being refused by the gate.
+( export PANE_OVERRIDE="$CODEX_DIALOG_QUOTED" PANE_OVERRIDE_2="$CODEX_BUSY" \
+         RUNTIME_OVERRIDE="codex"
+  run_case "codex: quoted footer still delivers" "pushed" 0 ); tally $?
+
+# STRUCTURAL, and this is the real pin for the post-send guard (see the honesty
+# note at the top of this section). It must sit ABOVE the check_idle branch that
+# classifies the post-send capture, never inside it. Inside, the guard would fire
+# only while a dialog pane happened to read BUSY -- a classification that has
+# already moved once, and that this guard exists precisely to distrust. A verdict
+# test cannot see the difference; a line-order test can.
+_guard_ln=$(grep -nF 'pane_has_codex_approval_dialog "$POST"' "$PUSH" | head -1 | cut -d: -f1)
+_branch_ln=$(grep -nF 'if check_idle "$POST"; then' "$PUSH" | head -1 | cut -d: -f1)
+if [ -n "$_guard_ln" ] && [ -n "$_branch_ln" ] && [ "$_guard_ln" -lt "$_branch_ln" ]; then
+  printf 'PASS  %-42s -> %s\n' "structural: POST dialog guard precedes check_idle" \
+    "guard L$_guard_ln, branch L$_branch_ln"; tally 0
+else
+  printf 'FAIL  %-42s -> %s\n' "structural: POST dialog guard precedes check_idle" \
+    "guard '${_guard_ln:-missing}', branch '${_branch_ln:-missing}'"; tally 1
+fi
+
 # ---------------------------------------------------------------------------
 # THE CAPPED PASTE (the capped-placeholder fix). Why every codex case above passed while the
 # feature was dead in production.
@@ -708,16 +847,19 @@ fi
 # refuse to type into a live confirmation dialog: pressing Enter there ANSWERS
 # it, on a human's behalf, with whatever option happens to be selected.
 #
-# Honest about what this proves: the verdict is the SAME before and after the
-# narrowing (measured, both give skip:staged). inbox-push delivers-and-queues
-# into busy panes rather than skipping them, so check_idle's verdict was never
-# what stopped this one -- the composer gate is, and it must keep stopping it.
-# So this is the safety net for the change, not its red-green evidence; that
-# lives in the direct check_idle cases above. The skip REASON is pinned from an
-# observed run, not predicted: the dialog's selected option carries Codex's own
-# composer glyph, so find_composer_line reads it and calls the pane staged.
+# Honest about what this proves. When the narrowing landed, the verdict here was
+# skip:staged both before and after it, because inbox-push delivers-and-queues
+# into busy panes rather than skipping them -- check_idle's verdict was never
+# what stopped this one. The composer gate stopped it, by accident: the dialog's
+# selected option carries Codex's own composer glyph, so find_composer_line read
+# it and called the pane staged. That accident knows nothing about dialogs and
+# would evaporate the moment Codex rendered its selection differently, which is
+# why the refusal is now a named gate of its own (skip:dialog-pending). So this
+# case remains the safety net for the narrowing rather than its red-green
+# evidence -- that lives in the direct check_idle cases above -- and it now also
+# pins that the refusal survived being made deliberate.
 ( export PANE_OVERRIDE="$CODEX_APPROVAL_DIALOG" RUNTIME_OVERRIDE="codex"
-  run_case "codex approval dialog -> never delivered" "skip:staged" 2 ); tally $?
+  run_case "codex approval dialog -> never delivered" "skip:dialog-pending" 2 ); tally $?
 
 echo "inbox-push: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
