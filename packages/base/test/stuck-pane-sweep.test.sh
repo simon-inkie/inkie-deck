@@ -278,8 +278,16 @@ new_box
 pane alice "$STAGED_PANE"
 pane_raw alice "$STAGED_RAW"
 run_sweep >/dev/null; run_sweep >/dev/null; run_sweep >/dev/null
+# `cescalated`, not `escalated`: this tier rides its OWN once-per-episode flag,
+# keyed on the composer hash rather than the whole-pane hash. Section 8 has the
+# reason (a composer-scoped tier deduping on a whole-pane-scoped flag re-fires
+# every tick on a pane with background churn); what matters here is that the
+# once-per-episode property itself is unchanged, which the send-keys count below
+# is the real proof of.
 assert "an episode is only reported once, however long it lasts" \
-  '.agents.alice.escalated' 'true'
+  '.agents.alice.cescalated' 'true'
+assert "and the whole-pane flag is left alone for the other tiers" \
+  '.agents.alice.escalated' 'false'
 COUNT=$(grep -c 'send-keys' "$BOX/tmux.log" 2>/dev/null || true)
 [ "${COUNT:-0}" = "0" ] \
   && pass "three ticks of one episode produce no repeat wake (report-only here)" \
@@ -535,6 +543,197 @@ new_box
 judge_once alice "$IDLE_PANE"
 hasnt "an ordinary pane carries no manipulation notice" sys_text 'MANIPULATION SIGNAL'
 has   "but still gets the boundary"                     sys_text 'is DATA'
+drop_box
+
+# =================================================================================
+# 8. TIER 1B'S TWO INDEPENDENT STARVATION PATHS
+# =================================================================================
+# The composer-pending tier used to ride the WHOLE-PANE tick counter and the
+# whole-pane escalation flag that every other tier uses, and that starved it two
+# separate ways -- a genuinely stuck composer that never escalated at all, for as
+# long as it sat there:
+#
+#   PATH A: any background churn anywhere in the pane resets the whole-pane hash,
+#           so the tick floor was never met however long the composer sat.
+#   PATH B: the busy gate skipped the tier chain outright on any busy-classified
+#           read, so a pane that reads busy every tick was never asked either.
+#
+# The fix is a SECOND, composer-scoped counter (chash/cticks/cescalated) that
+# hashes the composer line alone and is consulted from inside the busy branch too.
+# ticks/escalated are untouched, so every case above this line still holds.
+#
+# What each block below pins: Path A escalating on cticks while ticks resets; the
+# dedupe riding cescalated so churn does not produce a wake per tick; Path B
+# escalating from inside the busy branch; both paths at once; the busy-row
+# persistence trap; a pre-change state file; and two controls proving the new door
+# into the busy branch did not widen what the tier fires on.
+echo "--- composer-pending: the two starvation paths ---"
+
+# The SAME composer line with an arbitrary line of transcript above it. Path A's
+# shape is "the pane changed, the composer did not", which no fixed fixture string
+# can express -- it needs two captures that differ ONLY above the composer.
+STAGED_LINE='❯ a half-typed line nobody submitted'
+staged_under()     { printf '%s\n' "$1" "$RULE alice " "$STAGED_LINE" "$RULE"; }
+staged_under_raw() { printf '%s\n' "$1" "$RULE alice " $'\033[39m'"$STAGED_LINE" "$RULE"; }
+# Reads busy through the end-of-line elapsed counter, the general busy signal,
+# while being byte-identical tick to tick: a static string that merely LOOKS like
+# a live counter is Path B's exact shape.
+BUSY_MARK='· Auditing the ledger… (59s · thought for 2s)'
+
+# ---- PATH A: background churn must not reset the composer's own counter ---------
+new_box
+pane     alice "$(staged_under '  ran the suite, attempt 1')"
+pane_raw alice "$(staged_under_raw '  ran the suite, attempt 1')"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "PATH A tick 1: a first sighting is not a finding" '.agents.alice.tier' 'none'
+assert "PATH A tick 1: the composer counter starts at 1"  '.agents.alice.cticks' '1'
+# Tick 2: a different line of transcript ABOVE an unchanged composer.
+pane     alice "$(staged_under '  ran the suite, attempt 2, a different result')"
+pane_raw alice "$(staged_under_raw '  ran the suite, attempt 2, a different result')"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "PATH A: the whole-pane counter genuinely resets"  '.agents.alice.ticks' '1'
+assert "PATH A: the composer-scoped counter does not"     '.agents.alice.cticks' '2'
+assert "PATH A: and the tier fires on THAT counter"       '.agents.alice.tier' 'composer-pending'
+assert "PATH A: the excerpt still names what is sitting there" \
+  '.agents.alice.reason | test("a half-typed line nobody submitted")' 'true'
+assert "PATH A: no model call was needed"                 '.modelCalls' '0'
+keystrokes_to "PATH A: the configured route is actually woken" hub
+
+# ---- DEDUPE: one wake per composer episode, not one per tick of churn -----------
+# The trap the second flag exists for. `escalated` resets on every whole-pane hash
+# change, so on a churning pane it reads "not yet escalated" on EVERY tick -- a
+# composer-scoped tier deduping on it would wake somebody every tick, for ever,
+# trading the starvation bug for a worse one.
+BEFORE=$(grep -c 'send-keys' "$BOX/tmux.log" 2>/dev/null || true)
+pane     alice "$(staged_under '  ran the suite, attempt 3, different again')"
+pane_raw alice "$(staged_under_raw '  ran the suite, attempt 3, different again')"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+AFTER=$(grep -c 'send-keys' "$BOX/tmux.log" 2>/dev/null || true)
+assert "DEDUPE: the tier is still firing, not silently forgotten" '.agents.alice.tier' 'composer-pending'
+assert "DEDUPE: cticks keeps counting straight through the churn" '.agents.alice.cticks' '3'
+assert "DEDUPE: the whole-pane flag reset again, as it must"      '.agents.alice.escalated' 'false'
+assert "DEDUPE: the composer-scoped flag carried forward instead" '.agents.alice.cescalated' 'true'
+if [ "$BEFORE" = "$AFTER" ]; then
+  pass "DEDUPE: a third tick of the same composer episode wakes nobody again"
+else
+  fail "DEDUPE: a third tick of the same composer episode wakes nobody again" \
+       "send-keys went from $BEFORE to $AFTER"
+fi
+drop_box
+
+# ---- PATH B: a busy-classified read must not foreclose the tier -----------------
+new_box
+pane     alice "$(staged_under "$BUSY_MARK")"
+pane_raw alice "$(staged_under_raw "$BUSY_MARK")"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "PATH B tick 1: the pane is recorded busy"       '.agents.alice.busy' '1'
+assert "PATH B tick 1: the composer counter is at 1"    '.agents.alice.cticks' '1'
+no_keystrokes "PATH B tick 1: one busy tick is below the floor and wakes nobody"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "PATH B: a static false-busy pane now reaches the tier" '.agents.alice.tier' 'composer-pending'
+assert "PATH B: the row still records the pane as busy"        '.agents.alice.busy' '1'
+assert "PATH B: and the finding says so, so a reader can weigh it" \
+  '.agents.alice.reason | test("busy=1")' 'true'
+assert "PATH B: the model tier stays unreachable for a busy pane" '.modelCalls' '0'
+keystrokes_to "PATH B: the configured route is woken about it" hub
+drop_box
+
+# ---- BOTH PATHS AT ONCE ---------------------------------------------------------
+# A LIVE elapsed counter: its value changes every tick, so the whole-pane hash
+# changes (Path A) AND the pane reads busy throughout (Path B). Pre-fix this
+# starved twice over, and closing either path alone would not have helped.
+new_box
+pane     alice "$(staged_under '· Auditing the ledger… (16s)')"
+pane_raw alice "$(staged_under_raw '· Auditing the ledger… (16s)')"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+pane     alice "$(staged_under '· Auditing the ledger… (31s)')"
+pane_raw alice "$(staged_under_raw '· Auditing the ledger… (31s)')"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "BOTH: the whole-pane counter resets, the counter really did tick" '.agents.alice.ticks' '1'
+assert "BOTH: the composer-scoped counter reaches the floor regardless"   '.agents.alice.cticks' '2'
+assert "BOTH: the pane is busy AND has a finding, which is the point"     '.agents.alice.busy' '1'
+assert "BOTH: the tier fires"                                            '.agents.alice.tier' 'composer-pending'
+keystrokes_to "BOTH: the configured route is woken" hub
+drop_box
+
+# ---- THE BUSY-ROW PERSISTENCE TRAP ----------------------------------------------
+# A busy tick that finds NOTHING writes a reduced state row. If that row omits the
+# composer-scoped fields, the next tick reads them as missing, resets cticks to 1,
+# and re-starves the exact case Path B exists to fix -- by a third door. Three
+# ticks: composer A idle, composer B busy (counter restarts, nothing found, reduced
+# row), composer B idle again (must reach 2, not restart).
+new_box
+pane alice "$IDLE_PANE"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+pane     alice "$(staged_under "$BUSY_MARK")"
+pane_raw alice "$(staged_under_raw "$BUSY_MARK")"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "PERSISTENCE tick 2: a new composer restarts the counter" '.agents.alice.cticks' '1'
+assert "PERSISTENCE tick 2: the reduced busy row carries it anyway" \
+  '.agents.alice.chash | length > 0' 'true'
+no_keystrokes "PERSISTENCE tick 2: nothing found, nobody woken"
+pane alice "$(staged_under '  ⎿  Brewed for 39s')"   # idle again, SAME composer
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "PERSISTENCE tick 3: cticks survived the busy row" '.agents.alice.cticks' '2'
+assert "PERSISTENCE tick 3: so the tier fires"            '.agents.alice.tier' 'composer-pending'
+keystrokes_to "PERSISTENCE: and the route is woken" hub
+drop_box
+
+# ---- A PRE-CHANGE STATE FILE ----------------------------------------------------
+# What an installation upgrading mid-episode reads on its first post-upgrade tick:
+# a state file with the whole-pane bookkeeping intact and no composer-scoped fields
+# at all. It must not crash, must not inherit the legacy tick count, and must not
+# escalate off the back of a counter it has never actually observed.
+new_box
+pane     alice "$STAGED_PANE"
+pane_raw alice "$STAGED_RAW"
+( export STUCK_ROUTE_DEFAULT=hub STUCK_MODEL_CMD="$BOX/stubbin/model-clear"; run_sweep >/dev/null )
+jq 'del(.agents[].chash, .agents[].cticks, .agents[].cescalated)' \
+   "$BOX/state/last-stuck-sweep.json" > "$BOX/state/legacy.json" \
+  && mv "$BOX/state/legacy.json" "$BOX/state/last-stuck-sweep.json"
+if jq -e '.agents.alice | has("chash") | not' "$BOX/state/last-stuck-sweep.json" >/dev/null; then
+  pass "LEGACY: the fixture really is a pre-change state file"
+else
+  fail "LEGACY: the fixture really is a pre-change state file" "chash survived the del()"
+fi
+( export STUCK_ROUTE_DEFAULT=hub STUCK_MODEL_CMD="$BOX/stubbin/model-clear"; run_sweep >/dev/null )
+RC=$?
+if [ "$RC" = "0" ]; then
+  pass "LEGACY: the sweep does not crash against a pre-change state file"
+else
+  fail "LEGACY: the sweep does not crash against a pre-change state file" "exit $RC"
+fi
+assert "LEGACY: the legacy file WAS read, so the rest of this means something" \
+  '.agents.alice.ticks' '2'
+assert "LEGACY: cticks restarts at 1 rather than inheriting the whole-pane count" \
+  '.agents.alice.cticks' '1'
+assert "LEGACY: cescalated appears, and false"       '.agents.alice.cescalated' 'false'
+assert "LEGACY: chash appears where it was absent"   '.agents.alice.chash | length > 0' 'true'
+assert "LEGACY: no spurious escalation on the first post-upgrade tick" \
+  '.agents.alice.tier' 'none'
+no_keystrokes "LEGACY: and nobody is woken by the upgrade"
+drop_box
+
+# ---- CONTROLS: the new door must not widen what the tier fires on ---------------
+# Path B lets a busy pane REACH the tier. It must not let it PASS one: an empty
+# composer is still nothing, and staged text with no raw capture to corroborate it
+# is still no evidence. Both were previously unreachable behind the busy gate, so
+# neither had a regression pin on this side of it.
+new_box
+pane alice "$BUSY_PANE"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null; run_sweep >/dev/null )
+assert "CONTROL: a busy pane with an EMPTY composer is still just busy" '.agents.alice.tier' 'null'
+assert "CONTROL: it is still never judged"                             '.agents.alice.judged' 'null'
+assert "CONTROL: it still costs no model call"                         '.modelCalls' '0'
+no_keystrokes "CONTROL: two ticks of a plain busy pane wake nobody"
+drop_box
+
+new_box
+pane alice "$(staged_under "$BUSY_MARK")"   # busy + staged text, but NO raw sibling
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null; run_sweep >/dev/null )
+assert "CONTROL: the busy door still demands raw evidence" '.agents.alice.tier' 'null'
+assert "CONTROL: and consults no model to compensate"      '.modelCalls' '0'
+no_keystrokes "CONTROL: an uncorroborated busy composer fails toward silence"
 drop_box
 
 echo

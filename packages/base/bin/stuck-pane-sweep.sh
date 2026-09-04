@@ -59,7 +59,10 @@
 #      is unambiguous, there is nothing to corroborate.
 #   1b. DETERMINISTIC composer-pending tier (see composer_pending). Positively
 #      identified unsubmitted text in the composer, still there after
-#      >= STUCK_MIN_TICKS byte-identical ticks. Also free, also no model call.
+#      >= STUCK_MIN_TICKS byte-identical ticks OF THE COMPOSER LINE ITSELF --
+#      its own `chash`/`cticks` counter, not the whole-pane one every other tier
+#      rides. See the tier's header and the main loop. Also free, also no model
+#      call, and the one tier a busy-classified pane does not foreclose.
 #   2. LIGHTWEIGHT-MODEL fallback, and entirely OPTIONAL. Only for a pane that is
 #      idle, matches NO known literal, and has been BYTE-IDENTICAL across
 #      >= STUCK_MIN_TICKS consecutive ticks. Env-configurable model, a floating
@@ -350,6 +353,29 @@ EOF
 # person left a half-typed line and walked away", which are the same finding with
 # two different correct responses (press Enter, versus check with the human
 # first).
+#
+# TWO INDEPENDENT STARVATION PATHS, since fixed -- and note that THIS FUNCTION
+# was not the broken half, its CALLER in the main loop was. All this function
+# ever answers is "is there pending text right now"; the caller decides whether
+# it has been sitting there long enough to be a wedge, and that gate was wrong
+# two separate ways.
+#
+#   PATH A: the caller counted ticks against the WHOLE-PANE hash, which resets
+#   on any byte changing anywhere in the pane -- a tool-call summary scrolling
+#   by, a spinner elsewhere in the transcript. A pane with any such background
+#   churn plus a genuinely stuck composer never produced two consecutive
+#   identical whole-pane hashes, so the tick floor was never met and this
+#   function was never asked, however long the composer sat unsubmitted.
+#
+#   PATH B: the caller's busy gate skipped the whole tier chain on any
+#   busy-classified read, so a pane that reads busy on EVERY tick (a live
+#   elapsed counter, or a wholly static string that merely looks like one) was
+#   never asked either, for the same "however long" reason by a different door.
+#
+# The main loop now hashes the composer line ALONE (`chash`) and counts its own
+# unchanged run (`cticks`), and it consults this function from inside the busy
+# branch as well as after it. The mechanism, and the dedupe trap that comes with
+# it, are documented at the counter itself.
 composer_excerpt() {  # flatten + strip quotes/backslashes + cap: this string can be pasted into a tmux composer
   printf '%s' "$1" | tr '\n\t' '  ' | tr -d '"\\' | cut -c1-60 | sed 's/[[:space:]]*$//'
 }
@@ -753,72 +779,161 @@ while IFS= read -r w <&3; do
   fi
   [ "$escalated" = "true" ] || escalated="false"
 
-  # A busy pane is working, not wedged. No pattern match, no model call, and the
-  # tick counter still advances honestly (the capture genuinely changed or didn't).
-  if check_idle "$pane"; then
-    state_rows+=("\"$w\":{\"hash\":\"$h\",\"ticks\":$ticks,\"since\":\"$since\",\"busy\":1,\"judged\":null,\"escalated\":false}")
-    continue
+  # --- tier 1b's OWN secondary tick counter ----------------------------------------
+  # WHY: tier 1b used to ride `ticks`/`escalated` above -- the WHOLE-PANE hash --
+  # and starved two independent ways because of it. Both paths, and why they are
+  # the same bug wearing two coats, are written out at composer_pending's header.
+  #
+  # FIX: hash the COMPOSER LINE ALONE (`chash`) and count ITS OWN unchanged-tick
+  # run (`cticks`), independent of what the rest of the pane is doing. `ticks` and
+  # `escalated` are UNTOUCHED -- the model tier and its `since` bookkeeping still
+  # read the whole-pane hash exactly as before. This is a PARALLEL counter, not a
+  # rekeying of the existing one, and that is what keeps the change scoped to tier
+  # 1b instead of quietly retiming every tier at once.
+  #
+  # THE DEDUPE TRAP, and the reason `cescalated` exists rather than reusing
+  # `escalated`: `escalated` resets on every whole-pane hash change (`escalated=""`
+  # a few lines up). Under composer-scoped ticking, a pane with background noise
+  # (whole-pane hash changing every tick) plus a stuck composer would satisfy
+  # `escalated != true` on EVERY tick it is re-evaluated -- a wake per tick, for
+  # ever, trading the starvation bug for a worse one. `cescalated` is tier 1b's own
+  # once-per-episode flag, tied to CHASH stability rather than whole-pane-hash
+  # stability: it carries forward while the composer itself is unchanged and clears
+  # only when the composer changes. See the dedupe split further down.
+  #
+  # Self-heals against a state file written before this existed: a missing
+  # `chash`/`cticks`/`cescalated` reads as empty through prev_field, the `-n "$pch"`
+  # conjunct below fails, and the counter simply restarts at 1. No migration, no
+  # crash, and no inheriting of the legacy whole-pane tick count.
+  chash=$(pane_hash "$(find_composer_line "$pane")")
+  pch=$(prev_field "$w" chash)
+  if [ "$chash" = "$pch" ] && [ -n "$pch" ]; then
+    cticks=$(prev_field "$w" cticks); cticks=$(( ${cticks:-1} + 1 ))
+    cescalated=$(prev_field "$w" cescalated)
+  else
+    cticks=1; cescalated=""
   fi
+  [ "$cescalated" = "true" ] || cescalated="false"
 
   reason=""; source_tier=""
-  if hit=$(match_pattern "$pane"); then
-    # TIER 1 -- free, immediate, no corroboration needed.
-    reason="$hit"; source_tier="deterministic"
-  elif [ "$ticks" -ge "$MIN_TICKS" ] && composer_pending "$pane" "$w"; then
-    # TIER 1b -- unsubmitted composer text, still there after >= MIN_TICKS
-    # byte-identical ticks. NOT gated on `-z "$judged"`, unlike the model tier
-    # below, and that difference IS the fix: in the incident that produced this
-    # tier the model's "clear" was cached from tick 2 onward, so a tier gated the
-    # same way would have gone quiet for ticks 3-10 exactly as the model tier
-    # did. This one is re-evaluated every tick; the per-episode `escalated` flag
-    # below is what stops it re-waking anyone, the same mechanism tier 1 rides.
-    #
-    # NOT fired at ticks=1 on purpose: a first sighting proves the text exists,
-    # not that it has been sitting there -- it could be seconds old with the
-    # sender's own Enter still in flight.
-    [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "COMPOSER -> $w (ticks=$ticks)"
-    reason="composer-pending: unsubmitted composer text (ticks=$ticks): $COMPOSER_PENDING_TEXT"
-    source_tier="composer-pending"
-  elif [ "$ticks" -ge "$MIN_TICKS" ] && [ -z "$judged" ]; then
-    # TIER 2 -- motionless for real, and never judged for THIS capture.
-    [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "MODEL -> $w (ticks=$ticks)"
-    model_calls=$((model_calls+1))
-    if out=$(model_judge "$w" "$pane" "$ticks"); then
-      v=${out%%	*}; r=${out#*	}
-      judged="$v"
-      [ "$v" = "stuck" ] && { reason="model: ${r:-no reason given}"; source_tier="model"; }
+
+  # A busy pane is working, not wedged -- unless tier 1b's OWN composer-scoped
+  # counter says otherwise. No pattern match and no model call either way, and the
+  # whole-pane tick counter still advances honestly (the capture genuinely changed
+  # or it didn't).
+  #
+  # PATH B: this gate used to `continue` unconditionally, which starved tier 1b
+  # exactly as Path A did and by an independent route -- a pane can read busy on
+  # every tick (a live elapsed counter, or a wholly static string that merely LOOKS
+  # like one; see inbox-push's own documented residual) while its composer sits on
+  # genuinely unsubmitted text underneath the whole time. The principle is the one
+  # composer_pending's header already states: deterministic detection TRIGGERS,
+  # heuristic judgement ENRICHES and never SUPPRESSES. A busy reading is a
+  # heuristic, so it may suppress tier 1b only when tier 1b has nothing positively
+  # identified to say -- hence consulted BEFORE the `continue`, not foreclosed by
+  # it. The model tier stays unreachable for a busy pane exactly as before: nothing
+  # below can run once this block has set `source_tier`, and nothing below is
+  # reached at all when it has not.
+  #
+  # THE NEW FALSE-POSITIVE CLASS, named rather than discovered later: a genuinely
+  # busy long turn with a legitimately queued message staged across two or more
+  # ticks now produces ONE escalation per episode. The reason string says "busy=1"
+  # so whoever reads it can weigh "queued behind a long turn" before pressing
+  # anything. The asymmetry is what justifies it: one glance at a healthy pane
+  # versus a message stranded for hours.
+  busy=0; check_idle "$pane" && busy=1
+  if [ "$busy" = "1" ]; then
+    if [ "$cticks" -ge "$MIN_TICKS" ] && composer_pending "$pane" "$w"; then
+      [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "COMPOSER -> $w (ticks=$cticks, busy=1)"
+      reason="composer-pending: unsubmitted composer text (ticks=$cticks, busy=1): $COMPOSER_PENDING_TEXT"
+      source_tier="composer-pending"
     else
-      # FAIL CLOSED, but as ONE fault, not N stuck panes.
-      #
-      # Measured before this branch existed: with the classifier forced
-      # unavailable, every window hit tier 2 on the same tick and every one of
-      # them escalated as "stuck". A single outage therefore produced a
-      # whole-fleet wake storm aimed at the coordinator -- which is precisely the
-      # failure this sweep exists to prevent, arriving by a new route.
-      #
-      # An unavailable classifier is also not EVIDENCE about any individual pane,
-      # so "this pane looks stuck" would simply be a false statement. Fail-closed
-      # here means: refuse to answer "fine", surface the fault once, name the
-      # panes left unjudged, and claim nothing about them. Deterministic matches
-      # are unaffected and still fire normally throughout an outage.
-      #
-      # judged stays EMPTY on purpose. Caching a fabricated "stuck" would make
-      # the next tick's cached-verdict branch assert it as a real finding,
-      # laundering a transport error into a diagnosis. Empty means "still
-      # unjudged": retry next tick, and self-heal the moment the classifier
-      # returns.
-      judged=""
-      source_tier="model-unavailable"
-      unavailable+=("$w")
+      # THE BUSY-ROW PERSISTENCE TRAP: this reduced row used to write a reduced
+      # field set, and if `chash`/`cticks`/`cescalated` are not written HERE too, a
+      # single busy tick with nothing found silently zeroes tier 1b's counter on the
+      # very next tick's comparison -- re-starving the exact case Path B exists to
+      # fix, by a third door. `busy`/`judged`/`escalated` keep their existing
+      # hardcoded shape in this row on purpose; that is not part of this change.
+      state_rows+=("\"$w\":{\"hash\":\"$h\",\"ticks\":$ticks,\"since\":\"$since\",\"busy\":1,\"judged\":null,\"escalated\":false,\"chash\":\"$chash\",\"cticks\":$cticks,\"cescalated\":$cescalated}")
+      continue
     fi
-  elif [ "$judged" = "stuck" ]; then
-    # Same capture, already judged stuck on an earlier tick. Still stuck; the
-    # escalated flag below is what stops it from re-waking anyone.
-    reason="previously judged stuck"; source_tier="cached"
+  fi
+
+  if [ -z "$source_tier" ]; then
+    if hit=$(match_pattern "$pane"); then
+      # TIER 1 -- free, immediate, no corroboration needed.
+      reason="$hit"; source_tier="deterministic"
+    elif [ "$cticks" -ge "$MIN_TICKS" ] && composer_pending "$pane" "$w"; then
+      # TIER 1b -- unsubmitted composer text, still there after >= MIN_TICKS
+      # byte-identical COMPOSER ticks. Gated on `cticks`, the composer-scoped
+      # counter computed above, never the whole-pane `ticks` -- the tier's floor is
+      # unchanged in spirit, it is just measured against the right clock now.
+      #
+      # NOT gated on `-z "$judged"`, unlike the model tier below, and that
+      # difference IS the fix this tier was added for: in the incident that
+      # produced it the model's "clear" was cached from tick 2 onward, so a tier
+      # gated the same way would have gone quiet for ticks 3-10 exactly as the
+      # model tier did. This one is re-evaluated every tick; the per-episode
+      # `cescalated` flag below is what stops it re-waking anyone.
+      #
+      # NOT fired at cticks=1 on purpose: a first sighting proves the text exists,
+      # not that it has been sitting there -- it could be seconds old with the
+      # sender's own Enter still in flight.
+      [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "COMPOSER -> $w (ticks=$cticks)"
+      reason="composer-pending: unsubmitted composer text (ticks=$cticks): $COMPOSER_PENDING_TEXT"
+      source_tier="composer-pending"
+    elif [ "$ticks" -ge "$MIN_TICKS" ] && [ -z "$judged" ]; then
+      # TIER 2 -- motionless for real, and never judged for THIS capture.
+      [ "${STUCK_DRY_RUN:-0}" = "1" ] && echo "MODEL -> $w (ticks=$ticks)"
+      model_calls=$((model_calls+1))
+      if out=$(model_judge "$w" "$pane" "$ticks"); then
+        v=${out%%	*}; r=${out#*	}
+        judged="$v"
+        [ "$v" = "stuck" ] && { reason="model: ${r:-no reason given}"; source_tier="model"; }
+      else
+        # FAIL CLOSED, but as ONE fault, not N stuck panes.
+        #
+        # Measured before this branch existed: with the classifier forced
+        # unavailable, every window hit tier 2 on the same tick and every one of
+        # them escalated as "stuck". A single outage therefore produced a
+        # whole-fleet wake storm aimed at the coordinator -- which is precisely the
+        # failure this sweep exists to prevent, arriving by a new route.
+        #
+        # An unavailable classifier is also not EVIDENCE about any individual pane,
+        # so "this pane looks stuck" would simply be a false statement. Fail-closed
+        # here means: refuse to answer "fine", surface the fault once, name the
+        # panes left unjudged, and claim nothing about them. Deterministic matches
+        # are unaffected and still fire normally throughout an outage.
+        #
+        # judged stays EMPTY on purpose. Caching a fabricated "stuck" would make
+        # the next tick's cached-verdict branch assert it as a real finding,
+        # laundering a transport error into a diagnosis. Empty means "still
+        # unjudged": retry next tick, and self-heal the moment the classifier
+        # returns.
+        judged=""
+        source_tier="model-unavailable"
+        unavailable+=("$w")
+      fi
+    elif [ "$judged" = "stuck" ]; then
+      # Same capture, already judged stuck on an earlier tick. Still stuck; the
+      # escalated flag below is what stops it from re-waking anyone.
+      reason="previously judged stuck"; source_tier="cached"
+    fi
   fi
 
   routed_to=$(route_for "$w")
-  if [ -n "$reason" ] && [ "$escalated" != "true" ]; then
+  # WHICH ONCE-PER-EPISODE FLAG THIS FINDING RIDES. Tier 1b consults and sets its
+  # OWN `cescalated`, tied to composer-hash stability; every other tier keeps the
+  # shared `escalated`, tied to whole-pane-hash stability. They cannot be merged:
+  # see the dedupe trap at the counter above -- a composer-scoped tier deduping on
+  # a whole-pane-scoped flag re-fires on every tick of exactly the pane this fix
+  # exists to serve. One side effect, worth naming rather than discovering: a pane
+  # that has already taken a tier-1 wake this episode can still take one further
+  # tier-1b wake for the same wedge, because the two flags are independent.
+  # Bounded at one extra, and independently informative.
+  dedupe_flag="$escalated"
+  [ "$source_tier" = "composer-pending" ] && dedupe_flag="$cescalated"
+  if [ -n "$reason" ] && [ "$dedupe_flag" != "true" ]; then
     if [ -n "$ROUTE_DEFAULT" ] && [ "$w" = "$ROUTE_DEFAULT" ]; then
       self_stuck="$reason"
     else
@@ -834,13 +949,19 @@ while IFS= read -r w <&3; do
     # that episode is never retroactively notified. See the header. Fail-safe, and
     # the reason a live trial should be timed by when a NEW episode appears rather
     # than by what the state file already holds.
-    escalated="true"
+    if [ "$source_tier" = "composer-pending" ]; then cescalated="true"; else escalated="true"; fi
   fi
 
   jr=$(printf '%s' "$reason" | tr -d '"\\' | cut -c1-160)
   jj="null"; [ -n "$judged" ] && jj="\"$judged\""
   jrt="null"; [ -n "$routed_to" ] && jrt="\"$routed_to\""
-  state_rows+=("\"$w\":{\"hash\":\"$h\",\"ticks\":$ticks,\"since\":\"$since\",\"busy\":0,\"judged\":$jj,\"tier\":\"${source_tier:-none}\",\"reason\":\"$jr\",\"routedTo\":$jrt,\"escalated\":$escalated}")
+  # "busy":$busy, not a hardcoded 0: a pane reaching this row used to be idle by
+  # construction, and since tier 1b is consulted from inside the busy branch it no
+  # longer is. Recording the real classification is what makes a busy-and-pending
+  # finding diagnosable instead of a contradiction. chash/cticks/cescalated are
+  # ADDITIVE fields alongside the existing ones; nothing reads this file
+  # positionally.
+  state_rows+=("\"$w\":{\"hash\":\"$h\",\"ticks\":$ticks,\"since\":\"$since\",\"busy\":$busy,\"judged\":$jj,\"tier\":\"${source_tier:-none}\",\"reason\":\"$jr\",\"routedTo\":$jrt,\"escalated\":$escalated,\"chash\":\"$chash\",\"cticks\":$cticks,\"cescalated\":$cescalated}")
 done 3<<< "$windows"
 
 # --- decide + escalate -----------------------------------------------------------
