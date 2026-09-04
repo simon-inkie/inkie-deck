@@ -74,6 +74,13 @@ const LIB_REL = "packages/base/bin/pane-idle";
 const SHIPPED = {
   1: ["check_idle", "pane_ctx_pct"],
   2: ["check_idle", "pane_ctx_pct", "find_composer_line", "raw_line_for"],
+  3: [
+    "check_idle",
+    "pane_has_codex_approval_dialog",
+    "pane_ctx_pct",
+    "find_composer_line",
+    "raw_line_for",
+  ],
 };
 
 /** Files that source the library and may pin a minimum version. */

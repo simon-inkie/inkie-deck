@@ -34,6 +34,14 @@
 # codes still on it" -- with no policy in them, which is exactly what makes them
 # shareable.
 #
+# AND SINCE v3: pane_has_codex_approval_dialog(), which answers the one question
+# check_idle structurally cannot -- "is this pane idle, or is it wedged on a
+# Codex approval dialog waiting for a human to answer it". It passes the same
+# test the v2 primitives did: a pane-SHAPE lookup with no policy in it. It lives
+# here rather than in the one caller that needs it today so that the next one (a
+# second send-side guard, a sweep tier) does not grow a second copy of the
+# literal.
+#
 # Deliberately NOT moved here: check_composer_clean(). It has diverged on
 # PURPOSE, not by accident (inbox-push's copy takes a second raw-capture arg
 # and publishes COMPOSER_TEXT for its identity check), so folding the variants
@@ -158,6 +166,155 @@ check_idle() {
   # Claude family (verified live, "Working (Ns * esc to interrupt)"), so no
   # separate branch is needed -- the match above already covers it.
   return 1  # idle
+}
+
+# --------------------------------------------------------------------------
+# pane_has_codex_approval_dialog <pane>  -- return 0 iff the pane is CURRENTLY
+# showing one of Codex's own native approval dialogs (added at lib v3,
+# fixed 2026-09).
+#
+# WHY A SECOND QUESTION AT ALL, when check_idle already answers one: check_idle
+# is two-way and the world is three-way. A pane wedged on an UNANSWERED approval
+# dialog is running nothing and waiting on a human, so check_idle answers IDLE
+# for it -- correctly, and by design since the esc-to-cancel narrowing above;
+# before that narrowing the dialog's own footer tripped the Gemini busy marker
+# and the same pane answered BUSY. Neither verdict is the one a caller about to
+# press a key needs, and IDLE is the more dangerous of the two, because IDLE is
+# exactly what licenses a caller to type into a pane and submit.
+#
+# What this buys the caller is not a label, it is a KEYSTROKE DECISION. Enter is
+# the dialog's CONFIRM key. Code that reads "idle, safe to deliver" and sends
+# text + Enter at a pending dialog is not delivering a message: the text is
+# swallowed by a modal that is not a text field, and the Enter answers a
+# permission prompt Codex deliberately stopped to ask a human about -- silently,
+# unattended, and in the YES direction.
+#
+# BOTTOM-ANCHORED, deliberately, and for the same reason bin/stuck-pane-sweep.sh
+# matches its own stuck literals inside a TAIL_LINES window rather than over the
+# whole capture: a dialog that has ALREADY been answered, and transcript prose
+# that merely QUOTES the footer -- an agent discussing this bug, or this file --
+# both sit higher in the viewport. A whole-pane substring test answers "dialog
+# pending" for every one of those, and since the caller's response is to NOT
+# deliver, that is a silent delivery outage aimed squarely at whoever is working
+# on the dialog problem. A LIVE dialog is always at the bottom because it IS the
+# bottom: Codex renders it where the composer would be.
+#
+# THE LAST NON-BLANK LINE, not "somewhere inside the tail window" (the false
+# positive found by independent review, fixed 2026-09). A window is a distance,
+# and distance is the wrong test for "is this the bottom of the pane". Prose
+# quoting the footer does not have to be far up to be prose: a reply that
+# mentions the literal four lines above a ready composer sits ENTIRELY inside the
+# 20-line window, so the window test answers "dialog pending" while the pane is
+# idle, reachable, and showing a composer waiting for input. The caller's
+# response is to refuse delivery (skip:dialog-pending), so the outage lands, once
+# again, on precisely the agent discussing dialogs -- the shape tail-anchoring
+# was supposed to close, surviving the fix because the fix only moved it further
+# down the pane.
+#
+# The property that actually separates a live dialog from a quotation is not
+# proximity to the bottom, it IS the bottom: Codex draws the dialog where the
+# composer would be, so its footer is the last rendered content and there is
+# nothing below it. A quotation always has something below it -- the composer at
+# minimum -- because a pane with nothing below the quote is a pane with no
+# composer, which is not an idle pane anyone can deliver to anyway.
+#
+# STRICTLY NARROWER than the window test it replaces: if the last non-blank line
+# ends with the literal then the literal is inside the window, so every pane this
+# matches, the old test matched too. The change can therefore only move verdicts
+# from dialog-pending to no-dialog, never the reverse, which bounds it to the
+# false-positive direction and cannot introduce a NEW pane at which a caller
+# would press Enter.
+#
+# TRAILING BLANK ROWS ARE STRIPPED FIRST, and this is a LIBRARY-level guarantee
+# rather than a bug seen in the field: inbox-push captures with
+# PANE="$(capture ...)", and command substitution eats trailing newlines, so its
+# panes happen to arrive already stripped. A strictly-last-line test would
+# therefore work for today's caller and answer "no dialog" for a real dialog the
+# first time somebody feeds this a capture read from a file, or one whose bottom
+# rows carry a space rather than nothing. That is the fail direction this
+# function must never take, and it must not be the caller's quoting style that
+# decides. The window is what BOUNDS the strip: blank rows past it are not looked
+# through, so the window still means something after this change, just something
+# narrower than it meant before.
+#
+# ENDS WITH, rather than equals, after trimming: the real capture indents the
+# footer by two spaces, and a boxed or bulleted rendering would prefix something
+# else again. What is not negotiable is that the literal TERMINATES the line,
+# which is what a quotation inside a sentence ("... or esc to cancel", which
+# collides with...) cannot do.
+#
+# THE LITERAL, not a regex over its words. This is Codex's own stable footer, and
+# a curated literal that gets re-captured when the vendor changes the wording
+# beats a pattern that quietly widens. That is the opposite trade from the rules
+# in check_idle above, and deliberately so: those classify an open-ended set of
+# runtimes and renderings, where enumeration has gone blind three times; this one
+# recognises a single vendor string, where the enumeration IS the specification.
+#
+# It is also NOT read from the stuck sweep's pattern list, even though that list
+# is where a deployment's other known-stuck literals live. That list is
+# config-REPLACEABLE by design (STUCK_PATTERN_CONFIG overrides it wholesale), so
+# sourcing a keystroke guard from it would hand a config file the power to switch
+# the guard off. One copy here, owned by the code that acts on it.
+#
+# CODEX_DIALOG_TAIL_LINES resolves at CALL time, not at source time: this file is
+# sourced once per process, and a module-level default binds before a caller (or
+# a test) can set it.
+#
+# ZERO IS INVALID, not a valid tiny window. An all-digits test on its own treats
+# "0" as VALID input, so CODEX_DIALOG_TAIL_LINES=0 sails straight through,
+# `tail -n 0` emits nothing, the scan below sees no lines at all: a REAL,
+# on-screen dialog reads as "no dialog here", exactly backwards from this
+# function's fail-towards-LOOKING contract. Checked as a NUMERIC zero rather than
+# against a literal "0", because "00" and "000" are equally zero and equally
+# broken, and a string compare would have left the same hole open one digit over.
+#
+# UPPER BOUND, kept, though what it bounds is narrower since the last-line fix:
+# not how much PROSE is in scope (prose is excluded by position now, at any
+# distance) but how far up the trailing-blank strip will reach, plus a caller or
+# a future config knob passing something silly to `tail`. 200 is generous
+# headroom over any real terminal viewport -- Codex's own dialog body is well
+# under 20 lines end to end -- and the validation is retained verbatim because it
+# closes bug classes (zero, overflow) that are independent of what the window is
+# for.
+#
+# OVERFLOW is the same bug class as the zero bypass, one layer out: an all-digit
+# value past the shell's integer range (say twenty nines) makes
+# `[ "$tail_lines" -eq 0 ]` and `[ ... -gt 200 ]` themselves fail with "integer
+# expression expected", silenced by their own 2>/dev/null -- so NEITHER the
+# zero-fallback NOR the clamp fires, `tail -n <value>` then errors and emits
+# nothing, and a real dialog reads as absent again. A value of 15 or more digits
+# is clamped to 200 directly, BEFORE either arithmetic test runs, so the
+# comparisons only ever see a value already known to be in range. 1e15 sits far
+# below any real shell's overflow boundary, and no legitimate caller needs a
+# window remotely that large.
+# --------------------------------------------------------------------------
+pane_has_codex_approval_dialog() {
+  local pane="$1"
+  local tail_lines="${CODEX_DIALOG_TAIL_LINES:-20}"
+  case "$tail_lines" in
+    ''|*[!0-9]*) tail_lines=20 ;;
+    ???????????????*) tail_lines=200 ;;
+    *) [ "$tail_lines" -eq 0 ] 2>/dev/null && tail_lines=20 ;;
+  esac
+  [ "$tail_lines" -gt 200 ] 2>/dev/null && tail_lines=200
+  # The last NON-BLANK line of the window, found the way find_composer_line finds
+  # its candidate: walk the lines and keep the last one that qualifies, rather
+  # than grepping and taking tail -1. Same idiom, same reason -- the answer is a
+  # POSITION in the capture, and a content search cannot express one.
+  local footer='Press enter to confirm or esc to cancel'
+  local line trimmed last=''
+  while IFS= read -r line; do
+    # Leading strip, then trailing strip: the two whitespace idioms already used
+    # by find_composer_line and raw_line_for respectively.
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    # An `if`, not `[ ... ] && last=...`, so the body cannot end on a non-zero
+    # status: a caller running under `set -e` would abort the whole script on the
+    # first blank row, and blank rows are the common case at the bottom of a pane.
+    if [ -n "$trimmed" ]; then last="$trimmed"; fi
+  done < <(printf '%s\n' "$pane" | tail -n "$tail_lines" 2>/dev/null)
+  case "$last" in *"$footer") return 0 ;; esac
+  return 1
 }
 
 # --------------------------------------------------------------------------
@@ -301,7 +458,18 @@ raw_line_for() {
 # bumps this without the callers, or that re-uses a number already shipped, is a
 # silent no-op at best and a silently-quiet safety gate at worst, so the number
 # is checked mechanically rather than by review.
-PANE_IDLE_LIB_VERSION=2
+#
+# v3 adds pane_has_codex_approval_dialog, and the undefined-function failure mode
+# is WORSE for it than for the v2 primitives, which is why inbox-push raises its
+# own pin to `-ge 3` rather than trusting presence. An undefined
+# pane_has_codex_approval_dialog returns non-zero, and non-zero here means "no
+# dialog on this pane" -- so against a v2 library the guard would answer all
+# clear every time and the caller would press Enter at pending approval dialogs,
+# which is the exact keystroke the guard exists to withhold. The callers that do
+# NOT use it (bin/stuck-pane-sweep.sh, bin/activity-sweep.sh) keep their own
+# assertions unchanged and are unaffected: pins are per-caller, by what each one
+# actually calls.
+PANE_IDLE_LIB_VERSION=3
 
 # --------------------------------------------------------------------------
 # CLI mode. Only runs when executed directly, never when sourced.
