@@ -209,11 +209,50 @@ codex_pane_current_command() {
 # very dialog, say -- must not read as a dialog being present. The window is
 # fixed rather than configurable because there is exactly one caller and no
 # reason for it to vary.
+#
+# THE FOOTER IS CHECKED ON THE LAST NON-BLANK LINE, NOT ANYWHERE IN THE WINDOW
+# (the false positive fixed by independent review, 2026-09). A 20-line window is
+# not a small place: a resumed session's pane can carry a RECENT exchange that
+# quotes or discusses this very dialog only a few lines above a clean, ready
+# composer, and both the quote and the composer then sit inside the same window.
+# "Both anchors somewhere in the tail" answers "dialog pending" for that pane.
+#
+# WHY THAT ONE IS WORSE THAN A MISSED DIALOG. The caller,
+# codex_dismiss_update_dialog_if_present below, responds to a true return by
+# sending the bare keystroke "3" with no Enter. Against a live dialog the digit
+# selects and confirms; against an idle pane there is no dialog to swallow it and
+# it lands as a stray character typed into the composer text box. It is not
+# submitted, so nothing errors and nothing is logged -- it just sits there as
+# staged text, and staged text is exactly what bin/inbox-push's composer-clean
+# gate refuses to type over. One false positive on one boot therefore takes that
+# agent OFF the delivery path indefinitely, and the evidence is a single
+# unexplained "3" nobody typed.
+#
+# A live dialog's footer is the LAST rendered non-blank line, because Codex draws
+# the dialog where the composer would be and there is nothing below it; a
+# reference to the dialog in transcript text always has SOMETHING under it, if
+# only the composer prompt itself. So the footer anchors on position, and that
+# alone rejects the whole class.
+#
+# THE HEADLINE STAYS A LOOSE MATCH WITHIN THE WINDOW, deliberately. It sits
+# several lines above the footer in a real render (release-notes URL and three
+# menu options in between), so a last-line rule cannot apply to it, and it is not
+# the anchor doing the work here -- the footer's position is.
+#
+# CONTAINMENT ON THAT LINE, not equality with it. What is load-bearing is WHICH
+# line carries the footer, not its exact bytes: captures differ in indentation,
+# and a future render that boxes the dialog would put border glyphs around the
+# same string. Requiring the exact bytes would trade this false positive for a
+# false negative -- a real dialog read as absent, the agent left frozen behind
+# it -- the moment either changed.
 codex_pane_has_update_dialog() {
-  local pane="$1" tail_text
+  local pane="$1" tail_text last_line
   tail_text=$(printf '%s\n' "$pane" | tail -n 20)
-  printf '%s' "$tail_text" | grep -qF 'Update available!' || return 1
-  printf '%s' "$tail_text" | grep -qF 'Press enter to continue'
+  printf '%s\n' "$tail_text" | grep -qF 'Update available!' || return 1
+  # Whitespace-only counts as blank: capture-pane -p trims trailing whitespace
+  # per line, but a fixture (or a -e capture read through a stripper) need not.
+  last_line=$(printf '%s\n' "$tail_text" | grep -v '^[[:space:]]*$' | tail -n 1)
+  printf '%s\n' "$last_line" | grep -qF 'Press enter to continue'
 }
 
 # codex_dismiss_update_dialog_if_present <target> -- capture the pane and, if

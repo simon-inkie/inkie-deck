@@ -324,6 +324,19 @@ if codex_pane_has_update_dialog "$CODEX_DIALOG_QUOTED_IN_PROSE"; then
   fail "D3 detector: both anchors quoted in text, pushed off-tail -> no" "matched a stale quote"
 else pass "D3 detector: both anchors quoted in text, pushed off-tail -> no"; fi
 
+# D3b (negative, LAST-LINE anchoring -- the false positive found by independent
+# review, 2026-09): the same quoted anchors, but this time INSIDE the 20-line
+# window, a few lines above a clean composer that is the real last line. D3 above
+# only proves the window has an edge; this proves the window is not enough on its
+# own, because a resumed session's most recent exchange is exactly the text most
+# likely to be quoting this dialog and is exactly the text nearest the bottom.
+# The footer has to be the last non-blank line, not merely present somewhere.
+CODEX_DIALOG_QUOTED_ABOVE_COMPOSER=$'  ... earlier transcript\n\n\xe2\x80\xa2 Ran boot-agents on basalt\n\n  Codex printed "Update available! 0.149.1 -> 0.153.0", offered\n  "3. Skip until next version", and ended with "Press enter to continue".\n  I answered it, so the pane is clear now.\n\n\xe2\x80\xba Ask Codex to do anything'
+if codex_pane_has_update_dialog "$CODEX_DIALOG_QUOTED_ABOVE_COMPOSER"; then
+  fail "D3b detector: anchors quoted INSIDE the tail, composer is the last line -> no" \
+    "matched a quote sitting above a ready composer"
+else pass "D3b detector: anchors quoted INSIDE the tail, composer is the last line -> no"; fi
+
 # D4: an ordinary idle pane, and an empty capture.
 if codex_pane_has_update_dialog $'some transcript\n\n\xe2\x80\xba Ask Codex to do anything'; then
   fail "D4 detector: ordinary idle pane -> no"; else pass "D4 detector: ordinary idle pane -> no"; fi
@@ -373,6 +386,27 @@ sent6=$(grep -c 'send-keys' "$TMUX_LOG3" 2>/dev/null)
 [ "$sent6" -eq 0 ] \
   && pass "D6 dismissal: no dialog present -> no keystroke" \
   || fail "D6 dismissal: no dialog present -> no keystroke" "sent=$sent6"
+
+# D6b: the D3b pane -- a quoted dialog above a ready composer -- gets NO
+# keystroke. This is the assertion that matters, and the reason D3b exists: the
+# predicate returning true is not itself the harm, sending "3" at a live composer
+# is. The digit is not submitted, so it stages as text nobody typed, and staged
+# text is what bin/inbox-push's composer-clean gate refuses to type over -- one
+# false positive silently takes the agent off the delivery path. Asserted on the
+# send-keys log rather than on the return code so that a future refactor which
+# moves the decision out of the detector cannot pass this case while still
+# sending the key.
+DIALOG_STUB_TEXT="$CODEX_DIALOG_QUOTED_ABOVE_COMPOSER"
+: > "$TMUX_LOG3"
+codex_dismiss_update_dialog_if_present "test:basalt"
+rc6b=$?
+sent6b=$(grep -c 'send-keys' "$TMUX_LOG3" 2>/dev/null)
+if [ "$sent6b" -eq 0 ] && [ "$rc6b" -ne 0 ]; then
+  pass "D6b dismissal: quoted dialog above a ready composer -> no '3' into the composer"
+else
+  fail "D6b dismissal: quoted dialog above a ready composer -> no '3' into the composer" \
+    "rc=$rc6b sent=$sent6b log=$(cat "$TMUX_LOG3")"
+fi
 
 # ---- dialog handling wired through the verifier ----------------------------
 
