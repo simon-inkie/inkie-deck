@@ -34,6 +34,7 @@ const SUITES = [
   "pane-idle.test.sh",
   "activity-sweep.test.sh",
   "stuck-pane-sweep.test.sh",
+  "boot-agents.test.sh",
 ] as const;
 
 describe("ported shell suites", () => {
