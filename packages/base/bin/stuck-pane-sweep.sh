@@ -70,8 +70,12 @@
 #      response type, a daily spend cap charged BEFORE the call (but only once
 #      the call is actually ATTEMPTABLE, see model_preconditions_ok), fail-closed
 #      on any error -- but fail-closed as ONE fault, not as N stuck panes; see
-#      the model-unavailable branch, which a live run proved matters. With no
-#      credential and no STUCK_MODEL_CMD this tier simply never runs, and the two
+#      the model-unavailable branch, which a live run proved matters. Every
+#      failure of the underlying call is classified (transport / HTTP error /
+#      unparseable) and logged to CLASSIFIER_ERROR_LOG, because "unavailable" on
+#      its own does not say whether that was a network fault, a quota outage, or
+#      a malformed response, and those need different fixes. With no credential
+#      and no STUCK_MODEL_CMD this tier simply never runs, and the two
 #      deterministic tiers are unaffected.
 #
 # COST DISCIPLINE -- the model must not be called on every idle pane every tick:
@@ -192,6 +196,13 @@ DAILY_CAP_USD="${STUCK_SWEEP_DAILY_HARD_CAP_USD:-1}"
 # spend that system's daily cap, and a system that fails CLOSED on cap could then
 # be paused fleet-wide by a chatty sweep. Same shape, separate file.
 SPEND_LEDGER="${STUCK_SWEEP_SPEND_LEDGER:-$STATE_DIR/stuck-sweep-spend-ledger.json}"
+# WHY the classifier call failed, when it fails. Deliberately NOT the state file:
+# other things parse that file, and it must not grow a variable-shape error blob.
+# `curl -sS` does not fail on a non-2xx HTTP status, so without asking for the
+# status explicitly a quota error or a server fault was captured and then thrown
+# away on the next line's success-shape parse, indistinguishable afterwards from
+# routine noise or a plain transport timeout.
+CLASSIFIER_ERROR_LOG="${STUCK_SWEEP_CLASSIFIER_ERROR_LOG:-$STATE_DIR/stuck-sweep-classifier-errors.log}"
 
 mkdir -p "$STATE_DIR"
 
@@ -621,6 +632,34 @@ using only the rules you were given, and reply with the JSON object alone.
 EOF
 }
 
+# --- model tier: why the call failed ---------------------------------------------
+# One append-only tab-separated line per failed classifier call. Plain text, not
+# JSONL, on purpose: the reader is a human with `tail` during an incident, and
+# needing a parser to find out what broke is the exact cost this exists to
+# remove. Deliberately not wired to STUCK_MODEL_CMD: an injected test seam is a
+# stand-in for the whole call and has no HTTP status or curl exit of its own to
+# report.
+#
+# NEVER log the request or its headers -- the API key travels in the
+# x-goog-api-key header, not in anything passed here. Only the RESPONSE status
+# and body, and the body only to its first 300 bytes: a response body is an
+# unknown shape in general, and the cap is a deliberate redaction, not a
+# formatting preference.
+#
+# Failing to write is non-fatal by design. An observability addition must not
+# become a new way for the classifier itself to break.
+classifier_error_log() {  # <kind> <http-code> <curl-exit> <body>
+  local kind="$1" code="$2" rc="$3" body="$4" ts
+  ts="${now:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  mkdir -p "$(dirname "$CLASSIFIER_ERROR_LOG")" 2>/dev/null || return 0
+  # head -c bounds it to 300 BYTES; tr keeps the record on one line so the log
+  # stays greppable line-by-line whatever the body contained.
+  body=$(printf '%s' "$body" | head -c 300 | tr '\n\r\t' '   ')
+  printf '%s\tkind=%s\thttp=%s\tcurl_exit=%s\tmodel=%s\tbody=%s\n' \
+    "$ts" "$kind" "$code" "$rc" "$STUCK_MODEL" "$body" \
+    >> "$CLASSIFIER_ERROR_LOG" 2>/dev/null || return 0
+}
+
 # --- model tier: the call --------------------------------------------------------
 # STUCK_MODEL_CMD is the injectable seam (tests, and a swap to any other provider
 # without touching this logic). It receives the two halves as a JSON envelope
@@ -628,7 +667,7 @@ EOF
 # for exactly the reason the split exists. Without it: a generateContent call
 # over curl, with the rules in systemInstruction and the data in the user turn.
 model_raw() {  # <system-instruction>; user content on stdin -> raw model JSON on stdout
-  local sys="$1" user envelope body resp
+  local sys="$1" user envelope body resp http rc=0 text
   user=$(cat)
   # jq is load-bearing on BOTH paths now, and it is not a new requirement: the
   # tier already cannot run without it (charge_daily fails closed, and the
@@ -654,12 +693,41 @@ model_raw() {  # <system-instruction>; user content on stdin -> raw model JSON o
       responseMimeType: "application/json"
     }
   }') || return 1
-  resp=$(curl -sS --max-time 20 -X POST \
+  # --ipv4: some hosts have no working IPv6 route but DNS still returns an AAAA
+  # record for this endpoint, so a default dual-stack curl can try v6 first and
+  # stall to the full --max-time before falling back to v4 instead of trying it
+  # immediately. Forcing v4 removes the stall rather than only diagnosing it
+  # faster; there is no dual-stack behaviour this call needs to keep.
+  #
+  # -w '\n%{http_code}': -sS does NOT fail on a non-2xx, so without this a 429 or
+  # a 5xx arrived indistinguishable from a malformed success and was thrown away
+  # on the jq parse below. The status is appended as a final line and split off
+  # next.
+  resp=$(curl -sS --ipv4 --max-time 20 -w '\n%{http_code}' -X POST \
     "https://generativelanguage.googleapis.com/v1beta/models/${STUCK_MODEL}:generateContent" \
     -H "x-goog-api-key: ${GOOGLE_GENERATIVE_AI_API_KEY}" \
     -H "Content-Type: application/json" \
-    -d "$body" 2>/dev/null) || return 1
-  printf '%s' "$resp" | jq -er '.candidates[0].content.parts[0].text' 2>/dev/null || return 1
+    -d "$body" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # A non-zero exit here is genuinely transport-level (timeout, DNS, connection
+    # refused), precisely the class -sS's own exit-code contract does not hide.
+    # $resp is whatever curl managed to write before it gave up.
+    classifier_error_log transport 000 "$rc" "$resp"
+    return 1
+  fi
+  # An empty body leaves resp as just "\n<code>", which splits correctly to an
+  # empty body and the real code.
+  http="${resp##*$'\n'}"
+  resp="${resp%$'\n'*}"
+  case "$http" in
+    2??) ;;
+    *) classifier_error_log http-error "$http" 0 "$resp"; return 1 ;;
+  esac
+  text=$(printf '%s' "$resp" | jq -er '.candidates[0].content.parts[0].text' 2>/dev/null) || {
+    classifier_error_log unparseable "$http" 0 "$resp"
+    return 1
+  }
+  printf '%s\n' "$text"
 }
 
 # model_judge <agent> <pane> <ticks> -> echoes "stuck|clear<TAB>reason"; returns 1

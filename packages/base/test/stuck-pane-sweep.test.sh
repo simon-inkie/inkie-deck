@@ -81,6 +81,19 @@ EOF
 cat > "$PROMPT_LOG"
 printf '%s\n' '{"verdict":"clear","reason":"resting between turns"}'
 EOF
+  # Stands in for curl on the REAL (non-STUCK_MODEL_CMD) classifier path: records
+  # its own argv so a test can assert on what the sweep actually asked curl for,
+  # and emulates `-w '\n%{http_code}'` -- body, then a newline, then the status --
+  # so a failure shape can be dialled in per case with no network call. Every
+  # other case in this suite drives model_judge through STUCK_MODEL_CMD instead,
+  # so this stub only matters to the section that deliberately leaves it unset.
+  cat > "$BOX/stubbin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CURL_ARGV_LOG:-/dev/null}"
+[ "${CURL_STUB_EXIT:-0}" = "0" ] || exit "$CURL_STUB_EXIT"
+printf '%s' "${CURL_STUB_BODY:-}"
+printf '\n%s' "${CURL_STUB_CODE:-200}"
+EOF
   chmod +x "$BOX/stubbin/"*
   : > "$BOX/tmux.log"
 }
@@ -734,6 +747,92 @@ pane alice "$(staged_under "$BUSY_MARK")"   # busy + staged text, but NO raw sib
 assert "CONTROL: the busy door still demands raw evidence" '.agents.alice.tier' 'null'
 assert "CONTROL: and consults no model to compensate"      '.modelCalls' '0'
 no_keystrokes "CONTROL: an uncorroborated busy composer fails toward silence"
+drop_box
+
+# =================================================================================
+# 9. THE CLASSIFIER CALL ITSELF: forced IPv4, and why a failure failed
+# =================================================================================
+# Every case above drives model_judge through the injected STUCK_MODEL_CMD seam,
+# which stands in for the WHOLE call and has no argv, no HTTP status and no curl
+# exit code of its own for these two changes to attach to. This section instead
+# drives the REAL curl branch, through the stub curl on PATH that new_box sets
+# up, with GOOGLE_GENERATIVE_AI_API_KEY set to a placeholder a stub curl never
+# sends anywhere and STUCK_MODEL_CMD left unset so model_preconditions_ok takes
+# that branch rather than the seam.
+echo "--- the classifier call: IPv4 and error logging ---"
+
+GOOD_RESP='{"candidates":[{"content":{"parts":[{"text":"{\"verdict\":\"clear\",\"reason\":\"resting\"}"}]}}]}'
+QUOTA_RESP='{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exceeded for this project"}}'
+
+# run_curl_case <stub-exit> <stub-code> <stub-body> -- two ticks against a
+# motionless pane, so the second tick is the one that actually reaches curl.
+run_curl_case() {
+  pane alice "$IDLE_PANE"
+  ( export GOOGLE_GENERATIVE_AI_API_KEY="placeholder-key-never-sent-anywhere-real" \
+           CURL_ARGV_LOG="$BOX/curl-argv.log" \
+           CURL_STUB_EXIT="$1" CURL_STUB_CODE="$2" CURL_STUB_BODY="$3"
+    run_sweep >/dev/null; run_sweep >/dev/null )
+}
+argv_text()   { cat "$BOX/curl-argv.log" 2>/dev/null; }
+errlog_text() { cat "$BOX/state/stuck-sweep-classifier-errors.log" 2>/dev/null; }
+
+# ---- the request forces IPv4, and asks curl for the status code -----------------
+new_box
+run_curl_case 0 200 "$GOOD_RESP"
+# Needle deliberately space-padded: has()'s `grep -qF` would read a bare leading
+# "--" as its own end-of-options marker and match nothing.
+has "the classifier call forces IPv4"        argv_text " --ipv4 "
+has "and asks curl for the HTTP status code" argv_text "%{http_code}"
+has "still the generateContent endpoint"     argv_text "generativelanguage.googleapis.com"
+drop_box
+
+# ---- an HTTP error is logged with the real status and the response body ---------
+new_box
+run_curl_case 0 429 "$QUOTA_RESP"
+has    "an HTTP error is classified as such"     errlog_text "kind=http-error"
+has    "the real status code is recorded"        errlog_text "http=429"
+has    "the response body survives to the log"   errlog_text "quota exceeded for this project"
+hasnt  "the api key never reaches the log"       errlog_text "placeholder-key-never-sent"
+assert "and the classifier reads as unavailable, not as a stuck verdict" \
+  '.agents.alice.tier' 'model-unavailable'
+drop_box
+
+# ---- a transport failure is logged with curl's own exit code --------------------
+new_box
+run_curl_case 28 000 ""
+has "a transport failure is classified as such" errlog_text "kind=transport"
+has "curl's own exit code is recorded"          errlog_text "curl_exit=28"
+drop_box
+
+# ---- a 2xx that does not parse is its own kind, not folded into http-error ------
+new_box
+run_curl_case 0 200 '{"promptFeedback":{"blockReason":"OTHER"}}'
+has "an unparseable success is its own kind"    errlog_text "kind=unparseable"
+has "and carries the body that failed to parse" errlog_text "blockReason"
+drop_box
+
+# ---- a successful call logs nothing: this is a diagnostic, not a noise source ---
+new_box
+run_curl_case 0 200 "$GOOD_RESP"
+if [ -s "$BOX/state/stuck-sweep-classifier-errors.log" ]; then
+  fail "a successful call writes no error line" "$(errlog_text)"
+else
+  pass "a successful call writes no error line"
+fi
+assert "positive control: the call really did succeed" '.agents.alice.judged' 'clear'
+drop_box
+
+# ---- an oversized error body is capped at 300 bytes, not reproduced whole -------
+new_box
+BIG_BODY='{"error":{"message":"'"$(head -c 600 < /dev/zero | tr '\0' 'x')"'"}}'
+run_curl_case 0 500 "$BIG_BODY"
+LOGGED_BODY=$(errlog_text | sed 's/.*[[:space:]]body=//')
+if [ "${#LOGGED_BODY}" = "300" ]; then
+  pass "an oversized error body is truncated to 300 bytes"
+else
+  fail "an oversized error body is truncated to 300 bytes" "got ${#LOGGED_BODY} bytes"
+fi
+has "and it is the START of the body, not the end" errlog_text '{"error":{"message":"xxx'
 drop_box
 
 echo
