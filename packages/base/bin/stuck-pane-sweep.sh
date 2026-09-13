@@ -71,12 +71,15 @@
 #      the call is actually ATTEMPTABLE, see model_preconditions_ok), fail-closed
 #      on any error -- but fail-closed as ONE fault, not as N stuck panes; see
 #      the model-unavailable branch, which a live run proved matters. Every
-#      failure of the underlying call is classified (transport / HTTP error /
-#      unparseable) and logged to CLASSIFIER_ERROR_LOG, because "unavailable" on
-#      its own does not say whether that was a network fault, a quota outage, or
-#      a malformed response, and those need different fixes. With no credential
-#      and no STUCK_MODEL_CMD this tier simply never runs, and the two
-#      deterministic tiers are unaffected.
+#      failure is classified and logged to CLASSIFIER_ERROR_LOG, at BOTH layers
+#      of the call: the transport/envelope layer (transport / http-error /
+#      unparseable-envelope, in model_raw) and the semantic layer one level up
+#      (the envelope came back fine but the model's OWN verdict text did not --
+#      empty-text / unparseable / invalid-verdict, in model_judge), because
+#      "unavailable" on its own does not say whether that was a network fault, a
+#      quota outage, or a malformed response, and those need different fixes.
+#      With no credential and no STUCK_MODEL_CMD this tier simply never runs,
+#      and the two deterministic tiers are unaffected.
 #
 # COST DISCIPLINE -- the model must not be called on every idle pane every tick:
 #   - busy pane                -> no call (it is working, by definition not stuck)
@@ -636,15 +639,28 @@ EOF
 # One append-only tab-separated line per failed classifier call. Plain text, not
 # JSONL, on purpose: the reader is a human with `tail` during an incident, and
 # needing a parser to find out what broke is the exact cost this exists to
-# remove. Deliberately not wired to STUCK_MODEL_CMD: an injected test seam is a
-# stand-in for the whole call and has no HTTP status or curl exit of its own to
-# report.
+# remove.
+#
+# model_raw()'s OWN three call sites (transport / http-error / unparseable-
+# envelope) are deliberately not reachable through STUCK_MODEL_CMD: an injected
+# test seam is a stand-in for the whole call and has no HTTP status or curl exit
+# of its own to report. That is a property of THOSE call sites, not of this
+# function -- model_judge()'s call sites (see there) fire regardless of whether
+# $raw came from curl or the seam, because a malformed verdict is just as real a
+# production failure on either path. This function has no opinion of its own
+# about where its callers' data came from; it only ever writes the line it is
+# handed.
 #
 # NEVER log the request or its headers -- the API key travels in the
 # x-goog-api-key header, not in anything passed here. Only the RESPONSE status
-# and body, and the body only to its first 300 bytes: a response body is an
-# unknown shape in general, and the cap is a deliberate redaction, not a
-# formatting preference.
+# and body, and the body only to its first 300 bytes. THAT CAP BOUNDS THE LOG'S
+# SIZE against a response of unknown shape; it is not a content-redaction
+# mechanism and this file proves nothing about what any given 300 bytes
+# contains -- truncating arbitrary text is not the same claim as redacting
+# sensitive content from it. The API key never reaching this file is true for
+# an unrelated reason (it travels in a request header this function is never
+# handed in the first place), not because truncation redacted it out of a body
+# that had it.
 #
 # Failing to write is non-fatal by design. An observability addition must not
 # become a new way for the classifier itself to break.
@@ -751,11 +767,58 @@ model_judge() {
   cost=$(estimate_cost_usd "$(( ${#sys} + ${#user} ))")
   charge_daily "$cost" || return 1
   raw=$(printf '%s' "$user" | model_raw "$sys") || return 1
-  [ -n "$raw" ] || return 1
+  # EVERYTHING FROM HERE IS ONE LAYER UP FROM model_raw()'s OWN ERROR LOGGING,
+  # deliberately logged here rather than there.
+  #
+  # model_raw() only ever sees the HTTP/envelope level: did the request
+  # transport, did it come back 2xx, could `.candidates[0].content.parts[0].text`
+  # be pulled out of it. A response can clear every one of those and still be
+  # useless, because that extracted text is ITSELF supposed to be the model's own
+  # verdict JSON, and nothing has checked that yet. Before this fix, a failure
+  # here -- non-JSON text, valid JSON with no .verdict, an out-of-enum verdict,
+  # or simply empty text -- fell through to a bare `return 1` with zero entries
+  # in CLASSIFIER_ERROR_LOG: the classifier reported "unavailable" with no
+  # diagnostic trail, exactly the blind spot the whole feature was built to
+  # close, just one layer up. Found in review; the three checks below close it.
+  #
+  # SEAM-AGNOSTIC, ON PURPOSE -- unlike model_raw()'s own logging. model_raw()'s
+  # three call sites are deliberately NOT wired to STUCK_MODEL_CMD because there
+  # is no HTTP status or curl exit code to report when a seam command ran
+  # instead of curl. That reasoning does not apply here: model_judge() cannot
+  # tell, and must not try to tell, whether $raw came from real curl or from
+  # STUCK_MODEL_CMD, and a STUCK_MODEL_CMD-swapped provider producing a malformed
+  # verdict is just as real a production failure as the built-in provider doing
+  # so -- STUCK_MODEL_CMD's own doc comment names "a swap to any other provider
+  # without touching this logic" as a legitimate production configuration, not
+  # only a test double. So every classifier_error_log call below fires
+  # regardless of which path produced $raw. "n/a"/"n/a" stand in for the
+  # http-code/curl-exit columns because neither genuinely applies at this layer:
+  # there is no HTTP response to cite here, real or simulated -- the failure is
+  # in the model's OWN output, not in the transport that carried it.
+  if [ -z "$raw" ]; then
+    # model_raw() succeeded -- a well-formed envelope came back -- but the
+    # model's own text was empty. Its own kind, not folded into "unparseable"
+    # below: there is nothing to attempt to parse, which is a different failure
+    # to "got something and it was garbage".
+    classifier_error_log empty-text "n/a" "n/a" ""
+    return 1
+  fi
   # Strip a ```json fence if the model added one.
   raw=$(printf '%s' "$raw" | sed -e 's/^```[a-zA-Z]*//' -e 's/```$//')
   if [ "$have_jq" = "1" ]; then
-    verdict=$(printf '%s' "$raw" | jq -er '.verdict' 2>/dev/null) || return 1
+    if ! verdict=$(printf '%s' "$raw" | jq -er '.verdict' 2>/dev/null); then
+      # The model's own text is not valid JSON at all, or is valid JSON with no
+      # .verdict field. KIND REUSED DELIBERATELY, not invented fresh: this is
+      # conceptually model_raw()'s own "unparseable" case, one layer up -- a
+      # well-formed HTTP response whose CONTENT does not parse as expected. The
+      # confirmed repro that prompted this fix
+      # (`{"candidates":[{"content":{"parts":[{"text":"not JSON"}]}}]}`) is
+      # exactly this shape. Logging the model's own extracted text as the body
+      # here, rather than an HTTP envelope, is what keeps a `tail` on this file
+      # able to tell the two apart in practice despite the shared kind.
+      classifier_error_log unparseable "n/a" "n/a" "$raw"
+      return 1
+    fi
     # Flatten to one line and trim: this string can be pasted into a tmux
     # composer, where an embedded newline would submit the message early.
     reason=$(printf '%s' "$raw" | jq -r '.reason // ""' 2>/dev/null | tr '\n\t"' '   ' | sed 's/[[:space:]]*$//;s/^[[:space:]]*//')
@@ -764,7 +827,18 @@ model_judge() {
   fi
   case "$verdict" in
     stuck|clear) ;;
-    *) return 1 ;;   # schema violation is deterministic; do not retry, fail closed
+    *)
+      # Valid JSON, WITH a .verdict field, but its value is neither "stuck" nor
+      # "clear". A DISTINCT kind from "unparseable", deliberately: this is not a
+      # parse failure, it is a schema/enum violation on content that parsed
+      # cleanly, which is a different thing for an operator to act on -- a model
+      # that answered off-menu (e.g. "unclear") is a prompt-compliance question,
+      # while "unparseable" is "the model did not even return JSON". Collapsing
+      # the two into one kind would hide that distinction from exactly the
+      # person this log exists for.
+      classifier_error_log invalid-verdict "n/a" "n/a" "$raw"
+      return 1
+      ;;   # schema violation is deterministic; do not retry, fail closed
   esac
   printf '%s\t%s\n' "$verdict" "$reason"
 }

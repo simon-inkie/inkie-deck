@@ -73,6 +73,17 @@ EOF
 cat >/dev/null
 exit 1
 EOF
+  # Answers successfully (exit 0, non-empty stdout) but with text that is not
+  # the expected verdict JSON at all. Stands in for a STUCK_MODEL_CMD-swapped
+  # provider misbehaving in production -- the seam has no HTTP status or curl
+  # exit of its own, but a malformed verdict through it is exactly as real a
+  # failure as one from the built-in curl path, per model_judge()'s own new
+  # seam-agnostic logging.
+  cat > "$BOX/stubbin/model-malformed" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' 'not JSON at all'
+EOF
   # The prompt-construction probe. Everything the sweep would have sent lands in
   # $PROMPT_LOG verbatim, so section 7 can assert on the REAL request rather than
   # on a re-implementation of it.
@@ -833,6 +844,67 @@ else
   fail "an oversized error body is truncated to 300 bytes" "got ${#LOGGED_BODY} bytes"
 fi
 has "and it is the START of the body, not the end" errlog_text '{"error":{"message":"xxx'
+drop_box
+
+# =================================================================================
+# 10. model_judge()'s OWN failure paths, one layer above model_raw() (safety-relevant)
+# =================================================================================
+# model_raw() only ever sees the HTTP/envelope level. A response can clear every
+# one of those checks -- transports, comes back 2xx, the envelope's own
+# `.candidates[0].content.parts[0].text` extracts cleanly -- and still be
+# useless, because that extracted text is ITSELF supposed to be the model's own
+# verdict JSON and nothing had checked THAT. Before this fix, a failure there
+# (non-JSON text, valid JSON missing .verdict, an out-of-enum verdict, or empty
+# text) fell through to a bare `return 1` with ZERO entries in
+# CLASSIFIER_ERROR_LOG -- reported "unavailable" with no diagnostic trail,
+# exactly the blind spot the whole feature was built to close, one layer up.
+# Found by a model-diverse peer reviewer; this section is the fix, including
+# their own confirmed repro verbatim.
+echo "--- model_judge: the semantic layer above model_raw ---"
+
+# ---- the reviewer's own confirmed repro, verbatim, via the real curl path ------
+new_box
+run_curl_case 0 200 '{"candidates":[{"content":{"parts":[{"text":"not JSON"}]}}]}'
+assert "a well-formed envelope whose OWN text is not JSON reads as unavailable" \
+  '.agents.alice.tier' 'model-unavailable'
+has "the semantic parse failure IS logged now (kind reused from model_raw's own case)" \
+  errlog_text "kind=unparseable"
+has "and it is the model's own text that is logged, not an HTTP envelope" \
+  errlog_text "body=not JSON"
+drop_box
+
+# ---- valid JSON, has .verdict, but the value is not in the allowed enum --------
+new_box
+run_curl_case 0 200 '{"candidates":[{"content":{"parts":[{"text":"{\"verdict\":\"maybe\",\"reason\":\"unsure\"}"}]}}]}'
+assert "an out-of-enum verdict reads as unavailable, not as a silent third state" \
+  '.agents.alice.tier' 'model-unavailable'
+has "an enum violation gets its OWN kind, distinct from unparseable" \
+  errlog_text "kind=invalid-verdict"
+has "the offending verdict text itself is logged" errlog_text '"verdict":"maybe"'
+drop_box
+
+# ---- the model's own text extracts cleanly but is empty -----------------------
+new_box
+run_curl_case 0 200 '{"candidates":[{"content":{"parts":[{"text":""}]}}]}'
+assert "empty model text reads as unavailable" '.agents.alice.tier' 'model-unavailable'
+has "empty text gets its own kind too, not folded into unparseable" \
+  errlog_text "kind=empty-text"
+drop_box
+
+# ---- THE SEAM QUESTION: this new logging must not care where $raw came from ----
+# model_raw()'s OWN logging is deliberately unreachable through STUCK_MODEL_CMD
+# (no HTTP status or curl exit to report for a seam call). This new logging
+# lives in model_judge(), which never asks where $raw came from -- a
+# STUCK_MODEL_CMD-swapped provider producing a malformed verdict is just as real
+# a production failure as the built-in provider doing so. Proven here by driving
+# the exact same malformed-verdict shape through the seam instead of curl.
+new_box
+pane alice "$IDLE_PANE"
+( export STUCK_MODEL_CMD="$BOX/stubbin/model-malformed"; run_sweep >/dev/null; run_sweep >/dev/null )
+assert "a malformed verdict via the STUCK_MODEL_CMD seam ALSO reads as unavailable" \
+  '.agents.alice.tier' 'model-unavailable'
+has "and it is ALSO logged: model_judge does not care which path produced \$raw" \
+  errlog_text "kind=unparseable"
 drop_box
 
 echo
