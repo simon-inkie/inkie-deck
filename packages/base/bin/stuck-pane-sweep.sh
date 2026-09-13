@@ -70,9 +70,16 @@
 #      response type, a daily spend cap charged BEFORE the call (but only once
 #      the call is actually ATTEMPTABLE, see model_preconditions_ok), fail-closed
 #      on any error -- but fail-closed as ONE fault, not as N stuck panes; see
-#      the model-unavailable branch, which a live run proved matters. With no
-#      credential and no STUCK_MODEL_CMD this tier simply never runs, and the two
-#      deterministic tiers are unaffected.
+#      the model-unavailable branch, which a live run proved matters. Every
+#      failure is classified and logged to CLASSIFIER_ERROR_LOG, at BOTH layers
+#      of the call: the transport/envelope layer (transport / http-error /
+#      unparseable-envelope, in model_raw) and the semantic layer one level up
+#      (the envelope came back fine but the model's OWN verdict text did not --
+#      empty-text / unparseable / invalid-verdict, in model_judge), because
+#      "unavailable" on its own does not say whether that was a network fault, a
+#      quota outage, or a malformed response, and those need different fixes.
+#      With no credential and no STUCK_MODEL_CMD this tier simply never runs,
+#      and the two deterministic tiers are unaffected.
 #
 # COST DISCIPLINE -- the model must not be called on every idle pane every tick:
 #   - busy pane                -> no call (it is working, by definition not stuck)
@@ -114,6 +121,12 @@
 #                            trusted half; `user` carries text the sweep does not
 #                            control and must never be read as instruction. See
 #                            the trust-boundary section further down.
+#                            Runs WITHOUT GOOGLE_GENERATIVE_AI_API_KEY in its
+#                            environment, deliberately: a provider swap has no
+#                            legitimate need for it, and this closes a
+#                            confirmed leak where a misconfigured swap command
+#                            could otherwise read, echo, or crash-dump the real
+#                            key. See model_raw() and classifier_error_log().
 #   STUCK_MIN_TICKS=<n>      consecutive-unchanged ticks before the model may run (2)
 #   STUCK_STATE_DIR=<dir>    state home; shares the stuck-shape list with
 #                            activity-sweep.sh, which is why it is not inside
@@ -192,6 +205,13 @@ DAILY_CAP_USD="${STUCK_SWEEP_DAILY_HARD_CAP_USD:-1}"
 # spend that system's daily cap, and a system that fails CLOSED on cap could then
 # be paused fleet-wide by a chatty sweep. Same shape, separate file.
 SPEND_LEDGER="${STUCK_SWEEP_SPEND_LEDGER:-$STATE_DIR/stuck-sweep-spend-ledger.json}"
+# WHY the classifier call failed, when it fails. Deliberately NOT the state file:
+# other things parse that file, and it must not grow a variable-shape error blob.
+# `curl -sS` does not fail on a non-2xx HTTP status, so without asking for the
+# status explicitly a quota error or a server fault was captured and then thrown
+# away on the next line's success-shape parse, indistinguishable afterwards from
+# routine noise or a plain transport timeout.
+CLASSIFIER_ERROR_LOG="${STUCK_SWEEP_CLASSIFIER_ERROR_LOG:-$STATE_DIR/stuck-sweep-classifier-errors.log}"
 
 mkdir -p "$STATE_DIR"
 
@@ -621,6 +641,82 @@ using only the rules you were given, and reply with the JSON object alone.
 EOF
 }
 
+# --- redaction backstop (defense in depth for the API-key leak, see below) -------
+# A single literal substring replace, deliberately -- this closes ONE confirmed
+# leak (the configured key value reaching this log), not a general secret
+# scanner. Escaping is only needed on the PATTERN side: `secret` is untrusted in
+# shape (it is a credential value, not a literal this file wrote), so it is
+# escaped for every BRE metacharacter and for the `/` delimiter before being
+# spliced into a sed program. The classic bracket-expression trick is used so a
+# literal `]` is handled too: placed first inside `[...]`, it reads as itself
+# rather than closing the class early. The replacement, "[REDACTED]", is a
+# fixed literal this file wrote and needs no escaping of its own.
+redact_secret() {  # <text> <secret> -> text with every literal occurrence of secret replaced
+  local text="$1" secret="$2" esc_pat
+  [ -n "$secret" ] || { printf '%s' "$text"; return 0; }
+  esc_pat=$(printf '%s' "$secret" | sed -e 's/[]\/$*.^[]/\\&/g') || { printf '%s' "$text"; return 0; }
+  printf '%s' "$text" | sed "s/${esc_pat}/[REDACTED]/g" 2>/dev/null || printf '%s' "$text"
+}
+
+# --- model tier: why the call failed ---------------------------------------------
+# One append-only tab-separated line per failed classifier call. Plain text, not
+# JSONL, on purpose: the reader is a human with `tail` during an incident, and
+# needing a parser to find out what broke is the exact cost this exists to
+# remove.
+#
+# model_raw()'s three call sites on the CURL path (transport / http-error /
+# unparseable-envelope) are deliberately not reachable through STUCK_MODEL_CMD:
+# an injected test seam is a stand-in for the whole call and has no HTTP status
+# or curl exit of its own to report. That is a property of THOSE call sites, not
+# of this function -- model_judge()'s call sites (see there) fire regardless of
+# whether $raw came from curl or the seam, because a malformed verdict is just
+# as real a production failure on either path. model_raw() also has ONE call
+# site that IS seam-specific (kind=seam-exit, for a nonzero STUCK_MODEL_CMD
+# exit) -- the one case above does not and cannot apply to, because it has no
+# curl invocation to be silent about in the first place. This function has no
+# opinion of its own about where its callers' data came from; it only ever
+# writes the line it is handed.
+#
+# THE API-KEY LEAK, confirmed by review, and how this function's OWN half of the
+# fix works. NEVER log the request or its headers -- the API key travels in the
+# x-goog-api-key header, not in anything passed here, on the real curl path.
+# That guarantee does NOT extend to $STUCK_MODEL_CMD: that subprocess inherits
+# the full shell environment, including GOOGLE_GENERATIVE_AI_API_KEY (present
+# whenever this tier runs at all, since the curl path needs it too), and
+# whatever it prints to stdout becomes $raw one layer up in model_judge() --
+# which, if $raw fails verdict validation, logs $raw's own content. The
+# PRIMARY fix is at the call site in model_raw(): the seam subprocess is now
+# invoked with that variable stripped from its environment (`env -u`), so it
+# cannot read, echo, crash-dump or otherwise leak it by any means. What THIS
+# function adds is the backstop, belt-and-braces: before any body is written,
+# on every call site, every literal occurrence of the CONFIGURED key value is
+# redacted first. It is a second, independent line of defense -- even if some
+# future code path or a different secret leaked in some other way, this still
+# closes the specific claim "the API key never reaches the log" -- not a
+# replacement for fixing the leak at its root.
+#
+# Redaction runs BEFORE the 300-byte cap below, not after: truncating first
+# could cut a key in half and leave a partial, still-sensitive fragment past the
+# cut, which is not the same guarantee as no fragment at all. The cap itself
+# remains what it always was -- it BOUNDS THE LOG'S SIZE against a response of
+# unknown shape, not a content-redaction mechanism in its own right; redaction
+# is now a distinct, prior step, not something the cap was ever asked to prove.
+#
+# Failing to write is non-fatal by design. An observability addition must not
+# become a new way for the classifier itself to break.
+classifier_error_log() {  # <kind> <http-code> <curl-exit> <body>
+  local kind="$1" code="$2" rc="$3" body="$4" ts
+  ts="${now:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  mkdir -p "$(dirname "$CLASSIFIER_ERROR_LOG")" 2>/dev/null || return 0
+  body=$(redact_secret "$body" "${GOOGLE_GENERATIVE_AI_API_KEY:-}")
+  # head -c bounds it to 300 BYTES; tr keeps the record on one line so the log
+  # stays greppable line-by-line whatever the body contained.
+  body=$(printf '%s' "$body" | head -c 300 | tr '\n\r\t' '   ')
+  printf '%s\tkind=%s\thttp=%s\tcurl_exit=%s\tmodel=%s\tbody=%s\n' \
+    "$ts" "$kind" "$code" "$rc" "$STUCK_MODEL" "$body" \
+    >> "$CLASSIFIER_ERROR_LOG" 2>/dev/null || return 0
+}
+
 # --- model tier: the call --------------------------------------------------------
 # STUCK_MODEL_CMD is the injectable seam (tests, and a swap to any other provider
 # without touching this logic). It receives the two halves as a JSON envelope
@@ -628,7 +724,7 @@ EOF
 # for exactly the reason the split exists. Without it: a generateContent call
 # over curl, with the rules in systemInstruction and the data in the user turn.
 model_raw() {  # <system-instruction>; user content on stdin -> raw model JSON on stdout
-  local sys="$1" user envelope body resp
+  local sys="$1" user envelope body resp http rc=0 text seam_out seam_rc
   user=$(cat)
   # jq is load-bearing on BOTH paths now, and it is not a new requirement: the
   # tier already cannot run without it (charge_daily fails closed, and the
@@ -636,8 +732,51 @@ model_raw() {  # <system-instruction>; user content on stdin -> raw model JSON o
   [ "$have_jq" = "1" ] || return 1
   if [ -n "${STUCK_MODEL_CMD:-}" ]; then
     envelope=$(jq -n --arg s "$sys" --arg u "$user" '{system: $s, user: $u}') || return 1
-    printf '%s' "$envelope" | $STUCK_MODEL_CMD
-    return $?
+    # ENV ISOLATION -- the ROOT fix for a review-confirmed API key leak (see
+    # classifier_error_log()'s header for the belt-and-braces backstop). This
+    # subprocess runs with the FULL inherited shell environment by default,
+    # which includes GOOGLE_GENERATIVE_AI_API_KEY whenever this tier is even
+    # reachable at all -- the curl path below needs it to work, so it is
+    # present on every run that gets this far, not only a misconfigured one.
+    # A seam command has no legitimate need for it: the whole point of
+    # STUCK_MODEL_CMD is a provider swap, and a different provider
+    # authenticates through its own mechanism, not this variable. `env -u`
+    # makes the subprocess genuinely unable to read it, echo it, crash-dump
+    # it, or leak it through any other side channel -- not just the one
+    # logging path a reviewer happened to find.
+    #
+    # CONFIRMED EXPLOIT, closed by this line: with
+    # STUCK_MODEL_CMD='printenv GOOGLE_GENERATIVE_AI_API_KEY', the old
+    # unqualified invocation would print the real key to stdout; model_judge()
+    # would (correctly) reject that as an unparseable verdict; and the logging
+    # added in the immediately prior commit would then have written the
+    # literal key into CLASSIFIER_ERROR_LOG. With the variable genuinely
+    # absent from this subprocess's environment, that same command now fails
+    # (printenv exits 1, having found nothing) and is caught by the seam-exit
+    # logging just below -- which never sees the key, because the subprocess
+    # never had it.
+    #
+    # Left UNQUOTED, as $STUCK_MODEL_CMD always was: it is documented as a
+    # space-separated command line, not a single executable path, and
+    # `env -u VAR -- $CMD` word-splits it exactly the way the bare
+    # `$STUCK_MODEL_CMD` call always did.
+    seam_out=$(printf '%s' "$envelope" | env -u GOOGLE_GENERATIVE_AI_API_KEY -- $STUCK_MODEL_CMD)
+    seam_rc=$?
+    if [ "$seam_rc" -ne 0 ]; then
+      # THE NAMED FUNCTIONAL GAP: every OTHER failure path in this tier logs
+      # something; a nonzero seam exit did not -- the existing model-down test
+      # exercised exactly this path without ever asserting on the log.
+      # "curl_exit" is reused rather than adding a new column: it already
+      # means "the exit status of whatever process made the call" for the
+      # transport-failure case below, and this is the same slot for the
+      # seam's own process. "http" does not apply here any more than it does
+      # one layer up in model_judge() -- there was no HTTP call on this path
+      # -- so it is logged as "n/a" the same way.
+      classifier_error_log seam-exit "n/a" "$seam_rc" "$seam_out"
+      return "$seam_rc"
+    fi
+    printf '%s\n' "$seam_out"
+    return 0
   fi
   # Re-checked here, not just in model_judge: this is the function that would
   # otherwise POST a request with an empty api-key header, so it stays safe for
@@ -654,12 +793,41 @@ model_raw() {  # <system-instruction>; user content on stdin -> raw model JSON o
       responseMimeType: "application/json"
     }
   }') || return 1
-  resp=$(curl -sS --max-time 20 -X POST \
+  # --ipv4: some hosts have no working IPv6 route but DNS still returns an AAAA
+  # record for this endpoint, so a default dual-stack curl can try v6 first and
+  # stall to the full --max-time before falling back to v4 instead of trying it
+  # immediately. Forcing v4 removes the stall rather than only diagnosing it
+  # faster; there is no dual-stack behaviour this call needs to keep.
+  #
+  # -w '\n%{http_code}': -sS does NOT fail on a non-2xx, so without this a 429 or
+  # a 5xx arrived indistinguishable from a malformed success and was thrown away
+  # on the jq parse below. The status is appended as a final line and split off
+  # next.
+  resp=$(curl -sS --ipv4 --max-time 20 -w '\n%{http_code}' -X POST \
     "https://generativelanguage.googleapis.com/v1beta/models/${STUCK_MODEL}:generateContent" \
     -H "x-goog-api-key: ${GOOGLE_GENERATIVE_AI_API_KEY}" \
     -H "Content-Type: application/json" \
-    -d "$body" 2>/dev/null) || return 1
-  printf '%s' "$resp" | jq -er '.candidates[0].content.parts[0].text' 2>/dev/null || return 1
+    -d "$body" 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # A non-zero exit here is genuinely transport-level (timeout, DNS, connection
+    # refused), precisely the class -sS's own exit-code contract does not hide.
+    # $resp is whatever curl managed to write before it gave up.
+    classifier_error_log transport 000 "$rc" "$resp"
+    return 1
+  fi
+  # An empty body leaves resp as just "\n<code>", which splits correctly to an
+  # empty body and the real code.
+  http="${resp##*$'\n'}"
+  resp="${resp%$'\n'*}"
+  case "$http" in
+    2??) ;;
+    *) classifier_error_log http-error "$http" 0 "$resp"; return 1 ;;
+  esac
+  text=$(printf '%s' "$resp" | jq -er '.candidates[0].content.parts[0].text' 2>/dev/null) || {
+    classifier_error_log unparseable "$http" 0 "$resp"
+    return 1
+  }
+  printf '%s\n' "$text"
 }
 
 # model_judge <agent> <pane> <ticks> -> echoes "stuck|clear<TAB>reason"; returns 1
@@ -683,11 +851,67 @@ model_judge() {
   cost=$(estimate_cost_usd "$(( ${#sys} + ${#user} ))")
   charge_daily "$cost" || return 1
   raw=$(printf '%s' "$user" | model_raw "$sys") || return 1
-  [ -n "$raw" ] || return 1
-  # Strip a ```json fence if the model added one.
+  # EVERYTHING FROM HERE IS ONE LAYER UP FROM model_raw()'s OWN ERROR LOGGING,
+  # deliberately logged here rather than there.
+  #
+  # model_raw() only ever sees the HTTP/envelope level: did the request
+  # transport, did it come back 2xx, could `.candidates[0].content.parts[0].text`
+  # be pulled out of it. A response can clear every one of those and still be
+  # useless, because that extracted text is ITSELF supposed to be the model's own
+  # verdict JSON, and nothing has checked that yet. Before this fix, a failure
+  # here -- non-JSON text, valid JSON with no .verdict, an out-of-enum verdict,
+  # or simply empty text -- fell through to a bare `return 1` with zero entries
+  # in CLASSIFIER_ERROR_LOG: the classifier reported "unavailable" with no
+  # diagnostic trail, exactly the blind spot the whole feature was built to
+  # close, just one layer up. Found in review; the three checks below close it.
+  #
+  # SEAM-AGNOSTIC, ON PURPOSE -- unlike model_raw()'s own logging. model_raw()'s
+  # three call sites are deliberately NOT wired to STUCK_MODEL_CMD because there
+  # is no HTTP status or curl exit code to report when a seam command ran
+  # instead of curl. That reasoning does not apply here: model_judge() cannot
+  # tell, and must not try to tell, whether $raw came from real curl or from
+  # STUCK_MODEL_CMD, and a STUCK_MODEL_CMD-swapped provider producing a malformed
+  # verdict is just as real a production failure as the built-in provider doing
+  # so -- STUCK_MODEL_CMD's own doc comment names "a swap to any other provider
+  # without touching this logic" as a legitimate production configuration, not
+  # only a test double. So every classifier_error_log call below fires
+  # regardless of which path produced $raw. "n/a"/"n/a" stand in for the
+  # http-code/curl-exit columns because neither genuinely applies at this layer:
+  # there is no HTTP response to cite here, real or simulated -- the failure is
+  # in the model's OWN output, not in the transport that carried it.
+  # Strip a ```json fence if the model added one, BEFORE checking for empty
+  # text, not after. A response that is ONLY a fence with nothing inside it
+  # (e.g. "```json\n```") is non-empty here -- it fence-strips down to an
+  # empty string -- so checking emptiness first would miss that shape entirely
+  # and let it fall through to the JSON parse below, misclassified as the less
+  # accurate "unparseable" rather than "empty-text". Stripping unconditionally
+  # and checking once, after, catches a genuinely empty $raw (stripping a fence
+  # out of nothing is still nothing) and a fenced-empty $raw with the same
+  # check, so there is one emptiness test instead of two near-duplicates.
   raw=$(printf '%s' "$raw" | sed -e 's/^```[a-zA-Z]*//' -e 's/```$//')
+  if [ -z "$raw" ]; then
+    # model_raw() succeeded -- a well-formed envelope came back -- but the
+    # model's own text was empty, whether literally or after fence-stripping.
+    # Its own kind, not folded into "unparseable" below: there is nothing to
+    # attempt to parse, which is a different failure to "got something and it
+    # was garbage".
+    classifier_error_log empty-text "n/a" "n/a" ""
+    return 1
+  fi
   if [ "$have_jq" = "1" ]; then
-    verdict=$(printf '%s' "$raw" | jq -er '.verdict' 2>/dev/null) || return 1
+    if ! verdict=$(printf '%s' "$raw" | jq -er '.verdict' 2>/dev/null); then
+      # The model's own text is not valid JSON at all, or is valid JSON with no
+      # .verdict field. KIND REUSED DELIBERATELY, not invented fresh: this is
+      # conceptually model_raw()'s own "unparseable" case, one layer up -- a
+      # well-formed HTTP response whose CONTENT does not parse as expected. The
+      # confirmed repro that prompted this fix
+      # (`{"candidates":[{"content":{"parts":[{"text":"not JSON"}]}}]}`) is
+      # exactly this shape. Logging the model's own extracted text as the body
+      # here, rather than an HTTP envelope, is what keeps a `tail` on this file
+      # able to tell the two apart in practice despite the shared kind.
+      classifier_error_log unparseable "n/a" "n/a" "$raw"
+      return 1
+    fi
     # Flatten to one line and trim: this string can be pasted into a tmux
     # composer, where an embedded newline would submit the message early.
     reason=$(printf '%s' "$raw" | jq -r '.reason // ""' 2>/dev/null | tr '\n\t"' '   ' | sed 's/[[:space:]]*$//;s/^[[:space:]]*//')
@@ -696,7 +920,18 @@ model_judge() {
   fi
   case "$verdict" in
     stuck|clear) ;;
-    *) return 1 ;;   # schema violation is deterministic; do not retry, fail closed
+    *)
+      # Valid JSON, WITH a .verdict field, but its value is neither "stuck" nor
+      # "clear". A DISTINCT kind from "unparseable", deliberately: this is not a
+      # parse failure, it is a schema/enum violation on content that parsed
+      # cleanly, which is a different thing for an operator to act on -- a model
+      # that answered off-menu (e.g. "unclear") is a prompt-compliance question,
+      # while "unparseable" is "the model did not even return JSON". Collapsing
+      # the two into one kind would hide that distinction from exactly the
+      # person this log exists for.
+      classifier_error_log invalid-verdict "n/a" "n/a" "$raw"
+      return 1
+      ;;   # schema violation is deterministic; do not retry, fail closed
   esac
   printf '%s\t%s\n' "$verdict" "$reason"
 }
