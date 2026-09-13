@@ -92,6 +92,36 @@ EOF
 cat > "$PROMPT_LOG"
 printf '%s\n' '{"verdict":"clear","reason":"resting between turns"}'
 EOF
+  # THE API-KEY LEAK REGRESSION FIXTURES.
+  #
+  # Simulates a leak that reaches model_judge() by some route OTHER than the
+  # environment -- e.g. a future bug, or a different secret entirely -- so the
+  # redaction backstop in classifier_error_log() can be proven on its own,
+  # independent of whether env-isolation at the seam call site works. It never
+  # reads GOOGLE_GENERATIVE_AI_API_KEY itself; it just prints a fixed string
+  # that a test sets to match the configured key, standing in for "the key
+  # reached here somehow".
+  cat > "$BOX/stubbin/model-hardcoded-leak" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' "leaked-via-some-other-path: ${LEAK_STUB_SECRET:-}"
+EOF
+  # Proves env-isolation INDEPENDENTLY of redaction: prints "SET:<value>" if
+  # GOOGLE_GENERATIVE_AI_API_KEY is visible to this subprocess, or the bare
+  # word "UNSET" if it genuinely is not. Redaction can only ever remove the
+  # literal key VALUE from a logged body -- it cannot make the word "SET:"
+  # disappear -- so asserting the log holds exactly "UNSET" is proof the
+  # variable was absent from this subprocess's own environment, not merely
+  # that its value was scrubbed after the fact.
+  cat > "$BOX/stubbin/model-env-marker" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+if [ -n "${GOOGLE_GENERATIVE_AI_API_KEY:-}" ]; then
+  printf '%s\n' "SET:${GOOGLE_GENERATIVE_AI_API_KEY}"
+else
+  printf '%s\n' "UNSET"
+fi
+EOF
   # Stands in for curl on the REAL (non-STUCK_MODEL_CMD) classifier path: records
   # its own argv so a test can assert on what the sweep actually asked curl for,
   # and emulates `-w '\n%{http_code}'` -- body, then a newline, then the status --
@@ -125,6 +155,15 @@ pane()     { printf '%s\n' "$2" > "$BOX/fixtures/$1.txt"; }
 pane_raw() { printf '%s\n' "$2" > "$BOX/fixtures/$1.raw.txt"; }
 
 s() { jq -r "$1" "$BOX/state/last-stuck-sweep.json" 2>/dev/null; }
+# Moved up from section 9 (their original home) so section 5's seam-exit
+# logging case can use errlog_text() too, before section 9's own definition
+# would otherwise have appeared in file order.
+argv_text()   { cat "$BOX/curl-argv.log" 2>/dev/null; }
+errlog_text() { cat "$BOX/state/stuck-sweep-classifier-errors.log" 2>/dev/null; }
+# has <label> <text-producer> <literal>   /   hasnt <label> <producer> <literal>
+# Also moved up for the same reason as the two above.
+has()   { if "$2" | grep -qF -- "$3"; then pass "$1"; else fail "$1" "missing: $3"; fi; }
+hasnt() { if "$2" | grep -qF -- "$3"; then fail "$1" "present: $3"; else pass "$1"; fi; }
 
 # assert <label> <jq-filter> <expected>
 assert() {
@@ -394,6 +433,15 @@ assert "no pane is claimed stuck on a transport failure" \
   '[.agents[] | select(.reason != "" and .reason != null)] | length' '0'
 assert "the outage is visible in the verdict" '.verdict' 'classifier-unavailable'
 assert "no fabricated verdict is cached"      '.agents.alice.judged' 'null'
+# THE NAMED FUNCTIONAL GAP, now closed: this exercises exactly the nonzero
+# seam-exit path (model-down exits 1, prints nothing) and used to leave
+# CLASSIFIER_ERROR_LOG untouched -- every OTHER failure path in this tier
+# logged something, this one didn't. It now does, with its own kind distinct
+# from a zero-exit malformed verdict (see model-malformed's "unparseable"
+# case elsewhere in this file).
+has "a nonzero seam exit is now logged, closing the named gap" \
+  errlog_text "kind=seam-exit"
+has "the seam's own exit code is recorded" errlog_text "curl_exit=1"
 drop_box
 
 # =================================================================================
@@ -477,9 +525,8 @@ pane_element() {
   '
 }
 
-# has <label> <text-producer> <literal>   /   hasnt <label> <producer> <literal>
-has()   { if "$2" | grep -qF -- "$3"; then pass "$1"; else fail "$1" "missing: $3"; fi; }
-hasnt() { if "$2" | grep -qF -- "$3"; then fail "$1" "present: $3"; else pass "$1"; fi; }
+# has()/hasnt() moved up to the top helper section (before section 1) so
+# section 5 can use them too.
 
 # judge_once <window> <pane text> -- two ticks, so the pane is motionless and the
 # model tier actually runs.
@@ -784,8 +831,7 @@ run_curl_case() {
            CURL_STUB_EXIT="$1" CURL_STUB_CODE="$2" CURL_STUB_BODY="$3"
     run_sweep >/dev/null; run_sweep >/dev/null )
 }
-argv_text()   { cat "$BOX/curl-argv.log" 2>/dev/null; }
-errlog_text() { cat "$BOX/state/stuck-sweep-classifier-errors.log" 2>/dev/null; }
+# argv_text()/errlog_text() moved up to the top helper section.
 
 # ---- the request forces IPv4, and asks curl for the status code -----------------
 new_box
@@ -891,6 +937,21 @@ has "empty text gets its own kind too, not folded into unparseable" \
   errlog_text "kind=empty-text"
 drop_box
 
+# ---- FIXED IN PASSING: a fence with nothing inside it is "empty", not "garbage" --
+# Before this fix, `[ -z "$raw" ]` was checked BEFORE the ```json fence was
+# stripped, so a response that is only a fence with nothing inside it read as
+# non-empty at that check, fence-stripped down to "", and then failed the JSON
+# parse below -- logged as the less accurate "unparseable" rather than the
+# genuinely correct "empty-text". The check now runs once, after stripping.
+new_box
+run_curl_case 0 200 '{"candidates":[{"content":{"parts":[{"text":"```json\n```"}]}}]}'
+assert "a fence with nothing inside it reads as unavailable" '.agents.alice.tier' 'model-unavailable'
+has "and it is classified as empty, not as unparseable garbage" \
+  errlog_text "kind=empty-text"
+hasnt "the fence markers themselves never appear as a logged body" \
+  errlog_text 'body=```'
+drop_box
+
 # ---- THE SEAM QUESTION: this new logging must not care where $raw came from ----
 # model_raw()'s OWN logging is deliberately unreachable through STUCK_MODEL_CMD
 # (no HTTP status or curl exit to report for a seam call). This new logging
@@ -905,6 +966,101 @@ assert "a malformed verdict via the STUCK_MODEL_CMD seam ALSO reads as unavailab
   '.agents.alice.tier' 'model-unavailable'
 has "and it is ALSO logged: model_judge does not care which path produced \$raw" \
   errlog_text "kind=unparseable"
+drop_box
+
+# =================================================================================
+# 11. THE API-KEY LEAK (safety-relevant): env isolation + redaction backstop
+# =================================================================================
+# CONFIRMED, EXPLOITABLE REGRESSION, found in review. $STUCK_MODEL_CMD runs
+# with the full inherited shell environment, including
+# GOOGLE_GENERATIVE_AI_API_KEY (present whenever this tier can run at all, the
+# curl path needs it too). With STUCK_MODEL_CMD='printenv
+# GOOGLE_GENERATIVE_AI_API_KEY', that prints the real key to stdout;
+# model_judge() correctly rejects it as an unparseable verdict; and the
+# semantic-layer logging landed one commit ago on this branch would then write
+# the literal key into CLASSIFIER_ERROR_LOG. TWO INDEPENDENT fixes close it:
+#   1. ROOT FIX: the seam subprocess is invoked with that variable stripped
+#      from its own environment (env -u), so it cannot read it at all.
+#   2. BACKSTOP: classifier_error_log() redacts any literal occurrence of the
+#      configured key from every body it writes, on every call site.
+# Each is tested on its own below, deliberately not only together, because
+# either one alone is meant to be sufficient -- proving them separately is
+# what demonstrates that, rather than one masking a failure in the other.
+echo "--- the API-key leak: env isolation + redaction backstop ---"
+
+# ---- fix 1, proven ALONE: env-isolation, independent of redaction ---------------
+# model-env-marker reports "SET:<value>" or the bare word "UNSET" depending on
+# whether IT, the subprocess, can see the variable. Redaction can only ever
+# scrub the literal key VALUE out of a logged body -- it has no way to make
+# the word "SET:" disappear -- so a log holding exactly "UNSET" is proof the
+# variable was absent from the seam's own environment, regardless of whether
+# the redaction backstop exists at all.
+new_box
+pane alice "$IDLE_PANE"
+( export GOOGLE_GENERATIVE_AI_API_KEY="AIzaSy-fake-real-shaped-key-0123456789" \
+         STUCK_MODEL_CMD="$BOX/stubbin/model-env-marker"
+  run_sweep >/dev/null; run_sweep >/dev/null )
+has "the seam subprocess genuinely cannot see the key (proven without relying on redaction)" \
+  errlog_text "body=UNSET"
+hasnt "and, as a consequence, the real key value never appears either" \
+  errlog_text "AIzaSy-fake-real-shaped-key-0123456789"
+drop_box
+
+# ---- fix 2, proven ALONE: the redaction backstop, independent of the seam -------
+# Drives the REAL curl path (no STUCK_MODEL_CMD at all -- env-isolation is not
+# even in play here) with a response body that happens to embed the
+# configured key's literal value, standing in for some other leak vector (a
+# verbose provider error echoing back request data, for instance). Proves the
+# backstop works on its own merits, not merely in the one place review found
+# it missing.
+new_box
+run_curl_case 0 500 '{"error":{"message":"upstream rejected key placeholder-key-never-sent-anywhere-real, try again"}}'
+has "the redaction backstop replaces the key with a fixed placeholder" \
+  errlog_text "[REDACTED]"
+hasnt "and the real key value itself never survives to the log" \
+  errlog_text "placeholder-key-never-sent-anywhere-real"
+drop_box
+
+# ---- BELT AND BRACES: the backstop still catches a leak env-isolation cannot ----
+# A hardcoded stand-in for "the key reached model_judge() by some path other
+# than the environment" (a future bug, or a different secret entirely) --
+# env -u cannot help here by construction, since this stub never reads the
+# environment at all. This is what "defense in depth" means concretely: the
+# backstop is not redundant with the root fix, it covers what the root fix
+# structurally cannot.
+new_box
+pane alice "$IDLE_PANE"
+( export GOOGLE_GENERATIVE_AI_API_KEY="AIzaSy-fake-real-shaped-key-0123456789" \
+         STUCK_MODEL_CMD="$BOX/stubbin/model-hardcoded-leak" \
+         LEAK_STUB_SECRET="AIzaSy-fake-real-shaped-key-0123456789"
+  run_sweep >/dev/null; run_sweep >/dev/null )
+has "a leak via a path env-isolation cannot cover is still caught by the backstop" \
+  errlog_text "leaked-via-some-other-path: [REDACTED]"
+hasnt "the real key value still never survives to the log" \
+  errlog_text "AIzaSy-fake-real-shaped-key-0123456789"
+drop_box
+
+# ---- THE REVIEWER'S OWN CONFIRMED REPRO, VERBATIM, END TO END -------------------
+# STUCK_MODEL_CMD='printenv GOOGLE_GENERATIVE_AI_API_KEY', exactly as named in
+# review. With the variable genuinely stripped, `printenv` finds nothing,
+# prints nothing, and exits 1 -- which is itself independent proof that the
+# environment fix took effect: had the key still been visible, printenv would
+# have exited 0 with the key on stdout and this would have logged as
+# kind=unparseable (model-malformed's case, above), not kind=seam-exit. Assert
+# both the specific mechanism (which kind fired) and the actual security
+# property (the key is never in the log), so this stands as the end-to-end
+# regression test for the confirmed exploit, not just a unit test of one path.
+new_box
+pane alice "$IDLE_PANE"
+( export GOOGLE_GENERATIVE_AI_API_KEY="AIzaSy-fake-real-shaped-key-0123456789" \
+         STUCK_MODEL_CMD="printenv GOOGLE_GENERATIVE_AI_API_KEY"
+  run_sweep >/dev/null; run_sweep >/dev/null )
+has "the reviewer's exact repro now fails at the seam, not by leaking the key" \
+  errlog_text "kind=seam-exit"
+hasnt "confirming env-isolation took effect, not just that malformed output was caught" \
+  errlog_text "kind=unparseable"
+hasnt "and the real key never reaches the log, full stop" \
+  errlog_text "AIzaSy-fake-real-shaped-key-0123456789"
 drop_box
 
 echo
