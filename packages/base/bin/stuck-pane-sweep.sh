@@ -309,12 +309,61 @@ pane_hash() {
 # prose that merely QUOTES the string (an agent discussing this very feature),
 # can sit higher in the viewport. Echoes the matched literal; returns 1 on no
 # match.
+#
+# LINE-ANCHORED, not bare-substring. A tail window alone bounds WHERE a literal
+# may appear, not WHAT it is part of, and every one of these literals is also
+# ordinary English an agent can legitimately write: quoting it while explaining
+# a false positive, or describing the dialog to a teammate. Observed on a live
+# deployment: a pane was flagged for a tail window that only DISCUSSED a
+# trigger phrase in prose, with no dialog on screen and an idle composer; the
+# reply explaining that false positive then sat inside a second pane's own tail
+# window, and its quote of the phrase re-triggered the same rule there too. Two
+# wakes from one phrase, the second caused by the reply to the first -- the
+# self-sustaining shape that makes a bare substring test worse than merely
+# noisy.
+#
+# THE RULE: the literal must BEGIN a line of the tail, after stripping that
+# line's LEFT-HAND BORDER CHROME (leading whitespace and vertical box-drawing
+# glyphs). A rendered dialog puts its text at the start of its own line, inside
+# its own frame; prose puts the phrase inside a sentence, after other words.
+#
+# STRICTLY NARROWER BY CONSTRUCTION, which is what lets a tier that escalates
+# on the first tick, with no corroboration, take this change at all: chrome is
+# only ever stripped from the LEFT EDGE, so a stripped line is always a SUFFIX
+# of the real line. "The stripped line starts with the literal" therefore
+# implies "the literal is a substring of the real line" -- every pane the new
+# rule matches, the old bare-substring rule matched too. The change can only
+# REMOVE a match, never invent one. (Stripping anywhere but the left edge would
+# break that: it could join two halves of a line into a literal that was never
+# on screen.)
+#
+# THE STRIP SET IS DELIBERATELY MINIMAL -- whitespace and vertical box-drawing
+# borders only. No "-", "*", ">" or quote characters: those are prose furniture
+# (a markdown bullet or blockquote holding the phrase alone must stay
+# unmatched), and widening the strip set trades away false-positive safety for
+# shapes nobody has actually observed. It is a one-line edit if a real dialog
+# frame ever needs one added.
+#
+# GENERIC ON PURPOSE: this function also serves PATTERN_CONFIG's arbitrary,
+# admin-supplied literals, so the rule is about the SHAPE OF A RENDERED LINE,
+# not about the one literal hardcoded above. A literal added via config gets
+# the same anchoring with no code change.
+CHROME_RE='^([[:space:]]|│|┃|║|\|)+'
+
 match_pattern() {
-  local pane="$1" tail_txt p
+  local pane="$1" tail_txt stripped p
   tail_txt=$(printf '%s\n' "$pane" | tail -n "$TAIL_LINES")
+  # One sed pass over the whole window rather than a fork per line: this runs
+  # for every pane, every tick.
+  stripped=$(printf '%s\n' "$tail_txt" | sed -E "s/$CHROME_RE//" 2>/dev/null)
   while IFS= read -r p; do
     [ -z "$p" ] && continue
-    if printf '%s\n' "$tail_txt" | grep -qF -- "$p" 2>/dev/null; then
+    # index()==1 is a LITERAL prefix test, not a regex, so a pattern holding
+    # regex metacharacters (PATTERN_CONFIG can hold anything) matches as text.
+    # The literal travels via ENVIRON, not awk -v: -v applies backslash-escape
+    # processing to its value and would mangle a literal that contains one.
+    if printf '%s\n' "$stripped" \
+       | p="$p" awk 'index($0, ENVIRON["p"]) == 1 { found = 1 } END { exit !found }' 2>/dev/null; then
       printf '%s\n' "$p"; return 0
     fi
   done <<EOF

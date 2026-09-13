@@ -1063,6 +1063,108 @@ hasnt "and the real key never reaches the log, full stop" \
   errlog_text "AIzaSy-fake-real-shaped-key-0123456789"
 drop_box
 
+# =================================================================================
+# 12. TIER 1 LINE ANCHORING
+# =================================================================================
+# match_pattern used to escalate on a bare substring anywhere in the tail
+# window, so an agent merely WRITING ABOUT a stuck-shape literal -- quoting it
+# while explaining a false positive to someone else -- tripped the same
+# escalation as a real dialog. Worse, that reply itself then sits inside the
+# tail window of whichever pane it lands in, so a false positive can spawn a
+# second one downstream with no live dialog anywhere in the chain.
+#
+# The fix requires the literal to BEGIN a tail line, after stripping only that
+# line's left-hand border chrome (leading whitespace and vertical box-drawing
+# glyphs). This section pins: the prose false positive is gone; both a plain
+# and a boxed real dialog still fire (no regression); a PATTERN_CONFIG literal
+# gets the same treatment for free; and, as a containment check rather than a
+# prose claim, that everything the new rule matches the old rule matched too.
+echo "--- tier 1: line anchoring ---"
+
+# A second real-dialog RENDERING, box-drawn rather than plain, so the chrome
+# strip is exercised on more than one shape of left edge.
+BOXED_DIALOG_PANE=$'╭──────────────────────────────────────────╮\n│ Auto mode classifier requires confirmation │\n╰──────────────────────────────────────────╯\n❯ '
+
+# Modelled on a real false positive: a finished assistant turn, an ordinary
+# transcript, an idle composer (glyph + NBSP) under its own rule -- nothing
+# boxed, nothing interactive. The literal sits mid-sentence, in quotes, well
+# short of the end of the window.
+PROSE_QUOTE_PANE=$'  ⎿  Brewed for 12s\n  Checked that pane already: no live dialog, composer clean and idle.\n  The sweep matched "Auto mode classifier requires confirmation" in my own\n  prose from the earlier reply, not a real prompt.\n'"$RULE"$' alice \n❯ '"$NBSP"$'\n'"$RULE"
+
+# old_rule_matched <pane> <literal> -- 0 if the PRE-ANCHOR rule (a bare
+# substring anywhere in the last 20 lines) would have matched. Reproduced
+# verbatim as the revert-to-red control: a claim that the new rule EXCLUDES
+# something means nothing without proof the old rule INCLUDED it on the same
+# bytes. It also doubles as the containment check the anchoring is supposed to
+# satisfy by construction -- every pane the new rule matches must show up here
+# as a match too, never the reverse.
+old_rule_matched() { printf '%s\n' "$1" | tail -n 20 | grep -qF -- "$2"; }
+
+LITERAL='Auto mode classifier requires confirmation'
+
+# ---- CONTROL: the bug is real, and the comparison is like-with-like --------------
+if old_rule_matched "$PROSE_QUOTE_PANE" "$LITERAL"; then
+  pass "CONTROL: the old bare-substring rule matched the prose pane (the real bug)"
+else
+  fail "CONTROL: the old bare-substring rule matched the prose pane (the real bug)"
+fi
+if old_rule_matched "$DIALOG_PANE" "$LITERAL"; then
+  pass "CONTROL: the old rule also matched the plain real dialog"
+else
+  fail "CONTROL: the old rule also matched the plain real dialog"
+fi
+if old_rule_matched "$BOXED_DIALOG_PANE" "$LITERAL"; then
+  pass "CONTROL: the old rule also matched the boxed real dialog"
+else
+  fail "CONTROL: the old rule also matched the boxed real dialog"
+fi
+
+# ---- prose quoting the literal is NOT a live dialog ------------------------------
+new_box
+pane alice "$PROSE_QUOTE_PANE"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "prose quoting the literal does not reach tier 1" '.agents.alice.tier' 'none'
+assert "the tick verdict is all-clear"                   '.verdict' 'all-clear'
+assert "and no model call was made instead"              '.modelCalls' '0'
+no_keystrokes "nobody is woken about a pane that only TALKS about a dialog"
+drop_box
+
+# ---- no regression: both real-dialog renderings still fire on tick 1 ------------
+new_box
+pane alice "$DIALOG_PANE"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "the plain real dialog still fires on the first tick" '.agents.alice.tier' 'deterministic'
+assert "and the reason still names the literal" \
+  '.agents.alice.reason' "$LITERAL"
+keystrokes_to "the plain dialog still wakes the configured route" hub
+drop_box
+
+new_box
+pane alice "$BOXED_DIALOG_PANE"
+( export STUCK_ROUTE_DEFAULT=hub; run_sweep >/dev/null )
+assert "the boxed real dialog still fires on the first tick" '.agents.alice.tier' 'deterministic'
+assert "border chrome does not stop the match"                '.agents.alice.reason' "$LITERAL"
+keystrokes_to "the boxed dialog still wakes the configured route" hub
+drop_box
+
+# ---- the anchoring is generic: it applies to a PATTERN_CONFIG literal too --------
+# match_pattern serves a config-replaceable list, so a literal added purely via
+# config must get the same anchoring with no code change.
+CONFIG_LITERAL='Waiting for approval to continue'
+CONFIG_DIALOG_PANE=$'╭──────────────────────────────────╮\n│ Waiting for approval to continue │\n╰──────────────────────────────────╯\n❯ '
+CONFIG_PROSE_PANE=$'  ⎿  Brewed for 3s\n  Nothing here is "Waiting for approval to continue" -- that pane is idle.\n❯ '"$NBSP"
+
+new_box
+mkdir -p "$BOX/state"
+printf '%s\n' "$CONFIG_LITERAL" > "$BOX/state/stuck-patterns.txt"
+pane alice "$CONFIG_DIALOG_PANE"
+pane hub   "$CONFIG_PROSE_PANE"
+( export STUCK_ROUTE_DEFAULT=deputy; run_sweep >/dev/null )
+assert "a CONFIG literal rendered as a dialog still fires"     '.agents.alice.tier' 'deterministic'
+assert "the same CONFIG literal quoted in prose does not"      '.agents.hub.tier' 'none'
+keystrokes_to "the config-literal dialog wakes the configured route" deputy
+drop_box
+
 echo
 echo "stuck-pane-sweep: $PASS passed, $FAILS failed"
 exit "$FAILS"
