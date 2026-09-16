@@ -345,6 +345,13 @@ if [ -n "$SELF" ] && [ "$RECIPIENT" = "$SELF" ]; then
   emit "skip:self"
 fi
 
+# Provider-switch lock: pause delivery while a provider transition is in flight.
+PROVIDER_SWITCH_LOCK="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/provider-switch-lock"
+if [ -x "$PROVIDER_SWITCH_LOCK" ] && \
+   "$PROVIDER_SWITCH_LOCK" active "$RECIPIENT"; then
+  emit "skip:provider-switch"
+fi
+
 # 1. Window must exist (recipient is live in tmux). Skipped in test mode.
 if [ "$TEST_MODE" != "1" ]; then
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null \

@@ -207,7 +207,7 @@ MODEL_FLAG="--model gpt-5.6"
 # One shared matcher for the fallback re-send, rather than the same regex
 # copied into eight assertions where seven of them could quietly drift.
 resend_logged() {
-  grep -qE "send-keys -t test:basalt printf .*basalt.*; AGENT_NAME=basalt codex --model gpt-5\.6 Enter" "$1"
+  grep -qE "send-keys -t test:basalt printf .*basalt.*;.*AGENT_NAME=basalt.*codex.*--model gpt-5\.6 Enter" "$1"
 }
 
 TMUX_LOG=$(mktemp)
@@ -722,7 +722,88 @@ fi
 rm -rf "$T13_DIR"
 unset CODEX_SESSIONS_DIR
 
-rm -f "$TMUX_LOG3"
+# ===== provider-envelope construction ==================================
+# A Codex launch has one provider envelope regardless of whether it is a
+# fresh boot, a resume, or the verified fallback after a failed resume.
+# These tests deliberately exercise construction directly so future provider
+# switching can reuse it without sending anything to tmux.
+
+# P1: shared-home compatibility. CODEX_HOME must be omitted, not exported as
+# an empty string, while secrets and agent identity/config remain present.
+p1_cmd=$(codex_launch_command alex "copywriter" "" "" "")
+p1_rc=$?
+p1_ok=0
+if [ "$p1_rc" -eq 0 ] \
+  && printf '%s' "$p1_cmd" | grep -qF "[ -f $AGENTS_HOME/alex/.env.secrets ] && . $AGENTS_HOME/alex/.env.secrets;" \
+  && printf '%s' "$p1_cmd" | grep -qF 'env AGENT_NAME=alex AGENT_ROLE=copywriter' \
+  && ! printf '%s' "$p1_cmd" | grep -q 'CODEX_HOME=' \
+  && printf '%s' "$p1_cmd" | grep -qE ' codex$'; then
+  p1_ok=1
+fi
+if [ "$p1_ok" -eq 1 ]; then
+  pass "P1 shared provider envelope: secrets + identity/config retained, CODEX_HOME omitted"
+else
+  fail "P1 shared provider envelope: secrets + identity/config retained, CODEX_HOME omitted" \
+    "rc=$p1_rc cmd=$p1_cmd"
+fi
+
+# P2: an isolated home moves session lookup/quarantine with it. The explicit
+# CODEX_SESSIONS_DIR seam still wins in lookup tests above; this pure helper
+# defines the production default selected by launch_agent.
+P2_HOME="/tmp/codex-provider-home-p2-$$"
+p2_isolated=$(codex_sessions_dir_for_home "$P2_HOME")
+p2_shared=$(codex_sessions_dir_for_home "")
+if [ "$p2_isolated" = "$P2_HOME/sessions" ] \
+  && [ "$p2_shared" = "$HOME/.codex/sessions" ]; then
+  pass "P2 session directory follows isolated home and preserves shared default"
+else
+  fail "P2 session directory follows isolated home and preserves shared default" \
+    "isolated=$p2_isolated shared=$p2_shared"
+fi
+
+# P3 (headline regression): Azure resume failure must fall back through the
+# same provider envelope. Only `resume <sid>` may differ; secret sourcing,
+# identity/config, isolated CODEX_HOME, role, and model flag all survive.
+P3_DIR=$(mktemp -d)
+P3_HOME="$P3_DIR/azure-codex-home"
+P3_SID="p3azure0-ef00-4444-8888-00000000000f"
+mkdir -p "$P3_HOME/sessions"
+: > "$P3_HOME/sessions/rollout-2026-09-15T10-00-00-${P3_SID}.jsonl"
+codex_pane_current_command() { printf 'bash\n'; }
+DIALOG_STUB_TEXT=""
+CODEX_SESSIONS_DIR="$P3_HOME/sessions"
+TMUX_LOG_P3=$(mktemp)
+tmux() { if [ "$1" = "send-keys" ]; then printf '%s\n' "$*" >> "$TMUX_LOG_P3"; fi; return 0; }
+p3_resume=$(codex_launch_command iris "researcher" "$P3_HOME" "$P3_SID" "--model gpt-5.6-sol")
+p3_fresh=$(codex_launch_command iris "researcher" "$P3_HOME" "" "--model gpt-5.6-sol")
+# The verifier must derive quarantine scope from the same isolated home even
+# without launch_agent's dynamically-scoped CODEX_SESSIONS_DIR convenience.
+unset CODEX_SESSIONS_DIR
+codex_verify_resume_or_fallback "test:iris" iris "$P3_SID" "researcher" "$P3_HOME" "--model gpt-5.6-sol"
+p3_rc=$?
+p3_sent=$(sed -n 's/^send-keys -t test:iris //p' "$TMUX_LOG_P3" | tail -1 | sed 's/ Enter$//')
+p3_shape_ok=0
+case "$p3_resume" in
+  "$p3_fresh resume $P3_SID") p3_shape_ok=1 ;;
+esac
+p3_quarantine_ok=0
+[ -f "$P3_HOME/sessions/rollout-2026-09-15T10-00-00-${P3_SID}.jsonl.codex-resume-failed" ] \
+  && [ ! -f "$P3_HOME/sessions/rollout-2026-09-15T10-00-00-${P3_SID}.jsonl" ] \
+  && p3_quarantine_ok=1
+if [ "$p3_rc" -ne 0 ] \
+  && [ "$p3_shape_ok" -eq 1 ] \
+  && [ "$p3_quarantine_ok" -eq 1 ] \
+  && [ "$p3_sent" = "$p3_fresh" ] \
+  && printf '%s' "$p3_fresh" | grep -qF "[ -f $AGENTS_HOME/iris/.env.secrets ] && . $AGENTS_HOME/iris/.env.secrets;" \
+  && printf '%s' "$p3_fresh" | grep -qF "CODEX_HOME=$P3_HOME" \
+  && printf '%s' "$p3_fresh" | grep -qF 'codex --model gpt-5.6-sol'; then
+  pass "P3 Azure failed resume: fallback preserves the complete provider envelope"
+else
+  fail "P3 Azure failed resume: fallback preserves the complete provider envelope" \
+    "rc=$p3_rc shape=$p3_shape_ok quarantine=$p3_quarantine_ok resume=$p3_resume fresh=$p3_fresh sent=$p3_sent"
+fi
+rm -rf "$P3_DIR" "$TMUX_LOG_P3"
+unset CODEX_SESSIONS_DIR
 
 echo
 echo "boot-agents: $PASS passed, $FAILS failed"

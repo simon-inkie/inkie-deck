@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from "react";
 import { Outlet, Link, NavLink, useLocation, useParams } from "react-router";
-import { Bell, CalendarClock, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, TriangleAlert, X } from "lucide-react";
+import { Bell, CalendarClock, Gauge, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, TriangleAlert, X } from "lucide-react";
 import { Sidebar, type SidebarAgent } from "./Sidebar";
 import {
   ResizablePanelGroup,
@@ -35,6 +35,8 @@ import { formatRelative, formatDurationHm } from "~/lib/time";
 import { statusLabel, type EscalatedAgent } from "~/lib/activity.shared";
 import { useLiveRevalidate } from "~/lib/use-live-revalidate";
 import { useMessageChime } from "~/lib/message-chime";
+import { CodexQuotaPanel, ProviderBadge } from "./CodexQuotaStatus";
+import type { CodexQuotaDisplayData } from "~/lib/codex-quota-display";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -125,9 +127,24 @@ interface AppShellProps {
    * Empty/absent renders nothing, same posture as workCards.
    */
   escalated?: EscalatedAgent[];
+  /** Ticket 3: read-only Plus quota and explicit per-agent provider state. */
+  codexQuota?: CodexQuotaDisplayData;
 }
 
-export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false, escalated = [] }: AppShellProps) {
+const UNKNOWN_CODEX_QUOTA: CodexQuotaDisplayData = {
+  quota: {
+    freshness: "missing",
+    status: "UNKNOWN",
+    available: false,
+    blocked: false,
+    warning: null,
+    observedAt: null,
+    windows: [],
+  },
+  providers: {},
+};
+
+export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false, escalated = [], codexQuota = UNKNOWN_CODEX_QUOTA }: AppShellProps) {
   const params = useParams();
   const active = params.agent;
   const location = useLocation();
@@ -353,6 +370,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
               {modelSelector !== undefined ? (
                 <ModelSelector data={modelSelector} />
               ) : null}
+              <ProviderBadge provider={codexQuota.providers[active] ?? "unknown"} />
             </span>
           ) : null}
         </div>
@@ -379,6 +397,29 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
             escalated.length === 1 ? "w-full lg:w-auto" : undefined
           )}
         >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-testid="codex-quota-trigger"
+                aria-label={`Codex quota: ${codexQuota.quota.blocked ? "blocked" : codexQuota.quota.freshness}`}
+                className={cn(
+                  "relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-md transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  codexQuota.quota.blocked ? "text-destructive" : "text-muted-foreground"
+                )}
+              >
+                <Gauge className="size-5" aria-hidden="true" />
+                {codexQuota.quota.blocked ? (
+                  <span className="absolute right-1 top-1 size-2 rounded-full bg-destructive" aria-hidden="true" />
+                ) : null}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80">
+              <DropdownMenuLabel>Codex usage</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <CodexQuotaPanel quota={codexQuota.quota} />
+            </DropdownMenuContent>
+          </DropdownMenu>
           {/* File pinner: per-thread Files panel toggle. Chat view only (the
               manifest is built from chat messages, not the tmux pane). Pure
               URL-state (?files=1) - no shell prop needed. */}

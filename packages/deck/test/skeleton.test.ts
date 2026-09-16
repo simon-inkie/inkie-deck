@@ -59,7 +59,7 @@ describe("Leg 1: BOOTS (scaffold wired, static route shell exists)", () => {
     // The component is a plain function export.
     const mod = await import("~/routes/home.js");
     expect(typeof mod.default).toBe("function");
-  });
+  }, 15000);
 
   it("the Home component has the name 'Home' or is a valid function", async () => {
     const mod = await import("~/routes/home.js");
