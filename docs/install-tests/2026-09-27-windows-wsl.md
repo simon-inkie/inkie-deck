@@ -368,6 +368,25 @@ Suggestions:
   Deck; or collect name/pronouns/time zone once at install and pre-fill
   `USER.md` for every agent.
 
+### R19. A settings page for keys and config (REQUIREMENT, existing ticket)
+Found by pressing the mic in Deck's chat: `WebSocket connection to
+'ws://localhost:5176/voice' failed`. Two causes, both config (see D12). The
+bigger point: **Deck has nowhere to set anything.** Every key and option is a
+line in `packages/deck/.env` that you edit by hand and then restart for.
+That's already a problem for voice, and gets worse with the brain (embedding
+key, R12), Tailscale URLs (R13) and the default model (R17).
+Wanted: a settings panel **in the style of ChatGPT / Claude**, opening as an
+overlay over the main window, a pattern people already know. Covers at least:
+transcription key (Deepgram), embedding key (Gemini, for the brain), voice
+origins and URL (derived automatically from how Deck is being reached, so
+Tailscale just works), `MC_USER`, default model for new agents.
+Things to decide while building it: where secrets are stored (not in the repo
+tree; file permissions 600), whether a change applies live or restarts the
+right process (the voice proxy reads its env at start), and that Deck has **no
+authentication**, so a settings page that shows or edits keys is readable by
+anyone who can reach the port. Write-only key fields ("set / replace", never
+displayed) would help.
+
 ### R9. Pre-public leak check: leftovers from the original deployment in comments (SPOTTED, not yet swept)
 While reading for R8: `api.tmux-send.tsx` comments mention a person's first name, a second person's name for their instance, and an internal ticket id. The leak gate is meant to
 stop names and tickets; either these slipped past its rules or they're
@@ -527,6 +546,29 @@ Doc text for tier 3, after "Start the sessions":
 > selected by default, so don't just press Enter. You only answer this once per
 > agent. (Or from a terminal: `tmux attach -t agents`, pick the agent's window,
 > answer, then detach with Ctrl-b d.)
+
+### D12. Turning on voice dictation (CONFIRMED broken out of the box)
+Pressing the mic on a production install gives `WebSocket connection to
+'ws://localhost:5176/voice' failed` in the browser console. The launcher log
+already says why: `DEEPGRAM_API_KEY ABSENT - voice disabled` and
+`voice-proxy listening on ws://127.0.0.1:5176/voice (origins:
+http://localhost:5174)`. 5174 is the dev server's old port, so the proxy
+turns away the page Deck actually serves on 4242. INSTALL.md's limitations list
+predicts this; `.env.example` has the Deepgram lines but none of the `VOICE_*`
+ones. Doc text (and add the lines to `.env.example`):
+
+> Voice dictation uses Deepgram. To turn it on, add to `packages/deck/.env`:
+> ```sh
+> DEEPGRAM_API_KEY=<your key>
+> VOICE_ALLOWED_ORIGINS=http://localhost:4242
+> ```
+> then restart Deck. If you reach Deck from another machine or over Tailscale,
+> also set `VOICE_PROXY_URL` to the address your browser uses (for example
+> `wss://<machine>.<tailnet>/voice` behind `tailscale serve`) and add that
+> page's origin to `VOICE_ALLOWED_ORIGINS`.
+
+Repo fix worth doing: default `VOICE_ALLOWED_ORIGINS` to Deck's own
+`http://localhost:$PORT` instead of 5174.
 
 ### D4. Keeping agents alive on WSL (TESTED: survives closing windows; reboot not covered)
 Test, 2026-09-27: Deck running in a detached tmux session (`tmux new-session
