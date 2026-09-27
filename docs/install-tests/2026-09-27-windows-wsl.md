@@ -350,6 +350,24 @@ Recommended split:
   write it into the agent's `.claude/settings.json`, and INSTALL.md should
   mention it.
 
+### R18. First-session onboarding works; make the day-one steps explicit (CONFIRMED on inkie)
+After a hello from Deck, inkie did its day one without being told how: wrote
+`IDENTITY.md` and `SOUL.md` (zero placeholders left), told the user SOUL.md had
+changed as the template asks, left `USER.md` blank because the template says to
+confirm before writing, and asked for name, pronouns, time zone and project.
+It also spotted that wren's persona files were still templates: wren's first
+session was a test message asking for a one-line reply, so it never did its
+day-one work. Its self-chosen role ("walks the human through their first
+steps") fits R7 (`inkie` as the first agent) and R16 (narrator) well.
+Suggestions:
+- `create-agent.sh` (or `boot-agents.sh` on first launch) sends a standard
+  first message: "This is your first session; do your day-one steps from your
+  persona files, then say hello." Then day one doesn't depend on the human's
+  first message happening to ask for it.
+- INSTALL.md: tell people to expect the USER.md questions and answer them in
+  Deck; or collect name/pronouns/time zone once at install and pre-fill
+  `USER.md` for every agent.
+
 ### R9. Pre-public leak check: leftovers from the original deployment in comments (SPOTTED, not yet swept)
 While reading for R8: `api.tmux-send.tsx` comments mention a person's first name, a second person's name for their instance, and an internal ticket id. The leak gate is meant to
 stop names and tickets; either these slipped past its rules or they're
@@ -562,4 +580,5 @@ What this doesn't cover, and needs documenting:
 | boot-agents with a real CLI | **blocked, then pass** | pane stopped at folder trust (R6). Answering `yes` from Deck's terminal view killed it twice (R8). Relaunched, trust accepted with Down+Enter via tmux, then the resume picker (R10), then the renderer prompt (R11). Ready after that, in auto mode. `/rename wren` sent by hand |
 | **Live delivery: Deck -> agent -> reply** | **pass** | compose from Deck 200 -> pushed into the pane as `[inbox from <you>] ... [reply via inbox: inbox reply <you>]` -> wren ran `inbox reply <you>` itself (allowed by auto mode) -> reply in the thread file **10s** after sending. First observation of the "delivering direction" INSTALL.md calls unproven. Update that limitation: seen working by hand on 2026-09-27, still no automated test |
 | New agent `inkie` via `create-agent.sh` | **pass, then blocked** | created + VERIFIED in 5.6s (boot phrase quoted back), appears in Deck straight away. `boot-agents.sh`: "1 launched + armed (inkie), 1 already up" (wren left alone). Pane stopped at the folder trust prompt again (R6), so the "launched + armed" report was wrong about its state (R11). User then attached with tmux: trusted the folder, got the resume picker again ("No conversations found in this project", R10), got past it, ran `/rename inkie`, and the name appeared on the prompt border and tmux status bar. Also shown: tmux focus-events hint and the Opus default-model notice (R17) |
+| inkie first session (hello from Deck) | **pass** | replied in 45s via `inbox`. Self-authored IDENTITY.md and SOUL.md, flagged the SOUL change, left USER.md for the user and asked the right questions, and noticed wren's persona was still templates (R18) |
 | WSL idle shutdown (D4) | **pass** | Deck + wren in tmux, all Windows terminals closed: still up after 5 min with pings, and after 11 min with no traffic at all (final check 200). Reboot/login start not covered yet (R13) |
