@@ -276,6 +276,47 @@ Pieces to document or build (not yet tested on this laptop):
 5. **Check after a reboot**: one command that reports Deck up, each agent's
    pane state, and which agents are stuck at a prompt (ties in with R11).
 
+### R14. One `agents` command that brings everything up (REQUIREMENT)
+Target experience, for a non-developer: Start menu -> type "Ubuntu" -> open it ->
+type `agents` (or `agents <name>`) -> you're looking at your agents. That already works on the main PC.
+Today the laptop needs two separate things (Deck's web service in its own tmux
+session, plus `boot-agents.sh`), and INSTALL.md starts Deck in the foreground
+of a terminal, where closing the window stops it.
+**What the main PC has today (missing from inkie-deck):** a root-level
+`agents` command that attaches to the tmux `agents` session, and
+`agents <name>` (e.g. `agents wren`) which attaches straight to that agent's
+window. It's the everyday way into the agents' terminals there, and nothing
+like it ships in the repo. The laptop test needed `tmux attach -t agents` and
+Ctrl-b w to find a window, which is too much to ask of a non-developer.
+
+Suggested `packages/base/bin/agents` (linked into `~/.local/bin` by
+`create-agent.sh`, like `inbox` already is), keeping the PC's behaviour and
+adding the start-up half:
+- `agents`: attach to the `agents` session. `agents <name>`: attach with that
+  agent's window selected (`tmux attach -t agents \; select-window -t
+  "=<name>"`, or `switch-client` if already inside tmux). Unknown name: list the
+  agents and exit non-zero.
+- If the session or Deck isn't running (after a reboot or `wsl --shutdown`),
+  bring it up first:
+  1. Start Deck's web service if it isn't answering: `tmux new-session -d -s
+     deck-server -c <repo>/packages/deck 'node scripts/start-production.mjs'`
+     (or `systemctl --user start deck` once R13 has a unit).
+  2. Run `boot-agents.sh` (starts or leaves alone each agent's window).
+  3. Print Deck's URL, and which agents are ready or waiting on a prompt (R11).
+- Tab-completion of agent names is a nice extra (bash `complete -W` from the
+  window list).
+Tested on this laptop: Deck and agents in tmux survive every window closing
+(D4), so `agents` is only needed after a reboot or `wsl --shutdown`.
+
+### R15. No playbook for adding an agent; Deck has no "new agent" UI (CONFIRMED by reading)
+Searched inkie-deck for a playbook / onboarding guide: none. The only way to
+add an agent is `create-agent.sh`, documented in `packages/base/README.md`
+("Install"), which also notes that "`--resume`-style launching needs the first
+session named before it can resume", the same gap as R10, yet
+`create-agent.sh` doesn't name it. Deck's UI can't create an agent (no route
+calls `create-agent`). If a playbook exists in the main PC's private agents
+setup, it should be cleaned and brought in as `docs/adding-an-agent.md`.
+
 ### R9. Pre-public leak check: leftovers from the original deployment in comments (SPOTTED, not yet swept)
 While reading for R8: `api.tmux-send.tsx` comments mention a person's first name, a second person's name for their instance, and an internal ticket id. The leak gate is meant to
 stop names and tickets; either these slipped past its rules or they're
@@ -487,4 +528,5 @@ What this doesn't cover, and needs documenting:
 | `create-agent.sh --verify-only wren` | **pass** | exit 0, boot phrase quoted back |
 | boot-agents with a real CLI | **blocked, then pass** | pane stopped at folder trust (R6). Answering `yes` from Deck's terminal view killed it twice (R8). Relaunched, trust accepted with Down+Enter via tmux, then the resume picker (R10), then the renderer prompt (R11). Ready after that, in auto mode. `/rename wren` sent by hand |
 | **Live delivery: Deck -> agent -> reply** | **pass** | compose from Deck 200 -> pushed into the pane as `[inbox from <you>] ... [reply via inbox: inbox reply <you>]` -> wren ran `inbox reply <you>` itself (allowed by auto mode) -> reply in the thread file **10s** after sending. First observation of the "delivering direction" INSTALL.md calls unproven. Update that limitation: seen working by hand on 2026-09-27, still no automated test |
+| New agent `inkie` via `create-agent.sh` | **pass, then blocked** | created + VERIFIED in 5.6s (boot phrase quoted back), appears in Deck straight away. `boot-agents.sh`: "1 launched + armed (inkie), 1 already up" (wren left alone). Pane stopped at the folder trust prompt again (R6), so the "launched + armed" report was wrong about its state (R11) |
 | WSL idle shutdown (D4) | **pass** | Deck + wren in tmux, all Windows terminals closed: still up after 5 min with pings, and after 11 min with no traffic at all (final check 200). Reboot/login start not covered yet (R13) |
