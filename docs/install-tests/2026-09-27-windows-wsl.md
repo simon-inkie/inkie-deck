@@ -317,6 +317,39 @@ session named before it can resume", the same gap as R10, yet
 calls `create-agent`). If a playbook exists in the main PC's private agents
 setup, it should be cleaned and brought in as `docs/adding-an-agent.md`.
 
+### R16. A narrator agent to watch panes and help with setup (IDEA)
+Seen twice now (wren, then inkie): every new agent needs someone at its
+terminal for the first-run screens, plus a manual `/rename <agent>`, after
+which the name shows on the prompt box border and in the tmux status bar. The
+user suggests a third agent, a **narrator** (the original deployment has one), that
+watches agent windows, answers setup screens and monitors what's going on.
+
+Recommended split:
+- **Known screens are fixed in scripts, no agent:** R10 (`--session-id` + `-n`)
+  removes the resume picker *and* the rename; `boot-agents.sh` can recognise
+  the trust screen (R6). Deterministic, free and testable.
+- **The narrator handles the unknown:** new first-run prompts after Claude
+  Code updates (R11), stuck panes, and walking a new user through setup and
+  their first agent. Build it on what's already in `packages/base/bin`:
+  `stuck-pane-sweep.sh` and `activity-sweep.sh` already detect stuck panes and
+  track per-agent activity; the narrator would be the layer that decides and
+  acts (via the same careful path as `inbox-push`, not Deck's ungated
+  terminal send).
+- Ship it as an optional agent template (`create-agent.sh narrator --role
+  ...`) with its own persona files, so the default install stays two scripts
+  and no extra model spend.
+
+### R17. Small first-boot polish (CONFIRMED on inkie's pane)
+- Claude Code shows `tmux focus-events off | add 'set -g focus-events on' to
+  ~/.tmux.conf and reattach for focus tracking`. Ship a recommended tmux
+  snippet (or have `boot-agents.sh` run `tmux set -g focus-events on` on the
+  session it creates) so every agent pane doesn't show the hint.
+- Claude Code showed "Opus 5.5 is now your default model and it draws down
+  usage faster than Sonnet 5" on a Pro plan. With several always-on agents,
+  the model is a cost decision. `create-agent.sh` could take `--model` and
+  write it into the agent's `.claude/settings.json`, and INSTALL.md should
+  mention it.
+
 ### R9. Pre-public leak check: leftovers from the original deployment in comments (SPOTTED, not yet swept)
 While reading for R8: `api.tmux-send.tsx` comments mention a person's first name, a second person's name for their instance, and an internal ticket id. The leak gate is meant to
 stop names and tickets; either these slipped past its rules or they're
@@ -528,5 +561,5 @@ What this doesn't cover, and needs documenting:
 | `create-agent.sh --verify-only wren` | **pass** | exit 0, boot phrase quoted back |
 | boot-agents with a real CLI | **blocked, then pass** | pane stopped at folder trust (R6). Answering `yes` from Deck's terminal view killed it twice (R8). Relaunched, trust accepted with Down+Enter via tmux, then the resume picker (R10), then the renderer prompt (R11). Ready after that, in auto mode. `/rename wren` sent by hand |
 | **Live delivery: Deck -> agent -> reply** | **pass** | compose from Deck 200 -> pushed into the pane as `[inbox from <you>] ... [reply via inbox: inbox reply <you>]` -> wren ran `inbox reply <you>` itself (allowed by auto mode) -> reply in the thread file **10s** after sending. First observation of the "delivering direction" INSTALL.md calls unproven. Update that limitation: seen working by hand on 2026-09-27, still no automated test |
-| New agent `inkie` via `create-agent.sh` | **pass, then blocked** | created + VERIFIED in 5.6s (boot phrase quoted back), appears in Deck straight away. `boot-agents.sh`: "1 launched + armed (inkie), 1 already up" (wren left alone). Pane stopped at the folder trust prompt again (R6), so the "launched + armed" report was wrong about its state (R11) |
+| New agent `inkie` via `create-agent.sh` | **pass, then blocked** | created + VERIFIED in 5.6s (boot phrase quoted back), appears in Deck straight away. `boot-agents.sh`: "1 launched + armed (inkie), 1 already up" (wren left alone). Pane stopped at the folder trust prompt again (R6), so the "launched + armed" report was wrong about its state (R11). User then attached with tmux: trusted the folder, got the resume picker again ("No conversations found in this project", R10), got past it, ran `/rename inkie`, and the name appeared on the prompt border and tmux status bar. Also shown: tmux focus-events hint and the Opus default-model notice (R17) |
 | WSL idle shutdown (D4) | **pass** | Deck + wren in tmux, all Windows terminals closed: still up after 5 min with pings, and after 11 min with no traffic at all (final check 200). Reboot/login start not covered yet (R13) |
