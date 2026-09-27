@@ -447,8 +447,13 @@ restarted. So on this WSL version (systemd on) **closing the terminal doesn't
 kill Deck or the agents**, as long as they were started in tmux.
 
 Caveat: the watcher's HTTP request every 10s went through WSL's localhost
-forwarding, which may count as activity. A cleaner repeat is to close
-everything and check only once, after 10+ minutes.
+forwarding, which may count as activity. **Repeated cleanly, 15:14-15:25:** zero
+`wsl.exe` clients and no traffic into WSL for 11 minutes (only
+`wsl -l --running` once a minute, which doesn't touch the distro). Ubuntu was
+still running every minute, and the one HTTP check at the end got Deck 200. So
+the result stands: with systemd on and Deck + agents in tmux, WSL doesn't shut
+down when idle on this version (WSL on Windows 11 build 26200, no
+`.wslconfig`).
 
 What this doesn't cover, and needs documenting:
 - **Deck started the INSTALL.md way dies with its window.** The guide runs
@@ -482,4 +487,4 @@ What this doesn't cover, and needs documenting:
 | `create-agent.sh --verify-only wren` | **pass** | exit 0, boot phrase quoted back |
 | boot-agents with a real CLI | **blocked, then pass** | pane stopped at folder trust (R6). Answering `yes` from Deck's terminal view killed it twice (R8). Relaunched, trust accepted with Down+Enter via tmux, then the resume picker (R10), then the renderer prompt (R11). Ready after that, in auto mode. `/rename wren` sent by hand |
 | **Live delivery: Deck -> agent -> reply** | **pass** | compose from Deck 200 -> pushed into the pane as `[inbox from <you>] ... [reply via inbox: inbox reply <you>]` -> wren ran `inbox reply <you>` itself (allowed by auto mode) -> reply in the thread file **10s** after sending. First observation of the "delivering direction" INSTALL.md calls unproven. Update that limitation: seen working by hand on 2026-09-27, still no automated test |
-| WSL idle shutdown (D4) | **pass (with caveat)** | Deck + wren in tmux, all Windows terminals closed: still up after 5 min, VM not restarted. Reboot/login start not covered yet |
+| WSL idle shutdown (D4) | **pass** | Deck + wren in tmux, all Windows terminals closed: still up after 5 min with pings, and after 11 min with no traffic at all (final check 200). Reboot/login start not covered yet (R13) |
