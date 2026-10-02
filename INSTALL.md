@@ -368,6 +368,17 @@ again and an agent whose pane already has its runtime running in it is left
 alone; one whose runtime has exited is relaunched, which is what makes this
 safe to fire on boot.
 
+On first boot, attach to the session and answer any runtime setup prompts
+manually. Folder trust defaults to No: do not press Enter while No is
+preselected. Choose Yes manually only if you trust the folder. Claude Code
+uses its default permission mode (currently auto) unless you configure it.
+The resume picker and fullscreen offer also need a manual answer.
+The launcher reports each waiting agent by name and exits 3 while readiness
+or monitor confirmation is pending (exit 1 means a launch failed). It reports
+ready launches and confirmed monitors separately; a live process alone does
+not prove either. After answering prompts, run the launcher again. Existing
+sessions are checked for readiness but are not automatically re-armed.
+
 ```sh
 tmux list-windows -t agents -F '#{window_name}'
 ```
