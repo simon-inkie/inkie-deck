@@ -190,6 +190,19 @@ export function buildSendKeysTextArgs(
   return ["send-keys", "-t", `=${session}:=${window}`, "-l", "--", text];
 }
 
+/** Fixed navigation keys accepted by the pane send seam. */
+export const SEND_KEYS_ALLOWED_KEYS = ["Up", "Down", "Enter", "Escape", "Tab", "BTab"] as const;
+export type PaneKey = (typeof SEND_KEYS_ALLOWED_KEYS)[number];
+
+export function isValidPaneKey(key: string): key is PaneKey {
+  return SEND_KEYS_ALLOWED_KEYS.some((allowed) => allowed === key);
+}
+
+/** Named keys are single keystrokes, without literal mode or an extra Enter. */
+export function buildSendKeysNamedArgs(session: string, window: string, key: PaneKey): string[] {
+  return ["send-keys", "-t", `=${session}:=${window}`, key];
+}
+
 /**
  * argv for pressing Enter in a window. Pure - unit-pinned. No "-l": "Enter" is
  * a key NAME here, not literal text - this is the keystroke that submits.
@@ -217,6 +230,32 @@ function runTmuxVoid(args: string[]): boolean {
 }
 
 export type SendKeysResult = { ok: true } | { ok: false; error: string };
+
+/** Send one allowlisted navigation key to a live, exactly matched window. */
+export function sendNamedKeyToWindow(
+  env: NodeJS.ProcessEnv,
+  window: string,
+  key: string
+): SendKeysResult {
+  if (!isValidWindowName(window)) return { ok: false, error: "Unknown or invalid window." };
+  if (!isValidPaneKey(key)) return { ok: false, error: "Invalid navigation key." };
+  if (!listTmuxWindows(env).includes(window)) {
+    return { ok: false, error: "Window is not live in the session." };
+  }
+  return runTmuxVoid(buildSendKeysNamedArgs(resolveTmuxSession(env), window, key))
+    ? { ok: true }
+    : { ok: false, error: "Could not send key to the window." };
+}
+
+/** Refuse text when the current viewport cannot be checked or shows a shell. */
+function textSendRefusal(session: string, window: string): string | undefined {
+  const viewport = runTmux(buildCaptureViewportArgs(session, window));
+  if (viewport === undefined) return "Could not check the pane before sending text.";
+  if (viewport.split("\n").some((line) => SHELL_PROMPT_RE.test(line))) {
+    return "The pane is at a shell prompt. Text was not submitted.";
+  }
+  return undefined;
+}
 
 /**
  * Send a line of literal text to an agent's window, then submit it with Enter.
@@ -249,12 +288,16 @@ export async function sendKeysToWindow(
   }
 
   const session = resolveTmuxSession(env);
+  const refusal = textSendRefusal(session, window);
+  if (refusal !== undefined) return { ok: false, error: refusal };
   // Send the raw text the operator typed (not the trimmed copy) so leading
   // whitespace they intended is preserved; the trim only gates emptiness.
   if (!runTmuxVoid(buildSendKeysTextArgs(session, window, text))) {
     return { ok: false, error: "Could not send text to the window." };
   }
   await new Promise((resolve) => setTimeout(resolve, SEND_KEYS_ENTER_DELAY_MS));
+  const submitRefusal = textSendRefusal(session, window);
+  if (submitRefusal !== undefined) return { ok: false, error: submitRefusal };
   if (!runTmuxVoid(buildSendKeysEnterArgs(session, window))) {
     // Text landed but Enter did not - the message sits in the prompt unsubmitted.
     return { ok: false, error: "Text sent but submit (Enter) failed." };
