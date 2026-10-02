@@ -258,9 +258,13 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
     },
     { label: "lone bare prompt with trailing space", text: "\u276F " },
     { label: "lone bare prompt no trailing space", text: "\u276F" },
+    {
+      label: "agy/Gemini runtime (bare > prompt)",
+      text: "───\n>\n───\n? for shortcuts   Gemini 3.5 Flash (Medium) · 1 task(s)",
+    },
   ];
 
-  // NO WAKE: every unsafe state - dirty composer, permission dialog, bash shell, agy, ghost
+  // NO WAKE: every unsafe state - dirty composer, permission dialog, bash shell, ghost
   const noWake = [
     {
       label: "dirty composer - staged text",
@@ -268,16 +272,16 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
     },
     { label: "dirty composer 2 - text after prompt", text: "\u276F do the folder reorg" },
     {
+      label: "dirty agy composer - text after > prompt",
+      text: "───\n> git status\n───\n? for shortcuts   Gemini 3.8 Flash",
+    },
+    {
       label: "permission dialog",
       text: "Do you want to proceed?\n\u276F 1. Yes\n  2. No",
     },
     {
       label: "bash shell - exited agent",
       text: "alex@demobox:~/agents/echo$ \nalex@demobox:~/agents/echo$ ",
-    },
-    {
-      label: "agy/Gemini runtime (different glyph)",
-      text: "───\n>\n───\n? for shortcuts   Gemini 3.5 Flash (Medium) · 1 task(s)",
     },
     { label: "ghost/auto-suggest text after prompt", text: "\u276F /compact" },
     {
@@ -312,6 +316,12 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
   it("IDLE_PROMPT_RE matches a bare Codex prompt glyph (U+203A)", () => {
     expect(IDLE_PROMPT_RE.test("\u203A ")).toBe(true);
     expect(IDLE_PROMPT_RE.test("\u203A do something real")).toBe(false);
+  });
+
+  it("IDLE_PROMPT_RE matches a bare agy prompt glyph (>)", () => {
+    expect(IDLE_PROMPT_RE.test("> ")).toBe(true);
+    expect(IDLE_PROMPT_RE.test(">")).toBe(true);
+    expect(IDLE_PROMPT_RE.test("> do something real")).toBe(false);
   });
 
   // CRITICAL false-negative regression: idle agent with ctx-percent statusline

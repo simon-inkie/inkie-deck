@@ -298,7 +298,7 @@ export function buildCaptureViewportRawArgs(session: string, window: string): st
  * line like "(3s ..." reads active and just SKIPS the wake - the safe
  * direction; a wrong wake risks stray text in a live composer).
  */
-export const ACTIVE_PANE_RE = /esc to interrupt|\((?:\d+h\s)?(?:\d+m\s)?\d+s\s/i;
+export const ACTIVE_PANE_RE = /esc to (?:interrupt|cancel)|\((?:\d+h\s)?(?:\d+m\s)?\d+s\s/i;
 
 /** True when a captured viewport shows the working spinner (turn in flight). */
 export function paneTextIsActive(viewport: string): boolean {
@@ -308,13 +308,12 @@ export function paneTextIsActive(viewport: string): boolean {
 /**
  * The bare, EMPTY composer prompt: a lone prompt glyph on its own line, nothing
  * typed after it. This is the POSITIVE idle signal - the one state where a wake
- * is safe. Two glyphs are recognised: Claude Code's U+276F and Codex's U+203A
- * (the runtimes MC live-wakes). Everything else fails it on purpose:
- *   - dirty composer ("U+276F git checkout main")  -> text after the prompt, no match
+ * is safe. Three glyphs are recognised: Claude Code's U+276F, Codex's U+203A,
+ * and agy's ">" (the runtimes MC live-wakes). Everything else fails it on purpose:
+ *   - dirty composer ("U+276F git checkout main" or "> git checkout main") -> text after the prompt, no match
  *   - permission dialog ("U+276F 1. Yes")           -> text after the prompt, no match
  *   - ghost / auto-suggest ("U+276F /compact")      -> text after the prompt, no match (benign skip)
  *   - exited agent at a bash shell ("user@host$")   -> no prompt glyph at all, no match
- *   - agy / Gemini runtime (">")                    -> different glyph, no match (separate wake path)
  * Validated against live panes: it matched ONLY the genuinely-idle agents and
  * rejected every unsafe state. Multiline (`m`) so any viewport line can be the
  * composer (the statusline + separator render BELOW the prompt in this TUI).
@@ -324,14 +323,13 @@ export function paneTextIsActive(viewport: string): boolean {
  * case is handled downstream by the ANSI dim-hint disambiguation (DIM_SGR); this
  * regex only covers the truly-bare state (Claude's usual rest, Codex's rare one).
  */
-export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A]\s*$/m;
+export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A>]\s*$/m;
 
 /**
- * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F
- * and Codex's U+203A. agy / Gemini's ">" is deliberately excluded - it has its
- * own separate wake path and never carries the dim-hint placeholder below.
+ * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F,
+ * Codex's U+203A, and agy / Gemini's ">".
  */
-export const COMPOSER_PROMPT_GLYPHS = ["\u276F", "\u203A"] as const;
+export const COMPOSER_PROMPT_GLYPHS = ["\u276F", "\u203A", ">"] as const;
 
 /**
  * The ANSI "dim" SGR marker (ESC[2m). Codex wraps every rotating hint placeholder
