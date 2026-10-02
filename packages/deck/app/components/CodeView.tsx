@@ -34,6 +34,22 @@ interface CodeViewProps {
   lang: string;
 }
 
+// Keep large review files usable without highlighting the entire payload or
+// creating a DOM node for every line. The server's 2 MB read cap is a security
+// bound, not a safe client-side syntax-highlighting budget.
+const MAX_HIGHLIGHT_CHARS = 128 * 1024;
+const MAX_GUTTER_LINES = 4_000;
+
+export function shouldRenderPlainCode(content: string): boolean {
+  if (content.length > MAX_HIGHLIGHT_CHARS) return true;
+
+  let lines = 1;
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10 && ++lines > MAX_GUTTER_LINES) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -78,9 +94,10 @@ function highlightContent(content: string, lang: string): string {
  * (TASK-563) can query them by line number without DOM changes here.
  */
 export function CodeView({ content, lang }: CodeViewProps) {
+  const plain = useMemo(() => shouldRenderPlainCode(content), [content]);
   const highlightedHtml = useMemo(
-    () => highlightContent(content, lang),
-    [content, lang]
+    () => plain ? null : highlightContent(content, lang),
+    [content, lang, plain]
   );
 
   // Split the highlighted HTML into per-line spans.
@@ -88,9 +105,28 @@ export function CodeView({ content, lang }: CodeViewProps) {
   // lines for common languages, so splitting on \n is reliable. We join the
   // lines as individual <span data-line> elements for future anchor support.
   const lineCount = useMemo(
-    () => content.split("\n").length,
-    [content]
+    () => plain ? 0 : content.split("\n").length,
+    [content, plain]
   );
+
+  if (plain) {
+    return (
+      <div
+        className="code-view"
+        style={{ background: "#1f1f1f", color: "#d4d4d4", fontFamily: "var(--font-mono)", fontSize: "0.8125rem", lineHeight: "1.55" }}
+      >
+        <div className="px-3 py-2 text-xs text-muted-foreground">
+          Large file: syntax highlighting and line numbers are off for responsiveness.
+        </div>
+        <pre
+          data-testid="large-code-plain"
+          style={{ margin: 0, padding: "0.75em", overflow: "auto", whiteSpace: "pre" }}
+        >
+          <code>{content}</code>
+        </pre>
+      </div>
+    );
+  }
 
   return (
     // Outer wrapper: .code-view scopes the VS Code Dark Modern hljs theme
@@ -157,7 +193,7 @@ export function CodeView({ content, lang }: CodeViewProps) {
         <code
           className={`hljs language-${lang}`}
           style={{ background: "transparent", padding: 0, fontSize: "inherit" }}
-          dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+          dangerouslySetInnerHTML={{ __html: highlightedHtml ?? "" }}
         />
       </pre>
     </div>
