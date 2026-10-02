@@ -37,7 +37,10 @@ export async function action({ request }: Route.ActionArgs) {
   if (!parsed.success) {
     return { ok: false as const, error: "Invalid send payload." };
   }
-  // sendKeysToWindow carries the ROSTER + live-allowlist gate and degrades to
-  // { ok: false } on any failure - it never throws.
-  return sendKeysToWindow(process.env, parsed.data.window, parsed.data.text);
+  // sendKeysToWindow carries the ROSTER + live-allowlist gate, verifies the
+  // submit, and degrades to { ok: false } on any failure - it never throws.
+  const result = await sendKeysToWindow(process.env, parsed.data.window, parsed.data.text);
+  return result.status === "submitted"
+    ? { ok: true as const }
+    : { ok: false as const, error: result.error };
 }

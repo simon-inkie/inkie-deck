@@ -35,6 +35,12 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { resolveAttachmentsRoot } from "./attachments.server.js";
+import {
+  submitPaneText,
+  type PaneSnapshot,
+  type PaneSubmitDriver,
+  type SendKeysResult as PaneSendKeysResult,
+} from "./tmux-submit.js";
 
 /** ROSTER agent-name convention - the pre-subprocess gate. */
 export const WINDOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -219,47 +225,120 @@ function runTmuxVoid(args: string[]): boolean {
 export type SendKeysResult = { ok: true } | { ok: false; error: string };
 
 /**
+ * tmux side effects the verified-send state machine needs, as a seam so the
+ * policy module stays testable without a live server.
+ */
+export interface SendKeysDriver {
+  listWindows(env: NodeJS.ProcessEnv): string[];
+  captureViewport(
+    session: string,
+    window: string,
+    raw: boolean
+  ): string | undefined;
+  sendText(session: string, window: string, text: string): boolean;
+  pressEnter(session: string, window: string): boolean;
+  wait(ms: number): Promise<void>;
+}
+
+const LIVE_SEND_KEYS_DRIVER: SendKeysDriver = {
+  listWindows: (env) => listTmuxWindows(env),
+  captureViewport: (session, window, raw) =>
+    runTmux(
+      raw
+        ? buildVerifiedSendCaptureArgs(session, window)
+        : buildCaptureViewportArgs(session, window)
+    ),
+  sendText: (session, window, text) =>
+    runTmuxVoid(buildSendKeysTextArgs(session, window, text)),
+  pressEnter: (session, window) =>
+    runTmuxVoid(buildSendKeysEnterArgs(session, window)),
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** Bounded settle samples before deciding whether one Enter retry is safe. */
+export const SEND_KEYS_VERIFY_DELAYS_MS = [250, 750] as const;
+
+function captureSendSnapshot(
+  driver: SendKeysDriver,
+  session: string,
+  window: string
+): PaneSnapshot | undefined {
+  const plain = driver.captureViewport(session, window, false);
+  if (plain === undefined) return undefined;
+  const raw = driver.captureViewport(session, window, true);
+  return classifyPaneSnapshot(plain, raw);
+}
+
+/**
  * Send a line of literal text to an agent's window, then submit it with Enter.
  *
  * Carries the SAME validate-before-subprocess gate as capture: the window must
  * be ROSTER-shaped AND present in the live session. Empty/whitespace-only and
  * over-length text are rejected before any subprocess. The Enter is a SEPARATE
- * call after SEND_KEYS_ENTER_DELAY_MS (see that constant). Any failure returns
- * { ok: false } - it never throws and never touches the read path, so the
- * readonly fallback survives a broken write.
+ * call after SEND_KEYS_ENTER_DELAY_MS (see that constant), and it is VERIFIED:
+ * after the Enter the pane is re-captured, and the send only reports submitted
+ * when the composer has demonstrably cleared or the turn has visibly started.
+ * At most ONE additional Enter is allowed, and only while the composer still
+ * holds exactly the payload we sent - that is the swallowed-Enter case, where
+ * the text is in the prompt and blind, this is exactly why it is safe to retry.
+ *
+ * Never throws and never touches the read path, so the readonly fallback
+ * survives a broken write.
  */
 export async function sendKeysToWindow(
   env: NodeJS.ProcessEnv,
   window: string,
-  text: string
-): Promise<SendKeysResult> {
+  text: string,
+  driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
+): Promise<PaneSendKeysResult> {
   if (!isValidWindowName(window)) {
-    return { ok: false, error: "Unknown or invalid window." };
+    return {
+      status: "not-submitted",
+      reason: "invalid-window",
+      error: "Unknown or invalid window.",
+      enterAttempts: 0,
+    };
   }
   const trimmed = text.trim();
   if (trimmed === "") {
-    return { ok: false, error: "Nothing to send." };
+    return {
+      status: "not-submitted",
+      reason: "empty-text",
+      error: "Nothing to send.",
+      enterAttempts: 0,
+    };
   }
   if (text.length > SEND_KEYS_MAX_LEN) {
-    return { ok: false, error: `Message too long (max ${SEND_KEYS_MAX_LEN}).` };
+    return {
+      status: "not-submitted",
+      reason: "text-too-long",
+      error: `Message too long (max ${SEND_KEYS_MAX_LEN}).`,
+      enterAttempts: 0,
+    };
   }
   // Live allowlist: the window must exist in the session right now.
-  if (!listTmuxWindows(env).includes(window)) {
-    return { ok: false, error: "Window is not live in the session." };
+  if (!driver.listWindows(env).includes(window)) {
+    return {
+      status: "not-submitted",
+      reason: "window-not-live",
+      error: "Window is not live in the session.",
+      enterAttempts: 0,
+    };
   }
 
   const session = resolveTmuxSession(env);
+  const submitDriver: PaneSubmitDriver = {
+    capture: () => captureSendSnapshot(driver, session, window),
+    sendText: (payload) => driver.sendText(session, window, payload),
+    pressEnter: () => driver.pressEnter(session, window),
+    wait: driver.wait,
+  };
   // Send the raw text the operator typed (not the trimmed copy) so leading
   // whitespace they intended is preserved; the trim only gates emptiness.
-  if (!runTmuxVoid(buildSendKeysTextArgs(session, window, text))) {
-    return { ok: false, error: "Could not send text to the window." };
-  }
-  await new Promise((resolve) => setTimeout(resolve, SEND_KEYS_ENTER_DELAY_MS));
-  if (!runTmuxVoid(buildSendKeysEnterArgs(session, window))) {
-    // Text landed but Enter did not - the message sits in the prompt unsubmitted.
-    return { ok: false, error: "Text sent but submit (Enter) failed." };
-  }
-  return { ok: true };
+  return submitPaneText(text, submitDriver, {
+    enterDelayMs: SEND_KEYS_ENTER_DELAY_MS,
+    verifyDelaysMs: SEND_KEYS_VERIFY_DELAYS_MS,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +352,10 @@ export async function sendKeysToWindow(
  * unit-pinned.
  */
 export function buildCaptureViewportArgs(session: string, window: string): string[] {
+  // -J joins terminal soft-wraps and preserves right padding. Claude draws its
+  // own word-wrapped composer rows, so composerTextFromViewport retains their
+  // framing; without -J a wrapped row would arrive split and read as a change.
+
   return ["capture-pane", "-t", `=${session}:=${window}`, "-p"];
 }
 
@@ -286,6 +369,21 @@ export function buildCaptureViewportArgs(session: string, window: string): strin
  */
 export function buildCaptureViewportRawArgs(session: string, window: string): string[] {
   return ["capture-pane", "-t", `=${session}:=${window}`, "-p", "-e"];
+}
+
+/**
+ * argv for the VERIFIED-SEND capture. "-J" joins terminal soft-wraps so a
+ * composer row that wrapped at the pane edge comes back as ONE line, and it
+ * preserves the right padding that -p alone trims. The verified-composer
+ * identity check needs both: a wrapped payload must not look like a different
+ * one, and the padding is what tells an app-drawn row boundary from real
+ * whitespace in the text.
+ *
+ * NOT used by the read path. The read path keeps its own capture shape so a
+ * change here can never reflow what a reader sees. Pure - unit-pinned.
+ */
+export function buildVerifiedSendCaptureArgs(session: string, window: string): string[] {
+  return ["capture-pane", "-t", `=${session}:=${window}`, "-p", "-J"];
 }
 
 /**
@@ -414,6 +512,115 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
  * wake for agents with a ctx-percent statusline.
  */
 export const SHELL_PROMPT_RE = /\w+@[\w.-]+[:\s].*[$#%]\s*$/;
+
+const COMPOSER_LOWER_BORDER_RE = /^\s*[─━═╌╍┄┅]{3,}\s*$/u;
+
+function findComposerLowerBorderIndex(lines: string[], promptIndex: number): number {
+  for (let index = promptIndex + 1; index < lines.length; index++) {
+    if (COMPOSER_LOWER_BORDER_RE.test(lines[index] ?? "")) return index;
+  }
+  return -1;
+}
+
+type ComposerDisplay = {
+  text: string;
+  rows: NonNullable<PaneSnapshot["stagedRows"]>;
+};
+
+type ComposerDisplayRow = {
+  text: string;
+  /** True when -J exposed terminal padding to the right of this row. */
+  rightPadded: boolean;
+};
+
+function removeTuiRightPadding(line: string): ComposerDisplayRow {
+  const padding = line.match(/ +$/u)?.[0] ?? "";
+  return {
+    text: padding === "" ? line : line.slice(0, -padding.length),
+    rightPadded: padding !== "",
+  };
+}
+
+/**
+ * Decode the composer region of a -J capture into the exact payload text the
+ * pane is holding, plus a per-row record of whether the terminal had padded
+ * the row. Claude renders the composer as the last prompt-glyph line followed
+ * by continuation rows framed with exactly two leading spaces, closed by a
+ * horizontal border. Anything that does not match that framing returns
+ * undefined: an unrecognised shape must read as "not ours", never as a match.
+ */
+export function composerTextFromViewport(viewport: string): ComposerDisplay | undefined {
+  const lines = viewport.split("\n");
+  const promptIndex = findPromptLineIndex(lines);
+  if (promptIndex === -1) return undefined;
+  const promptLine = lines[promptIndex];
+  if (promptLine === undefined) return undefined;
+  const glyph = COMPOSER_PROMPT_GLYPHS.find((candidate) => promptLine.includes(candidate));
+  if (glyph === undefined) return undefined;
+  let firstLine = promptLine.slice(promptLine.indexOf(glyph) + glyph.length);
+  // Remove the TUI-owned separator after the prompt glyph, not user whitespace.
+  if (firstLine.startsWith(" ") || firstLine.startsWith("\u00a0")) {
+    firstLine = firstLine.slice(1);
+  }
+  const borderIndex = findComposerLowerBorderIndex(lines, promptIndex);
+  const renderedContinuation =
+    borderIndex === -1 ? [] : lines.slice(promptIndex + 1, borderIndex);
+  const rows: ComposerDisplayRow[] = [removeTuiRightPadding(firstLine)];
+  for (const line of renderedContinuation) {
+    // Claude frames every app-drawn continuation row with exactly two spaces.
+    // Anything else is not a representation we can safely identify as ours.
+    if (!line.startsWith("  ")) return undefined;
+    rows.push(removeTuiRightPadding(line.slice(2)));
+  }
+
+  return { text: rows.map((row) => row.text).join("\n"), rows };
+}
+
+/** Pure pane classification used by the verified-send state machine. */
+export function classifyPaneSnapshot(
+  viewport: string,
+  rawViewport?: string
+): PaneSnapshot {
+  const lines = viewport.split("\n");
+  const promptIndex = findPromptLineIndex(lines);
+  if (promptIndex === -1) {
+    return {
+      activity: paneTextIsActive(viewport) ? "active" : "idle",
+      composer: "unknown",
+    };
+  }
+  const borderIndex = findComposerLowerBorderIndex(lines, promptIndex);
+  const outsideComposer = [
+    ...lines.slice(0, promptIndex),
+    ...(borderIndex === -1 ? [] : lines.slice(borderIndex + 1)),
+  ].join("\n");
+  const activity = paneTextIsActive(outsideComposer) ? "active" : "idle";
+  const staged = composerTextFromViewport(viewport);
+  const dimHint = composerLineIsDimHint(rawViewport);
+  // A bare prompt line alone is not sufficient when the framed composer has
+  // continuation content (for example, a payload beginning with a newline).
+  if (dimHint || (composerIsClean(viewport, rawViewport) && staged?.text === "")) {
+    return {
+      activity,
+      composer: dimHint ? "ghost" : "clean",
+    };
+  }
+  for (let index = promptIndex + 1; index < lines.length; index++) {
+    const line = lines[index];
+    if (line !== undefined && SHELL_PROMPT_RE.test(line)) {
+      return { activity, composer: "unknown" };
+    }
+  }
+  if (staged === undefined || staged.text === "") {
+    return { activity, composer: "unknown" };
+  }
+  return {
+    activity,
+    composer: "staged",
+    stagedText: staged.text,
+    stagedRows: staged.rows,
+  };
+}
 
 /**
  * True when the viewport shows a CONFIRMED-idle agent composer: no working
@@ -572,7 +779,9 @@ export async function wakeIdleAgent(
   const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
   const text = `[inbox from ${tag}] new message in Inkie Deck, check your inbox  [reply via inbox: inbox reply ${tag}]`;
   const res = await sendKeysToWindow(env, window, text);
-  return res.ok ? { woke: true, reason: "sent" } : { woke: false, reason: "send-failed" };
+  return res.status === "submitted"
+    ? { woke: true, reason: "sent" }
+    : { woke: false, reason: "send-failed" };
 }
 
 /**
@@ -662,7 +871,12 @@ export function resolveAndRewriteAttachmentPaths(text: string): string {
   }
 }
 
-export type PushResult = { pushed: boolean };
+/**
+ * The verified-send outcome, propagated rather than flattened to a boolean so a
+ * caller can tell "the composer was unsafe, nothing sent" from "we tried and
+ * could not confirm the submit".
+ */
+export type PushResult = PaneSendKeysResult;
 
 /**
  * Push the actual chat-box text to an agent's pane (TASK-524, extended TASK-537).
@@ -818,10 +1032,10 @@ export async function pushMessageToIdleAgent(
   window: string,
   fromUser: string,
   text: string,
-  dictated: boolean = false
+  dictated: boolean = false,
+  driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
 ): Promise<PushResult> {
   try {
-    if (!paneAcceptsSendLive(env, window)) return { pushed: false };
     const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
     // Rewrite web-relative /attachments/ image refs to real filesystem paths
     // BEFORE the length cap (the absolute path is longer than the URL, so it
@@ -833,9 +1047,13 @@ export async function pushMessageToIdleAgent(
     // is the unit both a human reader and the Python tooling use. The cap keeps
     // UTF-16 units; see buildPanePayload on why these are two different numbers.
     const safe = buildPanePayload(tag, body, [...text].length, dictated);
-    const res = await sendKeysToWindow(env, window, safe);
-    return { pushed: res.ok };
+    return await sendKeysToWindow(env, window, safe, driver);
   } catch {
-    return { pushed: false };
+    return {
+      status: "not-submitted",
+      reason: "unexpected-error",
+      error: "The pane push failed unexpectedly.",
+      enterAttempts: 0,
+    };
   }
 }
