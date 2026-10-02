@@ -1,0 +1,11 @@
+[Unit]
+Description=Inkie Deck
+
+[Service]
+Type=simple
+WorkingDirectory=@DECK_DIRECTORY@
+EnvironmentFile=@ENVIRONMENT_FILE@
+ExecStart=@NODE_BINARY@ scripts/start-production.mjs
+Restart=always
+RestartSec=5s
+KillMode=control-group

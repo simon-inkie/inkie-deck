@@ -224,9 +224,9 @@ the optional settings (a port, the activity panel, an agent allowlist). Copy
 from it if you would rather start there. Two notes on it that have cost people
 time:
 
-- The file to write is `.env`. `.env.production` is read by nothing in this
-  repository; it exists for a systemd `EnvironmentFile`, and a value you put
-  there will not reach the application when you start it by hand.
+- The file to write for a terminal or tmux start is `.env`. The systemd option
+  below reads `.env.production` through its `EnvironmentFile`; that file is
+  not loaded when you start the launcher by hand.
 - Anything already set in your environment beats the file. That is what makes
   a systemd unit's `EnvironmentFile` authoritative, and it is also how you
   override one value for one run.
@@ -273,7 +273,8 @@ pnpm build
 (cd packages/deck && node scripts/start-production.mjs)
 ```
 
-That keeps running too. The subshell is deliberate: the launcher must run with
+That runs in the foreground: closing the terminal stops Deck. The subshell is
+deliberate: the launcher must run with
 `packages/deck` as its working directory (it resolves the build and the `.env`
 relative to it), and the brackets mean your own shell stays where it was.
 
@@ -306,6 +307,85 @@ Agents appear once something writes into `INBOX_ROOT`, which is tier 3.
 500 for every request until you configure it, because it goes straight
 to the web server and skips the launcher that validates the roots and loads
 the `.env`. `node scripts/start-production.mjs` is the supported way in.
+
+### Keep it running after closing the terminal
+
+Stop the foreground instance with Ctrl+C before choosing one of these options,
+so only one Deck instance uses the port. Run the commands from the repository
+root after building.
+
+**Detached tmux:** this uses the same `.env` as the foreground launcher.
+
+```sh
+tmux new-session -d -s deck -c "$(pwd -P)/packages/deck" 'node scripts/start-production.mjs'
+```
+
+You can now close the terminal. Inspect Deck with `tmux attach -t deck`, then
+detach with Ctrl+B followed by D. Stop it with `tmux kill-session -t deck`.
+Agents started by `boot-agents.sh` run in the separate `agents` tmux session,
+which also survives closing an attached terminal. Starting Deck does not boot
+agents, and stopping the `deck` session does not stop the `agents` session.
+
+**systemd user service (Ubuntu 24.04):** this runs Deck outside the terminal
+and restarts it if the launcher exits. On WSL, systemd must be enabled in your
+distribution first; check that `systemctl --user status` reaches a user manager.
+This option supervises Deck and its launcher children, not agent startup.
+
+Copy the configuration and keep it private. If `.env.production` already
+exists, edit it instead of overwriting it. Use literal values in this file:
+systemd does not expand shell variables such as `$HOME` in an EnvironmentFile.
+
+```sh
+cp -n packages/deck/.env packages/deck/.env.production
+chmod 600 packages/deck/.env.production
+```
+
+Render the example unit with this checkout's directory and the Node executable
+currently in use, including installations managed by a version manager. The
+generated unit is machine-local; do not commit it or either environment file.
+
+```sh
+deck_unit_dir="$(systemd-path user-configuration)/systemd/user"
+mkdir -p "$deck_unit_dir"
+DECK_DIRECTORY="$(cd packages/deck && pwd -P)" \
+NODE_BINARY="$(node -p 'process.execPath')" \
+python3 - "$deck_unit_dir/deck.service" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+def escape(value):
+    return ''.join('%%' if c == '%' else '\\x%02x' % ord(c)
+                   if c.isspace() or c in '\\"' else c for c in value)
+
+directory = os.environ['DECK_DIRECTORY']
+unit = Path('packages/deck/scripts/deck.service').read_text()
+for token, value in {
+    '@DECK_DIRECTORY@': directory,
+    '@ENVIRONMENT_FILE@': str(Path(directory) / '.env.production'),
+    '@NODE_BINARY@': os.environ['NODE_BINARY'],
+}.items():
+    value = escape(value)
+    unit = unit.replace(token, '"' + value + '"' if token == '@NODE_BINARY@' else value)
+Path(sys.argv[1]).write_text(unit)
+PY
+systemctl --user daemon-reload
+loginctl enable-linger "$(id -un)"
+systemctl --user start deck
+systemctl --user status deck
+```
+
+Lingering keeps the user manager running after logout; without it, a user
+service can stop when your last login closes. If enabling it requires
+administrator authorisation, complete that step before relying on logout
+survival. Logs are available with `journalctl --user -u deck -f`. Stop Deck
+with `systemctl --user stop deck`; an explicit stop does not trigger a restart.
+After rebuilding, use `systemctl --user restart deck`.
+
+Neither option configures automatic Deck or agent startup after a reboot.
+Closing every WSL window is also different from shutting down WSL or the host,
+which stops both Deck and its agents. Re-render the unit if the checkout or
+Node executable moves.
 
 ## 5. Bring your agents to life
 
