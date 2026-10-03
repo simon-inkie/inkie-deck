@@ -500,7 +500,9 @@ export function paneTextIsIdle(viewport: string, rawViewport?: string): boolean 
  * CONFIRMED-idle agent composer: no working spinner AND a clean composer (see
  * paneTextIsIdle / composerIsClean). Returns false on ANY uncertainty - invalid
  * name, window not live, capture failure, an active spinner, a dirty composer,
- * a permission dialog, a bash shell, or an agy (">") prompt. Conservative on
+ * a permission dialog, a bash shell, or an uncorroborated ">" (a bare ">" with
+ * no agy frame border above it, e.g. a Bash PS2 continuation or node REPL).
+ * Conservative on
  * purpose: a missed wake just falls back to next-turn hook-inject, but a wrong
  * wake could corrupt a live composer or execute text at a shell. "Absence of
  * spinner" is NOT treated as idle.

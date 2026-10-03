@@ -417,6 +417,27 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
   });
 
   // SHELL_PROMPT_RE direct assertions
+  // Sonnet follow-up coverage: a ">" that appears in a Codex statusline must
+  // not hijack the dim-hint path, a dirty agy composer must not wake, and a
+  // narrow pane with a wrapped composer must stay conservative.
+  it("NO WAKE - dirty agy composer with text after the prompt glyph", () => {
+    expect(paneTextIsIdle("───────\n> refactor the parser\n───────\nGemini 3.8 Flash")).toBe(false);
+  });
+
+  it("WAKE - a > in a Codex statusline below the hint must not hijack detection", () => {
+    const plain = "transcript\n\u203A Implement {feature}\nmain -> origin  42%";
+    const raw = "transcript\n\x1b[2m\u203A Implement {feature}\x1b[0m\nmain -> origin  42%";
+    expect(paneTextIsIdle(plain, raw)).toBe(true);
+  });
+
+  it("NO WAKE - narrow pane: wrapped continuation row containing a glyph is not clean", () => {
+    // A narrow pane wraps the draft; the continuation row carries a stray glyph.
+    // The composer is not bare, so it must not read as a safe wake.
+    expect(
+      paneTextIsIdle("\u276F a long draft\n  that wrapped \u276F here")
+    ).toBe(false);
+  });
+
   it("lineHasPromptGlyph anchors > to the line start, keeps includes for TUI glyphs", () => {
     expect(lineHasPromptGlyph("> ")).toBe(true);
     expect(lineHasPromptGlyph("  > ")).toBe(true);
