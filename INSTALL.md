@@ -349,8 +349,9 @@ chmod 600 packages/deck/.env.production
 Render the example unit with this checkout's directory and the Node executable
 currently in use, including installations managed by a version manager. The
 generated unit is machine-local; do not commit it or either environment file.
-`EnvironmentFile` uses glob syntax, so the renderer doubles backslashes there
-to match them literally. `WorkingDirectory` keeps backslashes unchanged.
+`EnvironmentFile` uses glob syntax, so the renderer escapes `\`, `*`, `?` and
+`[` there so each of them matches only the literal character.
+`WorkingDirectory` is not globbed, so it keeps those characters unchanged.
 Systemd can load these paths, but Node's ES module loader rejects backslashes
 in module filenames. Use a checkout path without backslashes to run Deck.
 
@@ -362,6 +363,7 @@ NODE_BINARY="$(node -p 'process.execPath')" \
 python3 - "$deck_unit_dir/deck.service" <<'PY'
 import os
 from pathlib import Path
+import re
 import sys
 
 def escape_command(value):
@@ -378,9 +380,10 @@ for token, value in {
 }.items():
     if '\n' in value or '\r' in value:
         raise ValueError('Unit paths cannot contain line breaks')
-    # Only ExecStart unescapes C escapes. EnvironmentFile uses glob syntax.
+    # Only ExecStart unescapes C escapes. EnvironmentFile uses glob syntax,
+    # so escape its glob characters (backslash first) to match them literally.
     if token == '@ENVIRONMENT_FILE@':
-        value = value.replace('\\', '\\\\')
+        value = re.sub(r'([\\*?\[])', r'\\\1', value)
     value = ('"' + escape_command(value) + '"' if token == '@NODE_BINARY@'
              else value.replace('%', '%%'))
     unit = unit.replace(token, value)

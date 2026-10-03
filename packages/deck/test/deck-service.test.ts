@@ -16,6 +16,8 @@ const parserBinary = "/lib/systemd/systemd";
 const parserAvailable = process.getuid?.() !== 0 &&
   spawnSync(parserBinary, ["--version"]).status === 0;
 const verifierAvailable = spawnSync("systemd-analyze", ["--version"]).status === 0;
+const escapeEnvironmentFile = (value: string) =>
+  value.replace(/\\/g, "\\\\").replace(/\*/g, "\\*").replace(/\?/g, "\\?").replace(/\[/g, "\\[");
 
 describe("documented Deck user service", () => {
   let sandbox: string;
@@ -26,11 +28,16 @@ describe("documented Deck user service", () => {
 
   beforeAll(() => {
     sandbox = mkdtempSync();
-    directory = path.join(sandbox, 'checkout with spaces % and "quotes" and \\backslash');
+    directory = path.join(sandbox, 'checkout with spaces % and "quotes" and \\backslash [x] *?');
     mkdirSync(directory);
     nodeBinary = path.join(sandbox, 'node with \u2003 space %');
     symlinkSync(process.execPath, nodeBinary);
     writeFileSync(path.join(directory, ".env.production"), "DECK_SERVICE_PROBE=loaded\n");
+    // Matches the EnvironmentFile glob if `*` and `?` are left unescaped, and
+    // sorts after the real directory, so its value would clobber the probe's.
+    const decoy = path.join(sandbox, 'checkout with spaces % and "quotes" and \\backslash [x] AB');
+    mkdirSync(decoy);
+    writeFileSync(path.join(decoy, ".env.production"), "DECK_SERVICE_PROBE=decoy\n");
     mkdirSync(path.join(directory, "scripts"));
     // CommonJS isolates systemd path handling from Node's ESM URL restrictions.
     writeFileSync(path.join(directory, "scripts/start-production.cjs"),
@@ -64,12 +71,25 @@ describe("documented Deck user service", () => {
       .toContain("const root = process.cwd()");
   });
 
-  it("renders machine-local paths and escapes systemd specifiers and quoted paths", () => {
+  it("renders machine-local paths and escapes systemd specifiers, globs and quoted paths", () => {
     expect(rendered).not.toMatch(/@[A-Z_]+@/);
     expect(rendered).toContain(`WorkingDirectory=${directory.replace(/%/g, "%%")}\n`);
-    expect(rendered).toContain(`EnvironmentFile=${directory.replace(/\\/g, "\\\\").replace(/%/g, "%%")}/.env.production\n`);
+    expect(rendered).toContain(`EnvironmentFile=${escapeEnvironmentFile(directory).replace(/%/g, "%%")}/.env.production\n`);
     expect(rendered).toContain('\\xe2\\x80\\x83');
     expect(rendered).not.toContain('\\x2003');
+  });
+
+  it("escapes EnvironmentFile as a glob while WorkingDirectory stays literal", () => {
+    const fixed = '/checkouts/deck [x] *? \\dir %';
+    const fixedUnit = path.join(sandbox, "fixed.service");
+    execFileSync("python3", ["-", fixedUnit], {
+      cwd: path.resolve(deckDirectory, "../.."),
+      input: renderer![1],
+      env: { ...process.env, DECK_DIRECTORY: fixed, NODE_BINARY: "/usr/bin/node" },
+    });
+    const unit = readFileSync(fixedUnit, "utf8");
+    expect(unit).toContain("WorkingDirectory=/checkouts/deck [x] *? \\dir %%\n");
+    expect(unit).toContain("EnvironmentFile=/checkouts/deck \\[x] \\*\\? \\\\dir %%/.env.production\n");
   });
 
   it.skipIf(!verifierAvailable)("passes systemd's unit verifier after following the documented renderer", () => {
@@ -81,7 +101,7 @@ describe("documented Deck user service", () => {
     expect(result.stderr).not.toMatch(/ignoring:|not absolute|fatal error/);
   });
 
-  it.skipIf(!parserAvailable)("parses literal directive paths and UTF-8 command bytes with systemd", () => {
+  it.skipIf(!parserAvailable)("parses escaped directive paths and UTF-8 command bytes with systemd", () => {
     const probePath = path.join(sandbox, "probe.service");
     writeFileSync(probePath, rendered.replace("[Unit]\n", "[Unit]\nDefaultDependencies=no\n"));
     const result = spawnSync(parserBinary, ["--user", "--test", "--unit=probe.service"], {
@@ -94,12 +114,12 @@ describe("documented Deck user service", () => {
     const unit = result.stdout.split("-> Unit probe.service:")[1]?.split("\n\t-> Unit ")[0];
     expect(unit).toBeDefined();
     expect(unit).toContain(`WorkingDirectory: ${directory}\n`);
-    expect(unit).toContain(`EnvironmentFile: ${directory.replace(/\\/g, "\\\\")}/.env.production\n`);
+    expect(unit).toContain(`EnvironmentFile: ${escapeEnvironmentFile(directory)}/.env.production\n`);
     expect(unit).toContain(`Command Line: "${nodeBinary}" scripts/start-production.mjs\n`);
     expect(unit).not.toContain('node with  03');
   });
 
-  it.skipIf(!managerAvailable)("starts a launcher with literal working-directory and environment-file paths", () => {
+  it.skipIf(!managerAvailable)("starts a launcher with a literal working directory and a glob-escaped environment file", () => {
     // Transient properties skip specifier expansion but retain glob escaping.
     const environmentFile = rendered.match(/^EnvironmentFile=(.+)$/m)![1].replace(/%%/g, "%");
     const result = spawnSync("systemd-run", ["--user", "--wait", "--pipe", "--collect",
