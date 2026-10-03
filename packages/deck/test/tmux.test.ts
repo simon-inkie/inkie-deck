@@ -38,6 +38,7 @@ import {
   ACTIVE_PANE_RE,
   paneTextIsActive,
   IDLE_PROMPT_RE,
+  lineHasPromptGlyph,
   paneTextIsIdle,
   SHELL_PROMPT_RE,
   isAgentPaneIdle,
@@ -283,6 +284,17 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
       label: "bash shell - exited agent",
       text: "alex@demobox:~/agents/echo$ \nalex@demobox:~/agents/echo$ ",
     },
+    {
+      // Bash PS2 continuation: an unterminated quote renders a bare ">" with
+      // the shell prompt ABOVE it and no agy frame border. Must NOT be woken.
+      label: "bash PS2 continuation prompt (bare >)",
+      text: 'alex@demobox:~/agents/echo$ echo "foo\n>',
+    },
+    {
+      // node REPL left behind by an exited agent: a lone ">" prompt.
+      label: "node REPL prompt (bare >)",
+      text: "> \nundefined",
+    },
     { label: "ghost/auto-suggest text after prompt", text: "\u276F /compact" },
     {
       label: "active spinner (no bare prompt)",
@@ -322,6 +334,37 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
     expect(IDLE_PROMPT_RE.test("> ")).toBe(true);
     expect(IDLE_PROMPT_RE.test(">")).toBe(true);
     expect(IDLE_PROMPT_RE.test("> do something real")).toBe(false);
+  });
+
+  // M1: a bare ">" is only an agy composer when the frame border sits above it.
+  it("WAKE - agy frame: bare > with a border above is idle", () => {
+    expect(paneTextIsIdle("───────\n>\n───────\n? for shortcuts   Gemini 3.8 Flash")).toBe(true);
+  });
+
+  it("NO WAKE - bare > with NO border above (PS2 continuation) is refused", () => {
+    expect(paneTextIsIdle('alex@demobox:~/agents/echo$ echo "foo\n>')).toBe(false);
+  });
+
+  it("NO WAKE - bare > with output (node REPL) is refused", () => {
+    expect(paneTextIsIdle("> \nundefined")).toBe(false);
+  });
+
+  // M2: a ">" in a statusline/footer must NOT hijack the last-glyph-line scan
+  // for a Claude composer. lineHasPromptGlyph anchors ">" to the line start.
+  it("WAKE - Claude composer with a > in the statusline below (must not hijack)", () => {
+    expect(
+      paneTextIsIdle(
+        "\u276F \n──────\n  Opus 4.8 | main -> origin  32%"
+      )
+    ).toBe(true);
+  });
+
+  it("NO WAKE - Claude composer with a > in a footer, composer still dirty", () => {
+    expect(
+      paneTextIsIdle(
+        "\u276F git checkout main\n  main -> origin  32%"
+      )
+    ).toBe(false);
   });
 
   // CRITICAL false-negative regression: idle agent with ctx-percent statusline
@@ -374,6 +417,15 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
   });
 
   // SHELL_PROMPT_RE direct assertions
+  it("lineHasPromptGlyph anchors > to the line start, keeps includes for TUI glyphs", () => {
+    expect(lineHasPromptGlyph("> ")).toBe(true);
+    expect(lineHasPromptGlyph("  > ")).toBe(true);
+    expect(lineHasPromptGlyph("main -> origin")).toBe(false);
+    expect(lineHasPromptGlyph("a => b")).toBe(false);
+    expect(lineHasPromptGlyph("\u276F ")).toBe(true);
+    expect(lineHasPromptGlyph("prefix \u203A")).toBe(true);
+  });
+
   it("SHELL_PROMPT_RE matches a user@host bash prompt", () => {
     expect(SHELL_PROMPT_RE.test("alex@demobox:~/agents/echo$")).toBe(true);
   });
