@@ -245,8 +245,8 @@ const LIVE_SEND_KEYS_DRIVER: SendKeysDriver = {
   captureViewport: (session, window, raw) =>
     runTmux(
       raw
-        ? buildVerifiedSendCaptureArgs(session, window)
-        : buildCaptureViewportArgs(session, window)
+        ? buildVerifiedSendRawCaptureArgs(session, window)
+        : buildVerifiedSendCaptureArgs(session, window)
     ),
   sendText: (session, window, text) =>
     runTmuxVoid(buildSendKeysTextArgs(session, window, text)),
@@ -352,10 +352,6 @@ export async function sendKeysToWindow(
  * unit-pinned.
  */
 export function buildCaptureViewportArgs(session: string, window: string): string[] {
-  // -J joins terminal soft-wraps and preserves right padding. Claude draws its
-  // own word-wrapped composer rows, so composerTextFromViewport retains their
-  // framing; without -J a wrapped row would arrive split and read as a change.
-
   return ["capture-pane", "-t", `=${session}:=${window}`, "-p"];
 }
 
@@ -384,6 +380,19 @@ export function buildCaptureViewportRawArgs(session: string, window: string): st
  */
 export function buildVerifiedSendCaptureArgs(session: string, window: string): string[] {
   return ["capture-pane", "-t", `=${session}:=${window}`, "-p", "-J"];
+}
+
+/**
+ * The RAW (-e) companion capture for the verified-send path, same -J shape but
+ * WITH ANSI escapes preserved. The verified-send classifier needs the same
+ * joined, padding-preserving view as the plain capture AND the dim-hint signal:
+ * without -e the Codex hint placeholder carries no escapes and the composer is
+ * misclassified as real staged text, so idle Codex panes are refused. Both
+ * verified-send captures therefore use -J; only this one adds -e. Pure -
+ * unit-pinned.
+ */
+export function buildVerifiedSendRawCaptureArgs(session: string, window: string): string[] {
+  return ["capture-pane", "-t", `=${session}:=${window}`, "-p", "-J", "-e"];
 }
 
 /**
@@ -453,6 +462,31 @@ function findPromptLineIndex(lines: string[]): number {
 }
 
 /**
+ * Index of the LAST line that OPENS a composer: the prompt glyph is the first
+ * non-space token on the line. Claude and Codex both render the glyph at the
+ * start of the composer line; continuation rows are indented (Claude uses a
+ * two-space frame). A glyph appearing later in a line - a payload continuation
+ * that itself contains a glyph, or a glyph in transcript output - is NOT a
+ * composer open and must never be treated as the prompt, otherwise a non-empty
+ * draft ending in a glyph would read as a clean composer and an unsafe send
+ * would be authorised. Returns -1 when no line opens a composer.
+ */
+function findComposerOpenIndex(lines: string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    // The open glyph is the FIRST character of the line (column 0): Claude,
+    // Codex and agy all render it there, while continuation rows are indented.
+    // Requiring column 0 is what stops an indented continuation row that merely
+    // contains a glyph from being mistaken for a fresh composer open.
+    if (COMPOSER_PROMPT_GLYPHS.some((g) => line.startsWith(g))) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * True when the composer line of a RAW (-e) capture is a Codex dim-hint
  * placeholder rather than real staged text: find the last raw line bearing a
  * prompt glyph and check whether it carries the dim SGR marker. undefined/empty
@@ -487,6 +521,11 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
   if (promptIndex === -1) return false;
   const promptLine = lines[promptIndex];
   if (promptLine === undefined) return false;
+  // The glyph line must OPEN the composer (glyph is the first non-space token).
+  // If the last glyph line sits inside a continuation row - a payload row that
+  // itself contains a glyph - the composer framing is ambiguous, so fail closed:
+  // a non-empty draft ending in a glyph must never be read as clean.
+  if (promptIndex !== findComposerOpenIndex(lines)) return false;
   // A genuinely-bare prompt reads clean at once. Otherwise the composer has text
   // after the glyph: real staged text (dirty) OR a Codex rotating hint. Codex
   // renders every hint in the ANSI dim SGR (DIM_SGR); real typed text never is,
@@ -551,7 +590,7 @@ function removeTuiRightPadding(line: string): ComposerDisplayRow {
  */
 export function composerTextFromViewport(viewport: string): ComposerDisplay | undefined {
   const lines = viewport.split("\n");
-  const promptIndex = findPromptLineIndex(lines);
+  const promptIndex = findComposerOpenIndex(lines);
   if (promptIndex === -1) return undefined;
   const promptLine = lines[promptIndex];
   if (promptLine === undefined) return undefined;
@@ -582,7 +621,7 @@ export function classifyPaneSnapshot(
   rawViewport?: string
 ): PaneSnapshot {
   const lines = viewport.split("\n");
-  const promptIndex = findPromptLineIndex(lines);
+  const promptIndex = findComposerOpenIndex(lines);
   if (promptIndex === -1) {
     return {
       activity: paneTextIsActive(viewport) ? "active" : "idle",

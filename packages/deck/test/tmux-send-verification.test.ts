@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPanePayload,
+  buildVerifiedSendCaptureArgs,
+  buildVerifiedSendRawCaptureArgs,
   classifyPaneSnapshot,
   pushMessageToIdleAgent,
   sendKeysToWindow,
@@ -128,7 +130,7 @@ describe("sendKeysToWindow verified submission", () => {
     expect(classifyPaneSnapshot(plain, raw).composer).toBe("ghost");
     expect(classifyPaneSnapshot(plain, plain).composer).toBe("staged");
 
-    const ghostDriver = fakeDriver([{ plain, raw }, clean]);
+    const ghostDriver = fakeDriver([{ plain, raw }, staged("hello"), clean]);
     expect((await sendKeysToWindow({}, "agent-a", "hello", ghostDriver)).status).toBe(
       "submitted"
     );
@@ -179,18 +181,18 @@ describe("sendKeysToWindow verified submission", () => {
     const changedDriver = fakeDriver([clean, staged("someone else's text")]);
 
     await expect(sendKeysToWindow({}, "agent-a", "hello", busyDriver)).resolves.toMatchObject({
-      status: "not-attempted",
+      status: "unverified",
       reason: "busy-queue-pending",
     });
     await expect(
       sendKeysToWindow({}, "agent-a", "hello", busyBaselineDriver)
     ).resolves.toMatchObject({
-      status: "not-attempted",
+      status: "unverified",
       reason: "busy-queue-pending",
     });
     await expect(
       sendKeysToWindow({}, "agent-a", "hello", changedDriver)
-    ).resolves.toMatchObject({ status: "not-attempted", reason: "composer-changed" });
+    ).resolves.toMatchObject({ status: "unverified", reason: "composer-changed" });
     expect(busyBaselineDriver.actions.filter((action) => action === "enter")).toHaveLength(1);
     expect(changedDriver.actions.filter((action) => action === "enter")).toHaveLength(1);
   });
@@ -256,7 +258,7 @@ describe("sendKeysToWindow verified submission", () => {
       claudeFramedStaged("first line\nsecond line"),
     ]);
     await expect(sendKeysToWindow({}, "agent-a", payload, driver)).resolves.toMatchObject({
-      status: "not-attempted",
+      status: "unverified",
       reason: "composer-changed",
       enterAttempts: 1,
     });
@@ -325,9 +327,10 @@ describe("sendKeysToWindow verified submission", () => {
 describe("pushMessageToIdleAgent tri-state propagation", () => {
   it("surfaces submitted, not-attempted and not-submitted without booleans", async () => {
     const panePayload = buildPanePayload("operator", "hello", 5, false);
-    const submitted = fakeDriver([clean, clean]);
+    const submitted = fakeDriver([clean, claudeFramedStaged(panePayload), clean]);
     const notAttempted = fakeDriver([staged("real draft")]);
     const notSubmitted = fakeDriver([clean], { sendText: false });
+    const unverified = fakeDriver([clean, staged("someone else's text")]);
 
     expect(
       (await pushMessageToIdleAgent({}, "agent-a", "operator", "hello", false, submitted)).status
@@ -340,6 +343,101 @@ describe("pushMessageToIdleAgent tri-state propagation", () => {
       (await pushMessageToIdleAgent({}, "agent-a", "operator", "hello", false, notSubmitted))
         .status
     ).toBe("not-submitted");
+    expect(
+      (await pushMessageToIdleAgent({}, "agent-a", "operator", "hello", false, unverified))
+        .status
+    ).toBe("unverified");
     expect(panePayload).toContain("[inbox from operator] hello");
+  });
+});
+
+describe("verified-send live capture argv (C1)", () => {
+  it("the raw verified capture preserves ANSI (-e) and joins soft-wraps (-J)", () => {
+    const raw = buildVerifiedSendRawCaptureArgs("sess", "agent-a");
+    expect(raw).toContain("-e");
+    expect(raw).toContain("-J");
+    expect(raw).toContain("-p");
+  });
+
+  it("the plain verified capture joins soft-wraps (-J) but strips ANSI", () => {
+    const plain = buildVerifiedSendCaptureArgs("sess", "agent-a");
+    expect(plain).toContain("-J");
+    expect(plain).toContain("-p");
+    expect(plain).not.toContain("-e");
+  });
+
+  it("classifies a Codex dim hint as ghost only when the raw capture carries ANSI", () => {
+    const plain = "transcript\n› Implement {feature}\nstatus";
+    const rawAnsi = "transcript\n\x1b[1m›\x1b[0m \x1b[2mImplement {feature}\x1b[0m\nstatus";
+    // With the real ANSI-bearing raw capture the hint is a ghost, so the send
+    // proceeds; with a stripped (-e-less) capture the same text reads staged and
+    // the send is refused. This is the C1 regression the live driver had.
+    expect(classifyPaneSnapshot(plain, rawAnsi).composer).toBe("ghost");
+    expect(classifyPaneSnapshot(plain, plain).composer).toBe("staged");
+  });
+});
+
+describe("composer framing cannot read a non-empty draft as clean (M-a)", () => {
+  it("a draft ending in an indented glyph is NOT clean", () => {
+    // The visible composer text ends with a continuation row that itself shows
+    // a prompt glyph. The last glyph line is NOT a composer open, so it must
+    // never be treated as a clean prompt.
+    const viewport = [
+      "transcript",
+      "❯ line one",
+      "  line two ❯ ",
+      "\u2500".repeat(20),
+      "status",
+    ].join("\n");
+    const snapshot = classifyPaneSnapshot(viewport);
+    expect(snapshot.composer).not.toBe("clean");
+    expect(snapshot.composer).not.toBe("ghost");
+  });
+
+  it("does not authorise a retry Enter when a continuation row hides the payload", () => {
+    const payload = "hello";
+    // Composer holds someone else's text; a continuation row contains the glyph
+    // and our payload. Must read changed/unverified, never submitted.
+    const viewport = [
+      "transcript",
+      "❯ a different draft",
+      "  ❯ hello",
+      "─".repeat(20),
+      "status",
+    ].join("\n");
+    const snapshot = classifyPaneSnapshot(viewport);
+    const holds = composerHoldsPayload(
+      snapshot.stagedText ?? "",
+      payload,
+      snapshot.stagedRows
+    );
+    expect(holds).toBe(false);
+  });
+});
+
+describe("clean-to-clean is not proof of submission (M-b)", () => {
+  it("reports unverified when the composer was clean before and after with no payload seen", async () => {
+    const driver = fakeDriver([clean, clean, clean, clean, clean, clean]);
+    const result = await sendKeysToWindow({}, "agent-a", "hello", driver);
+    expect(result).toMatchObject({ status: "unverified", reason: "verification-unavailable" });
+    expect(result.status).not.toBe("submitted");
+  });
+
+  it("still confirms submission once the payload has been observed staged", async () => {
+    const driver = fakeDriver([clean, staged("hello"), clean]);
+    await expect(sendKeysToWindow({}, "agent-a", "hello", driver)).resolves.toMatchObject({
+      status: "submitted",
+      evidence: "composer-cleared",
+      enterAttempts: 1,
+    });
+  });
+
+  it("still confirms via an idle -> active turn transition", async () => {
+    const driver = fakeDriver([clean, { plain: "Working... (2s · 10 tokens)" }]);
+    await expect(sendKeysToWindow({}, "agent-a", "hello", driver)).resolves.toMatchObject({
+      status: "submitted",
+      evidence: "turn-started",
+      enterAttempts: 1,
+    });
   });
 });

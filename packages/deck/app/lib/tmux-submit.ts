@@ -38,8 +38,16 @@ export type SendKeysResult =
     }
   | {
       status: "not-attempted";
+      reason: "unsafe-composer";
+      error: string;
+      enterAttempts: number;
+    }
+  | {
+      // Text AND Enter were sent, but submission could not be positively
+      // verified. Distinct from not-attempted (nothing typed) so a caller can
+      // word it "sent, could not confirm" and does NOT invite a blind resend.
+      status: "unverified";
       reason:
-        | "unsafe-composer"
         | "verification-unavailable"
         | "busy-queue-pending"
         | "composer-changed";
@@ -100,21 +108,29 @@ type VerificationState =
   | { kind: "unavailable" }
   | { kind: "changed" };
 
+/**
+ * Evidence seen so far in one submission attempt. `payloadSeen` becomes true the
+ * moment a capture shows the composer holding exactly our payload. A clean
+ * composer only proves submission once we have SOME positive evidence the text
+ * ever reached the pane: either the payload was observed staged, or the pane
+ * moved from idle to a working turn. Without that, a pane that silently dropped
+ * our keys is indistinguishable from a delivered message.
+ */
+type VerificationEvidence = { payloadSeen: boolean };
+
 function evaluatePostEnter(
   snapshot: PaneSnapshot | undefined,
   payload: string,
-  baselineWasActive: boolean
+  baselineWasActive: boolean,
+  evidence: VerificationEvidence
 ): VerificationState {
   if (snapshot === undefined) {
     return { kind: "unavailable" };
   }
-  if (snapshot.composer === "clean" || snapshot.composer === "ghost") {
-    return { kind: "confirmed", evidence: "composer-cleared" };
-  }
-  // Staged content is evaluated before activity. A payload may itself contain
-  // strings such as "(45s" or "esc to interrupt" and must not prove its own
-  // submission by tripping a broad activity marker.
   if (snapshot.composer === "staged") {
+    // Staged content is evaluated before activity. A payload may itself contain
+    // strings such as "(45s" or "esc to interrupt" and must not prove its own
+    // submission by tripping a broad activity marker.
     if (
       !composerHoldsPayload(
         snapshot.stagedText ?? "",
@@ -124,9 +140,19 @@ function evaluatePostEnter(
     ) {
       return { kind: "changed" };
     }
+    // We have now positively seen our own text in the composer.
+    evidence.payloadSeen = true;
     return snapshot.activity === "active"
       ? { kind: "owned-busy" }
       : { kind: "owned-idle" };
+  }
+  if (snapshot.composer === "clean" || snapshot.composer === "ghost") {
+    // A clean composer proves submission ONLY with evidence the payload reached
+    // the pane first (seen staged) or that a turn visibly started (handled
+    // below). Otherwise it may mean our keys were never delivered.
+    return evidence.payloadSeen
+      ? { kind: "confirmed", evidence: "composer-cleared" }
+      : { kind: "unavailable" };
   }
   if (!baselineWasActive && snapshot.activity === "active") {
     return { kind: "confirmed", evidence: "turn-started" };
@@ -138,12 +164,13 @@ async function pollPostEnter(
   driver: PaneSubmitDriver,
   timing: PaneSubmitTiming,
   payload: string,
-  baselineWasActive: boolean
+  baselineWasActive: boolean,
+  evidence: VerificationEvidence
 ): Promise<VerificationState> {
   let state: VerificationState = { kind: "unavailable" };
   for (const delay of timing.verifyDelaysMs) {
     await driver.wait(delay);
-    state = evaluatePostEnter(driver.capture(), payload, baselineWasActive);
+    state = evaluatePostEnter(driver.capture(), payload, baselineWasActive, evidence);
     if (state.kind !== "owned-idle") return state;
   }
   return state;
@@ -160,7 +187,7 @@ function unconfirmedResult(
       : state.kind === "owned-busy"
         ? "busy-queue-pending"
         : "composer-changed";
-  return { status: "not-attempted", reason, error, enterAttempts };
+  return { status: "unverified", reason, error, enterAttempts };
 }
 
 /** Run one text send, one Enter and at most one positively-safe Enter retry. */
@@ -182,6 +209,7 @@ export async function submitPaneText(
     };
   }
   const baselineWasActive = baseline.activity === "active";
+  const evidence: VerificationEvidence = { payloadSeen: false };
 
   if (!driver.sendText(payload)) {
     return {
@@ -201,7 +229,7 @@ export async function submitPaneText(
     };
   }
 
-  let state = await pollPostEnter(driver, timing, payload, baselineWasActive);
+  let state = await pollPostEnter(driver, timing, payload, baselineWasActive, evidence);
   if (state.kind === "confirmed") {
     return { status: "submitted", evidence: state.evidence, enterAttempts: 1 };
   }
@@ -210,7 +238,7 @@ export async function submitPaneText(
   }
 
   // A final capture closes the delayed-submit race immediately before retry.
-  state = evaluatePostEnter(driver.capture(), payload, baselineWasActive);
+  state = evaluatePostEnter(driver.capture(), payload, baselineWasActive, evidence);
   if (state.kind === "confirmed") {
     return { status: "submitted", evidence: state.evidence, enterAttempts: 1 };
   }
@@ -226,7 +254,7 @@ export async function submitPaneText(
       enterAttempts: 2,
     };
   }
-  state = await pollPostEnter(driver, timing, payload, baselineWasActive);
+  state = await pollPostEnter(driver, timing, payload, baselineWasActive, evidence);
   if (state.kind === "confirmed") {
     return { status: "submitted", evidence: state.evidence, enterAttempts: 2 };
   }
