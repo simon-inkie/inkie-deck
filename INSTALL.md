@@ -315,6 +315,9 @@ so only one Deck instance uses the port. Run the commands from the repository
 root after building.
 
 **Detached tmux:** this uses the same `.env` as the foreground launcher.
+If a `deck` session already exists, inspect it with `tmux attach -t deck`.
+Stop its launcher, then use `tmux kill-session -t deck` before creating a
+replacement session with the command below.
 
 ```sh
 tmux new-session -d -s deck -c "$(pwd -P)/packages/deck" 'node scripts/start-production.mjs'
@@ -334,6 +337,9 @@ This option supervises Deck and its launcher children, not agent startup.
 Copy the configuration and keep it private. If `.env.production` already
 exists, edit it instead of overwriting it. Use literal values in this file:
 systemd does not expand shell variables such as `$HOME` in an EnvironmentFile.
+Remove any `export` prefixes and trailing inline comments copied from `.env`:
+use `KEY=value`, with comments on separate lines, and check quoted values
+against systemd's EnvironmentFile syntax.
 
 ```sh
 cp -n packages/deck/.env packages/deck/.env.production
@@ -354,9 +360,10 @@ import os
 from pathlib import Path
 import sys
 
-def escape(value):
-    return ''.join('%%' if c == '%' else '\\x%02x' % ord(c)
-                   if c.isspace() or c in '\\"' else c for c in value)
+def escape_command(value):
+    return ''.join('%%' if c == 37 else '\\x%02x' % c
+                   if c <= 32 or c >= 127 or c in (34, 92) else chr(c)
+                   for c in value.encode('utf-8'))
 
 directory = os.environ['DECK_DIRECTORY']
 unit = Path('packages/deck/scripts/deck.service').read_text()
@@ -365,8 +372,12 @@ for token, value in {
     '@ENVIRONMENT_FILE@': str(Path(directory) / '.env.production'),
     '@NODE_BINARY@': os.environ['NODE_BINARY'],
 }.items():
-    value = escape(value)
-    unit = unit.replace(token, '"' + value + '"' if token == '@NODE_BINARY@' else value)
+    if '\n' in value or '\r' in value:
+        raise ValueError('Unit paths cannot contain line breaks')
+    # Only ExecStart unescapes C escapes. Path directives take literal paths.
+    value = ('"' + escape_command(value) + '"' if token == '@NODE_BINARY@'
+             else value.replace('%', '%%'))
+    unit = unit.replace(token, value)
 Path(sys.argv[1]).write_text(unit)
 PY
 systemctl --user daemon-reload
@@ -381,6 +392,8 @@ administrator authorisation, complete that step before relying on logout
 survival. Logs are available with `journalctl --user -u deck -f`. Stop Deck
 with `systemctl --user stop deck`; an explicit stop does not trigger a restart.
 After rebuilding, use `systemctl --user restart deck`.
+Repeated failures are limited to five starts within 60 seconds. After fixing
+the cause, use `systemctl --user reset-failed deck` and start it again.
 
 Neither option configures automatic Deck or agent startup after a reboot.
 Closing every WSL window is also different from shutting down WSL or the host,

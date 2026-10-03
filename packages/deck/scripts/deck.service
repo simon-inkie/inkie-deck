@@ -1,5 +1,7 @@
 [Unit]
 Description=Inkie Deck
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -9,3 +11,4 @@ ExecStart=@NODE_BINARY@ scripts/start-production.mjs
 Restart=always
 RestartSec=5s
 KillMode=control-group
+NoNewPrivileges=yes

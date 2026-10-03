@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
@@ -8,24 +8,36 @@ import { mkdtempSync, rmSync } from "~/lib/test-helpers";
 const deckDirectory = fileURLToPath(new URL("../", import.meta.url));
 const instructions = readFileSync(path.join(deckDirectory, "../../INSTALL.md"), "utf8");
 const template = readFileSync(path.join(deckDirectory, "scripts/deck.service"), "utf8");
+const renderer = instructions.match(/<<'PY'\n([\s\S]*?)\nPY/);
+const managerAvailable = spawnSync("systemctl", ["--user", "show-environment"]).status === 0;
+const parserBinary = "/lib/systemd/systemd";
+const parserAvailable = process.getuid?.() !== 0 &&
+  spawnSync(parserBinary, ["--version"]).status === 0;
 const verifierAvailable = spawnSync("systemd-analyze", ["--version"]).status === 0;
 
 describe("documented Deck user service", () => {
   let sandbox: string;
   let unitPath: string;
   let rendered: string;
+  let directory: string;
+  let nodeBinary: string;
 
   beforeAll(() => {
     sandbox = mkdtempSync();
-    const directory = path.join(sandbox, 'checkout with spaces % and "quotes"');
+    directory = path.join(sandbox, 'checkout with spaces % and "quotes" and \\backslash');
     mkdirSync(directory);
+    nodeBinary = path.join(sandbox, 'node with \u2003 space %');
+    symlinkSync(process.execPath, nodeBinary);
+    writeFileSync(path.join(directory, ".env.production"), "DECK_SERVICE_PROBE=loaded\n");
+    mkdirSync(path.join(directory, "scripts"));
+    writeFileSync(path.join(directory, "scripts/start-production.mjs"),
+      'console.log(JSON.stringify({ cwd: process.cwd(), env: process.env.DECK_SERVICE_PROBE }));\n');
     unitPath = path.join(sandbox, "deck.service");
-    const renderer = instructions.match(/<<'PY'\n([\s\S]*?)\nPY/);
-    expect(renderer, "INSTALL.md must supply the unit renderer").not.toBeNull();
+    expect(renderer, 'INSTALL.md heading "Keep it running after closing the terminal" must supply the unit renderer').not.toBeNull();
     execFileSync("python3", ["-", unitPath], {
       cwd: path.resolve(deckDirectory, "../.."),
       input: renderer![1],
-      env: { ...process.env, DECK_DIRECTORY: directory, NODE_BINARY: process.execPath },
+      env: { ...process.env, DECK_DIRECTORY: directory, NODE_BINARY: nodeBinary },
     });
     rendered = readFileSync(unitPath, "utf8");
   });
@@ -40,6 +52,9 @@ describe("documented Deck user service", () => {
     expect(template).toContain("EnvironmentFile=@ENVIRONMENT_FILE@\n");
     expect(template).toContain("Restart=always\n");
     expect(template).toContain("RestartSec=5s\n");
+    expect(template).toContain("StartLimitIntervalSec=60\n");
+    expect(template).toContain("StartLimitBurst=5\n");
+    expect(template).toContain("NoNewPrivileges=yes\n");
     expect(template).toContain("KillMode=control-group\n");
     expect(template).not.toContain("[Install]");
     expect(readFileSync(path.join(deckDirectory, "scripts/start-production.mjs"), "utf8"))
@@ -48,10 +63,10 @@ describe("documented Deck user service", () => {
 
   it("renders machine-local paths and escapes systemd specifiers and quoted paths", () => {
     expect(rendered).not.toMatch(/@[A-Z_]+@/);
-    expect(rendered).toContain(`WorkingDirectory=${sandbox}`);
-    expect(rendered).toContain('checkout\\x20with\\x20spaces\\x20%%\\x20and\\x20\\x22quotes\\x22');
-    expect(rendered).toContain('quotes\\x22/.env.production\n');
-    expect(rendered).toContain(`ExecStart="${process.execPath.replace(/%/g, "%%")}" scripts/start-production.mjs`);
+    expect(rendered).toContain(`WorkingDirectory=${directory.replace(/%/g, "%%")}\n`);
+    expect(rendered).toContain(`EnvironmentFile=${directory.replace(/%/g, "%%")}/.env.production\n`);
+    expect(rendered).toContain('\\xe2\\x80\\x83');
+    expect(rendered).not.toContain('\\x2003');
   });
 
   it.skipIf(!verifierAvailable)("passes systemd's unit verifier after following the documented renderer", () => {
@@ -61,5 +76,51 @@ describe("documented Deck user service", () => {
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).not.toMatch(/ignoring:|not absolute|fatal error/);
+  });
+
+  it.skipIf(!parserAvailable)("parses literal directive paths and UTF-8 command bytes with systemd", () => {
+    const probePath = path.join(sandbox, "probe.service");
+    writeFileSync(probePath, rendered.replace("[Unit]\n", "[Unit]\nDefaultDependencies=no\n"));
+    const result = spawnSync(parserBinary, ["--user", "--test", "--unit=probe.service"], {
+      encoding: "utf8",
+      env: { ...process.env, XDG_RUNTIME_DIR: sandbox, XDG_CONFIG_HOME: sandbox,
+        XDG_CONFIG_DIRS: sandbox, SYSTEMD_UNIT_PATH: sandbox },
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const unit = result.stdout.split("-> Unit probe.service:")[1]?.split("\n\t-> Unit ")[0];
+    expect(unit).toBeDefined();
+    expect(unit).toContain(`WorkingDirectory: ${directory}\n`);
+    expect(unit).toContain(`EnvironmentFile: ${directory}/.env.production\n`);
+    expect(unit).toContain(`Command Line: "${nodeBinary}" scripts/start-production.mjs\n`);
+    expect(unit).not.toContain('node with  03');
+  });
+
+  it.skipIf(!managerAvailable)("starts a launcher with literal working-directory and environment-file paths", () => {
+    // Transient properties receive literal paths, without unit-file specifiers.
+    const result = spawnSync("systemd-run", ["--user", "--wait", "--pipe", "--collect",
+      "--property", `WorkingDirectory=${directory}`,
+      "--property", `EnvironmentFile=${directory}/.env.production`,
+      "--property", "NoNewPrivileges=yes", nodeBinary, "scripts/start-production.mjs"],
+    { encoding: "utf8", timeout: 15_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ cwd: directory, env: "loaded" });
+  });
+
+  it.each(["\n", "\r"])("rejects line breaks in rendered paths (%j)", (lineBreak) => {
+    const result = spawnSync("python3", ["-", path.join(sandbox, "invalid.service")], {
+      cwd: path.resolve(deckDirectory, "../.."), input: renderer![1], encoding: "utf8",
+      env: { ...process.env, DECK_DIRECTORY: directory + lineBreak, NODE_BINARY: nodeBinary },
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Unit paths cannot contain line breaks");
+  });
+
+  it("documents environment-file conversion and replacing an existing tmux session", () => {
+    expect(instructions).toContain("Remove any `export` prefixes and trailing inline comments");
+    expect(instructions).toContain("with comments on separate lines");
+    expect(instructions).toContain("If a `deck` session already exists, inspect it");
+    expect(instructions).toContain("`tmux kill-session -t deck` before creating a");
+    expect(instructions).toContain("`systemctl --user reset-failed deck`");
   });
 });
