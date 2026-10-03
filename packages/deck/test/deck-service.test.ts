@@ -9,7 +9,9 @@ const deckDirectory = fileURLToPath(new URL("../", import.meta.url));
 const instructions = readFileSync(path.join(deckDirectory, "../../INSTALL.md"), "utf8");
 const template = readFileSync(path.join(deckDirectory, "scripts/deck.service"), "utf8");
 const renderer = instructions.match(/<<'PY'\n([\s\S]*?)\nPY/);
-const managerAvailable = spawnSync("systemctl", ["--user", "show-environment"]).status === 0;
+// Probe the transient-unit capability used below, including in sandboxed runs.
+const managerAvailable = spawnSync("systemd-run", ["--user", "--wait", "--pipe", "--collect",
+  "/usr/bin/true"], { timeout: 15_000 }).status === 0;
 const parserBinary = "/lib/systemd/systemd";
 const parserAvailable = process.getuid?.() !== 0 &&
   spawnSync(parserBinary, ["--version"]).status === 0;
@@ -30,7 +32,8 @@ describe("documented Deck user service", () => {
     symlinkSync(process.execPath, nodeBinary);
     writeFileSync(path.join(directory, ".env.production"), "DECK_SERVICE_PROBE=loaded\n");
     mkdirSync(path.join(directory, "scripts"));
-    writeFileSync(path.join(directory, "scripts/start-production.mjs"),
+    // CommonJS isolates systemd path handling from Node's ESM URL restrictions.
+    writeFileSync(path.join(directory, "scripts/start-production.cjs"),
       'console.log(JSON.stringify({ cwd: process.cwd(), env: process.env.DECK_SERVICE_PROBE }));\n');
     unitPath = path.join(sandbox, "deck.service");
     expect(renderer, 'INSTALL.md heading "Keep it running after closing the terminal" must supply the unit renderer').not.toBeNull();
@@ -64,7 +67,7 @@ describe("documented Deck user service", () => {
   it("renders machine-local paths and escapes systemd specifiers and quoted paths", () => {
     expect(rendered).not.toMatch(/@[A-Z_]+@/);
     expect(rendered).toContain(`WorkingDirectory=${directory.replace(/%/g, "%%")}\n`);
-    expect(rendered).toContain(`EnvironmentFile=${directory.replace(/%/g, "%%")}/.env.production\n`);
+    expect(rendered).toContain(`EnvironmentFile=${directory.replace(/\\/g, "\\\\").replace(/%/g, "%%")}/.env.production\n`);
     expect(rendered).toContain('\\xe2\\x80\\x83');
     expect(rendered).not.toContain('\\x2003');
   });
@@ -91,17 +94,18 @@ describe("documented Deck user service", () => {
     const unit = result.stdout.split("-> Unit probe.service:")[1]?.split("\n\t-> Unit ")[0];
     expect(unit).toBeDefined();
     expect(unit).toContain(`WorkingDirectory: ${directory}\n`);
-    expect(unit).toContain(`EnvironmentFile: ${directory}/.env.production\n`);
+    expect(unit).toContain(`EnvironmentFile: ${directory.replace(/\\/g, "\\\\")}/.env.production\n`);
     expect(unit).toContain(`Command Line: "${nodeBinary}" scripts/start-production.mjs\n`);
     expect(unit).not.toContain('node with  03');
   });
 
   it.skipIf(!managerAvailable)("starts a launcher with literal working-directory and environment-file paths", () => {
-    // Transient properties receive literal paths, without unit-file specifiers.
+    // Transient properties skip specifier expansion but retain glob escaping.
+    const environmentFile = rendered.match(/^EnvironmentFile=(.+)$/m)![1].replace(/%%/g, "%");
     const result = spawnSync("systemd-run", ["--user", "--wait", "--pipe", "--collect",
       "--property", `WorkingDirectory=${directory}`,
-      "--property", `EnvironmentFile=${directory}/.env.production`,
-      "--property", "NoNewPrivileges=yes", nodeBinary, "scripts/start-production.mjs"],
+      "--property", `EnvironmentFile=${environmentFile}`,
+      "--property", "NoNewPrivileges=yes", nodeBinary, "scripts/start-production.cjs"],
     { encoding: "utf8", timeout: 15_000 });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout.trim())).toEqual({ cwd: directory, env: "loaded" });
