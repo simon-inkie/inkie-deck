@@ -734,12 +734,12 @@ export BOOT_BOX BOOT_SCRIPT
 boot_fixture() {
   local scenario="$1" expected="$2" label="$3"
   local output rc
-  rm -f "$BOOT_BOX/launched" "$BOOT_BOX/armed" "$BOOT_BOX/sessions/"*
+  rm -f "$BOOT_BOX/launched" "$BOOT_BOX/armed" "$BOOT_BOX/captures" "$BOOT_BOX/sessions/"*
   : > "$BOOT_BOX/log"
   : > "$BOOT_BOX/homes/demo/.auto-arm-watcher"
   printf 'claude\n' > "$BOOT_BOX/homes/demo/.runtime"
   [[ "$scenario" == opt-out ]] && rm -f "$BOOT_BOX/homes/demo/.auto-arm-watcher"
-  [[ "$scenario" == codex || "$scenario" == codex-verify-fail ]] && printf 'codex\n' > "$BOOT_BOX/homes/demo/.runtime"
+  [[ "$scenario" == codex || "$scenario" == codex-verify-fail || "$scenario" == existing-codex ]] && printf 'codex\n' > "$BOOT_BOX/homes/demo/.runtime"
   if [[ "$scenario" == codex-verify-fail ]]; then
     printf '{"originator":"codex-tui","thread_source":"user","cwd":"%s","id":"boot-test-id"}\n' "$BOOT_BOX/homes/demo" > "$BOOT_BOX/sessions/rollout-fixture-boot-test-id.jsonl"
   fi
@@ -754,7 +754,7 @@ boot_fixture() {
         list-windows) [[ "$BOOT_SCENARIO" != window-fail ]] && echo demo ;;
         new-window) return 1 ;;
         list-panes)
-          if [[ "$BOOT_SCENARIO" == existing || "$BOOT_SCENARIO" == existing-ready || -f "$BOOT_BOX/launched" ]]; then
+          if [[ "$BOOT_SCENARIO" == existing* || -f "$BOOT_BOX/launched" ]]; then
             [[ "$BOOT_SCENARIO" == missing-runtime || "$BOOT_SCENARIO" == codex-verify-fail ]] && echo bash || echo node
           else echo bash; fi ;;
         send-keys)
@@ -764,7 +764,28 @@ boot_fixture() {
             touch "$BOOT_BOX/armed"
           else touch "$BOOT_BOX/launched"; fi ;;
         capture-pane)
+          local captures=0
+          [[ -f "$BOOT_BOX/captures" ]] && captures=$(cat "$BOOT_BOX/captures")
+          captures=$((captures + 1))
+          echo "$captures" > "$BOOT_BOX/captures"
+          if [[ "$BOOT_SCENARIO" == delayed && "$captures" -le 12 ]]; then
+            echo "Loading session"
+            return 0
+          fi
           case "$BOOT_SCENARIO" in
+            existing-codex) printf "Earlier conversation\n› \n" ;;
+            existing-busy) printf "────────\nThinking (esc to interrupt)\n❯ \n" ;;
+            busy-history) printf "We discussed fullscreen and resume a conversation earlier\n────────\nThinking (esc to interrupt)\n❯ \n" ;;
+            scroll-monitor)
+              if [[ ! -f "$BOOT_BOX/armed" || "$*" == *"-S -2000"* ]]; then echo "Monitor started old"; fi
+              [[ -f "$BOOT_BOX/armed" ]] && echo "Monitor started new"
+              printf "────────\n❯ \n" ;;
+            nbsp)
+              [[ -f "$BOOT_BOX/armed" ]] && echo "Monitor started"
+              printf "────────\n❯ \302\240\n" ;;
+            existing-resume) printf "Resume a conversation\n❯ demo\n" ;;
+            existing-fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
+            existing-approval) printf "Would you like to run the following command?\n\n  $ ls\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n" ;;
             trust|existing) printf "Do you trust the files in this folder?\n  1. Yes\n❯ 2. No (default)\nEnter to confirm\n" ;;
             resume) printf "Resume a conversation\n❯ demo\n" ;;
             fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
@@ -785,7 +806,19 @@ boot_fixture() {
       esac
     }
     sleep() { :; }
-    export -f tmux sleep
+    # Emulate BSD sed treating backslash-x as x, rather than a hex escape.
+    sed() {
+      local arg
+      local -a args=()
+      for arg in "$@"; do
+        [[ "$BOOT_SCENARIO" == nbsp ]] && arg="${arg//\\x/x}"
+        args+=("$arg")
+      done
+      command sed "${args[@]}"
+    }
+    export -f tmux sleep sed
+    export BOOT_READY_SECS=2
+    [[ "$BOOT_SCENARIO" == delayed ]] && unset BOOT_READY_SECS
     AGENTS_HOME="$BOOT_BOX/homes" CODEX_SESSIONS_DIR="$BOOT_BOX/sessions" BOOT_STAGGER_SECS=0 CODEX_RESUME_VERIFY_SECS=0 bash "$BOOT_SCRIPT" demo
   ' 2>&1)
   rc=$?
@@ -795,11 +828,28 @@ boot_fixture() {
     fail "full boot: $scenario" "rc=$rc expected=$expected output=$output"
   fi
   case "$scenario" in
-    trust|existing|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
+    trust|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
       if grep -q 'arm your monitor' "$BOOT_BOX/log"; then fail "full boot: $scenario never arms"; else pass "full boot: $scenario never arms"; fi ;;
   esac
+  if [[ "$scenario" == monitor-timeout || "$scenario" == scroll-monitor ]]; then
+    local sends
+    sends=$(grep -c 'arm your monitor' "$BOOT_BOX/log")
+    [[ "$sends" -eq 1 ]] && pass "full boot: $scenario sends once" || fail "full boot: $scenario sends once" "sends=$sends"
+  fi
+  if [[ "$scenario" == busy-history ]]; then
+    [[ $(cat "$BOOT_BOX/captures") -ge 4 ]] && pass "busy history uses readiness budget" || fail "busy history uses readiness budget"
+  fi
   if [[ "$scenario" == trust ]] && ! printf '%s' "$output" | grep -q 'No is preselected'; then fail "folder trust names the default and manual action"; fi
 }
+boot_fixture delayed 0 '1 launched and ready, 1 monitors armed'
+boot_fixture existing-resume 3 'demo waiting: resume picker'
+boot_fixture existing-fullscreen 3 'demo waiting: fullscreen offer'
+boot_fixture existing-approval 3 'demo waiting: approval prompt'
+boot_fixture existing-busy 0 '1 already up and ready'
+boot_fixture existing-codex 0 '1 already up and ready'
+boot_fixture busy-history 3 'demo waiting: runtime busy'
+boot_fixture scroll-monitor 0 '1 monitors armed'
+boot_fixture nbsp 0 '1 launched and ready, 1 monitors armed'
 boot_fixture trust 3 'demo waiting: folder trust'
 boot_fixture existing 3 'demo waiting: folder trust'
 boot_fixture resume 3 'demo waiting: resume picker'

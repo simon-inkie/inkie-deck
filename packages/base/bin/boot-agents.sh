@@ -537,7 +537,7 @@ pane_readiness() {
     done <<< "$pane"
     [[ "$anchored" -eq 1 ]] || { echo "composer unconfirmed"; return 1; }
   fi
-  if printf '%s\n' "$composer" | sed -E 's/^[[:space:]]*(❯|›|>)[[:space:]]*//; s/\xc2\xa0//g' | grep -q '[^[:space:]]'; then
+  if printf '%s\n' "$composer" | sed -E -e 's/^[[:space:]]*(❯|›|>)[[:space:]]*//' -e $'s/\xc2\xa0//g' | grep -q '[^[:space:]]'; then
     raw=$(tmux capture-pane -t "$target" -p -e 2>/dev/null) || { echo "composer unconfirmed"; return 1; }
     raw=$(raw_line_for "$raw" "$composer")
     printf '%s' "$raw" | grep -qF "$(printf '\033[2m')" || { echo "composer contains text or menu selection"; return 1; }
@@ -546,20 +546,44 @@ pane_readiness() {
   return 0
 }
 
+# Match rendered setup dialogs, rather than phrases in conversation output.
+manual_prompt_reason() {
+  local pane="$1"
+  if pane_has_codex_approval_dialog "$pane"; then
+    echo "approval prompt: answer manually"
+    return 0
+  fi
+  printf '%s\n' "$pane" | grep -qE '^[[:space:]]*(❯|›)[[:space:]]*[^[:space:]]' || return 1
+  if printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Do you trust (the files|this folder|this workspace)|Trust (this folder|the files|this workspace))'; then
+    echo "folder trust: attach and choose Yes manually if you trust the folder; do not press Enter, No is preselected"
+  elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Resume a conversation|Select a conversation|Resume picker)([[:space:]?:]|$)'; then
+    echo "resume picker: choose a conversation manually"
+  elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Try|Use|Enable|Switch to) (the )?full.?screen (renderer|mode)'; then
+    echo "fullscreen offer: answer manually"
+  else
+    return 1
+  fi
+}
+
+existing_readiness() {
+  local pane reason
+  pane=$(tmux capture-pane -t "$1" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
+  pane=$(printf '%s\n' "$pane" | tail -n 30)
+  if reason=$(manual_prompt_reason "$pane"); then echo "$reason"; return 1; fi
+  # launch_agent already confirmed a running runtime. Busy output and a banner
+  # scrolled out of view are normal for an existing conversation.
+  return 0
+}
+
 wait_for_readiness() {
-  local target="$1" runtime="$2" reason="unconfirmed" attempt
-  for attempt in 1 2 3 4 5; do
+  local target="$1" runtime="$2" reason="unconfirmed" attempt pane prompt
+  local budget="${BOOT_READY_SECS:-45}"
+  case "$budget" in ''|*[!0-9]*|0) budget=45 ;; esac
+  for ((attempt=0; attempt<budget; attempt++)); do
     if reason=$(pane_readiness "$target" "$runtime"); then return 0; fi
-    local pane
     pane=$(tmux capture-pane -t "$target" -p 2>/dev/null | tail -n 30)
-    if printf '%s\n' "$pane" | grep -qiE 'trust this folder|trust the files|trust this workspace'; then
-      reason="folder trust: attach and choose Yes manually if you trust the folder; do not press Enter, No is preselected"
-      break
-    elif printf '%s\n' "$pane" | grep -qiE 'resume a conversation|select a conversation|resume picker'; then
-      reason="resume picker: choose a conversation manually"
-      break
-    elif printf '%s\n' "$pane" | grep -qiE 'fullscreen|full.screen'; then
-      reason="fullscreen offer: answer manually"
+    if prompt=$(manual_prompt_reason "$pane"); then
+      reason="$prompt"
       break
     fi
     case "$reason" in *manually*) break ;; esac
@@ -588,8 +612,9 @@ launch_agent() {
   # Per-agent model override (selector): $AGENTS_HOME/<a>/.model -> --model flag.
   # Absent = no flag = inherit the global default.
   [[ -f "$AGENTS_HOME/$a/.model" ]] && model_flag="--model $(cat "$AGENTS_HOME/$a/.model")"
-  tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a" \
-    || tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
+    tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  fi
   if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node)$'; then
     echo "skipped"; return
   fi
@@ -651,7 +676,9 @@ FAILED=0
 ARMED=0
 for a in "${AGENTS[@]}"; do
   if outcome=$(launch_agent "$a"); then
-    if reason=$(wait_for_readiness "$SESSION:$a" "$(get_runtime "$a")"); then
+    readiness_check=wait_for_readiness
+    [[ "$outcome" == skipped ]] && readiness_check=existing_readiness
+    if reason=$("$readiness_check" "$SESSION:$a" "$(get_runtime "$a")"); then
       if [[ "$outcome" == "launched" ]]; then
         FRESH+=("$a")
         LAUNCHED=$((LAUNCHED + 1))
@@ -691,22 +718,20 @@ for a in "${FRESH[@]}"; do
   target="$SESSION:$a"
   confirmed=0
   monitor_pattern='^[^[:alnum:]]*(Monitor\(|Monitor started([[:space:]]|$))'
-  baseline=$(tmux capture-pane -t "$target" -p 2>/dev/null | grep -ciE "$monitor_pattern")
-  for attempt in 1 2 3 4; do
-    if ! reason=$(wait_for_readiness "$target" "$(get_runtime "$a")"); then
-      echo "boot-agents: $a monitor waiting: $reason" >&2
-      break
-    fi
-    if ! tmux send-keys -t "$target" "arm your monitor"; then break; fi
-    sleep 0.7
-    if ! tmux send-keys -t "$target" Enter; then break; fi
-    sleep 8
-    observed=$(tmux capture-pane -t "$target" -p 2>/dev/null | grep -ciE "$monitor_pattern")
-    if [[ "$observed" -gt "$baseline" ]]; then
-      confirmed=1
-      break
-    fi
-  done
+  baseline=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
+  # Send once: repeated prompts can create duplicate watchers. Poll only.
+  if ! reason=$(wait_for_readiness "$target" "$(get_runtime "$a")"); then
+    echo "boot-agents: $a monitor waiting: $reason" >&2
+  elif tmux send-keys -t "$target" "arm your monitor" && sleep 0.7 && tmux send-keys -t "$target" Enter; then
+    for poll in 1 2 3 4; do
+      sleep 8
+      observed=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
+      if [[ "$observed" -gt "$baseline" ]]; then
+        confirmed=1
+        break
+      fi
+    done
+  fi
   if [[ "$confirmed" -eq 1 ]]; then
     ARMED=$((ARMED + 1))
     echo "boot-agents: $a monitor armed (pane confirmation)"
