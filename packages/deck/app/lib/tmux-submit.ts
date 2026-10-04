@@ -147,9 +147,14 @@ function evaluatePostEnter(
       : { kind: "owned-idle" };
   }
   if (snapshot.composer === "clean" || snapshot.composer === "ghost") {
-    // A clean composer proves submission ONLY with evidence the payload reached
-    // the pane first (seen staged) or that a turn visibly started (handled
-    // below). Otherwise it may mean our keys were never delivered.
+    // The composer is empty again. That proves submission when EITHER the pane
+    // has visibly started a turn (idle -> active, the common real case: Enter
+    // submits, the composer stays clean and the spinner appears) OR we saw our
+    // own payload staged earlier. A clean composer with neither is just an
+    // absence of evidence: the pane may have silently dropped our keys.
+    if (!baselineWasActive && snapshot.activity === "active") {
+      return { kind: "confirmed", evidence: "turn-started" };
+    }
     return evidence.payloadSeen
       ? { kind: "confirmed", evidence: "composer-cleared" }
       : { kind: "unavailable" };

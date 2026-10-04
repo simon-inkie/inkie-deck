@@ -4,6 +4,7 @@ import {
   buildVerifiedSendCaptureArgs,
   buildVerifiedSendRawCaptureArgs,
   classifyPaneSnapshot,
+  paneAcceptsSend,
   pushMessageToIdleAgent,
   sendKeysToWindow,
   type SendKeysDriver,
@@ -394,6 +395,16 @@ describe("composer framing cannot read a non-empty draft as clean (M-a)", () => 
     expect(snapshot.composer).not.toBe("ghost");
   });
 
+  it("refuses the send when only an indented glyph row follows a real draft (regression pin)", () => {
+    // Pre-fix this pane read as IDLE and authorised a send-keys into someone
+    // else's half-typed message (paneAcceptsSend was true on the old head). The
+    // fix anchors the composer open to column 0, so the pane is refused. This is
+    // the M-a case that genuinely fails before the fix.
+    const viewport = ["transcript", "❯ real draft text", "  ❯ ", "status"].join("\n");
+    expect(paneAcceptsSend(viewport)).toBe(false);
+    expect(classifyPaneSnapshot(viewport).composer).toBe("staged");
+  });
+
   it("does not authorise a retry Enter when a continuation row hides the payload", () => {
     const payload = "hello";
     // Composer holds someone else's text; a continuation row contains the glyph
@@ -412,6 +423,23 @@ describe("composer framing cannot read a non-empty draft as clean (M-a)", () => 
       snapshot.stagedRows
     );
     expect(holds).toBe(false);
+  });
+});
+
+describe("a real turn confirms even when the composer stays visible (Sonnet Major)", () => {
+  it("reports submitted via turn-started when Enter submits and the spinner appears above a clean composer", async () => {
+    // The real shape of a successful send: the composer is still rendered
+    // (clean) with the working spinner ABOVE it. The pane went idle -> active,
+    // which is proof of submission even though no payload was ever captured.
+    const busyFrame = {
+      plain: "Working... (2s · 10 tokens)\n❯ \nstatus",
+    };
+    const driver = fakeDriver([clean, busyFrame]);
+    await expect(sendKeysToWindow({}, "agent-a", "hello", driver)).resolves.toMatchObject({
+      status: "submitted",
+      evidence: "turn-started",
+      enterAttempts: 1,
+    });
   });
 });
 
