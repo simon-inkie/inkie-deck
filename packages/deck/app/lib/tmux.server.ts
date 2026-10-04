@@ -298,7 +298,7 @@ export function buildCaptureViewportRawArgs(session: string, window: string): st
  * line like "(3s ..." reads active and just SKIPS the wake - the safe
  * direction; a wrong wake risks stray text in a live composer).
  */
-export const ACTIVE_PANE_RE = /esc to interrupt|\((?:\d+h\s)?(?:\d+m\s)?\d+s\s/i;
+export const ACTIVE_PANE_RE = /esc to (?:interrupt|cancel)|\((?:\d+h\s)?(?:\d+m\s)?\d+s\s/i;
 
 /** True when a captured viewport shows the working spinner (turn in flight). */
 export function paneTextIsActive(viewport: string): boolean {
@@ -308,30 +308,71 @@ export function paneTextIsActive(viewport: string): boolean {
 /**
  * The bare, EMPTY composer prompt: a lone prompt glyph on its own line, nothing
  * typed after it. This is the POSITIVE idle signal - the one state where a wake
- * is safe. Two glyphs are recognised: Claude Code's U+276F and Codex's U+203A
- * (the runtimes MC live-wakes). Everything else fails it on purpose:
- *   - dirty composer ("U+276F git checkout main")  -> text after the prompt, no match
+ * is safe. Three glyphs are recognised: Claude Code's U+276F, Codex's U+203A,
+ * and agy's ">". Everything else fails it on purpose:
+ *   - dirty composer ("U+276F git checkout main" or "> git checkout main") -> text after the prompt, no match
  *   - permission dialog ("U+276F 1. Yes")           -> text after the prompt, no match
  *   - ghost / auto-suggest ("U+276F /compact")      -> text after the prompt, no match (benign skip)
  *   - exited agent at a bash shell ("user@host$")   -> no prompt glyph at all, no match
- *   - agy / Gemini runtime (">")                    -> different glyph, no match (separate wake path)
- * Validated against live panes: it matched ONLY the genuinely-idle agents and
- * rejected every unsafe state. Multiline (`m`) so any viewport line can be the
- * composer (the statusline + separator render BELOW the prompt in this TUI).
+ * Multiline (`m`) so any viewport line can be the composer (the statusline +
+ * separator render BELOW the prompt in this TUI).
+ *
+ * A bare ">" is matched here but is NOT sufficient on its own: it is a common
+ * character (Bash PS2 continuation, node REPL, diffs, redirects), so the caller
+ * additionally requires agy's frame border directly above it (isAgyPromptLine).
+ * U+276F and U+203A are near-unique and need no such corroboration.
  *
  * NB: Codex's idle composer is almost never genuinely bare - it shows a rotating
  * hint placeholder after the glyph, which fails this bare check by design. That
  * case is handled downstream by the ANSI dim-hint disambiguation (DIM_SGR); this
  * regex only covers the truly-bare state (Claude's usual rest, Codex's rare one).
  */
-export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A]\s*$/m;
+export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A>]\s*$/m;
 
 /**
- * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F
- * and Codex's U+203A. agy / Gemini's ">" is deliberately excluded - it has its
- * own separate wake path and never carries the dim-hint placeholder below.
+ * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F,
+ * Codex's U+203A, and agy / Gemini's ">". Consumers MUST gate the bare ">" on
+ * agy's frame border (see isAgyPromptLine / lineHasPromptGlyph); a lone ">" is a
+ * Bash PS2 continuation prompt as readily as an agy composer.
  */
-export const COMPOSER_PROMPT_GLYPHS = ["\u276F", "\u203A"] as const;
+export const COMPOSER_PROMPT_GLYPHS = ["\u276F", "\u203A", ">"] as const;
+
+/**
+ * agy / Gemini renders its composer inside a bordered frame:
+ *   ───
+ *   >
+ *   ───
+ * so a genuine agy prompt line has a horizontal border directly ABOVE it. This
+ * is the corroboration that tells an agy composer apart from a Bash PS2
+ * continuation prompt or a node REPL, both of which also render a lone ">".
+ */
+const AGY_FRAME_BORDER_RE = /^\s*[\u2500\u2501\u2550]{3,}\s*$/u;
+
+/**
+ * True when a bare ">" line is corroborated as an agy composer by a frame
+ * border directly above it. Used for the ">" glyph ONLY; the two TUI glyphs are
+ * near-unique and do not need it.
+ */
+function isAgyPromptLine(lines: string[], i: number): boolean {
+  const line = lines[i];
+  if (line === undefined || !/^\s*>\s*$/.test(line)) return false;
+  const above = lines[i - 1];
+  return above !== undefined && AGY_FRAME_BORDER_RE.test(above);
+}
+
+/**
+ * True when a line bears a composer prompt glyph, WITH the ">" glyph anchored to
+ * the start of the line. findPromptLineIndex uses this so a common ">" (a
+ * statusline arrow "main -> origin", a diff marker, "=>") can never be mistaken
+ * for a composer and hijack the last-glyph-line scan for Claude or Codex.
+ * U+276F and U+203A keep `includes`: they are near-unique, and a composer line
+ * may carry them after other viewport content.
+ */
+export function lineHasPromptGlyph(line: string): boolean {
+  return COMPOSER_PROMPT_GLYPHS.some((g) =>
+    g === ">" ? /^\s*>/.test(line) : line.includes(g)
+  );
+}
 
 /**
  * The ANSI "dim" SGR marker (ESC[2m). Codex wraps every rotating hint placeholder
@@ -347,7 +388,7 @@ export const DIM_SGR = "\x1b[2m";
 function findPromptLineIndex(lines: string[]): number {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line !== undefined && COMPOSER_PROMPT_GLYPHS.some((g) => line.includes(g))) {
+    if (line !== undefined && lineHasPromptGlyph(line)) {
       return i;
     }
   }
@@ -389,11 +430,17 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
   if (promptIndex === -1) return false;
   const promptLine = lines[promptIndex];
   if (promptLine === undefined) return false;
-  // A genuinely-bare prompt reads clean at once. Otherwise the composer has text
-  // after the glyph: real staged text (dirty) OR a Codex rotating hint. Codex
-  // renders every hint in the ANSI dim SGR (DIM_SGR); real typed text never is,
-  // so the raw capture disambiguates for ANY hint string, not a hardcoded one.
-  if (!IDLE_PROMPT_RE.test(promptLine) && !composerLineIsDimHint(rawViewport)) {
+  // A bare ">" is a common character, so it counts ONLY when corroborated as a
+  // genuine agy frame (a horizontal border directly above it). Without that
+  // border it may be a Bash PS2 continuation prompt or a node REPL, where a
+  // send-keys would type into unfinished shell input at the shell, so refuse.
+  if (/^\s*>\s*$/.test(promptLine)) {
+    if (!isAgyPromptLine(lines, promptIndex)) return false;
+  } else if (!IDLE_PROMPT_RE.test(promptLine) && !composerLineIsDimHint(rawViewport)) {
+    // A genuinely-bare TUI prompt reads clean at once. Otherwise the composer has
+    // text after the glyph: real staged text (dirty) OR a Codex rotating hint.
+    // Codex renders every hint in the ANSI dim SGR (DIM_SGR); real typed text
+    // never is, so the raw capture disambiguates for ANY hint string.
     return false;
   }
   // Stale-frame guard: a shell prompt below the composer means the agent exited
@@ -453,7 +500,9 @@ export function paneTextIsIdle(viewport: string, rawViewport?: string): boolean 
  * CONFIRMED-idle agent composer: no working spinner AND a clean composer (see
  * paneTextIsIdle / composerIsClean). Returns false on ANY uncertainty - invalid
  * name, window not live, capture failure, an active spinner, a dirty composer,
- * a permission dialog, a bash shell, or an agy (">") prompt. Conservative on
+ * a permission dialog, a bash shell, or an uncorroborated ">" (a bare ">" with
+ * no agy frame border above it, e.g. a Bash PS2 continuation or node REPL).
+ * Conservative on
  * purpose: a missed wake just falls back to next-turn hook-inject, but a wrong
  * wake could corrupt a live composer or execute text at a shell. "Absence of
  * spinner" is NOT treated as idle.
