@@ -166,24 +166,24 @@ describe("sendKeysToWindow - gate before subprocess (no keys really sent here)",
   it("rejects invalid/injection-shaped window names", async () => {
     for (const bad of ["quill;ls", "../quill", "agents:quill", "-quill", ""]) {
       const r = await sendKeysToWindow(env, bad, "hi");
-      expect(r.ok, JSON.stringify(bad)).toBe(false);
+      expect(r.status, JSON.stringify(bad)).toBe("not-submitted");
     }
   });
 
   it("rejects empty / whitespace-only text", async () => {
-    expect((await sendKeysToWindow(env, "quill", "")).ok).toBe(false);
-    expect((await sendKeysToWindow(env, "quill", "   \n  ")).ok).toBe(false);
+    expect((await sendKeysToWindow(env, "agent-a", "")).status).toBe("not-submitted");
+    expect((await sendKeysToWindow(env, "agent-a", "   \n  ")).status).toBe("not-submitted");
   });
 
   it("rejects over-length text", async () => {
     const huge = "x".repeat(SEND_KEYS_MAX_LEN + 1);
-    expect((await sendKeysToWindow(env, "quill", huge)).ok).toBe(false);
+    expect((await sendKeysToWindow(env, "agent-a", huge)).status).toBe("not-submitted");
   });
 
   it("rejects a well-formed name that is not live in the session", async () => {
     // Valid name, valid text, but the session cannot exist -> not allowlisted.
-    const r = await sendKeysToWindow(env, "quill", "hello");
-    expect(r.ok).toBe(false);
+    const r = await sendKeysToWindow(env, "agent-a", "hello");
+    expect(r.status).toBe("not-submitted");
   });
 });
 
