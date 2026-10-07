@@ -49,6 +49,10 @@ describe("defaultAllowedOrigins", () => {
     expect(defaultAllowedOrigins({ PORT: "  " })[0]).toBe("http://localhost:4242");
   });
 
+  it("falls back to 4242 for a PORT that is not a number", () => {
+    expect(defaultAllowedOrigins({ PORT: "abc" })[0]).toBe("http://localhost:4242");
+  });
+
   it("does not list the dev port twice when PORT is 5174", () => {
     expect(defaultAllowedOrigins({ PORT: "5174" })).toEqual([
       "http://localhost:5174",
@@ -76,6 +80,12 @@ describe("resolveAllowedOrigins", () => {
     expect(resolveAllowedOrigins({ VOICE_ALLOWED_ORIGINS: " , " })).toEqual(
       defaultAllowedOrigins({})
     );
+  });
+
+  it("strips trailing slashes from explicit origins", () => {
+    expect(
+      resolveAllowedOrigins({ VOICE_ALLOWED_ORIGINS: "http://host:4242/, https://x.example//" })
+    ).toEqual(["http://host:4242", "https://x.example"]);
   });
 
   it("lets an explicit value replace the defaults, trimmed", () => {
@@ -124,20 +134,34 @@ async function waitForPort(port: number, timeoutMs = 15000): Promise<void> {
 function attempt(port: number, origin: string): Promise<string> {
   return new Promise((resolve) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/voice`, { origin });
+    // A hung upgrade must fail this test quickly, not at the suite timeout.
+    const timer = setTimeout(() => {
+      ws.terminate();
+      resolve("timeout");
+    }, 5000);
     ws.once("message", (data) => {
+      clearTimeout(timer);
       resolve(data.toString("utf8"));
       ws.close();
     });
-    ws.once("error", (err) => resolve(`error: ${err.message}`));
+    ws.once("error", (err) => {
+      clearTimeout(timer);
+      resolve(`error: ${err.message}`);
+    });
   });
 }
 
 describe("voice-proxy process: default origins with only PORT set", () => {
   let child: ChildProcess | undefined;
 
-  afterEach(() => {
-    child?.kill();
+  afterEach(async () => {
+    const proc = child;
     child = undefined;
+    if (proc && proc.exitCode === null) {
+      const exited = new Promise<void>((r) => proc.once("exit", () => r()));
+      proc.kill();
+      await exited;
+    }
   });
 
   it("accepts Deck's own origin and rejects an unlisted one", async () => {
@@ -149,7 +173,12 @@ describe("voice-proxy process: default origins with only PORT set", () => {
     };
     delete env["VOICE_ALLOWED_ORIGINS"];
     delete env["DEEPGRAM_API_KEY"];
-    child = spawn(process.execPath, [PROXY], { env, stdio: "ignore" });
+    delete env["VOICE_PROXY_HOST"];
+    // stderr is inherited so a proxy that fails to start says why in the log.
+    child = spawn(process.execPath, [PROXY], {
+      env,
+      stdio: ["ignore", "ignore", "inherit"],
+    });
     await waitForPort(port);
 
     expect(JSON.parse(await attempt(port, "http://localhost:4242"))).toEqual({

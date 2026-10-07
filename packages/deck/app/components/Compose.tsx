@@ -1152,7 +1152,8 @@ export function Compose({
 
           <div className="flex items-end gap-2">
             {/* Textarea wrapper: mic + attach icons sit inside the border, bottom-right */}
-            <div className="relative flex-1">
+            <div className="flex-1">
+            <div className="relative">
               <textarea
                 id="compose-body"
                 ref={textareaRef}
@@ -1181,14 +1182,6 @@ export function Compose({
               />
 
               {/* Attach + Mic live inside the textarea border, bottom-right corner */}
-              {!voiceEnabled ? (
-                <span
-                  className="pointer-events-none absolute bottom-3 left-3 text-xs text-muted-foreground"
-                  data-testid="voice-disabled-note"
-                >
-                  {voiceDisabledReason}
-                </span>
-              ) : null}
               <div className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5">
                 {/* Paperclip - wired to file picker */}
                 <Button
@@ -1229,6 +1222,16 @@ export function Compose({
                   )}
                 </Button>
               </div>
+            </div>
+            {/* Outside the textarea box so it can never sit over typed text (#27). */}
+            {!voiceEnabled ? (
+              <p
+                className="mt-1 text-xs text-muted-foreground"
+                data-testid="voice-disabled-note"
+              >
+                {voiceDisabledReason}
+              </p>
+            ) : null}
             </div>
 
             {/* Right-hand column: gear above, Send below */}

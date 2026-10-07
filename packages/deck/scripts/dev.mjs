@@ -21,6 +21,7 @@
 import { cpSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { withVoiceDisabledReason } from "./voice-env.mjs";
 
 const root = process.cwd();
 const demoInbox = path.join(root, "fixtures", "demo-inbox");
@@ -146,13 +147,8 @@ const args = [
   ...(portFlagIdx === -1 ? ["--port", appPort] : []),
   ...passthrough,
 ];
-// The app never reads the speech key (test/seam.test.ts bans its name from
-// app/), so tell it why the mic is off instead: see getVoiceDisabledReason.
-const appEnv = { ...env };
-delete appEnv["VOICE_DISABLED_REASON"];
-if (!process.env["DEEPGRAM_API_KEY"]) {
-  appEnv["VOICE_DISABLED_REASON"] = "voice disabled: no DEEPGRAM_API_KEY";
-}
+// The app never reads the speech key; see scripts/voice-env.mjs.
+const appEnv = withVoiceDisabledReason(env);
 const child = spawn("react-router", args, {
   stdio: "inherit",
   env: appEnv,

@@ -106,14 +106,18 @@ const DEV_ORIGIN = "http://localhost:5174";
  * @returns {string[]}
  */
 export function defaultAllowedOrigins(env = process.env) {
-  const port = (env["PORT"] ?? "").trim() || "4242";
+  const rawPort = (env["PORT"] ?? "").trim();
+  // Digits only: anything else (PORT=abc) would build an origin no browser
+  // sends, so fall back to the launcher's own default instead.
+  const port = /^\d{1,5}$/.test(rawPort) ? rawPort : "4242";
   const own = `http://localhost:${port}`;
   return own === DEV_ORIGIN ? [own] : [own, DEV_ORIGIN];
 }
 
 /**
  * Resolve the allowlist from the environment: a non-empty comma-separated
- * VOICE_ALLOWED_ORIGINS wins, else defaultAllowedOrigins.
+ * VOICE_ALLOWED_ORIGINS wins (trailing slashes stripped), else
+ * defaultAllowedOrigins.
  *
  * @param {Record<string, string | undefined>} [env]
  * @returns {string[]}
@@ -121,7 +125,9 @@ export function defaultAllowedOrigins(env = process.env) {
 export function resolveAllowedOrigins(env = process.env) {
   const explicit = (env["VOICE_ALLOWED_ORIGINS"] ?? "")
     .split(",")
-    .map((o) => o.trim())
+    // Browsers send origins without a trailing slash, so a pasted
+    // "http://host/" would never match.
+    .map((o) => o.trim().replace(/\/+$/, ""))
     .filter(Boolean);
   return explicit.length > 0 ? explicit : defaultAllowedOrigins(env);
 }

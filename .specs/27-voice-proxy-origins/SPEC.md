@@ -94,9 +94,32 @@ Out of scope (and where it goes instead):
 ## Follow-ups
 
 - `127.0.0.1` and `[::1]` origins are not in the default list.
+- `dev.mjs` does not load `packages/deck/.env`, so a key set only there does
+  not reach the proxy in dev, although `.env.example` says dev reads it.
 - `start-production.mjs` could set `VOICE_PROXY_URL` itself from a configured
   public origin; left alone.
 
 ## Review feedback
 
-- None yet.
+### Opus review, 2026-10-07: approve with nits
+
+- Check whether `dev.mjs` decides the reason from the same environment the
+  proxy gets. Verified: `dev.mjs` does not load `.env` at all (it spreads
+  `process.env` into `env`, which feeds the app and, via `proxyEnv`, the
+  proxy), so the two always agree; a key set only in `.env` reaches neither in
+  dev. That gap is not new and is out of scope, filed under Follow-ups. The
+  reason is now computed from the same `env` object the child receives, via
+  the shared helper below. Not run end to end in dev: dev needs a seeded
+  sandbox and a Vite server; the helper is unit tested instead.
+- Trailing slash in `VOICE_ALLOWED_ORIGINS` never matches: fixed, stripped in
+  `resolveAllowedOrigins`, with a test.
+- Disabled note could overlap typed text: fixed, moved out of the textarea box
+  into its own line below it.
+- Process test hardening: fixed. `attempt()` has a 5s timeout, `afterEach`
+  awaits child exit, `VOICE_PROXY_HOST` is deleted from the child env, stderr
+  is inherited.
+- Message string duplicated in two launchers: fixed, `scripts/voice-env.mjs`
+  holds the text and the rule; `test/voice-env.test.ts` covers it.
+- Component test: added, `test/compose-voice-disabled.test.tsx`.
+- Optional `PORT` validation: done, a non-numeric `PORT` falls back to 4242.
+- Kept `VOICE_DISABLED_REASON`, as the reviewer recommended.

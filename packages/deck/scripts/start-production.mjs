@@ -26,6 +26,7 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { withVoiceDisabledReason } from "./voice-env.mjs";
 
 const root = process.cwd();
 
@@ -188,13 +189,12 @@ if (!existsSync(serveCli)) {
 // before the app ever sees the request. MC sets no cookies of its own, so this
 // is tolerance, not a leak; the client-side fix is clearing site-data. (Quill,
 // 2026-06-15 incident.)
-// The app never reads the speech key (test/seam.test.ts bans its name from
-// app/), so tell it why the mic is off instead: see getVoiceDisabledReason.
-const appEnv = { ...process.env, PORT: appPort, HOST: appHost };
-delete appEnv["VOICE_DISABLED_REASON"];
-if (!process.env["DEEPGRAM_API_KEY"]) {
-  appEnv["VOICE_DISABLED_REASON"] = "voice disabled: no DEEPGRAM_API_KEY";
-}
+// The app never reads the speech key; see scripts/voice-env.mjs.
+const appEnv = withVoiceDisabledReason({
+  ...process.env,
+  PORT: appPort,
+  HOST: appHost,
+});
 const child = spawn(
   process.execPath,
   ["--max-http-header-size=65536", serveCli, buildEntry],
