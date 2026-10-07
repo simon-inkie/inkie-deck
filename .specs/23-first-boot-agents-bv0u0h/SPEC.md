@@ -77,7 +77,7 @@ function and passes `bash -n`.
   The folder carries the branch name in full, suffix included, because
   DEVELOPMENT.md asks for the branch name as the folder name.
 - Supersedes: nothing, additive.
-- Commits: 115fa47 docs(spec): start #23 first-boot-agents (#23)
+- Commits: 3fa3e90 docs(spec): start #23 first-boot-agents (#23)
 
 ### 2026-10-07: pin claude sessions by id in both launchers
 - What changed: added `claude-session.sh`, sourced by `boot-agents.sh` and
@@ -108,4 +108,18 @@ function and passes `bash -n`.
   - Transcript directory derived from the physical path (`pwd -P`), because the
     claude process records its resolved working directory.
 - Supersedes: the "To be filled in" TL;DR, Scope and Test plan.
+- Commits: e4c3043 fix(base): pin claude agent sessions by id on first boot (#23)
+
+### 2026-10-07: checks before the pull request
+- What changed: ran the CONTRIBUTING.md check list. typecheck, boundaries,
+  leaks, licence, lib-version and dashes pass; the deck suite passes.
+  Dropped a session-link trailer from this branch's commit messages, which
+  `check:leaks:messages` rejects; its remaining findings are on commits
+  already on `main`.
+- Why: four base tests fail, identically on `main` in this environment, so
+  they are not this change: `create-agent.test.ts` "CANNOT VERIFY when there
+  is no runtime on PATH" (a real claude is on PATH here) and the
+  `inbox.test.sh`, `inbox-push.test.sh` and `pane-idle.test.sh` suites
+  (busy-pane and context-gate cases). `boot-agents.test.sh` passes, 45 of 45.
+- Supersedes: nothing, additive.
 - Commits: (this commit)
