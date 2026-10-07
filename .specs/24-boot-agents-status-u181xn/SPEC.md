@@ -83,7 +83,32 @@ Out of scope (and where it goes instead):
     script after a stalled first boot does not report "already up" as if it
     were fine.
 - Supersedes: nothing, additive
-- Commits: (this commit) SPEC only
+- Commits: docs(base): spec for boot readiness reporting (#24)
+
+### 2026-10-07: readiness check, report, exit 3, tests and docs
+- What changed: `boot_pane_state`, `boot_wait_for_ready` and
+  `boot_readiness_message` above the library boundary of `boot-agents.sh`;
+  the boot sequence polls fresh claude panes against one shared deadline
+  (`BOOT_READY_TIMEOUT_SECS`, default 30), samples already-up claude panes
+  once, prints per-agent lines and a summary, gates auto-arm on readiness and
+  exits 3 when any agent is waiting. INSTALL.md tier 3 gains "First boot".
+  16 "R" cases in `boot-agents.test.sh`, two of them end to end against a
+  stub tmux on PATH.
+- Why: as planned above. Two details settled while writing it:
+  - No associative array for the fresh/up split: bash 3.2 (macOS) has none,
+    and the script already guards for it.
+  - The trust message does not claim "No, exit" is always preselected. The
+    issue saw it preselected; the numbered render preselects Yes. The message
+    says not to press Enter until the right option is selected, which is
+    true for both.
+- Checks: typecheck, check:boundaries, check:leaks, check:licence,
+  check:lib-version and check:dashes pass. `pnpm test` has 4 failures
+  (create-agent "CANNOT VERIFY", inbox.test.sh, inbox-push.test.sh,
+  pane-idle.test.sh) that fail identically on `main` in the same container,
+  which has `claude` on PATH and no UTF-8 locale. `check:leaks:messages`
+  flags three commits already on `main`; this branch's commits are clean.
+- Supersedes: nothing, additive
+- Commits: fix(base): report boot readiness instead of claiming launched + armed (#24)
 
 ## Follow-ups
 
