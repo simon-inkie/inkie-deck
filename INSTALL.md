@@ -132,6 +132,22 @@ your shell profile rather than in one terminal, since the agents inherit the
 environment of whatever launched them. A desktop machine almost certainly
 already has this and can skip it.
 
+Last, get the code. This is the step that makes the clone the prerequisites
+above ask for:
+
+```sh
+git clone https://github.com/simon-inkie/inkie-deck.git && cd inkie-deck
+```
+
+While the repository is private, that clone needs you signed in to GitHub.
+Install the GitHub CLI (`gh`) and run `gh auth login` inside the same Linux
+environment you are installing in, which on Windows means inside WSL, not in
+PowerShell. Delete this paragraph once the repository is public.
+
+This block is the one exception to "executed from this document": the rig
+copies the tree into its container instead of cloning it, so it is declared
+as skipped in `rig/install-plan.mjs`, with the reason.
+
 ## 2. Install the dependencies
 
 Everything from here runs from the root of your clone.
