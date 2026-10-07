@@ -339,6 +339,68 @@ Agents appear once something writes into `INBOX_ROOT`, which is tier 3.
 to the web server and skips the launcher that validates the roots and loads
 the `.env`. `node scripts/start-production.mjs` is the supported way in.
 
+### Voice dictation (optional)
+
+Skip this unless you want the microphone in the compose box. Voice needs a
+Deepgram API key and nothing else when the browser runs on the same machine as
+Deck. None of the blocks in this section is executed by the rig (see
+[How this document is tested](#how-this-document-is-tested)), and they are
+tagged `text` for that reason.
+
+**On the machine Deck runs on.** Put the key in `packages/deck/.env`:
+
+```text
+DEEPGRAM_API_KEY=your-key-here
+```
+
+Start Deck as above and open `http://localhost:4242/`. The launcher prints
+`[prod] DEEPGRAM_API_KEY present`. Voice is a second listener on port 5176,
+bound to loopback, and it accepts WebSocket upgrades from
+`http://localhost:$PORT` (4242 unless you set `PORT`) and the dev port
+`http://localhost:5174` with no further settings.
+
+Without a key the microphone is disabled and reads "voice disabled: no
+DEEPGRAM_API_KEY". The launcher prints `ABSENT - voice disabled` too.
+
+**From another machine over Tailscale.** The browser sends the address bar's
+origin with every WebSocket upgrade, and the proxy rejects any origin it was
+not told about. Browsers also refuse the microphone on a page that is not a
+secure context, which `http://` over a tailnet address is not, and refuse a
+plain `ws://` connection from an `https://` page. So the working shape is
+HTTPS for Deck and `wss://` for the proxy, both terminated by `tailscale
+serve`, with Deck and the proxy left on loopback:
+
+```text
+tailscale serve --bg --https=443 http://127.0.0.1:4242
+tailscale serve --bg --https=8443 http://127.0.0.1:5176
+```
+
+Then tell the proxy about the origin and the browser about the proxy, where
+`<tailnet-host>` is your machine's full tailnet name, as `tailscale status` and
+the admin console show it:
+
+```text
+VOICE_ALLOWED_ORIGINS=https://<tailnet-host>
+VOICE_PROXY_URL=wss://<tailnet-host>:8443/voice
+```
+
+Restart the launcher and open `https://<tailnet-host>/`. Note the origin
+has no port, because the page is on 443. `VOICE_ALLOWED_ORIGINS` replaces the
+default rather than adding to it, so list `http://localhost:4242` as well
+(comma-separated) if you also use Deck on the machine itself.
+`VOICE_PROXY_HOST` stays unset here: `tailscale serve` reaches the proxy over
+loopback. Set it (to `0.0.0.0`, or a specific address) only if something
+that is not on this machine must connect to the proxy directly, and remember
+the proxy spends your Deepgram key for anyone who is allowed in.
+
+The `tailscale serve` flags vary between Tailscale versions; check `tailscale
+serve --help` against the lines above. They have not been run here.
+
+**If the microphone does nothing.** Look at the proxy's output. A line reading
+`rejected upgrade from origin "..."` names the exact origin to put in
+`VOICE_ALLOWED_ORIGINS`. No line at all means the browser never reached the
+proxy, which points at `VOICE_PROXY_URL` or at the proxy's bind address.
+
 ## 5. Bring your agents to life
 
 **This tier is manual, and cannot be otherwise from here.** An agent is a
@@ -638,21 +700,13 @@ image descriptions (Gemini) and web push all need keys, are off without them,
 and are not exercised by the rig. They degrade rather than fail: the voice
 proxy starts without a key and tells the client it has none.
 
-Voice carries one more thing worth knowing before you reach for it, because
-the dev command hides it. Voice is a SECOND listener, on its own port, and
-`pnpm dev` configures it for you while `node scripts/start-production.mjs` does
-not. In production the proxy keeps its own defaults: it binds `127.0.0.1`
-unless `VOICE_PROXY_HOST` says otherwise, it accepts WebSocket upgrades only
-from `http://localhost:5174`, which is the dev server's old port and not one
-anything here serves by default, and the URL handed to your browser falls back
-to `ws://localhost:5176/voice` when `VOICE_PROXY_URL` is unset, which your
-browser resolves against the machine YOU are sitting at rather than the one
-Deck is on.
-So on a production start, voice needs `VOICE_ALLOWED_ORIGINS` and
-`VOICE_PROXY_URL` set by hand even on the machine Deck is running on, and
-`VOICE_PROXY_HOST` as well to reach it from anywhere else. A rejected upgrade
-is logged by the proxy and looks, in the browser, like a microphone that does
-nothing. None of those three is in `.env.example` yet.
+Voice is a SECOND listener, on its own port, and a few of its settings are not
+the app's. See [Voice dictation](#voice-dictation-optional) for the working
+setups. The short version: on the machine Deck runs on, `DEEPGRAM_API_KEY` is
+enough; anywhere else the proxy needs `VOICE_ALLOWED_ORIGINS` and
+`VOICE_PROXY_URL` (and `VOICE_PROXY_HOST` if it is to be reached directly), all
+three documented in `.env.example`. A rejected upgrade is logged by the proxy
+and looks, in the browser, like a microphone that does nothing.
 
 **Everything here has only ever been measured as root.** The rig's containers
 run as root, and not by oversight that could be fixed in passing: the

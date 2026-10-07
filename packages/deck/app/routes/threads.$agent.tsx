@@ -36,7 +36,7 @@ import { makeStores } from "~/lib/stores.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled } from "~/lib/instance.server";
 import { saveAttachment } from "~/lib/attachments.server";
-import { getVoiceProxyUrl } from "~/lib/voice.server";
+import { getVoiceProxyUrl, getVoiceDisabledReason } from "~/lib/voice.server";
 import { linkifyBlockBodies } from "~/lib/review.server";
 import { listCards } from "~/lib/projects.server";
 import type { MessageBlock } from "~/lib/blocks/model";
@@ -236,7 +236,10 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const now = resolveNow(process.env["MC_NOW"]);
   const nowIso = now.toISOString();
   // Voice config: proxyUrl arrives via loader data so components never read env (FND-02).
-  const voice = { proxyUrl: getVoiceProxyUrl(process.env) };
+  const voice = {
+    proxyUrl: getVoiceProxyUrl(process.env),
+    disabledReason: getVoiceDisabledReason(process.env),
+  };
 
   // TASK-445: build a ticketId -> {column, cardId} map for the synergy badge.
   // Guarded listCards() (try/catch -> {} exactly like home.tsx).
@@ -1633,6 +1636,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
             onSent={handleSent}
             onCancel={handleCancel}
             voiceProxyUrl={voice.proxyUrl}
+            voiceDisabledReason={voice.disabledReason}
             debug={debugEnabled}
             onBatchSubmit={handleBatchSubmit}
             onBatchType={batchOnType}

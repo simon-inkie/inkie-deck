@@ -146,9 +146,16 @@ const args = [
   ...(portFlagIdx === -1 ? ["--port", appPort] : []),
   ...passthrough,
 ];
+// The app never reads the speech key (test/seam.test.ts bans its name from
+// app/), so tell it why the mic is off instead: see getVoiceDisabledReason.
+const appEnv = { ...env };
+delete appEnv["VOICE_DISABLED_REASON"];
+if (!process.env["DEEPGRAM_API_KEY"]) {
+  appEnv["VOICE_DISABLED_REASON"] = "voice disabled: no DEEPGRAM_API_KEY";
+}
 const child = spawn("react-router", args, {
   stdio: "inherit",
-  env,
+  env: appEnv,
   shell: true,
 });
 

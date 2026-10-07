@@ -87,6 +87,45 @@ export function isOriginAllowed(origin, allowed) {
   return typeof origin === "string" && Array.isArray(allowed) && allowed.includes(origin);
 }
 
+/**
+ * The dev-server origin (port 5174) that the proxy has always allowed.
+ */
+const DEV_ORIGIN = "http://localhost:5174";
+
+/**
+ * Default origin allowlist for the voice proxy (issue #27).
+ *
+ * Deck's own origin comes first, built from the same PORT the production
+ * launcher binds (default 4242), then the dev port. Only used when
+ * VOICE_ALLOWED_ORIGINS is unset or blank; an explicit value replaces it.
+ * The host is `localhost` only: a browser reaching Deck by another name
+ * (a Tailscale hostname, 127.0.0.1) sends a different Origin and must list
+ * it in VOICE_ALLOWED_ORIGINS.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string[]}
+ */
+export function defaultAllowedOrigins(env = process.env) {
+  const port = (env["PORT"] ?? "").trim() || "4242";
+  const own = `http://localhost:${port}`;
+  return own === DEV_ORIGIN ? [own] : [own, DEV_ORIGIN];
+}
+
+/**
+ * Resolve the allowlist from the environment: a non-empty comma-separated
+ * VOICE_ALLOWED_ORIGINS wins, else defaultAllowedOrigins.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string[]}
+ */
+export function resolveAllowedOrigins(env = process.env) {
+  const explicit = (env["VOICE_ALLOWED_ORIGINS"] ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+  return explicit.length > 0 ? explicit : defaultAllowedOrigins(env);
+}
+
 // ---------------------------------------------------------------------------
 // makeFrameBuffer - pure buffer helper for CONNECTING-phase audio frames.
 // (TASK-433 reopened: the primary bug is that frames sent before upstream open

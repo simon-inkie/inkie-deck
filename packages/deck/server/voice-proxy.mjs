@@ -34,6 +34,7 @@ import {
   mapUpstreamMessage,
   noKeyHandshake,
   isOriginAllowed,
+  resolveAllowedOrigins,
   makeFrameBuffer,
   statusFrame,
   buildDeepgramUrlQuery,
@@ -53,12 +54,11 @@ const HOST = process.env["VOICE_PROXY_HOST"] ?? "127.0.0.1";
 //     visits could open ws://localhost:5176 and spend Deepgram minutes
 //     through our key. Absent or non-matching Origin = reject the upgrade
 //     before any upstream connection exists.
-const ALLOWED_ORIGINS = (
-  process.env["VOICE_ALLOWED_ORIGINS"] ?? "http://localhost:5174"
-)
-  .split(",")
-  .map((o) => o.trim())
-  .filter(Boolean);
+//     Default: Deck's own http://localhost:$PORT (4242 unless PORT is set) and
+//     the dev port; see defaultAllowedOrigins in voice-relay.mjs. An unset OR
+//     blank VOICE_ALLOWED_ORIGINS falls back to it, since an empty allowlist
+//     would reject every upgrade.
+const ALLOWED_ORIGINS = resolveAllowedOrigins(process.env);
 
 // Model + language are explicit (2026-06-11): with `model` unspecified,
 // Deepgram silently falls back to the legacy "base-general" model, which is

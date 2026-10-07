@@ -37,15 +37,55 @@ Out of scope (and where it goes instead):
 
 ## Test plan
 
-To be filled in as the approach settles.
+- `test/voice-proxy-origins.test.ts`: pure tests for `defaultAllowedOrigins`
+  and `resolveAllowedOrigins` (unset, blank, custom `PORT`, `PORT=5174`
+  de-duplication, explicit override), plus a process test that spawns the real
+  proxy with only `PORT` set and checks an upgrade from
+  `http://localhost:4242` is accepted and `http://localhost:4243` is refused.
+- `test/voice-server.test.ts`: `getVoiceDisabledReason` and `getVoiceProxyUrl`.
+- Repo checks: typecheck, test, boundaries, leaks, licence, lib-version,
+  dashes.
+- Manual: production start at 4242 with only `DEEPGRAM_API_KEY` set; recorded
+  below under Decisions log if it could be measured.
 
 ## Decisions log
 
 - 2026-10-07: Branch started from the latest `origin/main`.
+- 2026-10-07: The computation lives in `voice-relay.mjs` only, not also in
+  `voice-relay.ts`. That file already has a hand-kept twin and a cross-copy
+  suite; adding a third thing to keep in step buys nothing, because the proxy
+  imports the `.mjs` and the new tests import it directly.
+- 2026-10-07: Explicit `VOICE_ALLOWED_ORIGINS` replaces the default rather than
+  extending it, as before. A blank value now falls back to the default, since
+  an empty allowlist would reject every upgrade.
+- 2026-10-07: Default hosts are `localhost` only. A page opened as
+  `http://127.0.0.1:4242` sends a different origin and still needs
+  `VOICE_ALLOWED_ORIGINS`.
+- 2026-10-07: "No key" is decided before the browser connects, not by waiting
+  for the proxy's `no_key` frame, which removes the failed WebSocket attempt
+  and its console error. Dead end: the first version read the key in the
+  loader and put the message in `Compose.tsx`, which `test/seam.test.ts`
+  rejects, because that test bans the key's name from everything under `app/`
+  (FND-02). Rather than loosen a guard, the launchers (outside `app/`, and the
+  ones that hand the proxy its key) set `VOICE_DISABLED_REASON` for the app
+  server when no key is present; the loader passes it on and `Compose` shows it
+  as given. A start that bypasses the launchers (`pnpm start`, unsupported)
+  leaves it unset, so the mic behaves as before there. If a maintainer would rather
+  allow the key name in `app/`, the loader could check it directly.
+  The proxy's `no_key` frame stays as a fallback.
+- 2026-10-07: The Tailscale walkthrough uses `tailscale serve` for both Deck
+  and the proxy, because the mic needs a secure context and `https://` pages
+  need `wss://`. The `tailscale serve` flags are written from documentation
+  and were not run here; INSTALL.md says so.
+- 2026-10-07: Corrected the stale voice claims in `INSTALL.md` limitations,
+  `scripts/start-production.mjs` header and `rig/container-image-note.md`,
+  which said the three variables were absent from `.env.example`.
 
 ## Follow-ups
 
-- None yet.
+- `127.0.0.1` and `[::1]` origins are not in the default list.
+- `start-production.mjs` could set `VOICE_PROXY_URL` itself from a configured
+  public origin; left alone.
 
 ## Review feedback
 
