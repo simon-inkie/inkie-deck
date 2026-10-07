@@ -58,6 +58,24 @@ Out of scope:
   only applies to private access, and adding a package there changes tested
   blocks for a temporary need.
 
+## Check results
+
+- Pass: `check:leaks` and `--self-test`, `check:boundaries`, `check:licence`,
+  `check:lib-version`, `check:dashes`, `typecheck`, `node rig/self-test.mjs`.
+- Already failing on main, unchanged by this work: `pnpm test` has 4 failures
+  (`create-agent` CANNOT VERIFY case, `inbox` and `inbox-push` shell suites,
+  the pane-gate cases). This machine lacks `xxd` and has no `LANG` set, both
+  of which INSTALL.md section 1 names as causes. Confirmed identical on a
+  clean checkout of main.
+- Already failing: `check:leaks:messages` reports 6 findings in three older
+  commits on main, none from this branch.
+- Not run: the Docker install rig (no Docker here).
+
 ## Follow-ups
 
-- None yet.
+- Tidy: `pnpm check:leaks -- --self-test` fails because pnpm forwards the
+  literal `--`; the self-test works as `pnpm check:leaks --self-test`.
+- Remove the private-repo `gh auth login` paragraph from INSTALL.md once the
+  repository is public.
+- Reword the `check:leaks:messages` findings in the older commits, or decide
+  they are accepted.
