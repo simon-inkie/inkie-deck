@@ -110,6 +110,52 @@ Out of scope (and where it goes instead):
 - Supersedes: nothing, additive
 - Commits: fix(base): report boot readiness instead of claiming launched + armed (#24)
 
+### 2026-10-07: review feedback recorded
+- What changed: the review of PR #54 is recorded under "Review feedback"
+  below. No code changed in this commit.
+- Why: the maintainer asked for the feedback to live in the SPEC folder.
+- Supersedes: nothing, additive
+- Commits: docs(base): record PR 54 review feedback in spec (#24)
+
+## Review feedback
+
+Review of PR #54 (2026-10-07), one pass over the five open PRs #52 to #56.
+Verdict: minor changes needed. Each finding is open until a commit resolves
+it, and its outcome (fixed, declined or deferred) is added here when it does.
+
+1. INSTALL.md sample output names `wren`. The "First boot" block shows
+   "wren is waiting..." and "1 launched (wren)". Once #52 (rename the sample
+   agent from `wren` to `inkie`) lands, this breaks #52's acceptance, so the
+   sample should say `inkie`. Status: open.
+2. `skipped:provider-switch` falls through the main loop. `launch_agent`
+   can echo `skipped:provider-switch` (and `skipped:provider-state`), which
+   matches neither `launched` nor `skipped`. The agent lands in neither FRESH
+   nor UP, is never readiness-checked, and still counts as "already up" in
+   the `${#AGENTS[@]} - ${#FRESH[@]}` arithmetic. Match `skipped*` or handle
+   it explicitly. Status: open.
+3. Readiness polling can give a false exit 3 on a slow multi-agent boot.
+   Readiness is polled only after every launch and its 12s stagger, and
+   fresh agents are checked one after another against a single 30s deadline.
+   With several agents on a slow first boot, later ones get about one sample
+   and can be reported as "prompt" while still loading. Consider documenting
+   `BOOT_READY_TIMEOUT_SECS` in INSTALL.md. Status: open.
+4. Unverified permission-mode claim. INSTALL.md says the default permission
+   mode is "auto, at the time of writing". That is a claim about Claude Code
+   defaults the PR does not verify; soften or verify it. Status: open.
+5. "Resume picker" wording goes stale after #55. Once #55 merges, the resume
+   picker is no longer a first-run screen, so the INSTALL.md text and the
+   comments that list it should be reworded. Status: open.
+6. Merge order. #54 and #55 both append tests at the end of
+   `packages/base/test/boot-agents.test.sh` (after line 805); keep both
+   blocks when resolving. Rebase #54 onto #55 and #52. Suggested merge
+   order: #53, #56, #52, #55, #54. Status: open.
+
+Nits, no action needed:
+- The `2>/dev/null` mid-pipeline in `boot_pane_has_trust_prompt` applies only
+  to `sed`. Harmless.
+- The trust check matches the literal UI text "Yes, I trust this folder".
+  Accepted by design.
+
 ## Follow-ups
 
 - Readiness reporting for codex and other runtimes.
