@@ -35,13 +35,20 @@ export async function loader() {
 }
 
 export const links: Route.LinksFunction = () => [
-  // Inkie webfonts (League Spartan / Work Sans / Space Grotesk) are loaded via
-  // the @import in app.css. These preconnects warm the font-CDN connection.
+  // Inkie webfonts (League Spartan / Work Sans / Space Grotesk). Loaded here and
+  // not by an @import in app.css: Tailwind inlines at the top of that file, so
+  // a font @import below it is no longer first and browsers drop it (#32).
+  // The preconnects warm the font-CDN connection for the stylesheet below.
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
     rel: "preconnect",
     href: "https://fonts.gstatic.com",
     crossOrigin: "anonymous",
+  },
+  {
+    rel: "stylesheet",
+    href:
+      "https://fonts.googleapis.com/css2?family=League+Spartan:wght@500;700;900&family=Work+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Space+Grotesk:wght@400;500;700&display=swap",
   },
   // TASK-470 PWA shell: manifest + home-screen icon. iOS only fires web push
   // for sites added to the Home Screen (16.4+), and that requires both.

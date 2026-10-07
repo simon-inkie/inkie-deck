@@ -593,10 +593,13 @@ on a machine or user account that does not have one. Pointing Deck at a
 differently-named session with `MC_TMUX_SESSION` works for the application,
 but the launcher will not follow it.
 
-**Typography needs the internet at runtime.** The stylesheet imports three
-fonts from Google Fonts, so an installation with no outbound access renders in
-fallback fonts with no explanation. Nothing else about the application depends
-on egress.
+**Typography needs the internet at runtime.** The page links a stylesheet for
+three fonts from Google Fonts, so a browser with no route to it renders in
+fallback fonts with no explanation. That is the browser's connection, not the
+server's. Until #32 was fixed the fonts never loaded even when online, because
+the `@import` that was meant to fetch them was dropped; if you see fallback
+fonts on a connected browser now, that is a regression worth reporting. Nothing
+else about the application depends on egress.
 
 **Optional subsystems are unverified here.** Voice dictation (Deepgram),
 image descriptions (Gemini) and web push all need keys, are off without them,

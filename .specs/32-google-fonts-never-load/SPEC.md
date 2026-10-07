@@ -52,6 +52,22 @@ Out of scope: self-hosting the fonts, font choice, any other CSS.
   stylesheet is requested, and it does not depend on how Tailwind orders
   inlined imports. This is the first option the issue gives.
 
+- 2026-10-07: Reword the INSTALL.md limitation rather than delete it. Fonts
+  still need a route to Google Fonts from the browser, so the limitation stands,
+  but it now says whose connection matters and records that the offline-only
+  cause was wrong.
+- 2026-10-07: Left the Google Fonts dependency in place. Self-hosting would also
+  remove the egress limitation but is a separate change.
+
+## Results
+
+- Before: `pnpm build` printed the `@import rules must precede` warning twice.
+  After: zero. Built CSS has no `googleapis` reference.
+- `pnpm dev` server-rendered HTML contains the font stylesheet `<link>` after
+  the preconnects, and the dev log has no `@import` warning.
+- `document.fonts` in a clean browser profile: not measured here (see Test
+  plan); needs a browser with access to Google Fonts.
+
 ## Follow-ups
 
-- None yet.
+- Self-host the three fonts so the app has no runtime egress dependency.
