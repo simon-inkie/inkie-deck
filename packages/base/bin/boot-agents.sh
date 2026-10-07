@@ -55,7 +55,8 @@
 #   3  launched, but at least one claude agent is waiting on a Claude Code
 #      prompt (folder trust and other first-run screens) and needs a person
 # Tunables: BOOT_READY_TIMEOUT_SECS (default 30) bounds the readiness wait,
-# BOOT_READY_POLL_SECS (default 1) is the gap between samples.
+# counted from the end of the launches; BOOT_READY_POLL_SECS (default 1) is
+# the gap between sampling rounds.
 #
 # Assumes the templates/ persona layout: each agent's home is
 # $AGENTS_HOME/<name>/ and holds a SOUL.md. Override AGENTS_HOME if yours
@@ -605,8 +606,9 @@ codex_home_for_agent() {
 
 # ---------------------------------------------------------------------------
 # Launch readiness for claude agents (#24). Typing a launch command is not a
-# working agent: a fresh Claude Code pane stops at first-run screens (folder
-# trust, the resume picker, renderer offers) and waits there for a human. So
+# working agent: a fresh Claude Code pane can stop at first-run screens
+# (folder trust, renderer offers, whatever a later version adds) and wait there
+# for a human. So
 # after launching, each claude pane is sampled and reported as ready, waiting
 # on a Claude Code prompt, or not running, and the folder trust screen is
 # named so the person knows which answer to give.
@@ -672,7 +674,7 @@ boot_pane_has_ready_composer() {
 # boot_pane_state <pane_text> -- print one of:
 #   trust   the folder trust screen
 #   ready   a composer waiting for input, or a pane busy mid-turn
-#   prompt  anything else: a first-run screen, a picker, or still loading
+#   prompt  anything else: a first-run screen or menu, or still loading
 # Trust is checked FIRST. Reading a trust screen as ready is the bug this
 # exists to fix; reading a ready pane as trust (prose that happens to begin a
 # line with the label) costs one extra line in the boot report.
@@ -694,25 +696,48 @@ boot_capture_pane() {
   tmux capture-pane -t "$1" -p 2>/dev/null
 }
 
-# boot_wait_for_ready <target> <deadline> -- poll the pane until it is ready or
-# on the trust screen, or until $SECONDS reaches <deadline>, and print
-# ready|trust|prompt|not-running. Always samples at least once, so a deadline
-# already passed gives a single reading. "not-running" means the pane's
-# command was never claude/node at the last sample (the CLI is missing, or
-# exited). BOOT_READY_POLL_SECS is the gap between samples.
-boot_wait_for_ready() {
-  local target="$1" deadline="$2" interval="${BOOT_READY_POLL_SECS:-1}" state="not-running"
+# boot_sample_once <target> -- one reading of a pane: ready|trust|prompt, or
+# not-running when the pane's command is not claude/node (the CLI is missing,
+# or exited).
+boot_sample_once() {
+  local target="$1"
+  if boot_pane_current_command "$target" | grep -qiE 'claude|node'; then
+    boot_pane_state "$(boot_capture_pane "$target")"
+  else
+    echo "not-running"
+  fi
+}
+
+# boot_poll_ready <deadline> <agent>... -- print "<agent> <state>" for each
+# agent, in the order given. Every agent not yet ready or on the trust screen
+# is sampled once per ROUND, and rounds repeat until all have settled or
+# $SECONDS reaches <deadline>; the last reading stands. At least one round
+# always runs, so a deadline already passed gives a single reading each.
+#
+# ROUND-ROBIN, NOT ONE AGENT AFTER ANOTHER (review finding on #54). Polling
+# each agent to the deadline in turn let one agent sitting on an unknown
+# prompt spend the whole window, so every agent after it got a single sample
+# and could be reported waiting while it was still loading: a false exit 3 on
+# a slow multi-agent first boot. Sampled in rounds, every agent gets the whole
+# window. BOOT_READY_POLL_SECS is the gap between rounds.
+boot_poll_ready() {
+  local deadline="$1"; shift
+  [[ $# -gt 0 ]] || return 0
+  local interval="${BOOT_READY_POLL_SECS:-1}" i pending
+  local -a names=("$@") states=()
+  for i in "${!names[@]}"; do states[i]="not-running"; done
   while :; do
-    if boot_pane_current_command "$target" | grep -qiE 'claude|node'; then
-      state="$(boot_pane_state "$(boot_capture_pane "$target")")"
-      [[ "$state" == "prompt" ]] || break
-    else
-      state="not-running"
-    fi
+    pending=0
+    for i in "${!names[@]}"; do
+      case "${states[i]}" in ready|trust) continue ;; esac
+      states[i]="$(boot_sample_once "$SESSION:${names[i]}")"
+      case "${states[i]}" in ready|trust) ;; *) pending=1 ;; esac
+    done
+    [[ "$pending" -eq 0 ]] && break
     [[ "$SECONDS" -ge "$deadline" ]] && break
     [[ "$interval" -gt 0 ]] 2>/dev/null && sleep "$interval"
   done
-  echo "$state"
+  for i in "${!names[@]}"; do printf '%s %s\n' "${names[i]}" "${states[i]}"; done
 }
 
 # boot_readiness_message <agent> <state> -- the per-agent line for a pane that
@@ -815,45 +840,50 @@ launch_agent() {
 # Only sleep after an actual launch (skips are free). Override with
 # BOOT_STAGGER_SECS=0 for a fast serial boot on a quiet box.
 STAGGER_SECS="${BOOT_STAGGER_SECS:-12}"
-declare -a FRESH=() UP=()
+# launch_agent answers "launched", "skipped" (already running), or
+# "skipped:<reason>" when it refused to launch (a provider switch in progress,
+# unreadable provider state). The last is neither up nor launched, and is
+# reported as such rather than counted as "already up".
+declare -a FRESH=() UP=() NOT_LAUNCHED=()
 for a in "${AGENTS[@]}"; do
   result="$(launch_agent "$a")"
-  if [[ "$result" == "launched" ]]; then
-    FRESH+=("$a")
-    [[ "$STAGGER_SECS" -gt 0 ]] && sleep "$STAGGER_SECS"
-  elif [[ "$result" == "skipped" ]]; then
-    UP+=("$a")
-  fi
+  case "$result" in
+    launched)
+      FRESH+=("$a")
+      [[ "$STAGGER_SECS" -gt 0 ]] && sleep "$STAGGER_SECS"
+      ;;
+    skipped) UP+=("$a") ;;
+    *) NOT_LAUNCHED+=("$a (${result#skipped:})") ;;
+  esac
 done
 
-# Readiness (see boot_wait_for_ready above). Fresh claude agents are polled
-# against ONE shared deadline, so the whole check is bounded by
-# BOOT_READY_TIMEOUT_SECS however many agents there are. Claude agents that
-# were already up get a single sample: re-running this after a stalled first
-# boot must not report a pane still sitting on the trust screen as fine.
-# Other runtimes are listed as not checked; codex verifies its own launch.
+# Readiness (see boot_poll_ready above). Fresh claude agents are polled in
+# rounds against ONE shared deadline, so the whole check is bounded by
+# BOOT_READY_TIMEOUT_SECS however many agents there are, and every agent gets
+# the whole window. Claude agents that were already up get a single reading:
+# re-running this after a stalled first boot must not report a pane still
+# sitting on the trust screen as fine. Other runtimes are listed as not
+# checked; codex verifies its own launch.
 READY_DEADLINE=$(( SECONDS + ${BOOT_READY_TIMEOUT_SECS:-30} ))
-# Plain arrays and a "fresh:" tag rather than an associative array, which
-# bash 3.2 (the macOS /bin/bash) does not have.
-declare -a READY=() WAITING=() NOT_RUNNING=() NOT_CHECKED=() TO_CHECK=()
-for a in ${FRESH[@]+"${FRESH[@]}"}; do TO_CHECK+=("fresh:$a"); done
-for a in ${UP[@]+"${UP[@]}"}; do TO_CHECK+=("up:$a"); done
-for entry in ${TO_CHECK[@]+"${TO_CHECK[@]}"}; do
-  a="${entry#*:}"
-  if [[ "$(get_runtime "$a")" != "claude" ]]; then
-    [[ "$entry" == fresh:* ]] && NOT_CHECKED+=("$a")
-    continue
-  fi
-  deadline="$READY_DEADLINE"
-  [[ "$entry" == fresh:* ]] || deadline="$SECONDS"
-  state="$(boot_wait_for_ready "$SESSION:$a" "$deadline")"
+declare -a READY=() WAITING=() NOT_RUNNING=() NOT_CHECKED=() POLL_FRESH=() POLL_UP=()
+for a in ${FRESH[@]+"${FRESH[@]}"}; do
+  if [[ "$(get_runtime "$a")" == "claude" ]]; then POLL_FRESH+=("$a"); else NOT_CHECKED+=("$a"); fi
+done
+for a in ${UP[@]+"${UP[@]}"}; do
+  [[ "$(get_runtime "$a")" == "claude" ]] && POLL_UP+=("$a")
+done
+while read -r a state; do
+  [[ -n "$a" ]] || continue
   case "$state" in
     ready) READY+=("$a") ;;
     trust|prompt) WAITING+=("$a") ;;
     *) NOT_RUNNING+=("$a") ;;
   esac
   boot_readiness_message "$a" "$state"
-done
+done < <(
+  boot_poll_ready "$READY_DEADLINE" ${POLL_FRESH[@]+"${POLL_FRESH[@]}"}
+  boot_poll_ready "$SECONDS" ${POLL_UP[@]+"${POLL_UP[@]}"}
+)
 
 # is_not_ready <agent> -- 0 if the readiness check found it not ready.
 is_not_ready() {
@@ -923,7 +953,8 @@ tmux set -g allow-passthrough on 2>/dev/null || true
 
 # Summary. "launched" means a launch command was typed, nothing more; the
 # lines after it say what each pane actually came up as.
-echo "boot-agents: ${#FRESH[@]} launched (${FRESH[*]:-none}), $(( ${#AGENTS[@]} - ${#FRESH[@]} )) already up"
+echo "boot-agents: ${#FRESH[@]} launched (${FRESH[*]:-none}), ${#UP[@]} already up"
+for x in ${NOT_LAUNCHED[@]+"${NOT_LAUNCHED[@]}"}; do echo "boot-agents: not launched: $x"; done
 [[ ${#READY[@]} -gt 0 ]] && echo "boot-agents: ready: ${READY[*]}"
 [[ ${#WAITING[@]} -gt 0 ]] && echo "boot-agents: waiting on a Claude Code prompt: ${WAITING[*]}"
 [[ ${#NOT_RUNNING[@]} -gt 0 ]] && echo "boot-agents: runtime not running: ${NOT_RUNNING[*]}"

@@ -897,43 +897,63 @@ expect_state "composer above background-task list"      ready  "$READY_BG_TASKS"
 expect_state "busy mid-turn"                            ready  "$BUSY_PANE"
 expect_state "trust label quoted in prose"              ready  "$PROSE_QUOTE"
 
-# boot_wait_for_ready against stubbed panes. The stubs run inside the command
-# substitution, so the sample count goes through a file.
+# boot_poll_ready against stubbed panes. The stubs run inside a command
+# substitution, so per-agent sample counts go through files.
 R_DIR=$(mktemp -d)
-R_CMD="claude"
-r_reset() { : > "$R_DIR/count"; }
-boot_pane_current_command() { printf '%s\n' "$R_CMD"; }
-# Serves R_SEQ[0], R_SEQ[1], ... and repeats the last one.
+SESSION="test"
+r_reset() { rm -f "$R_DIR"/count.* "$R_DIR"/cmd.*; }
+# Per-agent command: $R_DIR/cmd.<agent> if present, else "claude".
+boot_pane_current_command() {
+  local a="${1#*:}"
+  if [ -f "$R_DIR/cmd.$a" ]; then cat "$R_DIR/cmd.$a"; else echo claude; fi
+}
+# Serves <agent>'s sequence R_SEQ_<agent>[0], [1], ... and repeats the last.
 boot_capture_pane() {
-  local n
-  n=$(wc -l < "$R_DIR/count")
-  echo x >> "$R_DIR/count"
-  [ "$n" -ge "${#R_SEQ[@]}" ] && n=$(( ${#R_SEQ[@]} - 1 ))
-  printf '%s\n' "${R_SEQ[$n]}"
+  local a="${1#*:}" n arr
+  n=$(wc -l < "$R_DIR/count.$a" 2>/dev/null || echo 0)
+  echo x >> "$R_DIR/count.$a"
+  arr="R_SEQ_$a[@]"
+  local -a seq=("${!arr}")
+  [ "$n" -ge "${#seq[@]}" ] && n=$(( ${#seq[@]} - 1 ))
+  printf '%s\n' "${seq[$n]}"
 }
-r_samples() { wc -l < "$R_DIR/count" | tr -d ' '; }
-expect_wait() {
-  local name="$1" want="$2" want_samples="$3" deadline="$4" got samples
-  r_reset
-  got=$(BOOT_READY_POLL_SECS=0 boot_wait_for_ready "test:wren" "$deadline")
-  samples=$(r_samples)
-  if [ "$got" = "$want" ] && { [ -z "$want_samples" ] || [ "$samples" = "$want_samples" ]; }; then
-    pass "R wait: $name"
-  else
-    fail "R wait: $name" "got '$got' after $samples samples (want '$want'${want_samples:+ after $want_samples})"
-  fi
+r_samples() { wc -l < "$R_DIR/count.$1" 2>/dev/null | tr -d ' ' || echo 0; }
+[ -f "$R_DIR/count.x" ] || true
+expect_poll() {  # <name> <deadline> <agent:state>... (expected, in order)
+  local name="$1" deadline="$2" got want; shift 2
+  got=$(BOOT_READY_POLL_SECS=0 boot_poll_ready "$deadline" $(for w in "$@"; do echo "${w%%:*}"; done) | tr '\n' ' ')
+  want=$(for w in "$@"; do printf '%s %s ' "${w%%:*}" "${w#*:}"; done)
+  if [ "$got" = "$want" ]; then pass "R poll: $name"; else fail "R poll: $name" "got '$got' want '$want'"; fi
 }
-R_SEQ=("$LOADING_PANE" "$LOADING_PANE" "$READY_COMPOSER")
-expect_wait "polls through loading and stops at the first ready sample" ready 3 $(( SECONDS + 30 ))
-R_SEQ=("$TRUST_UNNUMBERED")
-expect_wait "stops at once on the trust screen" trust 1 $(( SECONDS + 30 ))
-R_SEQ=("$UNKNOWN_PROMPT")
-expect_wait "an unknown prompt at the deadline is prompt" prompt 1 "$SECONDS"
-R_CMD="bash"
-R_SEQ=("$READY_COMPOSER")
-expect_wait "a shell in the pane is not-running, and is never classified" not-running 0 "$SECONDS"
-R_CMD="claude"
+r_reset
+R_SEQ_wren=("$LOADING_PANE" "$LOADING_PANE" "$READY_COMPOSER")
+expect_poll "polls through loading and stops at the first ready sample" $(( SECONDS + 30 )) wren:ready
+[ "$(r_samples wren)" = "3" ] && pass "R poll: ready after exactly 3 samples" || fail "R poll: ready after exactly 3 samples" "got $(r_samples wren)"
+r_reset
+R_SEQ_wren=("$TRUST_UNNUMBERED")
+expect_poll "stops at once on the trust screen" $(( SECONDS + 30 )) wren:trust
+[ "$(r_samples wren)" = "1" ] && pass "R poll: trust after exactly 1 sample" || fail "R poll: trust after exactly 1 sample" "got $(r_samples wren)"
+r_reset
+R_SEQ_wren=("$UNKNOWN_PROMPT")
+expect_poll "an unknown prompt at the deadline is prompt" "$SECONDS" wren:prompt
+r_reset
+echo bash > "$R_DIR/cmd.wren"
+R_SEQ_wren=("$READY_COMPOSER")
+expect_poll "a shell in the pane is not-running, and is never classified" "$SECONDS" wren:not-running
+[ "$(r_samples wren)" = "0" ] && pass "R poll: a shell pane is never captured" || fail "R poll: a shell pane is never captured" "got $(r_samples wren)"
+
+# Review finding on #54: one agent that never settles must not starve the
+# agents after it. "stuck" sits on an unknown prompt; "late" loads for four
+# rounds and then shows a composer. Polled one after another to a deadline,
+# "late" would have been read once and reported waiting. In rounds, it settles.
+r_reset
+R_SEQ_stuck=("$UNKNOWN_PROMPT")
+R_SEQ_late=("$LOADING_PANE" "$LOADING_PANE" "$LOADING_PANE" "$LOADING_PANE" "$READY_COMPOSER")
+R_START=$SECONDS
+expect_poll "an agent stuck at a prompt does not starve a slower one" $(( SECONDS + 3 )) stuck:prompt late:ready
+r_reset
 unset -f boot_pane_current_command boot_capture_pane
+SESSION="agents"
 rm -rf "$R_DIR"
 
 R_MSG=$(boot_readiness_message wren trust)
@@ -995,6 +1015,24 @@ if [ "$E_RC" -eq 0 ] && printf '%s' "$E_OUT" | grep -qF 'ready: wren' \
   pass "R e2e: ready composer exits 0, reports ready, and is armed"
 else
   fail "R e2e: ready composer exits 0, reports ready, and is armed" "rc=$E_RC out=$E_OUT"
+fi
+# Review finding on #54: launch_agent answers "skipped:provider-switch" while a
+# provider switch holds the agent's lock. That is neither "launched" nor "already
+# up", so it must be reported as not launched and left out of both counts.
+mkdir -p "$E_DIR/state/wren/provider-switch.lock"
+printf '%s\n' "$READY_COMPOSER" > "$E_DIR/pane"
+rm -f "$E_DIR/launched" "$E_DIR/sent"
+E_OUT=$(env HOME="$E_DIR/home" PATH="$E_DIR/bin:$PATH" E_STUB_DIR="$E_DIR" \
+  AGENTS_HOME="$E_DIR/agents" PROVIDER_SWITCH_STATE_ROOT="$E_DIR/state" \
+  BOOT_STAGGER_SECS=0 BOOT_READY_TIMEOUT_SECS=0 bash "$BIN" 2>&1)
+E_RC=$?
+if [ "$E_RC" -eq 0 ] \
+  && printf '%s' "$E_OUT" | grep -qF 'not launched: wren (provider-switch)' \
+  && printf '%s' "$E_OUT" | grep -qF '0 launched (none), 0 already up' \
+  && [ ! -f "$E_DIR/sent" ]; then
+  pass "R e2e: a provider-switch skip is reported, not counted as already up"
+else
+  fail "R e2e: a provider-switch skip is reported, not counted as already up" "rc=$E_RC out=$E_OUT"
 fi
 rm -rf "$E_DIR"
 

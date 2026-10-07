@@ -117,38 +117,83 @@ Out of scope (and where it goes instead):
 - Supersedes: nothing, additive
 - Commits: docs(base): record PR 54 review feedback in spec (#24)
 
+### 2026-10-07: patch for the review findings
+- What changed:
+  - The main loop now matches `launched`, `skipped` and `skipped:<reason>`
+    explicitly. A refused launch (provider switch in progress, unreadable
+    provider state) is printed as "not launched: <agent> (<reason>)" and is
+    in neither the launched nor the already-up count. The already-up count is
+    now the real number of skipped-because-running agents, not
+    `agents - launched`.
+  - Readiness polling is now `boot_poll_ready`: one reading per unsettled
+    agent per round, rounds repeating to the shared deadline, replacing
+    `boot_wait_for_ready` (agent after agent). One agent stuck at an unknown
+    prompt can no longer leave later agents with a single reading and a false
+    exit 3. A test pins exactly that case.
+  - INSTALL.md "First boot": sample output uses `inkie`; documents
+    `BOOT_READY_TIMEOUT_SECS` (what it counts from, what a timeout looks like,
+    how to raise it) and the not-launched line; the permission-mode sentence
+    no longer states a default, since this PR does not verify one; the resume
+    picker is no longer listed as a first-run screen, here and in the script's
+    comments (#55 makes launches pin a session, so it should not appear).
+  - Tests: the wait cases are rewritten for the round-robin poller, plus a
+    starvation case and an end-to-end provider-switch case. 60 pass.
+- Why:
+  - Finding 2: `skipped:provider-switch` was matched by nothing, so the agent
+    was never checked and was counted as already up.
+  - Finding 3: the false exit 3 was real. The deadline was shared but spent in
+    order. Rounds fix the cause; a longer default would only have hidden it.
+    The readiness check still starts only after the last launch and its
+    stagger, which keeps the fix small. Panes launched early have had longest
+    to settle, so this errs towards fewer false waits.
+  - Finding 4: the PR cannot verify Claude Code's default mode, so it states
+    none.
+  - Finding 5: reworded now rather than after #55, because the wording is
+    false the moment #55 merges and still harmless before.
+  - Finding 6: the new tests are inserted inside the readiness block, which
+    sits at the end of the file, so a merge with #55 conflicts only where both
+    append after the same line. Resolve by keeping both blocks. Rebasing onto
+    #52 and #55 is not done here: neither is merged, and rebasing onto an
+    open PR's branch would couple this PR's history to theirs. After they
+    merge, update this branch from `main`.
+  - `wren` in INSTALL.md outside the First boot block is #52's rename to make,
+    not this PR's.
+- Supersedes: the `boot_wait_for_ready` description in "readiness check,
+  report, exit 3, tests and docs" above; that function no longer exists.
+- Commits: fix(base): poll readiness in rounds and report refused launches (#24)
+
 ## Review feedback
 
 Review of PR #54 (2026-10-07), one pass over the five open PRs #52 to #56.
-Verdict: minor changes needed. Each finding is open until a commit resolves
-it, and its outcome (fixed, declined or deferred) is added here when it does.
+Verdict: minor changes needed. Each finding carries its outcome (fixed,
+declined or deferred), updated when a commit resolves it.
 
 1. INSTALL.md sample output names `wren`. The "First boot" block shows
    "wren is waiting..." and "1 launched (wren)". Once #52 (rename the sample
    agent from `wren` to `inkie`) lands, this breaks #52's acceptance, so the
-   sample should say `inkie`. Status: open.
+   sample should say `inkie`. Status: fixed (see the 2026-10-07 patch entry).
 2. `skipped:provider-switch` falls through the main loop. `launch_agent`
    can echo `skipped:provider-switch` (and `skipped:provider-state`), which
    matches neither `launched` nor `skipped`. The agent lands in neither FRESH
    nor UP, is never readiness-checked, and still counts as "already up" in
    the `${#AGENTS[@]} - ${#FRESH[@]}` arithmetic. Match `skipped*` or handle
-   it explicitly. Status: open.
+   it explicitly. Status: fixed (see the patch entry).
 3. Readiness polling can give a false exit 3 on a slow multi-agent boot.
    Readiness is polled only after every launch and its 12s stagger, and
    fresh agents are checked one after another against a single 30s deadline.
    With several agents on a slow first boot, later ones get about one sample
    and can be reported as "prompt" while still loading. Consider documenting
-   `BOOT_READY_TIMEOUT_SECS` in INSTALL.md. Status: open.
+   `BOOT_READY_TIMEOUT_SECS` in INSTALL.md. Status: fixed (see the patch entry).
 4. Unverified permission-mode claim. INSTALL.md says the default permission
    mode is "auto, at the time of writing". That is a claim about Claude Code
-   defaults the PR does not verify; soften or verify it. Status: open.
+   defaults the PR does not verify; soften or verify it. Status: fixed (see the patch entry).
 5. "Resume picker" wording goes stale after #55. Once #55 merges, the resume
    picker is no longer a first-run screen, so the INSTALL.md text and the
-   comments that list it should be reworded. Status: open.
+   comments that list it should be reworded. Status: fixed (see the patch entry).
 6. Merge order. #54 and #55 both append tests at the end of
    `packages/base/test/boot-agents.test.sh` (after line 805); keep both
    blocks when resolving. Rebase #54 onto #55 and #52. Suggested merge
-   order: #53, #56, #52, #55, #54. Status: open.
+   order: #53, #56, #52, #55, #54. Status: handled as far as this branch can; the rebase itself waits on #52 and #55 merging (see the patch entry).
 
 Nits, no action needed:
 - The `2>/dev/null` mid-pipeline in `boot_pane_has_trust_prompt` applies only

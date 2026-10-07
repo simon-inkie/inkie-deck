@@ -404,17 +404,17 @@ contents of a pane cannot be produced that way.
 
 ### First boot
 
-With a model CLI installed, a new agent does not come up ready on its first
-boot. Claude Code stops at its first-run screens and waits for a person: the
-folder trust question first, then whatever else that version shows (a resume
-picker, a renderer offer). `boot-agents.sh` does not answer them. After
-launching, it looks at each Claude agent's pane and reports what it found,
-and it exits 3 if any agent is waiting on a prompt:
+With a model CLI installed, a new agent may not come up ready on its first
+boot. Claude Code can stop at first-run screens and wait for a person: the
+folder trust question first, then whatever else that version shows, such as a
+renderer offer. `boot-agents.sh` does not answer them. After launching, it
+looks at each Claude agent's pane and reports what it found, and it exits 3 if
+any agent is waiting on a prompt:
 
 ```text
-boot-agents: wren is waiting on Claude Code's folder trust prompt: open its terminal in Deck and choose "Yes, I trust this folder". Do not press Enter until that option is selected: on some Claude Code versions "No, exit" is preselected, and Enter on it exits the agent.
-boot-agents: 1 launched (wren), 0 already up
-boot-agents: waiting on a Claude Code prompt: wren
+boot-agents: inkie is waiting on Claude Code's folder trust prompt: open its terminal in Deck and choose "Yes, I trust this folder". Do not press Enter until that option is selected: on some Claude Code versions "No, exit" is preselected, and Enter on it exits the agent.
+boot-agents: 1 launched (inkie), 0 already up
+boot-agents: waiting on a Claude Code prompt: inkie
 ```
 
 Open the agent's terminal in Deck and answer each screen. Move the selection
@@ -425,14 +425,27 @@ Claude agent is ready. The script never writes Claude Code's own trust
 settings to skip this, because that file is internal to Claude Code and
 changes between versions.
 
-Agents run in Claude Code's default permission mode (auto, at the time of
-writing) unless you configure one. The launch command passes no permission
-flag, so set `permissions.defaultMode` in the agent's `.claude/settings.json`
-if you want something else.
+The readiness check starts once every launch has been typed, and watches all
+the new agents together for `BOOT_READY_TIMEOUT_SECS` seconds (default 30). A
+slow machine can need longer: an agent still loading when the time runs out is
+reported as waiting on a prompt. If you see that, and the pane turns out to be
+fine, run the script again, or raise the limit:
+
+```text
+BOOT_READY_TIMEOUT_SECS=90 packages/base/bin/boot-agents.sh
+```
+
+The launch command passes no permission flag, so agents run in whatever
+permission mode your Claude Code version and settings give them. Check what
+that is before leaving an agent unattended, and set `permissions.defaultMode`
+in the agent's `.claude/settings.json` if you want a particular one.
 
 An agent auto-armed on boot (a `.auto-arm-watcher` file in its home) is only
 armed once its pane is ready, because the arm ends in Enter and Enter on the
 trust screen can be the "No, exit" answer.
+
+An agent that is skipped because a provider switch is in progress is listed as
+not launched, and is neither counted as launched nor as already up.
 
 On a machine with no model CLI, the report says the runtime is not running
 in the pane, and the exit status stays 0.
