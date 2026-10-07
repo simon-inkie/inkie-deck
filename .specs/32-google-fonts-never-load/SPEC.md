@@ -68,6 +68,12 @@ Out of scope: self-hosting the fonts, font choice, any other CSS.
 - `document.fonts` in a clean browser profile: not measured here (see Test
   plan); needs a browser with access to Google Fonts.
 
+- Checks: typecheck, boundaries, leaks, licence, lib-version and dashes pass.
+  `packages/deck` tests: 2168 passed, 11 skipped. `packages/base` tests: 4
+  failed, 42 passed, identical on `origin/main` before this change. They are
+  environmental in this sandbox (no `xxd`, no UTF-8 locale, no model CLI) and
+  untouched by this change.
+
 ## Follow-ups
 
 - Self-host the three fonts so the app has no runtime egress dependency.
