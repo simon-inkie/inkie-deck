@@ -79,6 +79,7 @@ apt-get install -y ca-certificates curl git ripgrep python3 tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ```
 
 `curl` comes first on purpose. It is absent from a bare Ubuntu image and the
@@ -97,24 +98,19 @@ and Homebrew has no formula for it. If yours has somehow gone, `brew install
 vim` brings it back. This is the belief half of the document, not the observed
 half.
 
-Check what you got. Anything on the `22.13` line or above, or 24 and above, is
-inside the supported range; pnpm refuses to install on anything else and tells
-you why.
+Check Node. Anything on the `22.13` line or above, or 24 and above, is inside
+the supported range; pnpm refuses to install on anything else and tells you
+why. Do not check pnpm yet: that happens in section 2, inside your clone,
+because outside it corepack has no `packageManager` field to read and fetches
+the latest pnpm instead of the pinned one.
 
 ```sh
 node --version
-pnpm --version
 ```
 
 ```text
 v22.23.2
-10.34.5
 ```
-
-The pnpm version is pinned by the repository's `packageManager` field, so
-corepack fetches that exact version the first time you run it whatever you
-have installed globally. The first `pnpm --version` is therefore slower than
-it looks like it should be.
 
 One last thing, and only if your shell has no locale set, which is normal
 inside a container and on some minimal server images:
@@ -135,6 +131,26 @@ already has this and can skip it.
 ## 2. Install the dependencies
 
 Everything from here runs from the root of your clone.
+
+Check pnpm now, and not earlier. The pnpm version is pinned by the
+repository's `packageManager` field, so corepack fetches that exact version the
+first time you run it inside the clone, whatever you have installed globally.
+Outside the clone there is no pin and corepack fetches the latest release,
+which is not the one this repository was measured with. The first run is slower
+than it looks like it should be, because of that download.
+
+```sh
+pnpm --version
+```
+
+```text
+10.34.5
+```
+
+By default corepack asks `Y/n` before it downloads pnpm, and that prompt hangs a
+script or a container. The `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` line in section 1
+switches it off, for that shell only. If you open a new terminal, either set it
+again or answer `Y` when asked.
 
 ```sh
 pnpm install
