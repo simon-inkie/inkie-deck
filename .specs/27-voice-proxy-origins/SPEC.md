@@ -45,8 +45,18 @@ Out of scope (and where it goes instead):
 - `test/voice-server.test.ts`: `getVoiceDisabledReason` and `getVoiceProxyUrl`.
 - Repo checks: typecheck, test, boundaries, leaks, licence, lib-version,
   dashes.
-- Manual: production start at 4242 with only `DEEPGRAM_API_KEY` set; recorded
-  below under Decisions log if it could be measured.
+- Manual, run 2026-10-07 on a real `pnpm build` and `start-production.mjs`
+  with `PORT` unset: with only `DEEPGRAM_API_KEY` set, the proxy logged
+  `origins: http://localhost:4242, http://localhost:5174` and a WebSocket
+  upgrade with `Origin: http://localhost:4242` was accepted. With no key, the
+  thread page's loader data carried "voice disabled: no DEEPGRAM_API_KEY" and
+  the rendered page contained the disabled note. Not measured: a real browser
+  and a real Deepgram session (needs a key and a microphone), and the
+  Tailscale steps.
+- Gates: typecheck, deck tests, boundaries, leaks, licence, lib-version and
+  dashes pass. `check:leaks:messages` is red from commits already on main, none
+  of this branch's. `packages/base` has 4 failing shell-suite tests in this
+  sandbox, unrelated to this change (not touched).
 
 ## Decisions log
 
