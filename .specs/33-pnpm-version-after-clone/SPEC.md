@@ -55,3 +55,11 @@ Out of scope (and where it goes instead):
 
 - The section 1 apt line list and `corepack enable` run before any clone too,
   which is fine, but INSTALL.md still never says how to clone (separate issue).
+
+## Check results
+
+- Passing: install, typecheck, deck tests (2168), boundaries, leaks, licence,
+  lib-version, dashes.
+- Already failing on `main`, unchanged by this work: 4 tests in
+  `packages/base` (`create-agent` CANNOT VERIFY case, and the `inbox` and
+  `inbox-push` and `pane-idle` shell suites). Environment-related, not touched.
