@@ -42,7 +42,7 @@
 # Usage:
 #   bin/boot-agents.sh                 # resume + arm all agents, stay headless
 #   bin/boot-agents.sh --attach        # same, then attach to the session
-#   bin/boot-agents.sh wren basalt     # only the named agents
+#   bin/boot-agents.sh inkie basalt     # only the named agents
 #
 # After a headless run, view the agents with: tmux attach -t agents
 #
@@ -132,7 +132,7 @@ get_runtime() {
 #     session, which are not the conversation anyone wants resumed.
 #   - cwd == "$AGENTS_HOME/<agent>", matched THROUGH the closing quote, so a
 #     shorter agent name can never match a longer one that starts with it
-#     (agent "wren" must not resume a session belonging to "wren-scratch").
+#     (agent "inkie" must not resume a session belonging to "inkie-scratch").
 #
 # The id comes from the parsed payload, not from string-stripping the filename,
 # so a change to Codex's filename format cannot quietly start yielding wrong

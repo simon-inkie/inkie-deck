@@ -57,7 +57,7 @@ It needs python3, and two environment variables, both required with no
 defaults:
 
 ```bash
-export AGENT_NAME=wren                  # who you are
+export AGENT_NAME=inkie                  # who you are
 export INBOX_ROOT=/path/to/inboxes      # absolute path, no tilde
 
 packages/base/bin/inbox unread
@@ -139,8 +139,8 @@ export ACTIVITY_ROOT=~/.the-vault/activity
 
 packages/base/bin/activity-sweep.sh      # produce (put this on a timer)
 packages/base/bin/activity status --all  # every agent, one line each
-packages/base/bin/activity status wren   # one agent, in detail
-packages/base/bin/activity pin wren ~/repos/site   # override the worktree guess
+packages/base/bin/activity status inkie   # one agent, in detail
+packages/base/bin/activity pin inkie ~/repos/site   # override the worktree guess
 ```
 
 Every output leads with how old the data is, and says so loudly past
@@ -239,7 +239,7 @@ git clone <this-repo-url>
 
 # Starting a new agent from scratch:
 AGENTS_HOME=/path/to/agents INBOX_ROOT=/path/to/inboxes \
-  packages/base/bin/create-agent.sh wren --role "keeps the notes"
+  packages/base/bin/create-agent.sh inkie --role "keeps the notes"
 ```
 
 That writes the persona files, the inbox, and the runtime settings (including
