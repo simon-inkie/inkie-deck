@@ -88,6 +88,23 @@ export const RUNS = {
 };
 
 /**
+ * Executable blocks that are deliberately not run, each with the reason.
+ *
+ * A skip is declared rather than implied, so the coverage accounting still
+ * sees the block: it counts as claimed, and a skip naming a block that has left
+ * the document fails the rig as a stale claim.
+ *
+ * The clone step cannot run here. The rig copies the working tree into a
+ * container that has no network credentials, so `git clone` of the real URL
+ * would be testing the host's access rather than the document, and while the
+ * repository is private it cannot succeed at all. Every later block runs from
+ * the copied tree, which is what the clone would have produced.
+ */
+export const SKIPPED = {
+  "1-prerequisites/sh#4": "git clone of the real URL: no credentials in the container, and the rig copies the tree in instead",
+};
+
+/**
  * Blocks that never return, and the sentence in the document that says so.
  *
  * The runner has to know that `pnpm dev` does not exit, and that knowledge
