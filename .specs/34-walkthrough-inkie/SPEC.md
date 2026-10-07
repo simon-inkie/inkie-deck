@@ -58,3 +58,13 @@ Out of scope:
 
 - `packages/base/ROSTER.md` still has a fictional "Wren" persona. Rename it if
   the acceptance search is meant to be case-insensitive.
+
+## Results
+
+- `pnpm typecheck`, `check:boundaries`, `check:leaks`, `check:licence`,
+  `check:lib-version` and `check:dashes` pass. `rig --self-test` passes.
+- `pnpm test`: four failures in `packages/base`, identical on `main` before
+  this change (`create-agent` "no runtime on PATH", `inbox.test.sh`,
+  `inbox-push.test.sh`, `pane-idle.test.sh`). Not caused by this change.
+- The full rig run needs a docker daemon, which this environment lacks, so the
+  stage 08 change is unexecuted here. CI or a local run should confirm it.
