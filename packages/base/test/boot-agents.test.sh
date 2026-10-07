@@ -4,7 +4,10 @@
 # codex_pane_has_update_dialog / codex_dismiss_update_dialog_if_present (the
 # update-dialog detector and its keystroke), and
 # codex_verify_resume_or_fallback (launch verification, recovery, and the
-# quarantine gate).
+# quarantine gate). Also the launch readiness report for claude agents (#24):
+# boot_pane_state against first-run screen fixtures, boot_wait_for_ready
+# against stubbed panes, and the boot sequence end to end against a stub tmux
+# on PATH (the "R" cases).
 #
 #   bash packages/base/test/boot-agents.test.sh
 #     -> prints PASS/FAIL per case, exits non-zero on any fail.
@@ -804,6 +807,196 @@ else
 fi
 rm -rf "$P3_DIR" "$TMUX_LOG_P3"
 unset CODEX_SESSIONS_DIR
+
+# ---- launch readiness (#24) ------------------------------------------------
+# A fresh Claude Code pane can stop at first-run screens while the script
+# reported it launched. These fixtures are the SHAPES those screens take, with
+# paths replaced: the trust screen as the issue describes it (unnumbered, "No,
+# exit" selected), the numbered render, and the older boxed headline. What is
+# under test is where the label sits on its line and what sits under a rule.
+R_RULE='──────────────────────────────────────────'
+TRUST_UNNUMBERED=$(printf '%s\n' \
+  "$R_RULE" \
+  ' Accessing workspace:' \
+  '' \
+  ' /home/you/agents/wren' \
+  '' \
+  ' Quick safety check: Is this a project you created or one you trust?' \
+  '' \
+  '   Yes, I trust this folder' \
+  ' ❯ No, exit' \
+  '' \
+  ' Enter to confirm · Esc to cancel')
+TRUST_NUMBERED=$(printf '%s\n' \
+  "$R_RULE" \
+  ' Accessing workspace:' \
+  '' \
+  ' /home/you/agents/wren' \
+  '' \
+  ' ❯ 1. Yes, I trust this folder' \
+  '   2. No, exit' \
+  '' \
+  ' Enter to confirm · Esc to cancel')
+TRUST_BOXED=$(printf '%s\n' \
+  '╭──────────────────────────────────────────╮' \
+  '│ Do you trust the files in this folder?   │' \
+  '│                                          │' \
+  '│ /home/you/agents/wren                    │' \
+  '│                                          │' \
+  '│ ❯ 1. Yes, proceed                        │' \
+  '│   2. No, exit                            │' \
+  '╰──────────────────────────────────────────╯')
+# An offer nobody has seen before: no literal to match, and no composer.
+UNKNOWN_PROMPT=$(printf '%s\n' \
+  ' Try the new fullscreen renderer?' \
+  '' \
+  ' ❯ 1. Yes' \
+  '   2. Not now')
+# A menu whose highlighted option happens to sit directly under a rule. It
+# must not read as a composer.
+MENU_UNDER_RULE=$(printf '%s\n' "$R_RULE" '❯ 1. Resume the last session' '  2. Start fresh')
+READY_COMPOSER=$(printf '%s\n' \
+  ' ✻ Welcome to Claude Code!' \
+  '' \
+  '──────────────────────────────── wren ──' \
+  '❯ ' \
+  "$R_RULE" \
+  '  ? for shortcuts')
+# The composer above a background-task list whose entry carries the same glyph.
+READY_BG_TASKS=$'──────────────── wren ──\n❯ \n────────────────────\n  wren │ Sonnet 5 │ ~/agents/wren │ 29%\n\n  ● main\n❯ ◯ general-purpose  MR opener   32m 4s'
+# Mid-turn, composer scrolled out of the window: busy is past every first-run
+# screen.
+BUSY_PANE=$'  some earlier output\n✽ Dilly-dallying… (16s)'
+# The trust label quoted in prose above a ready composer.
+PROSE_QUOTE=$(printf '%s\n' \
+  '  On first boot, pick Yes, I trust this folder and the agent comes up.' \
+  '' \
+  '──────────────────────────────── wren ──' \
+  '❯ ' \
+  "$R_RULE")
+LOADING_PANE=$'you@host:~/agents/wren$ claude --resume wren || claude'
+
+expect_state() {
+  local name="$1" want="$2" pane="$3" got
+  got=$(boot_pane_state "$pane")
+  if [ "$got" = "$want" ]; then pass "R state: $name -> $want"; else fail "R state: $name -> $want" "got '$got'"; fi
+}
+if declare -F boot_pane_state >/dev/null && declare -F check_idle >/dev/null; then
+  pass "R library defines boot_pane_state and sources check_idle from pane-idle"
+else
+  fail "R library defines boot_pane_state and sources check_idle from pane-idle"
+fi
+expect_state "trust screen, unnumbered, No preselected" trust  "$TRUST_UNNUMBERED"
+expect_state "trust screen, numbered"                   trust  "$TRUST_NUMBERED"
+expect_state "trust screen, older boxed headline"       trust  "$TRUST_BOXED"
+expect_state "unknown first-run offer"                  prompt "$UNKNOWN_PROMPT"
+expect_state "numbered menu option under a rule"        prompt "$MENU_UNDER_RULE"
+expect_state "still loading (shell line only)"          prompt "$LOADING_PANE"
+expect_state "ready composer"                           ready  "$READY_COMPOSER"
+expect_state "composer above background-task list"      ready  "$READY_BG_TASKS"
+expect_state "busy mid-turn"                            ready  "$BUSY_PANE"
+expect_state "trust label quoted in prose"              ready  "$PROSE_QUOTE"
+
+# boot_wait_for_ready against stubbed panes. The stubs run inside the command
+# substitution, so the sample count goes through a file.
+R_DIR=$(mktemp -d)
+R_CMD="claude"
+r_reset() { : > "$R_DIR/count"; }
+boot_pane_current_command() { printf '%s\n' "$R_CMD"; }
+# Serves R_SEQ[0], R_SEQ[1], ... and repeats the last one.
+boot_capture_pane() {
+  local n
+  n=$(wc -l < "$R_DIR/count")
+  echo x >> "$R_DIR/count"
+  [ "$n" -ge "${#R_SEQ[@]}" ] && n=$(( ${#R_SEQ[@]} - 1 ))
+  printf '%s\n' "${R_SEQ[$n]}"
+}
+r_samples() { wc -l < "$R_DIR/count" | tr -d ' '; }
+expect_wait() {
+  local name="$1" want="$2" want_samples="$3" deadline="$4" got samples
+  r_reset
+  got=$(BOOT_READY_POLL_SECS=0 boot_wait_for_ready "test:wren" "$deadline")
+  samples=$(r_samples)
+  if [ "$got" = "$want" ] && { [ -z "$want_samples" ] || [ "$samples" = "$want_samples" ]; }; then
+    pass "R wait: $name"
+  else
+    fail "R wait: $name" "got '$got' after $samples samples (want '$want'${want_samples:+ after $want_samples})"
+  fi
+}
+R_SEQ=("$LOADING_PANE" "$LOADING_PANE" "$READY_COMPOSER")
+expect_wait "polls through loading and stops at the first ready sample" ready 3 $(( SECONDS + 30 ))
+R_SEQ=("$TRUST_UNNUMBERED")
+expect_wait "stops at once on the trust screen" trust 1 $(( SECONDS + 30 ))
+R_SEQ=("$UNKNOWN_PROMPT")
+expect_wait "an unknown prompt at the deadline is prompt" prompt 1 "$SECONDS"
+R_CMD="bash"
+R_SEQ=("$READY_COMPOSER")
+expect_wait "a shell in the pane is not-running, and is never classified" not-running 0 "$SECONDS"
+R_CMD="claude"
+unset -f boot_pane_current_command boot_capture_pane
+rm -rf "$R_DIR"
+
+R_MSG=$(boot_readiness_message wren trust)
+if printf '%s' "$R_MSG" | grep -qF 'wren' \
+  && printf '%s' "$R_MSG" | grep -qF 'Yes, I trust this folder' \
+  && printf '%s' "$R_MSG" | grep -qF 'Do not press Enter' \
+  && printf '%s' "$R_MSG" | grep -qF 'terminal in Deck'; then
+  pass "R trust message names the agent, the choice and the Enter warning"
+else
+  fail "R trust message names the agent, the choice and the Enter warning" "$R_MSG"
+fi
+[ -z "$(boot_readiness_message wren ready)" ] \
+  && pass "R ready prints no per-agent line" \
+  || fail "R ready prints no per-agent line"
+
+# End to end: the real boot sequence against a stub tmux on PATH. The stub
+# reports a shell until a launch command is sent, then claude, and serves the
+# pane from a fixture file. No live tmux is touched.
+E_DIR=$(mktemp -d)
+mkdir -p "$E_DIR/bin" "$E_DIR/home" "$E_DIR/agents/wren"
+: > "$E_DIR/agents/wren/SOUL.md"
+: > "$E_DIR/agents/wren/.auto-arm-watcher"
+cat > "$E_DIR/bin/tmux" <<'STUB'
+#!/usr/bin/env bash
+d="$E_STUB_DIR"
+case "$1" in
+  send-keys) printf '%s\n' "$*" >> "$d/sent"; : > "$d/launched" ;;
+  list-windows) printf 'wren\n' ;;
+  list-panes) if [ -f "$d/launched" ]; then echo claude; else echo bash; fi ;;
+  capture-pane) cat "$d/pane" ;;
+esac
+exit 0
+STUB
+chmod +x "$E_DIR/bin/tmux"
+e2e() {  # <pane fixture> -> sets E_OUT and E_RC
+  printf '%s\n' "$1" > "$E_DIR/pane"
+  rm -f "$E_DIR/launched" "$E_DIR/sent"
+  E_OUT=$(env HOME="$E_DIR/home" PATH="$E_DIR/bin:$PATH" E_STUB_DIR="$E_DIR" \
+    AGENTS_HOME="$E_DIR/agents" BOOT_STAGGER_SECS=0 BOOT_READY_TIMEOUT_SECS=0 \
+    bash "$BIN" 2>&1)
+  E_RC=$?
+}
+e2e "$TRUST_UNNUMBERED"
+if [ "$E_RC" -eq 3 ] \
+  && printf '%s' "$E_OUT" | grep -qF 'waiting on a Claude Code prompt: wren' \
+  && printf '%s' "$E_OUT" | grep -qF 'Yes, I trust this folder' \
+  && ! grep -qF 'arm your monitor' "$E_DIR/sent" 2>/dev/null; then
+  pass "R e2e: trust screen exits 3, names the agent, and is not armed"
+else
+  fail "R e2e: trust screen exits 3, names the agent, and is not armed" "rc=$E_RC out=$E_OUT"
+fi
+# The positive control for the arm gate: a ready pane IS armed. "Monitor
+# started" in the fixture ends the arm script's verify loop on its first pass,
+# which keeps this case to the arm script's own fixed sleeps.
+e2e "$(printf '%s\n' '  Monitor started' "$READY_COMPOSER")"
+if [ "$E_RC" -eq 0 ] && printf '%s' "$E_OUT" | grep -qF 'ready: wren' \
+  && ! printf '%s' "$E_OUT" | grep -qF 'waiting on' \
+  && grep -qF 'arm your monitor' "$E_DIR/sent" 2>/dev/null; then
+  pass "R e2e: ready composer exits 0, reports ready, and is armed"
+else
+  fail "R e2e: ready composer exits 0, reports ready, and is armed" "rc=$E_RC out=$E_OUT"
+fi
+rm -rf "$E_DIR"
 
 echo
 echo "boot-agents: $PASS passed, $FAILS failed"

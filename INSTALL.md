@@ -402,6 +402,41 @@ defaults to on and never looks for the binary, so the terminal view being
 offered in the navigation is not evidence that tmux exists on the machine. The
 contents of a pane cannot be produced that way.
 
+### First boot
+
+With a model CLI installed, a new agent does not come up ready on its first
+boot. Claude Code stops at its first-run screens and waits for a person: the
+folder trust question first, then whatever else that version shows (a resume
+picker, a renderer offer). `boot-agents.sh` does not answer them. After
+launching, it looks at each Claude agent's pane and reports what it found,
+and it exits 3 if any agent is waiting on a prompt:
+
+```text
+boot-agents: wren is waiting on Claude Code's folder trust prompt: open its terminal in Deck and choose "Yes, I trust this folder". Do not press Enter until that option is selected: on some Claude Code versions "No, exit" is preselected, and Enter on it exits the agent.
+boot-agents: 1 launched (wren), 0 already up
+boot-agents: waiting on a Claude Code prompt: wren
+```
+
+Open the agent's terminal in Deck and answer each screen. Move the selection
+to "Yes, I trust this folder" before pressing Enter: on some versions "No,
+exit" is the default, and accepting it closes the agent. Answer any later
+screen the same way, then run `boot-agents.sh` again; it exits 0 once every
+Claude agent is ready. The script never writes Claude Code's own trust
+settings to skip this, because that file is internal to Claude Code and
+changes between versions.
+
+Agents run in Claude Code's default permission mode (auto, at the time of
+writing) unless you configure one. The launch command passes no permission
+flag, so set `permissions.defaultMode` in the agent's `.claude/settings.json`
+if you want something else.
+
+An agent auto-armed on boot (a `.auto-arm-watcher` file in its home) is only
+armed once its pane is ready, because the arm ends in Enter and Enter on the
+trust screen can be the "No, exit" answer.
+
+On a machine with no model CLI, the report says the runtime is not running
+in the pane, and the exit status stays 0.
+
 ### Send a message, and answer it as the agent
 
 From the browser, open the agent's thread and type. Without a browser, this is

@@ -46,6 +46,17 @@
 #
 # After a headless run, view the agents with: tmux attach -t agents
 #
+# Output ends with what each claude pane came up as (ready, waiting on a
+# Claude Code prompt, or runtime not running; see "Launch readiness" below).
+# Exit status:
+#   0  done; every claude agent checked is ready or its runtime is not running
+#   1  no agents found
+#   2  unknown flag
+#   3  launched, but at least one claude agent is waiting on a Claude Code
+#      prompt (folder trust and other first-run screens) and needs a person
+# Tunables: BOOT_READY_TIMEOUT_SECS (default 30) bounds the readiness wait,
+# BOOT_READY_POLL_SECS (default 1) is the gap between samples.
+#
 # Assumes the templates/ persona layout: each agent's home is
 # $AGENTS_HOME/<name>/ and holds a SOUL.md. Override AGENTS_HOME if yours
 # lives somewhere else.
@@ -592,6 +603,135 @@ codex_home_for_agent() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# Launch readiness for claude agents (#24). Typing a launch command is not a
+# working agent: a fresh Claude Code pane stops at first-run screens (folder
+# trust, the resume picker, renderer offers) and waits there for a human. So
+# after launching, each claude pane is sampled and reported as ready, waiting
+# on a Claude Code prompt, or not running, and the folder trust screen is
+# named so the person knows which answer to give.
+#
+# PROMPTS ARE NOT ENUMERATED. They change between Claude Code versions, so
+# "waiting on a prompt" is the ABSENCE of a ready composer, not a match against
+# a list. The trust screen is the one exception, because it needs a specific
+# answer and its default can be the wrong one.
+#
+# Nothing here answers a prompt or writes Claude Code's own trust config: that
+# config is internal and version-fragile, and accepting trust is the person's
+# decision.
+# ---------------------------------------------------------------------------
+
+# Shared busy/idle classifier, sourced rather than re-implemented (see the
+# header of bin/pane-idle for why there is one copy). Only check_idle is used,
+# which every version of the library defines. If it is missing, a busy pane
+# simply falls through to the composer check below.
+BOOT_PANE_IDLE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/pane-idle"
+# shellcheck source=./pane-idle
+[[ -r "$BOOT_PANE_IDLE_LIB" ]] && . "$BOOT_PANE_IDLE_LIB"
+
+# Live-viewport window the shapes below are looked for in. A first-run screen
+# or a composer is at the bottom of the pane because it IS the bottom.
+BOOT_READY_TAIL_LINES=20
+
+# boot_pane_has_trust_prompt <pane_text> -- return 0 iff the pane is showing
+# Claude Code's folder trust screen. Matches the option label or the older
+# headline only where it BEGINS a line, after stripping border chrome, a
+# selection glyph and an option number, so transcript prose that mentions the
+# label inside a sentence does not match.
+boot_pane_has_trust_prompt() {
+  printf '%s\n' "$1" | tail -n "$BOOT_READY_TAIL_LINES" \
+    | sed -E 's/^([[:space:]]|│|┃|║|\|)+//; s/^(❯|›|>)[[:space:]]*//; s/^[0-9]+\.[[:space:]]*//' 2>/dev/null \
+    | grep -qE '^(Yes, I trust this folder|Do you trust the files in this folder)'
+}
+
+# boot_pane_has_ready_composer <pane_text> -- return 0 iff the window holds a
+# Claude Code composer: a prompt-glyph line DIRECTLY under a box-drawing rule,
+# the same anchor find_composer_line in bin/pane-idle uses.
+#
+# find_composer_line itself is not reused: when nothing is rule-anchored it
+# falls back to the last prompt-glyph line in the pane, which is right for its
+# callers and wrong here, because a selection menu's highlighted option ("> No,
+# exit") is exactly such a line and would read as a ready composer. A numbered
+# option under a rule is refused for the same reason.
+boot_pane_has_ready_composer() {
+  local rule='────────' line trimmed prev_rule=0
+  while IFS= read -r line; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$prev_rule" == 1 ]]; then
+      case "$trimmed" in
+        '❯'*|'>'*)
+          printf '%s\n' "$trimmed" | grep -qE '^(❯|>)[[:space:]]*[0-9]+\.' || return 0
+          ;;
+      esac
+    fi
+    case "$line" in *"$rule"*) prev_rule=1 ;; *) prev_rule=0 ;; esac
+  done < <(printf '%s\n' "$1" | tail -n "$BOOT_READY_TAIL_LINES")
+  return 1
+}
+
+# boot_pane_state <pane_text> -- print one of:
+#   trust   the folder trust screen
+#   ready   a composer waiting for input, or a pane busy mid-turn
+#   prompt  anything else: a first-run screen, a picker, or still loading
+# Trust is checked FIRST. Reading a trust screen as ready is the bug this
+# exists to fix; reading a ready pane as trust (prose that happens to begin a
+# line with the label) costs one extra line in the boot report.
+boot_pane_state() {
+  local pane="$1"
+  if boot_pane_has_trust_prompt "$pane"; then echo "trust"; return 0; fi
+  # check_idle returns 0 for BUSY. A pane mid-turn is past every first-run
+  # screen, so it is ready.
+  if declare -F check_idle >/dev/null && check_idle "$pane"; then echo "ready"; return 0; fi
+  if boot_pane_has_ready_composer "$pane"; then echo "ready"; return 0; fi
+  echo "prompt"
+}
+
+# Indirection points so the test suite can stub the pane without a live tmux.
+boot_pane_current_command() {
+  tmux list-panes -t "$1" -F '#{pane_current_command}' 2>/dev/null
+}
+boot_capture_pane() {
+  tmux capture-pane -t "$1" -p 2>/dev/null
+}
+
+# boot_wait_for_ready <target> <deadline> -- poll the pane until it is ready or
+# on the trust screen, or until $SECONDS reaches <deadline>, and print
+# ready|trust|prompt|not-running. Always samples at least once, so a deadline
+# already passed gives a single reading. "not-running" means the pane's
+# command was never claude/node at the last sample (the CLI is missing, or
+# exited). BOOT_READY_POLL_SECS is the gap between samples.
+boot_wait_for_ready() {
+  local target="$1" deadline="$2" interval="${BOOT_READY_POLL_SECS:-1}" state="not-running"
+  while :; do
+    if boot_pane_current_command "$target" | grep -qiE 'claude|node'; then
+      state="$(boot_pane_state "$(boot_capture_pane "$target")")"
+      [[ "$state" == "prompt" ]] || break
+    else
+      state="not-running"
+    fi
+    [[ "$SECONDS" -ge "$deadline" ]] && break
+    [[ "$interval" -gt 0 ]] 2>/dev/null && sleep "$interval"
+  done
+  echo "$state"
+}
+
+# boot_readiness_message <agent> <state> -- the per-agent line for a pane that
+# is not ready. Nothing for ready.
+boot_readiness_message() {
+  local a="$1" state="$2"
+  case "$state" in
+    trust)
+      echo "boot-agents: $a is waiting on Claude Code's folder trust prompt: open its terminal in Deck and choose \"Yes, I trust this folder\". Do not press Enter until that option is selected: on some Claude Code versions \"No, exit\" is preselected, and Enter on it exits the agent."
+      ;;
+    prompt)
+      echo "boot-agents: $a is waiting on a Claude Code prompt: open its terminal in Deck"
+      ;;
+    not-running)
+      echo "boot-agents: $a's runtime is not running in its pane: open its terminal in Deck to see why"
+      ;;
+  esac
+}
+
 # --- library boundary: the test suite sources this file with
 # BOOT_AGENTS_LIB_ONLY=1 to reach the functions above without running any of
 # the live tmux work below. Nothing past this point executes in that mode.
@@ -675,13 +815,54 @@ launch_agent() {
 # Only sleep after an actual launch (skips are free). Override with
 # BOOT_STAGGER_SECS=0 for a fast serial boot on a quiet box.
 STAGGER_SECS="${BOOT_STAGGER_SECS:-12}"
-declare -a FRESH=()
+declare -a FRESH=() UP=()
 for a in "${AGENTS[@]}"; do
-  if [[ "$(launch_agent "$a")" == "launched" ]]; then
+  result="$(launch_agent "$a")"
+  if [[ "$result" == "launched" ]]; then
     FRESH+=("$a")
     [[ "$STAGGER_SECS" -gt 0 ]] && sleep "$STAGGER_SECS"
+  elif [[ "$result" == "skipped" ]]; then
+    UP+=("$a")
   fi
 done
+
+# Readiness (see boot_wait_for_ready above). Fresh claude agents are polled
+# against ONE shared deadline, so the whole check is bounded by
+# BOOT_READY_TIMEOUT_SECS however many agents there are. Claude agents that
+# were already up get a single sample: re-running this after a stalled first
+# boot must not report a pane still sitting on the trust screen as fine.
+# Other runtimes are listed as not checked; codex verifies its own launch.
+READY_DEADLINE=$(( SECONDS + ${BOOT_READY_TIMEOUT_SECS:-30} ))
+# Plain arrays and a "fresh:" tag rather than an associative array, which
+# bash 3.2 (the macOS /bin/bash) does not have.
+declare -a READY=() WAITING=() NOT_RUNNING=() NOT_CHECKED=() TO_CHECK=()
+for a in ${FRESH[@]+"${FRESH[@]}"}; do TO_CHECK+=("fresh:$a"); done
+for a in ${UP[@]+"${UP[@]}"}; do TO_CHECK+=("up:$a"); done
+for entry in ${TO_CHECK[@]+"${TO_CHECK[@]}"}; do
+  a="${entry#*:}"
+  if [[ "$(get_runtime "$a")" != "claude" ]]; then
+    [[ "$entry" == fresh:* ]] && NOT_CHECKED+=("$a")
+    continue
+  fi
+  deadline="$READY_DEADLINE"
+  [[ "$entry" == fresh:* ]] || deadline="$SECONDS"
+  state="$(boot_wait_for_ready "$SESSION:$a" "$deadline")"
+  case "$state" in
+    ready) READY+=("$a") ;;
+    trust|prompt) WAITING+=("$a") ;;
+    *) NOT_RUNNING+=("$a") ;;
+  esac
+  boot_readiness_message "$a" "$state"
+done
+
+# is_not_ready <agent> -- 0 if the readiness check found it not ready.
+is_not_ready() {
+  local x
+  for x in ${WAITING[@]+"${WAITING[@]}"} ${NOT_RUNNING[@]+"${NOT_RUNNING[@]}"}; do
+    [[ "$x" == "$1" ]] && return 0
+  done
+  return 1
+}
 
 # Auto-arm is opt-in per agent, not a hardcoded list: an agent that wants its
 # inbox watcher armed automatically on boot creates an empty marker file at
@@ -697,8 +878,12 @@ should_auto_arm() {
 # Auto-arm the watcher on freshly-launched, opt-in agents. Wait for the TUI to
 # be ready, then type the prompt. Adjust "arm your monitor" to whatever your
 # own watcher-arming instruction is.
+#
+# Never into a pane the readiness check found not ready: the arm ends in Enter,
+# and Enter on a trust screen with "No, exit" preselected exits the agent.
 for a in "${FRESH[@]}"; do
   should_auto_arm "$a" || continue
+  is_not_ready "$a" && continue
   target="$SESSION:$a"
   # wait up to ~45s for the runtime to be the running command in the pane
   for _ in $(seq 1 45); do
@@ -718,6 +903,7 @@ done
 # Up to a few retries makes the arm self-healing.
 for a in "${FRESH[@]}"; do
   should_auto_arm "$a" || continue
+  is_not_ready "$a" && continue
   target="$SESSION:$a"
   for _ in 1 2 3 4; do
     sleep 8
@@ -735,7 +921,16 @@ tmux set -g set-titles on 2>/dev/null || true
 tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
 tmux set -g allow-passthrough on 2>/dev/null || true
 
-echo "boot-agents: ${#FRESH[@]} launched + armed (${FRESH[*]:-none}), $(( ${#AGENTS[@]} - ${#FRESH[@]} )) already up"
+# Summary. "launched" means a launch command was typed, nothing more; the
+# lines after it say what each pane actually came up as.
+echo "boot-agents: ${#FRESH[@]} launched (${FRESH[*]:-none}), $(( ${#AGENTS[@]} - ${#FRESH[@]} )) already up"
+[[ ${#READY[@]} -gt 0 ]] && echo "boot-agents: ready: ${READY[*]}"
+[[ ${#WAITING[@]} -gt 0 ]] && echo "boot-agents: waiting on a Claude Code prompt: ${WAITING[*]}"
+[[ ${#NOT_RUNNING[@]} -gt 0 ]] && echo "boot-agents: runtime not running: ${NOT_RUNNING[*]}"
+[[ ${#NOT_CHECKED[@]} -gt 0 ]] && echo "boot-agents: readiness not checked (not a claude agent): ${NOT_CHECKED[*]}"
 
+# Exit 3: launched, but at least one agent is waiting on a Claude Code prompt
+# and needs a person. --attach replaces this process, so it never returns 3.
 [[ $ATTACH -eq 1 ]] && exec tmux attach -t "$SESSION"
+[[ ${#WAITING[@]} -gt 0 ]] && exit 3
 exit 0
