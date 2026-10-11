@@ -434,7 +434,13 @@ Body for inplace test.")
     # Both are 4 bytes so length stays equal; just check "read" now present and "sent" gone
     AFTER_CONTENT=$(cat "$TPATH")
     if echo "$AFTER_CONTENT" | grep -q "status: read"; then
-      if ! echo "$AFTER_CONTENT" | grep -q "status: sent"; then
+      # Byte-exact: flipping the first "sent" to "read" in
+      # the before-bytes must reproduce the after-bytes, so nothing else moved.
+      EXPECTED_BYTES="${BEFORE_BYTES/73656e74/72656164}"
+      if [ "$EXPECTED_BYTES" != "$AFTER_BYTES" ]; then
+        fail "Case 11: bytes other than sent->read changed" "expected: $EXPECTED_BYTES
+actual:   $AFTER_BYTES"
+      elif ! echo "$AFTER_CONTENT" | grep -q "status: sent"; then
         ok "Case 11: in-place patch -- file length unchanged, sent->read flipped, nothing else moved"
       else
         fail "Case 11: status: sent still present after flip" "content: $AFTER_CONTENT"

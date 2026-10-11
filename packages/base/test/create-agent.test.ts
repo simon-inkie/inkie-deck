@@ -92,6 +92,8 @@ function testPath(box: Sandbox, withStub: boolean): string {
   fs.mkdirSync(nodeBin, { recursive: true });
   const link = path.join(nodeBin, "node");
   if (!fs.existsSync(link)) fs.symlinkSync(process.execPath, link);
+  // /usr/bin and /bin stay: the script needs coreutils. A system-wide `claude`
+  // there would still answer the probe, so this case assumes none is installed.
   const entries = [nodeBin, "/usr/bin", "/bin"];
   return (withStub ? [box.stubBin, ...entries] : entries).join(path.delimiter);
 }

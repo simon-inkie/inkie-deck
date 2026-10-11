@@ -334,7 +334,7 @@ bash packages/base/test/stuck-pane-sweep.test.sh
 The `inbox` suite needs PyYAML for its card cases, for the same reason
 `inbox reply` does. Byte comparisons use `od`, which POSIX guarantees, and the
 suites carry no locale dependency (fixtures use byte escapes, and the pane
-gates match multibyte glyphs byte-wise). PyYAML is installed explicitly in CI
+glyph matches in `bin/pane-idle` are written to work under `LC_ALL=C`). PyYAML is installed explicitly in CI
 rather than assumed, because a suite that is green because of what an image
 happened to carry is measuring the image.
 

@@ -28,8 +28,9 @@ Out of scope: `rig/` still installs and checks `xxd`; harmless, see Follow-ups.
 
 ## Acceptance
 
-- `pnpm -C packages/base test` passes with `LC_ALL=C`, no `xxd`, and a PATH that
-  has a `claude` beside node.
+- `cd packages/base && env -i HOME=$HOME PATH=$PATH LC_ALL=C npx vitest run`
+  passes (PATH keeps pnpm/node; the stripped part is locale and tools), with no
+  `xxd` and a `claude` beside node.
 
 ## Test plan
 
@@ -46,7 +47,17 @@ Before and after counts under the stripped environment, recorded in the PR.
 ## Follow-ups
 
 - `rig/` stages list `xxd` as a required tool; can be dropped.
+- `bin/pane-idle` uses `grep -P`, which BSD/macOS grep lacks.
+- The create-agent no-runtime case assumes no system-wide `claude` in
+  /usr/bin or /bin.
 
 ## Review feedback
 
-None yet.
+Opus review, round 1 (approve with minor changes):
+- Should-fix: `pane-idle` ctx bar regex used `[^│]`, a multibyte negated class
+  that is byte-wise under C. Fixed with `grep -P` and a `(?!│).` lookahead.
+- Should-fix: README overclaimed, and `BEFORE_BYTES`/`AFTER_BYTES` were never
+  compared. Case 11 now asserts the after-bytes equal the before-bytes with only
+  sent->read flipped; README reworded.
+- Nits: PATH comment in create-agent test, `grep -P` and system-claude
+  assumptions logged under Follow-ups, Acceptance command corrected.

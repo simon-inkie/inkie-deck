@@ -340,7 +340,7 @@ pane_has_codex_approval_dialog() {
 # scrollback.
 pane_ctx_pct() {
   local pane="$1" line
-  line=$(printf '%s\n' "$pane" | grep -E 'ctx:[0-9]+%|(█|░)[^│]*[0-9]+%' | tail -1)
+  line=$(printf '%s\n' "$pane" | grep -P 'ctx:[0-9]+%|(?:█|░)(?:(?!│).)*[0-9]+%' | tail -1)
   [ -z "$line" ] && return 1
   printf '%s\n' "$line" | grep -oE '[0-9]+%' | tail -1 | tr -d '%'
 }
