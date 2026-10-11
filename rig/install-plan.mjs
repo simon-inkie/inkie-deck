@@ -26,10 +26,13 @@ export const EXECUTABLE_LANGS = ["sh"];
  *
  * `text` is recorded output and `zsh` is the macOS path, which a Linux
  * container cannot run and which the document therefore marks as unverified.
+ * `sh-manual` is the "Keep it running" section: a container has no systemd
+ * user manager, and a detached second Deck would collide with the one the run
+ * already started. The document says those blocks are not executed.
  * A language outside this list fails the shape stage: unhandled, it would be
  * neither executed nor accounted for.
  */
-export const KNOWN_LANGS = ["sh", "text", "zsh"];
+export const KNOWN_LANGS = ["sh", "text", "zsh", "sh-manual"];
 
 const PREREQUISITES = ["1-prerequisites/sh#1", "1-prerequisites/sh#2", "1-prerequisites/sh#3"];
 const DEPENDENCIES = ["2-install-the-dependencies/sh#1", "2-install-the-dependencies/sh#2"];

@@ -1,0 +1,32 @@
+# deck.service: an example systemd USER unit that keeps Inkie Deck running
+# after the terminal that started it is closed, and restarts it if it dies.
+#
+# Install it with the commands in INSTALL.md, "Keep it running". They replace
+# the two placeholders below with absolute paths for your machine:
+#   @DECK_DIR@  your clone's packages/deck directory
+#   @NODE_DIR@  the directory holding the node you build with (`command -v node`)
+# A copy with a placeholder left in will not start.
+#
+# The launcher still reads packages/deck/.env, exactly as a hand-run start does,
+# so the four roots you already wrote there are enough. .env.production is
+# optional; anything in it beats .env, because the process environment wins.
+#
+# After `pnpm build`, run `systemctl --user restart deck` to serve the new build.
+
+[Unit]
+Description=Inkie Deck
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@DECK_DIR@
+EnvironmentFile=-@DECK_DIR@/.env.production
+# The launcher spawns the voice proxy as `node` from PATH, so put the same node
+# first; tmux, which the application calls, is found further along.
+Environment=PATH=@NODE_DIR@:/usr/local/bin:/usr/bin:/bin
+ExecStart=@NODE_DIR@/node scripts/start-production.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
