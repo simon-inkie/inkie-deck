@@ -1,11 +1,16 @@
 # inkie-deck
 
-A web control plane for a fleet of AI agents, copied in from the working platform and cleaned.
+A web control plane for a fleet of AI agents, copied in from the working
+platform and cleaned.
 
-## Git workflow
+## Shared rules
 
-Branch off `main` for every change, open a pull request, do not push directly to `main`. This applies to every contributor, human or agent.
+This file is a pointer. The repository's contributing rules are in
+[CONTRIBUTING.md](CONTRIBUTING.md), the workflow is in
+[DEVELOPMENT.md](DEVELOPMENT.md), and the agent runtime file is
+[AGENTS.md](AGENTS.md); read all three before your first change. They are the
+same files every other coding-agent runtime reads, so there is exactly one copy
+of the rules and no chance of drift.
 
-- Branch names: short, descriptive, kebab-case.
-- Keep PRs scoped to one change; large or unrelated changes go in separate PRs.
-- `main` should always be in a releasable state.
+The one thing worth repeating here, so a session that reads only this file is
+not blind: sign off every commit (`git commit -s`).

@@ -13,15 +13,26 @@ import { action } from "~/routes/api.tmux-send";
 const exec = vi.mocked(execFileSync);
 const env = { MC_TMUX_SESSION: "agents" };
 let viewport: string;
+let submitted: boolean;
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubEnv("MC_TMUX_ENABLED", "true");
-  viewport = "Trust this directory?\nAllow\nExit";
+  viewport = "\u276F ";
+  submitted = false;
   exec.mockReset();
   exec.mockImplementation((_file, args) => {
     if (args?.[0] === "list-windows") return "agent\n";
-    if (args?.[0] === "capture-pane") return viewport;
+    if (args?.[0] === "capture-pane") {
+      return submitted ? "(esc to interrupt)" : viewport;
+    }
+    if (
+      args?.[0] === "send-keys" &&
+      args.length === 4 &&
+      args.at(-1) === "Enter"
+    ) {
+      submitted = true;
+    }
     return "";
   });
 });
@@ -42,7 +53,12 @@ async function post(fields: Record<string, string>) {
 
 describe("pane named keys", () => {
   it.each(SEND_KEYS_ALLOWED_KEYS)("sends %s once with exact target and no automatic Enter", (key) => {
-    expect(buildSendKeysNamedArgs("agents", "agent", key)).toEqual(["send-keys", "-t", "=agents:=agent", key]);
+    expect(buildSendKeysNamedArgs("agents", "agent", key)).toEqual([
+      "send-keys",
+      "-t",
+      "=agents:=agent",
+      key,
+    ]);
     expect(sendNamedKeyToWindow(env, "agent", key)).toEqual({ ok: true });
     expect(writes()).toEqual([["send-keys", "-t", "=agents:=agent", key]]);
     expect(vi.getTimerCount()).toBe(0);
@@ -67,10 +83,14 @@ describe("pane named keys", () => {
 
 describe("literal text shell guard", () => {
   it("refuses shell prompts on any viewport line before writing", async () => {
-    viewport = "Old agent frame\nuser@host:work$ \nfooter";
-    expect((await sendKeysToWindow(env, "agent", "hello")).ok).toBe(false);
+    viewport = "Old shell frame\nuser@host:work$ \n\u276F ";
+    expect((await sendKeysToWindow(env, "agent", "hello")).status).toBe(
+      "not-attempted"
+    );
     expect(writes()).toHaveLength(0);
-    expect(exec.mock.calls.find(([, args]) => args?.[0] === "capture-pane")?.[1]).toEqual(["capture-pane", "-t", "=agents:=agent", "-p"]);
+    expect(
+      exec.mock.calls.find(([, args]) => args?.[0] === "capture-pane")?.[1]
+    ).toEqual(["capture-pane", "-t", "=agents:=agent", "-p", "-J"]);
   });
 
   it("fails closed when the capture fails", async () => {
@@ -78,15 +98,23 @@ describe("literal text shell guard", () => {
       if (args?.[0] === "list-windows") return "agent\n";
       throw new Error("unavailable");
     });
-    expect((await sendKeysToWindow(env, "agent", "hello")).ok).toBe(false);
+    expect((await sendKeysToWindow(env, "agent", "hello")).status).toBe(
+      "not-attempted"
+    );
     expect(writes()).toHaveLength(0);
   });
 
-  it("preserves literal text, then submits once after a successful recheck", async () => {
+  it("preserves literal text, then verifies one successful submit", async () => {
     const result = sendKeysToWindow(env, "agent", " hello ");
-    expect(writes()).toEqual([["send-keys", "-t", "=agents:=agent", "-l", "--", " hello "]]);
+    expect(writes()).toEqual([
+      ["send-keys", "-t", "=agents:=agent", "-l", "--", " hello "],
+    ]);
     await vi.runAllTimersAsync();
-    expect(await result).toEqual({ ok: true });
+    expect(await result).toEqual({
+      status: "submitted",
+      evidence: "turn-started",
+      enterAttempts: 1,
+    });
     expect(writes()).toHaveLength(2);
     expect(writes()[1]).toEqual(["send-keys", "-t", "=agents:=agent", "Enter"]);
   });
@@ -95,7 +123,7 @@ describe("literal text shell guard", () => {
     const result = sendKeysToWindow(env, "agent", "hello");
     viewport = "user@host:work$ ";
     await vi.runAllTimersAsync();
-    expect((await result).ok).toBe(false);
+    expect((await result).status).toBe("not-submitted");
     expect(writes()).toHaveLength(1);
   });
 
@@ -103,7 +131,7 @@ describe("literal text shell guard", () => {
     const result = sendKeysToWindow(env, "agent", "hello");
     exec.mockImplementation(() => { throw new Error("unavailable"); });
     await vi.runAllTimersAsync();
-    expect((await result).ok).toBe(false);
+    expect((await result).status).toBe("not-submitted");
     expect(writes()).toHaveLength(1);
   });
 });

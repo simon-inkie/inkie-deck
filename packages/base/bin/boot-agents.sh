@@ -10,7 +10,9 @@
 # this is safe to run repeatedly and safe to fire on boot via a systemd --user
 # service or equivalent.
 #
-# RESUME-ON-RELAUNCH. A claude agent resumes with `claude --resume <name>`. A
+# RESUME-ON-RELAUNCH. A claude agent resumes the session pinned in
+# $AGENTS_HOME/<name>/.session-id, and a first boot pins a new, named one
+# (claude_session_args, in claude-session.sh beside this file). A
 # codex agent resumes the newest session belonging to its own workspace
 # (codex_latest_session_for_workspace, below) with `codex resume <id>`.
 # Without that, a codex agent starts genuinely fresh on every relaunch -- a
@@ -96,6 +98,9 @@ else
   fi
   AGENTS=("${ALL_AGENTS[@]}")
 fi
+
+# Pinned claude session ids, shared with workspace.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
 
 # Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
 get_runtime() {
@@ -289,6 +294,41 @@ codex_dismiss_update_dialog_if_present() {
   return 0
 }
 
+# Resolve the sessions directory for a given CODEX_HOME (or default).
+# Empty argument = default ~/.codex/sessions.
+codex_sessions_dir_for_home() {
+  local home="${1:-}"
+  if [[ -n "$home" ]]; then
+    echo "$home/sessions"
+  else
+    echo "${HOME}/.codex/sessions"
+  fi
+}
+
+# Construct the canonical codex launch command for an agent, preserving its
+# complete provider envelope across both initial launch and crash-fallback.
+# Arguments: agent_name role codex_home [session_id] [model_flag]
+codex_launch_command() {
+  local a="$1" role="${2:-}" codex_home="${3:-}" sid="${4:-}" model_flag="${5:-}"
+  local q_a q_role q_home q_secrets
+  q_a=$(printf '%q' "$a")
+  q_role=$(printf '%q' "$role")
+  q_secrets=$(printf '%q' "$AGENTS_HOME/$a/.env.secrets")
+  local command="printf '\\033]0;%s\\007' $q_a; [ -f $q_secrets ] && . $q_secrets; env AGENT_NAME=$q_a AGENT_ROLE=$q_role"
+  if [[ -n "$codex_home" ]]; then
+    q_home=$(printf '%q' "$codex_home")
+    command="$command CODEX_HOME=$q_home"
+  fi
+  command="$command codex"
+  [[ -n "$model_flag" ]] && command="$command $model_flag"
+  if [[ -n "$sid" ]]; then
+    local q_sid
+    q_sid=$(printf '%q' "$sid")
+    command="$command resume $q_sid"
+  fi
+  printf '%s\n' "$command"
+}
+
 # codex_verify_resume_or_fallback <target> <agent> <sid> <launch_flags> --
 # confirm the pane actually came up, and recover it if it did not.
 #
@@ -399,7 +439,16 @@ codex_dismiss_update_dialog_if_present() {
 # CODEX_RESUME_POLL_INTERVAL_SECS (set 0 to skip the poll's sleeps while still
 # running the real CODEX_RESUME_POLL_MAX_CHECKS iterations of check logic).
 codex_verify_resume_or_fallback() {
-  local target="$1" a="$2" sid="$3" launch_flags="${4:-}" wait_secs="${CODEX_RESUME_VERIFY_SECS:-5}"
+  local target="$1" a="$2" sid="$3"
+  local role="" codex_home="" model_flag=""
+  if [[ $# -gt 4 ]]; then
+    role="${4:-}"
+    codex_home="${5:-}"
+    model_flag="${6:-}"
+  else
+    model_flag="${4:-}"
+  fi
+  local wait_secs="${CODEX_RESUME_VERIFY_SECS:-5}"
   [[ "$wait_secs" -gt 0 ]] 2>/dev/null && sleep "$wait_secs"
 
   local dismissed=1
@@ -479,8 +528,10 @@ codex_verify_resume_or_fallback() {
 
   # Invariant 1: attempt the fallback whatever the outcome, built identically
   # to the primary send minus `resume <sid>` so the replacement agent keeps
-  # its name and its flags.
-  tmux send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a codex $launch_flags" Enter
+  # its full provider envelope (name, role, auto-mode config, secrets, and model).
+  local fallback_command
+  fallback_command="$(codex_launch_command "$a" "$role" "$codex_home" "" "$model_flag")"
+  tmux send-keys -t "$target" "$fallback_command" Enter
   local send_rc=$?
   if [[ "$send_rc" -ne 0 ]]; then
     echo "boot-agents: $a's fallback codex re-send into $target itself FAILED (tmux send-keys exited $send_rc) -- the target is likely gone too, a worse problem than a bad session. Not quarantining $sid: the fallback never landed, and there is still no positive evidence the session was at fault. Escalating for an operator." >&2
@@ -495,10 +546,55 @@ codex_verify_resume_or_fallback() {
     return 1
   fi
 
-  local dir="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}" bad
+  local dir="${CODEX_SESSIONS_DIR:-$(codex_sessions_dir_for_home "$codex_home")}" bad
   bad=$(find "$dir" -type f -name "*-${sid}.jsonl" 2>/dev/null | head -1)
   [[ -n "$bad" ]] && mv -f -- "$bad" "${bad}.codex-resume-failed" 2>/dev/null
   return 1
+}
+
+# codex_home_for_agent <agent>
+# Provider state is written by bin/codex-provider-switch. A committed rollback
+# must survive the next boot even though the dormant Azure home remains on disk.
+# Backwards compatibility is deliberate: agents without provider state retain
+# the pre-switch behaviour where the presence of .codex-home selects it.
+codex_home_for_agent() {
+  local a="$1" agent_home azure_home provider_file provider=""
+  agent_home="$AGENTS_HOME/$a"
+  azure_home="$agent_home/.codex-home"
+  provider_file="${PROVIDER_SWITCH_STATE_ROOT:-$HOME/.the-vault/agents}/$a/provider-switch/provider.json"
+  if [[ -e "$provider_file" ]]; then
+    [[ -r "$provider_file" ]] || {
+      echo "boot-agents: $a provider state exists but is unreadable" >&2
+      return 1
+    }
+    command -v python3 >/dev/null 2>&1 || {
+      echo "boot-agents: python3 is required to read $a provider state" >&2
+      return 1
+    }
+    provider=$(python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); provider=value.get("provider"); assert provider in ("plus", "azure"); print(provider)' "$provider_file" 2>/dev/null) || {
+      echo "boot-agents: $a provider state is malformed; refusing to guess" >&2
+      return 1
+    }
+  fi
+  case "$provider" in
+    plus) printf '\n'; return 0 ;;
+    azure)
+      [[ -f "$azure_home/config.toml" ]] || {
+        echo "boot-agents: $a provider state says azure but $azure_home/config.toml is missing" >&2
+        return 1
+      }
+      printf '%s\n' "$azure_home"
+      return 0
+      ;;
+    '')
+      [[ -f "$azure_home/config.toml" ]] && printf '%s\n' "$azure_home" || printf '\n'
+      return 0
+      ;;
+    *)
+      echo "boot-agents: $a has invalid provider state '$provider'; refusing to guess" >&2
+      return 1
+      ;;
+  esac
 }
 
 # --- library boundary: the test suite sources this file with
@@ -516,9 +612,14 @@ fi
 # Launch an agent if it is not already running. Echoes "launched" or "skipped".
 launch_agent() {
   local a="$1" target="$SESSION:$1" runtime model_flag=""
+  local provider_switch_lock
+  provider_switch_lock="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/provider-switch-lock"
+  if [[ -x "$provider_switch_lock" ]] && "$provider_switch_lock" active "$a"; then
+    echo "skipped:provider-switch"; return
+  fi
   runtime=$(get_runtime "$a")
   # Per-agent model override (selector): $AGENTS_HOME/<a>/.model -> --model flag.
-  # Absent = no flag = inherit the global default.
+  # Absent = no flag = inherit the global default. Applies to all runtimes.
   [[ -f "$AGENTS_HOME/$a/.model" ]] && model_flag="--model $(cat "$AGENTS_HOME/$a/.model")"
   tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a" \
     || tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a"
@@ -531,33 +632,40 @@ launch_agent() {
     # ${VAR} resolves. Secrets should come from a real secret store at boot,
     # never raw in git-tracked config.
     #
-    # `--resume <name>` resolves a session DISPLAY NAME, and a session only
-    # acquires one when someone runs `/rename <name>` inside it. A brand new
-    # agent has none, so its very first boot fails with "No conversations found
-    # to resume", leaving a pane with no agent in it, which the idempotency
-    # check above then re-attempts on every subsequent run. Hence the fallback
-    # to a plain launch: the first boot starts a fresh session, and once that
-    # session has been renamed, every later boot resumes it. Run
-    # `/rename <name>` in a new agent's first session.
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude --resume $a $model_flag || claude $model_flag" Enter
+    # The session is pinned by id, not resumed by name: `--resume <name>` on a
+    # brand new agent opens an interactive picker instead of failing, so a
+    # `|| claude` fallback never ran and the pane sat at the picker. See
+    # claude-session.sh for the pin, the missing-transcript case and the
+    # one-off migration of sessions named by hand. If no pin can be written,
+    # launch a fresh named session rather than nothing.
+    local session_args
+    session_args="$(claude_session_args "$a" "$AGENTS_HOME/$a")" || {
+      echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
+      session_args="-n $(printf '%q' "$a")"
+    }
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag" Enter
   elif [[ "$runtime" == "codex" ]]; then
-    # Resume this agent's own most recent conversation, workspace-scoped
-    # (codex_latest_session_for_workspace, above). Always an explicit id
-    # rather than `codex resume --last`: the filters that make the choice
-    # correct here -- an interactive session, started by a person, in this
-    # agent's own workspace -- are this script's, and leaning on the CLI's own
-    # most-recent semantics would hand that decision away. An empty id means
-    # no session exists for this workspace yet, i.e. a genuine first boot, and
-    # a plain codex is exactly right.
+    # codex (Codex CLI runtime). AGENT_NAME/AGENT_ROLE must
+    # be REAL OS-level env vars set before the codex process starts.
+    local role=""; [[ -f "$AGENTS_HOME/$a/.role" ]] && role="$(cat "$AGENTS_HOME/$a/.role")"
+    local codex_home=""
+    codex_home="$(codex_home_for_agent "$a")" || {
+      echo "boot-agents: refusing to launch $a because provider selection failed" >&2
+      echo "skipped:provider-state"
+      return
+    }
+    local CODEX_SESSIONS_DIR
+    CODEX_SESSIONS_DIR="$(codex_sessions_dir_for_home "$codex_home")"
     local sid; sid="$(codex_latest_session_for_workspace "$a")"
-    local codex_cmd="codex $model_flag"
-    [[ -n "$sid" ]] && codex_cmd="codex resume $sid $model_flag"
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a $codex_cmd" Enter
+    local codex_cmd
+    codex_cmd="$(codex_launch_command "$a" "$role" "$codex_home" "$sid" "$model_flag")"
+    tmux send-keys -t "$target" "$codex_cmd" Enter
     # A selected id is not a promise the resume succeeded, so verify the pane
     # and recover it if it did not come up (codex_verify_resume_or_fallback,
     # above). The same call dismisses Codex's update-available dialog, which
     # is deliberately not gated on $sid so a first boot gets it too.
-    codex_verify_resume_or_fallback "$target" "$a" "$sid" "$model_flag"
+    codex_verify_resume_or_fallback "$target" "$a" "$sid" "$role" "$codex_home" "$model_flag"
+
   else
     # Any other runtime: launch it plainly. If it needs env vars set before
     # the process starts rather than after, set them here explicitly -- some

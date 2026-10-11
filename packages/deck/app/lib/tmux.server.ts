@@ -35,6 +35,12 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { resolveAttachmentsRoot } from "./attachments.server.js";
+import {
+  submitPaneText,
+  type PaneSnapshot,
+  type PaneSubmitDriver,
+  type SendKeysResult as PaneSendKeysResult,
+} from "./tmux-submit.js";
 
 /** ROSTER agent-name convention - the pre-subprocess gate. */
 export const WINDOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -191,7 +197,14 @@ export function buildSendKeysTextArgs(
 }
 
 /** Fixed navigation keys accepted by the pane send seam. */
-export const SEND_KEYS_ALLOWED_KEYS = ["Up", "Down", "Enter", "Escape", "Tab", "BTab"] as const;
+export const SEND_KEYS_ALLOWED_KEYS = [
+  "Up",
+  "Down",
+  "Enter",
+  "Escape",
+  "Tab",
+  "BTab",
+] as const;
 export type PaneKey = (typeof SEND_KEYS_ALLOWED_KEYS)[number];
 
 export function isValidPaneKey(key: string): key is PaneKey {
@@ -199,7 +212,11 @@ export function isValidPaneKey(key: string): key is PaneKey {
 }
 
 /** Named keys are single keystrokes, without literal mode or an extra Enter. */
-export function buildSendKeysNamedArgs(session: string, window: string, key: PaneKey): string[] {
+export function buildSendKeysNamedArgs(
+  session: string,
+  window: string,
+  key: PaneKey
+): string[] {
   return ["send-keys", "-t", `=${session}:=${window}`, key];
 }
 
@@ -237,8 +254,12 @@ export function sendNamedKeyToWindow(
   window: string,
   key: string
 ): SendKeysResult {
-  if (!isValidWindowName(window)) return { ok: false, error: "Unknown or invalid window." };
-  if (!isValidPaneKey(key)) return { ok: false, error: "Invalid navigation key." };
+  if (!isValidWindowName(window)) {
+    return { ok: false, error: "Unknown or invalid window." };
+  }
+  if (!isValidPaneKey(key)) {
+    return { ok: false, error: "Invalid navigation key." };
+  }
   if (!listTmuxWindows(env).includes(window)) {
     return { ok: false, error: "Window is not live in the session." };
   }
@@ -248,13 +269,68 @@ export function sendNamedKeyToWindow(
 }
 
 /** Refuse text when the current viewport cannot be checked or shows a shell. */
-function textSendRefusal(session: string, window: string): string | undefined {
+function textSendRefusal(
+  session: string,
+  window: string
+): string | undefined {
   const viewport = runTmux(buildCaptureViewportArgs(session, window));
-  if (viewport === undefined) return "Could not check the pane before sending text.";
+  if (viewport === undefined) {
+    return "Could not check the pane before sending text.";
+  }
   if (viewport.split("\n").some((line) => SHELL_PROMPT_RE.test(line))) {
     return "The pane is at a shell prompt. Text was not submitted.";
   }
   return undefined;
+}
+
+/**
+ * tmux side effects the verified-send state machine needs, as a seam so the
+ * policy module stays testable without a live server.
+ */
+export interface SendKeysDriver {
+  listWindows(env: NodeJS.ProcessEnv): string[];
+  captureViewport(
+    session: string,
+    window: string,
+    raw: boolean
+  ): string | undefined;
+  sendText(session: string, window: string, text: string): boolean;
+  pressEnter(session: string, window: string): boolean;
+  wait(ms: number): Promise<void>;
+}
+
+const LIVE_SEND_KEYS_DRIVER: SendKeysDriver = {
+  listWindows: (env) => listTmuxWindows(env),
+  captureViewport: (session, window, raw) =>
+    runTmux(
+      raw
+        ? buildVerifiedSendRawCaptureArgs(session, window)
+        : buildVerifiedSendCaptureArgs(session, window)
+    ),
+  sendText: (session, window, text) =>
+    runTmuxVoid(buildSendKeysTextArgs(session, window, text)),
+  // Recheck immediately before every Enter. The verified state machine proves
+  // the composer safe before typing and verifies the result afterwards; this
+  // closes the remaining delay race where the agent could exit to a shell
+  // after the text send but before Enter.
+  pressEnter: (session, window) =>
+    textSendRefusal(session, window) === undefined &&
+    runTmuxVoid(buildSendKeysEnterArgs(session, window)),
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** Bounded settle samples before deciding whether one Enter retry is safe. */
+export const SEND_KEYS_VERIFY_DELAYS_MS = [250, 750] as const;
+
+function captureSendSnapshot(
+  driver: SendKeysDriver,
+  session: string,
+  window: string
+): PaneSnapshot | undefined {
+  const plain = driver.captureViewport(session, window, false);
+  if (plain === undefined) return undefined;
+  const raw = driver.captureViewport(session, window, true);
+  return classifyPaneSnapshot(plain, raw);
 }
 
 /**
@@ -263,46 +339,70 @@ function textSendRefusal(session: string, window: string): string | undefined {
  * Carries the SAME validate-before-subprocess gate as capture: the window must
  * be ROSTER-shaped AND present in the live session. Empty/whitespace-only and
  * over-length text are rejected before any subprocess. The Enter is a SEPARATE
- * call after SEND_KEYS_ENTER_DELAY_MS (see that constant). Any failure returns
- * { ok: false } - it never throws and never touches the read path, so the
- * readonly fallback survives a broken write.
+ * call after SEND_KEYS_ENTER_DELAY_MS (see that constant), and it is VERIFIED:
+ * after the Enter the pane is re-captured, and the send only reports submitted
+ * when the composer has demonstrably cleared or the turn has visibly started.
+ * At most ONE additional Enter is allowed, and only while the composer still
+ * holds exactly the payload we sent - that is the swallowed-Enter case, where
+ * the text is in the prompt and blind, this is exactly why it is safe to retry.
+ *
+ * Never throws and never touches the read path, so the readonly fallback
+ * survives a broken write.
  */
 export async function sendKeysToWindow(
   env: NodeJS.ProcessEnv,
   window: string,
-  text: string
-): Promise<SendKeysResult> {
+  text: string,
+  driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
+): Promise<PaneSendKeysResult> {
   if (!isValidWindowName(window)) {
-    return { ok: false, error: "Unknown or invalid window." };
+    return {
+      status: "not-submitted",
+      reason: "invalid-window",
+      error: "Unknown or invalid window.",
+      enterAttempts: 0,
+    };
   }
   const trimmed = text.trim();
   if (trimmed === "") {
-    return { ok: false, error: "Nothing to send." };
+    return {
+      status: "not-submitted",
+      reason: "empty-text",
+      error: "Nothing to send.",
+      enterAttempts: 0,
+    };
   }
   if (text.length > SEND_KEYS_MAX_LEN) {
-    return { ok: false, error: `Message too long (max ${SEND_KEYS_MAX_LEN}).` };
+    return {
+      status: "not-submitted",
+      reason: "text-too-long",
+      error: `Message too long (max ${SEND_KEYS_MAX_LEN}).`,
+      enterAttempts: 0,
+    };
   }
   // Live allowlist: the window must exist in the session right now.
-  if (!listTmuxWindows(env).includes(window)) {
-    return { ok: false, error: "Window is not live in the session." };
+  if (!driver.listWindows(env).includes(window)) {
+    return {
+      status: "not-submitted",
+      reason: "window-not-live",
+      error: "Window is not live in the session.",
+      enterAttempts: 0,
+    };
   }
 
   const session = resolveTmuxSession(env);
-  const refusal = textSendRefusal(session, window);
-  if (refusal !== undefined) return { ok: false, error: refusal };
+  const submitDriver: PaneSubmitDriver = {
+    capture: () => captureSendSnapshot(driver, session, window),
+    sendText: (payload) => driver.sendText(session, window, payload),
+    pressEnter: () => driver.pressEnter(session, window),
+    wait: driver.wait,
+  };
   // Send the raw text the operator typed (not the trimmed copy) so leading
   // whitespace they intended is preserved; the trim only gates emptiness.
-  if (!runTmuxVoid(buildSendKeysTextArgs(session, window, text))) {
-    return { ok: false, error: "Could not send text to the window." };
-  }
-  await new Promise((resolve) => setTimeout(resolve, SEND_KEYS_ENTER_DELAY_MS));
-  const submitRefusal = textSendRefusal(session, window);
-  if (submitRefusal !== undefined) return { ok: false, error: submitRefusal };
-  if (!runTmuxVoid(buildSendKeysEnterArgs(session, window))) {
-    // Text landed but Enter did not - the message sits in the prompt unsubmitted.
-    return { ok: false, error: "Text sent but submit (Enter) failed." };
-  }
-  return { ok: true };
+  return submitPaneText(text, submitDriver, {
+    enterDelayMs: SEND_KEYS_ENTER_DELAY_MS,
+    verifyDelaysMs: SEND_KEYS_VERIFY_DELAYS_MS,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +432,34 @@ export function buildCaptureViewportRawArgs(session: string, window: string): st
 }
 
 /**
+ * argv for the VERIFIED-SEND capture. "-J" joins terminal soft-wraps so a
+ * composer row that wrapped at the pane edge comes back as ONE line, and it
+ * preserves the right padding that -p alone trims. The verified-composer
+ * identity check needs both: a wrapped payload must not look like a different
+ * one, and the padding is what tells an app-drawn row boundary from real
+ * whitespace in the text.
+ *
+ * NOT used by the read path. The read path keeps its own capture shape so a
+ * change here can never reflow what a reader sees. Pure - unit-pinned.
+ */
+export function buildVerifiedSendCaptureArgs(session: string, window: string): string[] {
+  return ["capture-pane", "-t", `=${session}:=${window}`, "-p", "-J"];
+}
+
+/**
+ * The RAW (-e) companion capture for the verified-send path, same -J shape but
+ * WITH ANSI escapes preserved. The verified-send classifier needs the same
+ * joined, padding-preserving view as the plain capture AND the dim-hint signal:
+ * without -e the Codex hint placeholder carries no escapes and the composer is
+ * misclassified as real staged text, so idle Codex panes are refused. Both
+ * verified-send captures therefore use -J; only this one adds -e. Pure -
+ * unit-pinned.
+ */
+export function buildVerifiedSendRawCaptureArgs(session: string, window: string): string[] {
+  return ["capture-pane", "-t", `=${session}:=${window}`, "-p", "-J", "-e"];
+}
+
+/**
  * Detects the Claude Code CORE working-spinner footer (a turn in flight). The
  * one cross-agent-stable ACTIVE marker is the elapsed-timer shape the core TUI
  * renders while working: "(2m 33s . <tokens>)", "(45s . <tokens>)", plus the
@@ -341,7 +469,7 @@ export function buildCaptureViewportRawArgs(session: string, window: string): st
  * line like "(3s ..." reads active and just SKIPS the wake - the safe
  * direction; a wrong wake risks stray text in a live composer).
  */
-export const ACTIVE_PANE_RE = /esc to interrupt|\((?:\d+h\s)?(?:\d+m\s)?\d+s\s/i;
+export const ACTIVE_PANE_RE = /esc to (?:interrupt|cancel)|\((?:\d+h\s)?(?:\d+m\s)?\d+s\s/i;
 
 /** True when a captured viewport shows the working spinner (turn in flight). */
 export function paneTextIsActive(viewport: string): boolean {
@@ -351,30 +479,71 @@ export function paneTextIsActive(viewport: string): boolean {
 /**
  * The bare, EMPTY composer prompt: a lone prompt glyph on its own line, nothing
  * typed after it. This is the POSITIVE idle signal - the one state where a wake
- * is safe. Two glyphs are recognised: Claude Code's U+276F and Codex's U+203A
- * (the runtimes MC live-wakes). Everything else fails it on purpose:
- *   - dirty composer ("U+276F git checkout main")  -> text after the prompt, no match
+ * is safe. Three glyphs are recognised: Claude Code's U+276F, Codex's U+203A,
+ * and agy's ">". Everything else fails it on purpose:
+ *   - dirty composer ("U+276F git checkout main" or "> git checkout main") -> text after the prompt, no match
  *   - permission dialog ("U+276F 1. Yes")           -> text after the prompt, no match
  *   - ghost / auto-suggest ("U+276F /compact")      -> text after the prompt, no match (benign skip)
  *   - exited agent at a bash shell ("user@host$")   -> no prompt glyph at all, no match
- *   - agy / Gemini runtime (">")                    -> different glyph, no match (separate wake path)
- * Validated against live panes: it matched ONLY the genuinely-idle agents and
- * rejected every unsafe state. Multiline (`m`) so any viewport line can be the
- * composer (the statusline + separator render BELOW the prompt in this TUI).
+ * Multiline (`m`) so any viewport line can be the composer (the statusline +
+ * separator render BELOW the prompt in this TUI).
+ *
+ * A bare ">" is matched here but is NOT sufficient on its own: it is a common
+ * character (Bash PS2 continuation, node REPL, diffs, redirects), so the caller
+ * additionally requires agy's frame border directly above it (isAgyPromptLine).
+ * U+276F and U+203A are near-unique and need no such corroboration.
  *
  * NB: Codex's idle composer is almost never genuinely bare - it shows a rotating
  * hint placeholder after the glyph, which fails this bare check by design. That
  * case is handled downstream by the ANSI dim-hint disambiguation (DIM_SGR); this
  * regex only covers the truly-bare state (Claude's usual rest, Codex's rare one).
  */
-export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A]\s*$/m;
+export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A>]\s*$/m;
 
 /**
- * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F
- * and Codex's U+203A. agy / Gemini's ">" is deliberately excluded - it has its
- * own separate wake path and never carries the dim-hint placeholder below.
+ * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F,
+ * Codex's U+203A, and agy / Gemini's ">". Consumers MUST gate the bare ">" on
+ * agy's frame border (see isAgyPromptLine / lineHasPromptGlyph); a lone ">" is a
+ * Bash PS2 continuation prompt as readily as an agy composer.
  */
-export const COMPOSER_PROMPT_GLYPHS = ["\u276F", "\u203A"] as const;
+export const COMPOSER_PROMPT_GLYPHS = ["\u276F", "\u203A", ">"] as const;
+
+/**
+ * agy / Gemini renders its composer inside a bordered frame:
+ *   ───
+ *   >
+ *   ───
+ * so a genuine agy prompt line has a horizontal border directly ABOVE it. This
+ * is the corroboration that tells an agy composer apart from a Bash PS2
+ * continuation prompt or a node REPL, both of which also render a lone ">".
+ */
+const AGY_FRAME_BORDER_RE = /^\s*[\u2500\u2501\u2550]{3,}\s*$/u;
+
+/**
+ * True when a bare ">" line is corroborated as an agy composer by a frame
+ * border directly above it. Used for the ">" glyph ONLY; the two TUI glyphs are
+ * near-unique and do not need it.
+ */
+function isAgyPromptLine(lines: string[], i: number): boolean {
+  const line = lines[i];
+  if (line === undefined || !/^\s*>\s*$/.test(line)) return false;
+  const above = lines[i - 1];
+  return above !== undefined && AGY_FRAME_BORDER_RE.test(above);
+}
+
+/**
+ * True when a line bears a composer prompt glyph, WITH the ">" glyph anchored to
+ * the start of the line. findPromptLineIndex uses this so a common ">" (a
+ * statusline arrow "main -> origin", a diff marker, "=>") can never be mistaken
+ * for a composer and hijack the last-glyph-line scan for Claude or Codex.
+ * U+276F and U+203A keep `includes`: they are near-unique, and a composer line
+ * may carry them after other viewport content.
+ */
+export function lineHasPromptGlyph(line: string): boolean {
+  return COMPOSER_PROMPT_GLYPHS.some((g) =>
+    g === ">" ? /^\s*>/.test(line) : line.includes(g)
+  );
+}
 
 /**
  * The ANSI "dim" SGR marker (ESC[2m). Codex wraps every rotating hint placeholder
@@ -390,11 +559,52 @@ export const DIM_SGR = "\x1b[2m";
 function findPromptLineIndex(lines: string[]): number {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (line !== undefined && COMPOSER_PROMPT_GLYPHS.some((g) => line.includes(g))) {
+    if (line !== undefined && lineHasPromptGlyph(line)) {
       return i;
     }
   }
   return -1;
+}
+
+/**
+ * Index of the LAST line that OPENS a composer: the prompt glyph is the first
+ * non-space token on the line. Claude and Codex both render the glyph at the
+ * start of the composer line; continuation rows are indented (Claude uses a
+ * two-space frame). A glyph appearing later in a line - a payload continuation
+ * that itself contains a glyph, or a glyph in transcript output - is NOT a
+ * composer open and must never be treated as the prompt, otherwise a non-empty
+ * draft ending in a glyph would read as a clean composer and an unsafe send
+ * would be authorised. Returns -1 when no line opens a composer.
+ */
+function findComposerOpenIndex(lines: string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line === undefined) continue;
+    // The open glyph is the FIRST character of the line (column 0): Claude,
+    // Codex and agy all render it there, while continuation rows are indented.
+    // Requiring column 0 is what stops an indented continuation row that merely
+    // contains a glyph from being mistaken for a fresh composer open.
+    // The bare ">" gets the same frame corroboration as composerIsClean: a line
+    // that merely starts with ">" (a statusline arrow, a diff marker) is not a
+    // composer open and must not anchor the framing check.
+    if (isComposerOpenLine(lines, i)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * True when the line at index i OPENS a composer: the prompt glyph is the first
+ * non-space token. For the two near-unique TUI glyphs that is enough; the common
+ * ">" additionally requires agy's frame border directly above (isAgyPromptLine),
+ * so a diff marker or statusline arrow cannot be mistaken for a composer open.
+ */
+function isComposerOpenLine(lines: string[], i: number): boolean {
+  const line = lines[i];
+  if (line === undefined) return false;
+  if (line.startsWith("\u276F") || line.startsWith("\u203A")) return true;
+  return isAgyPromptLine(lines, i);
 }
 
 /**
@@ -432,11 +642,22 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
   if (promptIndex === -1) return false;
   const promptLine = lines[promptIndex];
   if (promptLine === undefined) return false;
-  // A genuinely-bare prompt reads clean at once. Otherwise the composer has text
-  // after the glyph: real staged text (dirty) OR a Codex rotating hint. Codex
-  // renders every hint in the ANSI dim SGR (DIM_SGR); real typed text never is,
-  // so the raw capture disambiguates for ANY hint string, not a hardcoded one.
-  if (!IDLE_PROMPT_RE.test(promptLine) && !composerLineIsDimHint(rawViewport)) {
+  // The glyph line must OPEN the composer (glyph is the first non-space token).
+  // If the last glyph line sits inside a continuation row - a payload row that
+  // itself contains a glyph - the composer framing is ambiguous, so fail closed:
+  // a non-empty draft ending in a glyph must never be read as clean.
+  if (promptIndex !== findComposerOpenIndex(lines)) return false;
+  // A bare ">" is a common character, so it counts ONLY when corroborated as a
+  // genuine agy frame (a horizontal border directly above it). Without that
+  // border it may be a Bash PS2 continuation prompt or a node REPL, where a
+  // send-keys would type into unfinished shell input at the shell, so refuse.
+  if (/^\s*>\s*$/.test(promptLine)) {
+    if (!isAgyPromptLine(lines, promptIndex)) return false;
+  } else if (!IDLE_PROMPT_RE.test(promptLine) && !composerLineIsDimHint(rawViewport)) {
+    // A genuinely-bare TUI prompt reads clean at once. Otherwise the composer has
+    // text after the glyph: real staged text (dirty) OR a Codex rotating hint.
+    // Codex renders every hint in the ANSI dim SGR (DIM_SGR); real typed text
+    // never is, so the raw capture disambiguates for ANY hint string.
     return false;
   }
   // Stale-frame guard: a shell prompt below the composer means the agent exited
@@ -457,6 +678,124 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
  * wake for agents with a ctx-percent statusline.
  */
 export const SHELL_PROMPT_RE = /\w+@[\w.-]+[:\s].*[$#%]\s*$/;
+
+const COMPOSER_LOWER_BORDER_RE = /^\s*[─━═╌╍┄┅]{3,}\s*$/u;
+
+function findComposerLowerBorderIndex(lines: string[], promptIndex: number): number {
+  for (let index = promptIndex + 1; index < lines.length; index++) {
+    if (COMPOSER_LOWER_BORDER_RE.test(lines[index] ?? "")) return index;
+  }
+  return -1;
+}
+
+type ComposerDisplay = {
+  text: string;
+  rows: NonNullable<PaneSnapshot["stagedRows"]>;
+};
+
+type ComposerDisplayRow = {
+  text: string;
+  /** True when -J exposed terminal padding to the right of this row. */
+  rightPadded: boolean;
+};
+
+function removeTuiRightPadding(line: string): ComposerDisplayRow {
+  const padding = line.match(/ +$/u)?.[0] ?? "";
+  return {
+    text: padding === "" ? line : line.slice(0, -padding.length),
+    rightPadded: padding !== "",
+  };
+}
+
+/**
+ * Decode the composer region of a -J capture into the exact payload text the
+ * pane is holding, plus a per-row record of whether the terminal had padded
+ * the row. Claude renders the composer as the last prompt-glyph line followed
+ * by continuation rows framed with exactly two leading spaces, closed by a
+ * horizontal border. Anything that does not match that framing returns
+ * undefined: an unrecognised shape must read as "not ours", never as a match.
+ */
+export function composerTextFromViewport(viewport: string): ComposerDisplay | undefined {
+  const lines = viewport.split("\n");
+  const promptIndex = findComposerOpenIndex(lines);
+  if (promptIndex === -1) return undefined;
+  const promptLine = lines[promptIndex];
+  if (promptLine === undefined) return undefined;
+  const glyph = COMPOSER_PROMPT_GLYPHS.find((candidate) => promptLine.includes(candidate));
+  if (glyph === undefined) return undefined;
+  let firstLine = promptLine.slice(promptLine.indexOf(glyph) + glyph.length);
+  // Remove the TUI-owned separator after the prompt glyph, not user whitespace.
+  if (firstLine.startsWith(" ") || firstLine.startsWith("\u00a0")) {
+    firstLine = firstLine.slice(1);
+  }
+  const borderIndex = findComposerLowerBorderIndex(lines, promptIndex);
+  const renderedContinuation =
+    borderIndex === -1 ? [] : lines.slice(promptIndex + 1, borderIndex);
+  const rows: ComposerDisplayRow[] = [removeTuiRightPadding(firstLine)];
+  for (const line of renderedContinuation) {
+    // Claude frames every app-drawn continuation row with exactly two spaces.
+    // Anything else is not a representation we can safely identify as ours.
+    if (!line.startsWith("  ")) return undefined;
+    rows.push(removeTuiRightPadding(line.slice(2)));
+  }
+
+  return { text: rows.map((row) => row.text).join("\n"), rows };
+}
+
+/** Pure pane classification used by the verified-send state machine. */
+export function classifyPaneSnapshot(
+  viewport: string,
+  rawViewport?: string
+): PaneSnapshot {
+  const lines = viewport.split("\n");
+  // A shell frame anywhere in the live viewport is ambiguous and therefore
+  // unsafe. This preserves the original text-send guard while the positive
+  // composer classification below supplies the stronger verified-send gate.
+  if (lines.some((line) => SHELL_PROMPT_RE.test(line))) {
+    return {
+      activity: paneTextIsActive(viewport) ? "active" : "idle",
+      composer: "unknown",
+    };
+  }
+  const promptIndex = findComposerOpenIndex(lines);
+  if (promptIndex === -1) {
+    return {
+      activity: paneTextIsActive(viewport) ? "active" : "idle",
+      composer: "unknown",
+    };
+  }
+  const borderIndex = findComposerLowerBorderIndex(lines, promptIndex);
+  const outsideComposer = [
+    ...lines.slice(0, promptIndex),
+    ...(borderIndex === -1 ? [] : lines.slice(borderIndex + 1)),
+  ].join("\n");
+  const activity = paneTextIsActive(outsideComposer) ? "active" : "idle";
+  const staged = composerTextFromViewport(viewport);
+  const dimHint = composerLineIsDimHint(rawViewport);
+  // A bare prompt line alone is not sufficient when the framed composer has
+  // continuation content (for example, a payload beginning with a newline).
+  if (dimHint || (composerIsClean(viewport, rawViewport) && staged?.text === "")) {
+    return {
+      activity,
+      composer: dimHint ? "ghost" : "clean",
+    };
+  }
+  for (let index = promptIndex + 1; index < lines.length; index++) {
+    const line = lines[index];
+    if (line !== undefined && SHELL_PROMPT_RE.test(line)) {
+      return { activity, composer: "unknown" };
+    }
+  }
+  if (staged === undefined || staged.text === "") {
+    return { activity, composer: "unknown" };
+  }
+  return {
+    activity,
+    composer: "staged",
+    stagedText: staged.text,
+    stagedRows: staged.rows,
+  };
+}
 
 /**
  * True when the viewport shows a CONFIRMED-idle agent composer: no working
@@ -496,7 +835,9 @@ export function paneTextIsIdle(viewport: string, rawViewport?: string): boolean 
  * CONFIRMED-idle agent composer: no working spinner AND a clean composer (see
  * paneTextIsIdle / composerIsClean). Returns false on ANY uncertainty - invalid
  * name, window not live, capture failure, an active spinner, a dirty composer,
- * a permission dialog, a bash shell, or an agy (">") prompt. Conservative on
+ * a permission dialog, a bash shell, or an uncorroborated ">" (a bare ">" with
+ * no agy frame border above it, e.g. a Bash PS2 continuation or node REPL).
+ * Conservative on
  * purpose: a missed wake just falls back to next-turn hook-inject, but a wrong
  * wake could corrupt a live composer or execute text at a shell. "Absence of
  * spinner" is NOT treated as idle.
@@ -615,7 +956,9 @@ export async function wakeIdleAgent(
   const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
   const text = `[inbox from ${tag}] new message in Inkie Deck, check your inbox  [reply via inbox: inbox reply ${tag}]`;
   const res = await sendKeysToWindow(env, window, text);
-  return res.ok ? { woke: true, reason: "sent" } : { woke: false, reason: "send-failed" };
+  return res.status === "submitted"
+    ? { woke: true, reason: "sent" }
+    : { woke: false, reason: "send-failed" };
 }
 
 /**
@@ -705,7 +1048,12 @@ export function resolveAndRewriteAttachmentPaths(text: string): string {
   }
 }
 
-export type PushResult = { pushed: boolean };
+/**
+ * The verified-send outcome, propagated rather than flattened to a boolean so a
+ * caller can tell "the composer was unsafe, nothing sent" from "we tried and
+ * could not confirm the submit".
+ */
+export type PushResult = PaneSendKeysResult;
 
 /**
  * Push the actual chat-box text to an agent's pane (TASK-524, extended TASK-537).
@@ -861,10 +1209,10 @@ export async function pushMessageToIdleAgent(
   window: string,
   fromUser: string,
   text: string,
-  dictated: boolean = false
+  dictated: boolean = false,
+  driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
 ): Promise<PushResult> {
   try {
-    if (!paneAcceptsSendLive(env, window)) return { pushed: false };
     const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
     // Rewrite web-relative /attachments/ image refs to real filesystem paths
     // BEFORE the length cap (the absolute path is longer than the URL, so it
@@ -876,9 +1224,13 @@ export async function pushMessageToIdleAgent(
     // is the unit both a human reader and the Python tooling use. The cap keeps
     // UTF-16 units; see buildPanePayload on why these are two different numbers.
     const safe = buildPanePayload(tag, body, [...text].length, dictated);
-    const res = await sendKeysToWindow(env, window, safe);
-    return { pushed: res.ok };
+    return await sendKeysToWindow(env, window, safe, driver);
   } catch {
-    return { pushed: false };
+    return {
+      status: "not-submitted",
+      reason: "unexpected-error",
+      error: "The pane push failed unexpectedly.",
+      enterAttempts: 0,
+    };
   }
 }

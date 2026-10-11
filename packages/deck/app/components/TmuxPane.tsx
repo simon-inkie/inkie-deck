@@ -19,9 +19,18 @@ import { useFetcher } from "react-router";
 import { EmptyState } from "./EmptyState";
 import { TerminalSquare, CornerDownLeft } from "lucide-react";
 
-const NAVIGATION_KEYS = ["Up", "Down", "Enter", "Escape", "Tab", "BTab"] as const;
+const NAVIGATION_KEYS = [
+  "Up",
+  "Down",
+  "Enter",
+  "Escape",
+  "Tab",
+  "BTab",
+] as const;
 
-type SendData = { ok: true } | { ok: false; error: string };
+type SendData =
+  | { ok: true }
+  | { ok: false; unverified?: boolean; error: string };
 
 /**
  * The write affordance. A small textarea + Send that posts to the one send
@@ -35,9 +44,15 @@ function TmuxCompose({ sendTarget }: { sendTarget: string }) {
   const prevState = useRef(fetcher.state);
   const sentText = useRef(false);
   const busy = fetcher.state !== "idle";
+  const data = fetcher.data;
   const error =
-    fetcher.data !== undefined && fetcher.data.ok === false
-      ? fetcher.data.error
+    data !== undefined && data.ok === false
+      ? data.unverified === true
+        ? // Text and Enter were sent but delivery could not be confirmed: keep
+          // the text in the box and say so plainly rather than "failed", which
+          // would invite a duplicate resend.
+          `${data.error} It may still submit; check the pane before resending.`
+        : data.error
       : undefined;
 
   // Clear the box only when a text submission settles successfully.
@@ -60,12 +75,19 @@ function TmuxCompose({ sendTarget }: { sendTarget: string }) {
   function sendKey(key: (typeof NAVIGATION_KEYS)[number]) {
     if (busy) return;
     sentText.current = false;
-    fetcher.submit({ window: sendTarget, key }, { method: "post", action: "/api/tmux-send" });
+    fetcher.submit(
+      { window: sendTarget, key },
+      { method: "post", action: "/api/tmux-send" }
+    );
   }
 
   return (
     <div className="mt-2 shrink-0">
-      <div className="mb-2 flex flex-wrap gap-2" role="group" aria-label="Pane navigation">
+      <div
+        className="mb-2 flex flex-wrap gap-2"
+        role="group"
+        aria-label="Pane navigation"
+      >
         {NAVIGATION_KEYS.map((key) => (
           <button
             key={key}

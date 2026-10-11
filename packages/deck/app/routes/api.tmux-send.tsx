@@ -20,12 +20,26 @@
 import { z } from "zod";
 import { data } from "react-router";
 import type { Route } from "./+types/api.tmux-send";
-import { sendKeysToWindow, sendNamedKeyToWindow, SEND_KEYS_ALLOWED_KEYS, SEND_KEYS_MAX_LEN } from "~/lib/tmux.server";
+import {
+  sendKeysToWindow,
+  sendNamedKeyToWindow,
+  SEND_KEYS_ALLOWED_KEYS,
+  SEND_KEYS_MAX_LEN,
+} from "~/lib/tmux.server";
 import { tmuxEnabled } from "~/lib/instance.server";
 
 const windowSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 const sendSchema = z.union([
-  z.object({ window: windowSchema, text: z.string().min(1).max(SEND_KEYS_MAX_LEN).refine((text) => text.trim() !== "") }).strict(),
+  z
+    .object({
+      window: windowSchema,
+      text: z
+        .string()
+        .min(1)
+        .max(SEND_KEYS_MAX_LEN)
+        .refine((text) => text.trim() !== ""),
+    })
+    .strict(),
   z.object({ window: windowSchema, key: z.enum(SEND_KEYS_ALLOWED_KEYS) }).strict(),
 ]);
 
@@ -33,24 +47,63 @@ export async function action({ request }: Route.ActionArgs) {
   // TASK-462: server-side gate, not just hidden UI - a tmux-disabled instance
   // (Robin's) refuses sends even if the endpoint is POSTed directly.
   if (!tmuxEnabled(process.env)) {
-    return { ok: false as const, error: "The terminal is not available on this instance." };
+    return {
+      ok: false as const,
+      error: "The terminal is not available on this instance.",
+    };
   }
   let formData: FormData;
   try {
     formData = await request.formData();
   } catch {
-    return data({ ok: false as const, error: "Invalid send payload." }, { status: 400 });
+    return data(
+      { ok: false as const, error: "Invalid send payload." },
+      { status: 400 }
+    );
   }
-  if (["window", "text", "key"].some((field) => formData.getAll(field).length > 1)) {
-    return data({ ok: false as const, error: "Invalid send payload." }, { status: 400 });
+  if (
+    ["window", "text", "key"].some(
+      (field) => formData.getAll(field).length > 1
+    )
+  ) {
+    return data(
+      { ok: false as const, error: "Invalid send payload." },
+      { status: 400 }
+    );
   }
   const parsed = sendSchema.safeParse(Object.fromEntries(formData));
   if (!parsed.success) {
-    return data({ ok: false as const, error: "Invalid send payload." }, { status: 400 });
+    return data(
+      { ok: false as const, error: "Invalid send payload." },
+      { status: 400 }
+    );
   }
-  // sendKeysToWindow carries the ROSTER + live-allowlist gate and degrades to
-  // { ok: false } on any failure - it never throws.
-  return "key" in parsed.data
-    ? sendNamedKeyToWindow(process.env, parsed.data.window, parsed.data.key)
-    : sendKeysToWindow(process.env, parsed.data.window, parsed.data.text);
+  if ("key" in parsed.data) {
+    return sendNamedKeyToWindow(
+      process.env,
+      parsed.data.window,
+      parsed.data.key
+    );
+  }
+  // sendKeysToWindow carries the ROSTER + live-allowlist gate, verifies the
+  // submit, and degrades to { ok: false } on any failure - it never throws.
+  const result = await sendKeysToWindow(
+    process.env,
+    parsed.data.window,
+    parsed.data.text
+  );
+  if (result.status === "submitted") {
+    return { ok: true as const };
+  }
+  // "unverified" means text AND Enter were sent but delivery could not be
+  // proven. Surface it distinctly so the operator is told "sent, could not
+  // confirm" rather than "failed", which would invite a duplicate resend.
+  if (result.status === "unverified") {
+    return {
+      ok: false as const,
+      unverified: true as const,
+      error: result.error,
+    };
+  }
+  return { ok: false as const, error: result.error };
 }

@@ -25,6 +25,7 @@ import {
   REQUIRED_CLAIMS,
   REQUIRED_HEADINGS,
   RUNS,
+  SKIPPED,
 } from "../install-plan.mjs";
 
 export default {
@@ -34,7 +35,7 @@ export default {
     const docPath = path.join(ctx.repoRoot, INSTALL_DOC);
     const markdown = fs.readFileSync(docPath, "utf8");
     const blocks = extractFencedBlocks(markdown);
-    const cover = coverage(blocks, { executableLangs: EXECUTABLE_LANGS, knownLangs: KNOWN_LANGS, runs: RUNS });
+    const cover = coverage(blocks, { executableLangs: EXECUTABLE_LANGS, knownLangs: KNOWN_LANGS, runs: RUNS, skipped: SKIPPED });
 
     // Handed to the container stages so all three execute the same extraction
     // this stage just validated, rather than each parsing the file again.
@@ -145,6 +146,7 @@ export default {
       executableLangs: EXECUTABLE_LANGS,
       knownLangs: KNOWN_LANGS,
       runs: RUNS,
+      skipped: SKIPPED,
     });
 
     // NEGATIVE CONTROL 3. Strip the sentence that tells a reader `pnpm dev`
