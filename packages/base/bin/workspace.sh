@@ -2,8 +2,8 @@
 # Launch the agent workspace: one tmux window per agent, ready to go.
 # Usage: bin/workspace.sh [--windowed] [agent1 agent2 ...]
 # No args = all agents. Pass names to launch a subset.
-#   bin/workspace.sh wren basalt                 # tmux windows in current terminal
-#   bin/workspace.sh --windowed wren basalt      # spawn each in its own Windows Terminal
+#   bin/workspace.sh inkie basalt                 # tmux windows in current terminal
+#   bin/workspace.sh --windowed inkie basalt      # spawn each in its own Windows Terminal
 #   bin/workspace.sh                             # everyone, current terminal
 #
 # Assumes the persona layout from templates/: each agent's home is

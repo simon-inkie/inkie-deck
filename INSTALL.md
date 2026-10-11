@@ -414,8 +414,11 @@ you get an agent your launcher can see and Deck cannot.
 ```sh
 export AGENTS_HOME=$HOME/agents
 export INBOX_ROOT=$HOME/deck/inbox
-packages/base/bin/create-agent.sh wren --role "keeps the notes"
+packages/base/bin/create-agent.sh inkie --role "keeps the notes"
 ```
+
+`inkie` is only an example: any lowercase name works (letters, digits and
+hyphens).
 
 That writes both, links the `inbox` CLI onto your `PATH`, and then tries to
 prove the persona actually reached the model by asking the agent, in one
@@ -424,18 +427,18 @@ identity file. **With no model CLI installed, that last step cannot run**, and
 the script says so and exits 4:
 
 ```text
-create-agent: CREATED wren
-  persona files  /home/you/agents/wren
-  inbox          /home/you/deck/inbox/wren/inbox
+create-agent: CREATED inkie
+  persona files  /home/you/agents/inkie
+  inbox          /home/you/deck/inbox/inkie/inbox
   boot phrase    boot-6ed9a08da2961594
 
-create-agent: CANNOT VERIFY wren
+create-agent: CANNOT VERIFY inkie
   No `claude` on PATH, so there was nothing to ask.
 ```
 
 Exit 4 means created but unproven, and it is not a pass. Once you have a model
 CLI installed and signed in, `packages/base/bin/create-agent.sh --verify-only
-wren` re-runs only the proof. It exits 0 only if the phrase comes back, which
+inkie` re-runs only the proof. It exits 0 only if the phrase comes back, which
 is a stronger statement than any check of the files: a persona that never
 reached the model leaves behind exactly the same directory tree as one that
 did.
@@ -460,7 +463,7 @@ tmux list-windows -t agents -F '#{window_name}'
 ```
 
 ```text
-wren
+inkie
 ```
 
 The window is real whether or not a model CLI is installed. With none, the
@@ -468,20 +471,20 @@ pane holds the shell and the error, which is exactly what you should see at
 this point on a machine with no subscription:
 
 ```sh
-tmux capture-pane -t agents:wren -p | grep -v '^$' | tail -5
+tmux capture-pane -t agents:inkie -p | grep -v '^$' | tail -5
 ```
 
 ```text
-you@host:~/agents/wren$ printf '\033]0;wren\007'; [ -f /home/you/agents/wren/.env.secrets ] && . /home/you/agents/wren/.env.secrets; claude --session-id 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d -n wren
+you@host:~/agents/inkie$ printf '\033]0;inkie\007'; [ -f /home/you/agents/inkie/.env.secrets ] && . /home/you/agents/inkie/.env.secrets; claude --session-id 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d -n inkie
 -bash: claude: command not found
-you@host:~/agents/wren$
+you@host:~/agents/inkie$
 ```
 
 (The blank lines are dropped because a tmux pane is padded to its full height,
 and `tail` on the raw capture returns the padding rather than the text.)
 
 Deck reads that pane live. Open the agent's thread and switch to the terminal
-view, or `curl -sS "http://localhost:4242/threads/wren?view=tmux"`, and the
+view, or `curl -sS "http://localhost:4242/threads/inkie?view=tmux"`, and the
 contents of the pane are in the page. That is the one check in this area worth
 trusting. Deck's tmux surface is switched on by an environment variable that
 defaults to on and never looks for the binary, so the terminal view being
@@ -494,7 +497,7 @@ From the browser, open the agent's thread and type. Without a browser, this is
 the same request the interface makes:
 
 ```sh
-curl -sS -X POST http://localhost:4242/threads/wren \
+curl -sS -X POST http://localhost:4242/threads/inkie \
   --data-urlencode 'intent=compose' \
   --data-urlencode 'body=Welcome aboard. What do you make of the protocol doc?' \
   -o /dev/null -w '%{http_code}\n'
@@ -504,12 +507,12 @@ curl -sS -X POST http://localhost:4242/threads/wren \
 200
 ```
 
-That writes a block into `$INBOX_ROOT/wren/inbox/<your MC_USER>.md`. An agent
+That writes a block into `$INBOX_ROOT/inkie/inbox/<your MC_USER>.md`. An agent
 reads and answers with the `inbox` CLI, which is the half of the protocol that
 lives in the terminal, where the agent is. Standing in for the agent by hand:
 
 ```sh
-export AGENT_NAME=wren
+export AGENT_NAME=inkie
 export INBOX_ROOT=$HOME/deck/inbox
 ME=$(sed -n 's/^MC_USER=//p' packages/deck/.env | tail -1)
 : "${ME:?is empty. No MC_USER in packages/deck/.env; set it in tier 2 first.}"
@@ -558,7 +561,7 @@ guess it is willing to make.
 The reply is now in the thread, which you can see from Deck:
 
 ```sh
-curl -sS http://localhost:4242/threads/wren | grep -c 'the whole protocol'
+curl -sS http://localhost:4242/threads/inkie | grep -c 'the whole protocol'
 ```
 
 ### What is still missing, and it is the important part
