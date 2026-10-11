@@ -83,10 +83,18 @@ function stubRuntime(box: Sandbox, body: string): void {
  * PATH is built explicitly, never inherited. An inherited PATH would let a real
  * `claude` on the developer's machine answer the probe, which would make the
  * "no runtime available" case pass for the wrong reason on their box and fail
- * in CI. The node directory is included because the script shells out to node.
+ * in CI. Node is exposed through a directory holding only a node symlink, never
+ * its install directory, because that directory can also hold a global `claude`
+ * (npm -g puts runtimes beside node).
  */
 function testPath(box: Sandbox, withStub: boolean): string {
-  const entries = [path.dirname(process.execPath), "/usr/bin", "/bin"];
+  const nodeBin = path.join(path.dirname(box.stubBin), "node-only");
+  fs.mkdirSync(nodeBin, { recursive: true });
+  const link = path.join(nodeBin, "node");
+  if (!fs.existsSync(link)) fs.symlinkSync(process.execPath, link);
+  // /usr/bin and /bin stay: the script needs coreutils. A system-wide `claude`
+  // there would still answer the probe, so this case assumes none is installed.
+  const entries = [nodeBin, "/usr/bin", "/bin"];
   return (withStub ? [box.stubBin, ...entries] : entries).join(path.delimiter);
 }
 
