@@ -10,7 +10,9 @@
 # this is safe to run repeatedly and safe to fire on boot via a systemd --user
 # service or equivalent.
 #
-# RESUME-ON-RELAUNCH. A claude agent resumes with `claude --resume <name>`. A
+# RESUME-ON-RELAUNCH. A claude agent resumes the session pinned in
+# $AGENTS_HOME/<name>/.session-id, and a first boot pins a new, named one
+# (claude_session_args, in claude-session.sh beside this file). A
 # codex agent resumes the newest session belonging to its own workspace
 # (codex_latest_session_for_workspace, below) with `codex resume <id>`.
 # Without that, a codex agent starts genuinely fresh on every relaunch -- a
@@ -96,6 +98,9 @@ else
   fi
   AGENTS=("${ALL_AGENTS[@]}")
 fi
+
+# Pinned claude session ids, shared with workspace.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
 
 # Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
 get_runtime() {
@@ -627,15 +632,18 @@ launch_agent() {
     # ${VAR} resolves. Secrets should come from a real secret store at boot,
     # never raw in git-tracked config.
     #
-    # `--resume <name>` resolves a session DISPLAY NAME, and a session only
-    # acquires one when someone runs `/rename <name>` inside it. A brand new
-    # agent has none, so its very first boot fails with "No conversations found
-    # to resume", leaving a pane with no agent in it, which the idempotency
-    # check above then re-attempts on every subsequent run. Hence the fallback
-    # to a plain launch: the first boot starts a fresh session, and once that
-    # session has been renamed, every later boot resumes it. Run
-    # `/rename <name>` in a new agent's first session.
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude --resume $a $model_flag || claude $model_flag" Enter
+    # The session is pinned by id, not resumed by name: `--resume <name>` on a
+    # brand new agent opens an interactive picker instead of failing, so a
+    # `|| claude` fallback never ran and the pane sat at the picker. See
+    # claude-session.sh for the pin, the missing-transcript case and the
+    # one-off migration of sessions named by hand. If no pin can be written,
+    # launch a fresh named session rather than nothing.
+    local session_args
+    session_args="$(claude_session_args "$a" "$AGENTS_HOME/$a")" || {
+      echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
+      session_args="-n $(printf '%q' "$a")"
+    }
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag" Enter
   elif [[ "$runtime" == "codex" ]]; then
     # codex (Codex CLI runtime). AGENT_NAME/AGENT_ROLE must
     # be REAL OS-level env vars set before the codex process starts.

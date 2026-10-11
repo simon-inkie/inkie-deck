@@ -276,8 +276,11 @@ status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 There is nothing magic in it. If you would rather do it by hand, the templates
 are just files, and the two things easiest to miss doing it that way are the
 inbox directory (an agent your launcher can see but your control plane cannot)
-and the fact that `--resume`-style launching needs the first session named
-before it can resume:
+and nothing else: the launchers pin each claude agent's session by id in
+`<agent home>/.session-id` on its first boot, named after the agent, so there
+is no `/rename` step. Delete that file to start the agent on a fresh session.
+An agent named by hand before the pin existed is found by its name and pinned
+on its next boot:
 
 ```bash
 cp packages/base/templates/*.md /path/to/your/new/agent/

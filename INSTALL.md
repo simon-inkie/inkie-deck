@@ -50,8 +50,12 @@ wrong, the rig goes red.
   quietly stop being tested.
 - Blocks tagged `text` are recorded output, printed here so you can compare.
 - Blocks tagged `zsh` are the macOS path. Containers are Linux, so **the macOS
-  instructions in this document are unverified**, and are the one place here
-  where you are reading a belief rather than an observation.
+  instructions in this document are unverified**: there you are reading a
+  belief rather than an observation.
+- Blocks tagged `sh-manual` are not executed either: a container has no
+  systemd user manager, and a second Deck would collide with the one the run
+  already started. They were run by hand when written, and can drift without
+  the rig going red. They are all in [Keep it running](#keep-it-running).
 
 `rig/README.md` describes the harness. `node rig/run.mjs` runs it.
 
@@ -79,6 +83,7 @@ apt-get install -y ca-certificates curl git ripgrep python3 tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ```
 
 `curl` comes first on purpose. It is absent from a bare Ubuntu image and the
@@ -97,24 +102,19 @@ and Homebrew has no formula for it. If yours has somehow gone, `brew install
 vim` brings it back. This is the belief half of the document, not the observed
 half.
 
-Check what you got. Anything on the `22.13` line or above, or 24 and above, is
-inside the supported range; pnpm refuses to install on anything else and tells
-you why.
+Check Node. Anything on the `22.13` line or above, or 24 and above, is inside
+the supported range; pnpm refuses to install on anything else and tells you
+why. Do not check pnpm yet: that happens in section 2, inside your clone,
+because outside it corepack has no `packageManager` field to read and fetches
+the latest pnpm instead of the pinned one.
 
 ```sh
 node --version
-pnpm --version
 ```
 
 ```text
 v22.23.2
-10.34.5
 ```
-
-The pnpm version is pinned by the repository's `packageManager` field, so
-corepack fetches that exact version the first time you run it whatever you
-have installed globally. The first `pnpm --version` is therefore slower than
-it looks like it should be.
 
 One last thing, and only if your shell has no locale set, which is normal
 inside a container and on some minimal server images:
@@ -132,9 +132,45 @@ your shell profile rather than in one terminal, since the agents inherit the
 environment of whatever launched them. A desktop machine almost certainly
 already has this and can skip it.
 
+Last, get the code. This is the step that makes the clone the prerequisites
+above ask for:
+
+```sh
+git clone https://github.com/simon-inkie/inkie-deck.git && cd inkie-deck
+```
+
+While the repository is private, that clone needs you signed in to GitHub.
+Install the GitHub CLI (`gh`) and run `gh auth login` inside the same Linux
+environment you are installing in, which on Windows means inside WSL, not in
+PowerShell. Delete this paragraph once the repository is public.
+
+This block is the one exception to "executed from this document": the rig
+copies the tree into its container instead of cloning it, so it is declared
+as skipped in `rig/install-plan.mjs`, with the reason.
+
 ## 2. Install the dependencies
 
 Everything from here runs from the root of your clone.
+
+Check pnpm now, and not earlier. The pnpm version is pinned by the
+repository's `packageManager` field, so corepack fetches that exact version the
+first time you run it inside the clone, whatever you have installed globally.
+Outside the clone there is no pin and corepack fetches the latest release,
+which is not the one this repository was measured with. The first run is slower
+than it looks like it should be, because of that download.
+
+```sh
+pnpm --version
+```
+
+```text
+10.34.5
+```
+
+By default corepack asks `Y/n` before it downloads pnpm, and that prompt hangs a
+script or a container. The `COREPACK_ENABLE_DOWNLOAD_PROMPT=0` line in section 1
+switches it off, for that shell only. If you open a new terminal, either set it
+again or answer `Y` when asked.
 
 ```sh
 pnpm install
@@ -276,6 +312,8 @@ pnpm build
 That keeps running too. The subshell is deliberate: the launcher must run with
 `packages/deck` as its working directory (it resolves the build and the `.env`
 relative to it), and the brackets mean your own shell stays where it was.
+It also stops when you close that terminal; [Keep it running](#keep-it-running)
+below has two ways round that.
 
 It prints every root it resolved, and whether it found a `.env`, before it
 listens. A missing or relative or nonexistent root is fatal at that point and
@@ -306,6 +344,55 @@ Agents appear once something writes into `INBOX_ROOT`, which is tier 3.
 500 for every request until you configure it, because it goes straight
 to the web server and skips the launcher that validates the roots and loads
 the `.env`. `node scripts/start-production.mjs` is the supported way in.
+
+### Keep it running
+
+Started as above, Deck is a child of your terminal and dies with it. Two ways
+to keep it up, from the root of your clone, after `pnpm build`. Use one, not
+both: they want the same port.
+
+**In a detached tmux session.** Quick, needs nothing but tmux, and survives
+closing every terminal. Nothing restarts it if it crashes, and nothing starts
+it again after a reboot.
+
+```sh-manual
+tmux new-session -d -s deck -c "$PWD/packages/deck" node scripts/start-production.mjs
+```
+
+`tmux attach -t deck` shows its output; `Ctrl-b d` leaves it running again.
+`tmux kill-session -t deck` stops it. The session is called `deck` so it stays
+out of the `agents` session tier 3 creates.
+
+**As a systemd user service.** `packages/deck/deploy/deck.service` is an
+example unit: `Restart=always`, so a crash is restarted, and logs go to the
+journal. Install it with your clone and your Node filled in:
+
+```sh-manual
+mkdir -p ~/.config/systemd/user
+sed -e "s|@DECK_DIR@|$PWD/packages/deck|g" -e "s|@NODE_DIR@|$(dirname "$(command -v node)")|g" \
+  packages/deck/deploy/deck.service > ~/.config/systemd/user/deck.service
+systemctl --user daemon-reload
+systemctl --user start deck
+systemctl --user status deck
+```
+
+It reads the same `packages/deck/.env` as a hand-run start, so nothing else
+needs configuring. `packages/deck/.env.production` is the unit's optional
+`EnvironmentFile`: a value there beats `.env`.
+
+A user service still stops when you log out, unless your user lingers:
+
+```sh-manual
+loginctl enable-linger "$USER"
+```
+
+If that is refused, run it with `sudo`. After a rebuild, `systemctl --user
+restart deck` serves the new build, and `journalctl --user -u deck` shows the
+launcher's output. `systemctl --user enable deck` also starts it when your
+user manager starts, but starting Deck on boot is a separate piece of work and
+has not been checked here. On WSL, systemd has to be switched on in
+`/etc/wsl.conf`, which recent Ubuntu images already do; that is unverified
+here too.
 
 ## 5. Bring your agents to life
 
@@ -388,8 +475,7 @@ tmux capture-pane -t agents:inkie -p | grep -v '^$' | tail -5
 ```
 
 ```text
-you@host:~/agents/inkie$ printf '\033]0;inkie\007'; [ -f /home/you/agents/inkie/.env.secrets ] && . /home/you/agents/inkie/.env.secrets; claude --resume inkie  || claude
--bash: claude: command not found
+you@host:~/agents/inkie$ printf '\033]0;inkie\007'; [ -f /home/you/agents/inkie/.env.secrets ] && . /home/you/agents/inkie/.env.secrets; claude --session-id 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d -n inkie
 -bash: claude: command not found
 you@host:~/agents/inkie$
 ```
@@ -596,10 +682,13 @@ on a machine or user account that does not have one. Pointing Deck at a
 differently-named session with `MC_TMUX_SESSION` works for the application,
 but the launcher will not follow it.
 
-**Typography needs the internet at runtime.** The stylesheet imports three
-fonts from Google Fonts, so an installation with no outbound access renders in
-fallback fonts with no explanation. Nothing else about the application depends
-on egress.
+**Typography needs the internet at runtime.** The page links a stylesheet for
+three fonts from Google Fonts, so a browser with no route to it renders in
+fallback fonts with no explanation. That is the browser's connection, not the
+server's. Until #32 was fixed the fonts never loaded even when online, because
+the `@import` that was meant to fetch them was dropped; if you see fallback
+fonts on a connected browser now, that is a regression worth reporting. Nothing
+else about the application depends on egress.
 
 **Optional subsystems are unverified here.** Voice dictation (Deepgram),
 image descriptions (Gemini) and web push all need keys, are off without them,
@@ -637,8 +726,9 @@ bind-mounted state directory handing you back files you do not own, and that is
 worked through in `rig/container-image-note.md`.
 
 **macOS and Windows are unverified.** The rig runs Linux containers. The
-Ubuntu path in this document is executed on every run; the macOS block is not,
-and no one has run this on Windows.
+Ubuntu path in this document is executed on every run, apart from the
+`sh-manual` blocks in Keep it running; the macOS block is not, and no one has
+run this on Windows.
 
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
 only a display name: it is a filename in your inbox root.

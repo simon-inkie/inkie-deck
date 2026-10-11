@@ -122,12 +122,15 @@ export function slugify(text) {
  * derived from the other.
  *
  * @param {FencedBlock[]} blocks
- * @param {{ executableLangs: string[], knownLangs: string[], runs: Record<string, string[]> }} plan
+ * @param {{ executableLangs: string[], knownLangs: string[], runs: Record<string, string[]>, skipped?: Record<string, unknown> }} plan
  */
 export function coverage(blocks, plan) {
   const byId = new Map(blocks.map((block) => [block.id, block]));
   const executable = blocks.filter((block) => plan.executableLangs.includes(block.lang));
-  const claimed = new Set(Object.values(plan.runs).flat());
+  // A declared skip is an accounted-for block, not an unclaimed one: it names
+  // the block and carries a reason in the plan. It still has to exist in the
+  // document, so a stale skip is reported through unknownIds like a stale run.
+  const claimed = new Set([...Object.values(plan.runs).flat(), ...Object.keys(plan.skipped ?? {})]);
   return {
     total: blocks.length,
     executable: executable.map((block) => block.id),

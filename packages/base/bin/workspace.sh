@@ -47,6 +47,9 @@ else
   AGENTS=("${ALL_AGENTS[@]}")
 fi
 
+# Pinned claude session ids, shared with boot-agents.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
+
 get_runtime() {
   local agent="$1"
   if [[ -n "$RUNTIME_OVERRIDE" ]]; then
@@ -72,14 +75,17 @@ start_agent() {
     # Secrets should come from a real secret store at boot, never raw in
     # git-tracked config.
     #
-    # `--resume <name>` resolves a session DISPLAY NAME, and a session only
-    # acquires one when someone runs `/rename <name>` inside it. A brand new
-    # agent has none, so its very first launch fails with "No conversations
-    # found to resume" and leaves an empty pane. Hence the fallback to a plain
-    # launch: the first launch starts a fresh session, and once that session
-    # has been renamed, every later launch resumes it. Run `/rename <name>` in
-    # a new agent's first session.
-    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude --resume $agent $model_flag || claude $model_flag" Enter
+    # The session is pinned by id, not resumed by name: `--resume <name>` on a
+    # brand new agent opens an interactive picker instead of failing, so a
+    # `|| claude` fallback never ran. See claude-session.sh for the pin, the
+    # missing-transcript case and the one-off migration of sessions named by
+    # hand. If no pin can be written, launch a fresh named session.
+    local session_args
+    session_args="$(claude_session_args "$agent" "$AGENTS_HOME/$agent")" || {
+      echo "workspace: could not pin a session id for $agent; launching an unpinned session" >&2
+      session_args="-n $(printf '%q' "$agent")"
+    }
+    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag" Enter
   else
     # Any other runtime: launch it plainly and let its own config (hooks,
     # AGENT_NAME wiring) do the rest. Add a branch here if a given runtime

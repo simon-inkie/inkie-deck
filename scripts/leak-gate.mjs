@@ -59,7 +59,7 @@ const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 /**
  * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[], messageExempt?: boolean, messageExemptPattern?: string[] }} spec
  */
-function rule({ label, why, pattern, flags = "i", sample, messageExempt = false, messageExemptPattern }) {
+function rule({ label, why, pattern, flags = "i", sample, messageExempt = false, messageExemptPattern, contentExemptPattern }) {
   return {
     label,
     why,
@@ -74,6 +74,11 @@ function rule({ label, why, pattern, flags = "i", sample, messageExempt = false,
     // rule, not a specific name) must not go blind to every OTHER match on
     // that class just to permit one pre-approved instance.
     messageExemptPattern: messageExemptPattern ? new RegExp(messageExemptPattern.join(""), flags) : undefined,
+    // Content-scope counterpart: this exact shape is blanked out of the text
+    // BEFORE the rule runs, so only that instance is permitted. Anything else
+    // the rule's own pattern catches, including the same name elsewhere on the
+    // same line, still fires. Global so every instance on a line is blanked.
+    contentExemptRe: contentExemptPattern ? new RegExp(contentExemptPattern.join(""), flags.replace("g", "") + "g") : undefined,
   };
 }
 
@@ -92,6 +97,11 @@ const RULES = [
     pattern: ["si", "mon"],
     sample: ["si", "mon"],
     messageExempt: true,
+    // The canonical clone URL carries the GitHub owner, which is this name,
+    // and INSTALL.md has to print it. Exempt that one URL and nothing wider:
+    // the owner/repo pair is fixed, an optional .git is allowed, and a longer
+    // repo name (a fork-style suffix) does not match.
+    contentExemptPattern: ["https://github\\.com/si", "mon-ink", "ie/ink", "ie-deck(?:\\.git)?(?![\\w-])"],
   }),
   rule({
     label: "second-principal-first-name",
@@ -404,8 +414,9 @@ function scanBuffer(display, buffer) {
   const findings = [];
   const lines = buffer.toString("utf8").split("\n");
   for (const [index, lineText] of lines.entries()) {
-    for (const { label, why, re } of RULES) {
-      if (re.test(lineText)) {
+    for (const { label, why, re, contentExemptRe } of RULES) {
+      const tested = contentExemptRe ? lineText.replace(contentExemptRe, "") : lineText;
+      if (re.test(tested)) {
         findings.push({ file: display, line: index + 1, label, why });
       }
     }
@@ -687,10 +698,37 @@ function selfTest() {
       );
       process.exit(1);
     }
+    // Prove the content-scope URL exemption is narrow: the canonical clone
+    // URL passes, and the name still fires on the bare name, on a different
+    // URL, on a longer repo name, and beside an exempt URL on the same line.
+    const nameRule = RULES.find((r) => r.label === "principal-first-name");
+    if (!nameRule?.contentExemptRe) {
+      console.error("leak-gate self-test: principal-first-name rule or its content exemption missing");
+      process.exit(1);
+    }
+    const owner = ["si", "mon-ink", "ie"].join("");
+    const bareName = ["si", "mon"].join("");
+    const exemptCases = [
+      { text: `git clone https://github.com/${owner}/inkie-deck.git && cd inkie-deck`, fires: false, why: "the canonical clone URL" },
+      { text: `see https://github.com/${owner}/inkie-deck for the source`, fires: false, why: "the canonical URL without .git" },
+      { text: `ask ${bareName} about it`, fires: true, why: "the bare name" },
+      { text: `https://github.com/${owner}/other-repo.git`, fires: true, why: "a different repo under the same owner" },
+      { text: `https://github.com/${owner}/inkie-deck-fork.git`, fires: true, why: "a longer repo name" },
+      { text: `http://example.com/${owner}/inkie-deck.git`, fires: true, why: "a different host" },
+      { text: `https://github.com/${owner}/inkie-deck.git from ${bareName}`, fires: true, why: "the name beside an exempt URL" },
+    ];
+    for (const { text, fires, why } of exemptCases) {
+      const fired = scanBuffer("case", Buffer.from(text)).some((f) => f.label === nameRule.label);
+      if (fired !== fires) {
+        console.error(`leak-gate self-test: principal-first-name ${fires ? "should fire on" : "should exempt"} ${why}`);
+        process.exit(1);
+      }
+    }
     console.log(
       `leak-gate self-test: all ${RULES.length} rules fire correctly (content, filename and binary-sniff paths)`,
     );
     console.log("leak-gate self-test: message-scope exemption is narrow (approved shape only, not the whole rule)");
+    console.log("leak-gate self-test: content-scope URL exemption is narrow (canonical clone URL only)");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
