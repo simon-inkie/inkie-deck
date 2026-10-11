@@ -75,5 +75,10 @@ Opus round 2: the Windows "Keep it running" heading stole the
 Renamed it "Keep Deck running on Windows" (link in the section intro
 updated by wording). Nits: wrapped the long line and the intro, and added
 Line endings to the "do first" list.
+Human review (maintainer, PR comment): the WSL path only started the service, so
+nothing brought Deck back after a restart. Added `systemctl --user enable
+deck` and `loginctl enable-linger` to the Windows section, with what each
+does and that Deck still does not start with Windows itself. The PR keeps the
+unverified-steps list.
 Not done here, separate issue: the tier table anchors at the top of
 INSTALL.md (`#1-try-it` etc.) do not match the real headings.

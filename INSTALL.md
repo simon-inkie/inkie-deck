@@ -303,9 +303,19 @@ systemd=true
 
 Save, run `wsl --shutdown` in PowerShell, open Ubuntu again and repeat the
 check. Then follow the systemd user service steps in
-[Keep it running](#keep-it-running). After a Windows restart, Deck is back as
-soon as Ubuntu starts, which is when you first open an Ubuntu window; it does
-not start with Windows.
+[Keep it running](#keep-it-running), and add two commands to them. Starting the
+service does not bring it back after a restart, so also run:
+
+```sh-manual
+systemctl --user enable deck
+loginctl enable-linger "$USER"
+```
+
+`enable` makes the service start whenever your user's services start.
+`enable-linger` keeps them running without an Ubuntu window open, which is what
+you want under WSL. Without it, Deck comes back only when you next open an
+Ubuntu window. Either way it does not start with Windows itself: nothing runs
+until Ubuntu is started, and opening any Ubuntu window does that.
 
 ## 1. Prerequisites
 
