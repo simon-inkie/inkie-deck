@@ -196,6 +196,30 @@ export function buildSendKeysTextArgs(
   return ["send-keys", "-t", `=${session}:=${window}`, "-l", "--", text];
 }
 
+/** Fixed navigation keys accepted by the pane send seam. */
+export const SEND_KEYS_ALLOWED_KEYS = [
+  "Up",
+  "Down",
+  "Enter",
+  "Escape",
+  "Tab",
+  "BTab",
+] as const;
+export type PaneKey = (typeof SEND_KEYS_ALLOWED_KEYS)[number];
+
+export function isValidPaneKey(key: string): key is PaneKey {
+  return SEND_KEYS_ALLOWED_KEYS.some((allowed) => allowed === key);
+}
+
+/** Named keys are single keystrokes, without literal mode or an extra Enter. */
+export function buildSendKeysNamedArgs(
+  session: string,
+  window: string,
+  key: PaneKey
+): string[] {
+  return ["send-keys", "-t", `=${session}:=${window}`, key];
+}
+
 /**
  * argv for pressing Enter in a window. Pure - unit-pinned. No "-l": "Enter" is
  * a key NAME here, not literal text - this is the keystroke that submits.
@@ -224,6 +248,41 @@ function runTmuxVoid(args: string[]): boolean {
 
 export type SendKeysResult = { ok: true } | { ok: false; error: string };
 
+/** Send one allowlisted navigation key to a live, exactly matched window. */
+export function sendNamedKeyToWindow(
+  env: NodeJS.ProcessEnv,
+  window: string,
+  key: string
+): SendKeysResult {
+  if (!isValidWindowName(window)) {
+    return { ok: false, error: "Unknown or invalid window." };
+  }
+  if (!isValidPaneKey(key)) {
+    return { ok: false, error: "Invalid navigation key." };
+  }
+  if (!listTmuxWindows(env).includes(window)) {
+    return { ok: false, error: "Window is not live in the session." };
+  }
+  return runTmuxVoid(buildSendKeysNamedArgs(resolveTmuxSession(env), window, key))
+    ? { ok: true }
+    : { ok: false, error: "Could not send key to the window." };
+}
+
+/** Refuse text when the current viewport cannot be checked or shows a shell. */
+function textSendRefusal(
+  session: string,
+  window: string
+): string | undefined {
+  const viewport = runTmux(buildCaptureViewportArgs(session, window));
+  if (viewport === undefined) {
+    return "Could not check the pane before sending text.";
+  }
+  if (viewport.split("\n").some((line) => SHELL_PROMPT_RE.test(line))) {
+    return "The pane is at a shell prompt. Text was not submitted.";
+  }
+  return undefined;
+}
+
 /**
  * tmux side effects the verified-send state machine needs, as a seam so the
  * policy module stays testable without a live server.
@@ -250,7 +309,12 @@ const LIVE_SEND_KEYS_DRIVER: SendKeysDriver = {
     ),
   sendText: (session, window, text) =>
     runTmuxVoid(buildSendKeysTextArgs(session, window, text)),
+  // Recheck immediately before every Enter. The verified state machine proves
+  // the composer safe before typing and verifies the result afterwards; this
+  // closes the remaining delay race where the agent could exit to a shell
+  // after the text send but before Enter.
   pressEnter: (session, window) =>
+    textSendRefusal(session, window) === undefined &&
     runTmuxVoid(buildSendKeysEnterArgs(session, window)),
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
@@ -684,6 +748,15 @@ export function classifyPaneSnapshot(
   rawViewport?: string
 ): PaneSnapshot {
   const lines = viewport.split("\n");
+  // A shell frame anywhere in the live viewport is ambiguous and therefore
+  // unsafe. This preserves the original text-send guard while the positive
+  // composer classification below supplies the stronger verified-send gate.
+  if (lines.some((line) => SHELL_PROMPT_RE.test(line))) {
+    return {
+      activity: paneTextIsActive(viewport) ? "active" : "idle",
+      composer: "unknown",
+    };
+  }
   const promptIndex = findComposerOpenIndex(lines);
   if (promptIndex === -1) {
     return {
