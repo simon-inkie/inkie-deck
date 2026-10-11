@@ -717,6 +717,9 @@ if ! command -v claude >/dev/null 2>&1; then
   report_cannot_verify "No \`claude\` on PATH, so there was nothing to ask."
 fi
 
+. "$SCRIPT_DIR/claude-binary-check.sh"
+warn_if_foreign_claude
+
 PROBE_PROMPT="Answer from your own context, not by reading any files, and reply with exactly two lines and nothing else:
 name: <your name>
 boot phrase: <the boot phrase recorded in your identity file>

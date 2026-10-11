@@ -101,6 +101,7 @@ fi
 
 # Pinned claude session ids, shared with workspace.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
 
 # Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
 get_runtime() {
@@ -731,6 +732,7 @@ launch_agent() {
     # claude-session.sh for the pin, the missing-transcript case and the
     # one-off migration of sessions named by hand. If no pin can be written,
     # launch a fresh named session rather than nothing.
+    warn_if_foreign_claude
     local session_args
     session_args="$(claude_session_args "$a" "$AGENTS_HOME/$a")" || {
       echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
