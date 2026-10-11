@@ -520,6 +520,33 @@ again and an agent whose pane already has its runtime running in it is left
 alone; one whose runtime has exited is relaunched, which is what makes this
 safe to fire on boot.
 
+On first boot, attach to the session and answer any runtime setup prompts
+manually. Folder trust defaults to No: do not press Enter while No is
+preselected. Choose Yes manually only if you trust the folder. Claude Code
+uses its default permission mode (currently auto) unless you configure it.
+The resume picker and fullscreen offer also need a manual answer.
+The launcher reports ready launches and confirmed monitors separately; a
+live process alone does not prove a fresh launch is ready. Readiness waits
+up to 45 seconds per fresh launch; set `BOOT_READY_SECS` to a positive integer
+for slower machines. Recognised setup prompts stop the wait early.
+
+Exit statuses:
+
+- `0`: fresh launches are ready and requested monitors are confirmed.
+- `1`: a launch failed.
+- `3`: readiness or monitor confirmation is pending.
+
+Callers that treat non-zero statuses as failures, including a default systemd
+boot unit, will report failure even when a healthy first boot only needs a
+manual trust answer. A unit that accepts this pending state can set `SuccessExitStatus=3`.
+After answering prompts, run the launcher again to check known setup dialogs.
+Existing sessions, including busy conversations, are left running and are
+not automatically re-armed. If a fresh launch exceeds the readiness budget
+or stops at a setup prompt, its opted-in monitor is not armed on that run or
+on a later re-run: once the composer is ready, type `arm your monitor` manually.
+Monitor instructions are sent once, with confirmation polled from bounded
+pane history to avoid duplicate watcher requests.
+
 ```sh
 tmux list-windows -t agents -F '#{window_name}'
 ```
