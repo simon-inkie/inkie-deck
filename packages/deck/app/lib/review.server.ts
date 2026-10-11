@@ -1,7 +1,7 @@
 /**
  * review.server.ts
  *
- * Read-only safe-fs module for the review side-panel (TASK-431, TASK-562).
+ * Read-only safe-fs module for the review side-panel.
  * Mirrors the discipline from attachments.server.ts:
  *   - realpath BOTH sides for containment
  *   - sep-suffixed startsWith prefix assert
@@ -10,7 +10,7 @@
  *
  * That list used to carry a second bullet, a per-path substring ban on a
  * literal silo directory name, applied to the raw and the resolved path
- * both. TASK-434 replaced deny-known-bad with allowlist confinement across
+ * both. The shared safe-fs work replaced deny-known-bad with allowlist confinement across
  * safe-fs, attachments and projects; the ban was left standing here alone,
  * still naming a literal directory. Two things were wrong with it. It banned
  * a string no deployment is obliged to use, so on most of them it denied
@@ -75,8 +75,8 @@
  *   readReviewFile(absPath) - returns {path, content, kind, lang} or throws.
  *   readReviewAsset(absPath) - returns {bytes, contentType} for images or throws.
  *
- * The .server suffix keeps this module out of the client bundle (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * The .server suffix keeps this module out of the client bundle.
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -369,7 +369,7 @@ export interface ReviewFileResult {
 }
 
 /**
- * Read a document at absPath for the review panel (TASK-431, TASK-562).
+ * Read a document at absPath for the review panel.
  *
  * Gate chain (every failure throws; route maps all to 404, console.warn'd):
  *   1. Shape rejection (absolute, no NUL, no ".." segments).
@@ -377,10 +377,10 @@ export interface ReviewFileResult {
  *   3. Multi-root realpath containment.
  *   4. Extension allowlist (markdown + code set) - evaluated on BOTH the
  *      requested path AND the realpath'd path.
- *      (Peer-review hole Atlas 2026-06-06: a "notes.md -> .env" symlink inside
+ *      (Peer-review hole: a "notes.md -> .env" symlink inside
  *       an allowed root passes containment and requested-name check, but its
  *       RESOLVED extension is ".env" - denied here.)
- *   4a. Secret denylist (deny-before-allow, TASK-562 peer review 2026-06-28).
+ *   4a. Secret denylist (deny-before-allow).
  *       Runs on BOTH basenames after extension passes. Catches signing_key.json,
  *       .env.production, *.age, *.pem, credential JSON patterns, etc. that have
  *       extensions which would otherwise be allowed (.json, .yaml, ...).
@@ -479,7 +479,7 @@ export function readReviewAsset(absPath: string): ReviewAssetResult {
   }
 
   // Extension allowlist for assets (images only, NO svg).
-  // Same both-sides rule as readReviewFile (Atlas hole): a "pic.png" symlink
+  // Same both-sides rule as readReviewFile: a "pic.png" symlink
   // at an .env target must not serve secret bytes as image/png.
   const requestedExt = path.extname(absPath).toLowerCase();
   const ext = path.extname(finalResolved).toLowerCase();
@@ -509,7 +509,7 @@ export function readReviewAsset(absPath: string): ReviewAssetResult {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-linkify review paths (TASK-645)
+// Auto-linkify review paths
 // ---------------------------------------------------------------------------
 //
 // The review panel only opens a document when the message body contains REAL
@@ -521,7 +521,7 @@ export function readReviewAsset(absPath: string): ReviewAssetResult {
 //
 // Extension scope: REVIEW_DOC_EXTS (REVIEW_MD_EXTS + REVIEW_CODE_EXTS - the
 // same combined allowlist readReviewFile already serves). Widened to include
-// code paths (.ts/.py/.sql/... etc) 2026-07-20 per Alex: the panel already
+// code paths (.ts/.py/.sql/... etc) on request: the panel already
 // fully supports opening code files via real links, the original doc-only
 // scoping was a judgement call (a bare ".ts" mention felt more likely
 // incidental than a share), not a technical limitation.
@@ -531,7 +531,7 @@ export function readReviewAsset(absPath: string): ReviewAssetResult {
 //   - Images are deliberately NOT included: the panel can only inline an image
 //     that is referenced INSIDE an already-open markdown document (rewritten to
 //     /api/review-asset), there is no standalone "open a bare image path" mode,
-//     and Alex confirmed inline images are fine as-is, no click-to-open needed.
+//     and inline images were confirmed fine as-is, no click-to-open needed.
 //
 // Containment reuses resolveReviewRoots() + assertContained() + isSecretBasename()
 // - the exact same validation the review panel enforces. A path that does NOT
@@ -576,7 +576,7 @@ const AUTOLINK_ONLY_PATH_RE = new RegExp(`^${AUTOLINK_PATH_CORE}$`);
  * "report.md.bak" token). Without this, the star's backtracking would silently
  * truncate the match to whichever earlier ".ext" it can complete, contradicting
  * the "never guess" contract: resolveReviewablePath would then validate a real
- * but WRONG file. Peer-review catch (Atlas), not a containment bypass on its
+ * but WRONG file. Peer-review catch, not a containment bypass on its
  * own (resolveReviewablePath still re-validates whatever is matched) but a
  * content-accuracy gap worth closing at the regex boundary.
  */
@@ -743,7 +743,7 @@ export function autoLinkifyReviewPaths(
  * fix applies to the initial window AND to lazily loaded older chunks.
  *
  * Resolves review roots and builds the resolution cache ONCE for the whole
- * call (CodeRabbit catch: without this, root resolution + the containment
+ * call (without this, root resolution + the containment
  * fs.realpathSync/fs.statSync cost was paid once per block instead of once
  * per request, on a loader that re-runs on every poll cycle).
  *

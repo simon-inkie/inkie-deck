@@ -1,6 +1,6 @@
 /**
- * Dictation provenance marker (2026-06-11, Alex: "header so you know it's
- * dictated"). A plain reply block written with rawMeta "dictated: true" must
+ * Dictation provenance marker, so a reader can tell a reply was dictated.
+ * A plain reply block written with rawMeta "dictated: true" must
  * round-trip serialize -> parse as a PLAIN block (no card/action
  * misclassification) with the meta line preserved, so both the MC bubble
  * and agents reading raw markdown can see it.

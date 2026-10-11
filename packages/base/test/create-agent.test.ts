@@ -324,8 +324,8 @@ describe("creation", () => {
 
   it("calls the fallback a guess, and does not attribute it to a file that does not say it", () => {
     // The warning used to claim the value came from the application's
-    // .env.example. That file ships INBOX_ROOT empty (there is no default,
-    // FND-03), so the citation dressed a guess up as a lookup.
+    // .env.example. That file ships INBOX_ROOT empty (there is no default),
+    // so the citation dressed a guess up as a lookup.
     const box = sandbox();
     const result = run(box, ["wren", "--no-verify"], {
       env: { INBOX_ROOT: "" },

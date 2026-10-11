@@ -1,7 +1,7 @@
 /**
- * voice-env.test.ts - the launchers' VOICE_DISABLED_REASON rule (issue #27).
+ * voice-env.test.ts - the launchers' VOICE_DISABLED_REASON rule.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

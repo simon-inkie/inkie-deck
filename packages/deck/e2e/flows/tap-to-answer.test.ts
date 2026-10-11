@@ -1,10 +1,10 @@
 /**
- * tap-to-answer.test.ts - VALID-02 flow (b): tapping an option writes the answer
+ * tap-to-answer.test.ts - flow (b): tapping an option writes the answer
  * block back to the (temp) fixture inbox and the card flips to answered.
  *
- * CARD-02: answerCard writes the answer block; card shows "Answered: A" badge.
- * VALID-03: writeback goes to INBOX_ROOT (temp dir), never the committed fixtures/inbox.
- * ASCII only - no em-dashes per FND-05.
+ * answerCard writes the answer block; card shows "Answered: A" badge.
+ * Writeback goes to INBOX_ROOT (temp dir), never the committed fixtures/inbox.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";
@@ -27,7 +27,7 @@ test("CARD-02: tapping option A flips card to answered and writes answer to temp
   // Tap option A.
   await page.getByRole("button", { name: /Hold spend/ }).click();
 
-  // RR7 fetcher posts and revalidates - the card becomes a RECEIPT (TASK-453):
+  // RR7 fetcher posts and revalidates - the card becomes a RECEIPT:
   // resolution chip in the header strip, preferring the option LABEL over the
   // bare letter ("Answered: Hold spend at..." not "Answered: A").
   const chip = card.getByTestId("decision-resolution-chip");
@@ -45,7 +45,7 @@ test("CARD-02: tapping option A flips card to answered and writes answer to temp
     card.getByText("Hold spend at £45/day", { exact: true })
   ).toBeVisible();
 
-  // VALID-03: verify writeback landed in the TEMP fixture, not the committed one.
+  // Verify writeback landed in the TEMP fixture, not the committed one.
   const inboxRoot = process.env["INBOX_ROOT"];
   const inboxFile = path.join(inboxRoot!, "scribe", "inbox", "alex.md");
   const content = fs.readFileSync(inboxFile, "utf8");

@@ -1,16 +1,16 @@
 /**
- * sidebar-dot.test.ts - the agent-list "needs attention" dot (2026-06-12).
+ * sidebar-dot.test.ts - the agent-list "needs attention" dot.
  *
- * Alex reported the dot stuck on for quill + summit and never appearing for
+ * The dot was stuck on for quill + summit and never appeared for
  * other agents. Root cause: the dot read raw card state (answered/done) and
  * ignored BOTH (a) the queue-store handled set, so a swept card kept the dot
  * lit, and (b) unread plain messages, so a chatty agent never dotted.
  *
- * Two distinct dots (2026-06-12): a MAGENTA dot for an unread message and a
+ * Two distinct dots: a MAGENTA dot for an unread message and a
  * BURNT-ORANGE dot for an open (un-swept) decision/action card. Both can show
  * at once. A swept card shows no decision dot. This suite pins all the cases.
  *
- * VALID-03: writes only under INBOX_ROOT + the tmp queue store. ASCII only.
+ * Writes only under INBOX_ROOT + the tmp queue store. ASCII only.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

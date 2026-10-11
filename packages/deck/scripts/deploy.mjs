@@ -1,13 +1,12 @@
 /**
  * scripts/deploy.mjs - no-404-window redeploy of the MC production daemon.
  *
- * THE BUG THIS FIXES (2026-06-10, bit twice: wonky styling, then decision cards
- * "breaking"): `pnpm build` used to empty build/client and write fresh hashed
- * asset names. The production daemon (react-router-serve) serves build/client
+ * THE BUG THIS FIXES: `pnpm build` used to empty build/client and write fresh
+ * hashed asset names. The production daemon (react-router-serve) serves build/client
  * from disk LIVE while holding the prior server bundle in memory - so between
  * the build finishing and the restart completing, the live page's HTML still
  * pointed at the OLD hashes, which the build had just deleted -> 404 -> broken
- * styling + dead hydration on whatever Alex was looking at.
+ * styling + dead hydration on whatever the operator was looking at.
  *
  * THE FIX:
  *   1. vite build runs with emptyOutDir:false (see vite.config.ts), so a build
@@ -16,11 +15,11 @@
  *   2. Restart the daemon. The ONLY interruption is the restart itself (~1-2s,
  *      connection-refused which the browser retries) - never a broken render.
  *   3. Verify health: localhost 200, every referenced asset resolves on disk,
- *      and the tailnet front (Alex's lifeline) is 200. Loud non-zero exit if
+ *      and the tailnet front is 200. Loud non-zero exit if
  *      anything is off so the operator can roll back.
  *
  * NOT zero-CONNECTIVITY (the restart blip remains) but zero-BROKEN-RENDER, which
- * is the failure that actually hit Alex. True drain-and-swap is a v2 (needs a
+ * is the failure that actually occurred. True drain-and-swap is a v2 (needs a
  * second instance + a movable front; the serving proxy is pinned at :4242).
  *
  * Orphaned old assets are NOT auto-pruned here: a safe keep-set needs the full
@@ -30,10 +29,10 @@
  *
  * Usage: node scripts/deploy.mjs   (or: pnpm deploy)
  * Env: MC_TAILNET_HOST and MC_TAILNET_IP are REQUIRED (the hostname of the
- * front that serves the app, and the IP to pin it to for the lifeline check).
+ * front that serves the app, and the IP to pin it to for the remote-access check).
  * MC_PORT and MC_SERVICE have defaults and can be overridden.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -117,7 +116,7 @@ const missing = refs.filter((r) => !existsSync(path.join(root, "build", "client"
 if (missing.length > 0) die(`served HTML references missing assets (the 404 window!): ${missing.join(", ")}`);
 log(`all ${refs.length} referenced assets resolve on disk`);
 
-// The lifeline: the tailnet front must serve over Tailscale, not just localhost.
+// Remote access check: the tailnet front must serve over Tailscale, not just localhost.
 const tailRoot = httpCode(`https://${TAILNET_HOST}/`, `${TAILNET_HOST}:443:${TAILNET_IP}`);
 if (tailRoot !== "200") die(`tailnet / -> ${tailRoot} (lifeline check)`);
 log(`tailnet / -> 200 (lifeline intact)`);

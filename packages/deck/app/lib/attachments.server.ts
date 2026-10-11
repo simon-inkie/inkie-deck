@@ -11,8 +11,8 @@
  *   saveAttachment(agent, file) - validates policy, writes, returns { relPath, markdown }.
  *   readAttachment(relPath) - guards read path, returns { bytes, contentType, disposition }.
  *
- * The .server suffix keeps this module out of the client bundle (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * The .server suffix keeps this module out of the client bundle.
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -53,13 +53,12 @@ const POLICY: Record<string, PolicyEntry> = {
   svg:  { cls: "svg",   inline: false, maxBytes:  1 * 1024 * 1024, contentType: "application/octet-stream" },
   // XML follows the svg precedent: a render-capable type (XSLT / embedded
   // markup) is served as a download in octet-stream, never interpreted.
-  // Added 2026-06-12 (Alex: XML attach rejected).
+  // Added after XML attachments were found to be rejected.
   xml:  { cls: "text",  inline: false, maxBytes:  1 * 1024 * 1024, contentType: "application/octet-stream" },
 };
 
 /**
- * ANY-TYPE DEFAULT (2026-06-12, Alex: "lets open it up to any
- * file?"). Extensions outside the table are accepted as plain files:
+ * ANY-TYPE DEFAULT. Extensions outside the table are accepted as plain files:
  * always download-only (Content-Disposition: attachment), always
  * application/octet-stream so the browser never interprets active content
  * (HTML/JS/anything renderable downloads instead of executing), and a
@@ -113,7 +112,7 @@ export function resolveAttachmentsRoot(): string {
 /**
  * Assert that targetPath is safe to read or write within ATTACHMENTS_ROOT.
  *
- * TASK-434: rebased onto the shared confineToRootReal primitive in
+ * Now built on the shared confineToRootReal primitive in
  * safe-fs.server.ts (realpath both sides, parent-realpath + basename,
  * final-component realpath, sep-suffixed prefix assert). The substring ban
  * is gone; the MC_SANDBOX_ONLY live-silo refusal guards the root instead.
@@ -208,7 +207,7 @@ export async function saveAttachment(
   const dotIdx = sanitised.lastIndexOf(".");
   const ext = dotIdx > 0 ? sanitised.slice(dotIdx + 1).toLowerCase() : "";
 
-  // Any-type policy (2026-06-12): every extension resolves - curated types
+  // Any-type policy: every extension resolves - curated types
   // get typed handling, everything else the download-only default.
   const policy = policyForExtension(ext);
 
@@ -289,7 +288,7 @@ export function readAttachment(relPath: string): ReadAttachmentResult {
   const dotIdx = relPath.lastIndexOf(".");
   const ext = dotIdx > 0 ? relPath.slice(dotIdx + 1).toLowerCase() : "";
 
-  // TASK-431 lesson, applied to attachments (TASK-434 sweep): the policy gate
+  // Lesson from the review panel, applied to attachments: the policy gate
   // must also hold on the RESOLVED path. A symlink like notes.md -> creds.env
   // inside the root would otherwise serve .env bytes under a .md policy.
   const resolvedExt = path.extname(safePath).replace(/^\./, "").toLowerCase();
@@ -300,7 +299,7 @@ export function readAttachment(relPath: string): ReadAttachmentResult {
     );
   }
 
-  // Any-type policy (2026-06-12) supersedes the TASK-430 read allowlist:
+  // Any-type policy supersedes the read allowlist:
   // an unmapped extension now serves through the download-only default
   // (octet-stream + attachment disposition - bytes move, nothing is ever
   // interpreted). The symlink extension-swap guard above still holds, and

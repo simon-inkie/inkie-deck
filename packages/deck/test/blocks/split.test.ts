@@ -2,15 +2,15 @@
  * Regression tests for the three ways splitBlocks has lost message content.
  *
  * 1. A standalone "---" line inside a message body silently truncated the
- *    rendered message in MC, dropping everything after it (hit Alex 1 + 15
- *    Jul). Two independent bugs: splitBlocks used "---" as a block boundary
+ *    rendered message in MC, dropping everything after it (reported by the
+ *    operator twice). Two independent bugs: splitBlocks used "---" as a block boundary
  *    (dropping content up to the next header), and _parseBlock cut the body at
  *    the FIRST "---".
  *
  * 2. A markdown heading in a message body did the same thing, from the other
  *    end of the same function: every line beginning "## " opened a block, so
  *    an ordinary heading someone typed ended their message early and the rest
- *    of it re-appeared as a block with no sender (2026-08-13). The
+ *    of it re-appeared as a block with no sender. The
  *    python3 CLI in packages/base had the identical defect, was fixed there
  *    first, and the fix came across with a matching regression pin (Case 52 in
  *    packages/base/test/inbox.test.sh). Corpus cases body-markdown-heading and

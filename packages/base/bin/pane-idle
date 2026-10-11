@@ -346,7 +346,7 @@ pane_ctx_pct() {
 # find_composer_line <pane>  -- print the pane line carrying the REAL composer
 # prompt, or nothing if the pane has no prompt line at all.
 #
-# WHY NOT `grep '^[[:space:]]*(❯|›|>)' | tail -1` (the bug fixed 2026-07-29):
+# WHY NOT `grep '^[[:space:]]*(❯|›|>)' | tail -1`:
 # Claude Code renders its background-task list BELOW the composer and prefixes
 # the selected entry with the SAME ❯ glyph. Real capture off a live pane:
 #
@@ -358,10 +358,9 @@ pane_ctx_pct() {
 #   ❯ ◯ general-purpose  MR opener   32m 4s   <- LAST ❯ line in the capture
 #
 # so `tail -1` read the task entry, treated its text as staged, and the push was
-# skipped for as long as that subagent stayed visible -- confirmed live on one
-# agent's pane TWICE on 2026-07-29 (three human DMs persisted to that agent's
-# inbox but never pushed, unstuck by hand). The failure was silent and total,
-# not intermittent:
+# skipped for as long as that subagent stayed visible -- confirmed on live
+# panes (messages persisted to the inbox but never pushed). The failure was
+# silent and total, not intermittent:
 # any agent with a visible subagent was unreachable by live push.
 #
 # The composer sits directly under its own horizontal-rule border; nothing below

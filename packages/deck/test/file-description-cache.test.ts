@@ -18,7 +18,7 @@
  * The read counter (__descriptionCacheReadCount) is the instrumentation, in the
  * same spirit as __manifestParseCount in file-manifest-route.test.ts.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

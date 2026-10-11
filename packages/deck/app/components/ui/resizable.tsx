@@ -1,6 +1,5 @@
 /**
  * ui/resizable.tsx - shadcn-shape wrappers around react-resizable-panels
- * (TASK-456).
  *
  * Hand-written in this repo's ui/ style (no CLI scaffold), following the
  * shadcn source shape: PanelGroup / Panel re-exported with our class
@@ -12,7 +11,7 @@
  * useDefaultLayout) - the shadcn shape and the free localStorage
  * persistence both live in v3. Upgrade is its own ticket when shadcn moves.
  *
- * No .server imports - FND-02. ASCII only - no em-dashes - FND-05.
+ * No .server imports. ASCII only - no em-dashes.
  */
 import { GripVertical } from "lucide-react";
 import * as ResizablePrimitive from "react-resizable-panels";

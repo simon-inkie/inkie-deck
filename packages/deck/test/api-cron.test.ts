@@ -1,15 +1,15 @@
 /**
- * test/api-cron.test.ts - Unit tests for app/routes/api.cron.tsx (TASK-460).
+ * test/api-cron.test.ts - Unit tests for app/routes/api.cron.tsx.
  *
  * Covers:
- *   - Gate: action returns { ok: false } on a non-admin instance (MC_USER=robin).
+ *   - Gate: action returns { ok: false } on a non-admin instance (MC_USER set to a non-admin user).
  *   - targetType field flows through the create schema (ask-3).
  *
  * Uses process.env mutation (restored in afterEach) to set the instance user.
  * No real crontab is ever touched - all cron.server calls are rejected before
  * they reach crontab operations via the instance gate or by failing target validation.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, afterEach } from "vitest";

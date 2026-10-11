@@ -1,12 +1,12 @@
 /**
- * pending-batch-render.test.tsx - Render-switch tests for TASK-500.1.
+ * pending-batch-render.test.tsx - Render-switch tests for the pending-batch indicator.
  *
  * Tests that the correct indicator component is selected based on
  * batchPrefs.holdIndicator. Uses lightweight decision-logic tests rather
  * than full DOM rendering of the route (which requires heavy mocking of
  * loaders, stores.server, and Remix context).
  *
- * ASCII only (FND-05).
+ * ASCII only.
  */
 import { describe, it, expect } from "vitest";
 import type { HoldIndicator } from "../app/lib/batch-prefs";

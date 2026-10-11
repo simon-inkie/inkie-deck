@@ -1,5 +1,5 @@
 /**
- * card-render.test.ts - VALID-02 flow (a): decision card renders with tappable option buttons.
+ * card-render.test.ts - flow (a): decision card renders with tappable option buttons.
  *
  * Navigates to /threads/scribe and asserts:
  * - The decision card container is visible (data-testid="decision-card")
@@ -7,8 +7,8 @@
  * - Option button [A] "Hold spend..." is tappable (role=button)
  * - "OR write something..." affordance is present (MC #2: replaces "Push back")
  *
- * CARD-01: card blocks render as interactive DecisionCard.
- * ASCII only - no em-dashes per FND-05.
+ * Card blocks render as interactive DecisionCard.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { assertGitClean } from "./helpers.js";

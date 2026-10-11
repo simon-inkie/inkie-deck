@@ -1,6 +1,6 @@
 /**
  * Type declarations for server/voice-relay.mjs
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 export type ClientMessage =
@@ -56,7 +56,7 @@ export function makeFrameBuffer(maxFrames?: number, maxBytes?: number): FrameBuf
 export function statusFrame(state: UpstreamState, detail?: string): StatusMessage;
 
 /**
- * Team roster, the default keyterm list (measured 2026-07-28).
+ * The team roster, as the default keyterm list.
  */
 export const DEFAULT_KEYTERMS: readonly string[];
 

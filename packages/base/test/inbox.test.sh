@@ -1589,7 +1589,7 @@ STUB
 # ---------------------------------------------------------------------------
 # Case 52: a markdown heading INSIDE a message body must not truncate it.
 #
-# Found live 2026-08-13: block boundaries came off every column-0
+# Found in live use: block boundaries came off every column-0
 # "## " line, not only lines that actually parse as a header. A message
 # containing a markdown heading -- ordinary content, we all write in markdown
 # -- ended its own block early and everything after the heading vanished from
@@ -1616,7 +1616,7 @@ Here is my message.
 This trailing paragraph is AFTER the heading and must survive." > /dev/null
 
   OUT=$(run_inbox "$T" "alpha" read beta 2>&1)
-  # Review, 2026-08-13: the previous negative assertion here checked for
+  # Review: the previous negative assertion here checked for
   # "from: alice", a string this fixture never contains regardless of the parser,
   # so it could not fail and was testing nothing. The real invariant is that a
   # malformed heading must not split the message into a second block at all --

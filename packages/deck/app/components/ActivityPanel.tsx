@@ -1,5 +1,5 @@
 /**
- * ActivityPanel.tsx - the agent-activity panel on the Team tab (TASK-691 step 1).
+ * ActivityPanel.tsx - the agent-activity panel on the Team tab.
  *
  * One card per agent: a status pill, the evidence sentence behind it, the
  * resolved worktree with its confidence, and the newest completion. Everything
@@ -18,14 +18,13 @@
  *      uses. It means the sweep has nothing to say about this agent, which is
  *      a different thing from saying the agent is fine.
  *   3. OFFLINE SHOWS THE LAST STATE, NEVER AS THE CURRENT ONE. When the sweep
- *      has gone quiet the cards stay (Alex, 2026-07-31, after seeing the
- *      blank version), dimmed and under the offline banner, with the status
- *      pills stripped of their verdict tint: worktrees and completions are
+ *      has gone quiet the cards stay, dimmed and under the offline banner, with the
+ *      status pills stripped of their verdict tint: worktrees and completions are
  *      facts that stay true, a pill is a claim about now and stops being one
  *      the moment the engine dies.
  *
  * The pill itself (tint + glyph per status) lives in StatusPill.tsx, shared
- * with the Sidebar since 2026-07-31 so the two renderings cannot drift.
+ * with the Sidebar so the two renderings cannot drift.
  *
  * Every pill carries a glyph as well as a tint (WCAG 1.4.1, the same
  * not-colour-alone rule WorkStrip's stale clock follows).
@@ -35,8 +34,8 @@
  * a wrong guess correctable by eye, which is the design goal for this feature
  * (plan section 5) rather than an implementation detail.
  *
- * No .server imports - FND-02 (types come from activity.shared).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports (types come from activity.shared).
+ * ASCII only - no em-dashes.
  */
 import { useState } from "react";
 import { Link } from "react-router";
@@ -207,8 +206,7 @@ function AgentCard({
           muted={stale}
         />
         {/*
-          The PRIMARY action of the whole card (Alex's 2026-07-31 ask: "maybe a
-          button on each card to jump to the agents thread window"), so it sits
+          The PRIMARY action of the whole card, so it sits
           in the header row rather than inside the details toggle. Same URL
           shape AppShell's chat/terminal toggle produces, so it lands on the
           live pane rather than the chat half. Deliberately still offered on a
@@ -421,8 +419,8 @@ function AgentCard({
  * from nothing.
  *
  * It is now a BANNER over the last-known cards rather than a replacement for
- * them (2026-07-31), so the stale line has to describe what is rendering below
- * it: "N agents in it, pills are not shown" was true of the old blank version
+ * them, so the stale line has to describe what is rendering below it:
+ * "N agents in it, pills are not shown" was true of the old blank version
  * and would be a straight contradiction of the dimmed grid underneath.
  */
 function OfflineNote({
@@ -542,11 +540,9 @@ export function ActivityPanel({ activity, now, avatars = {} }: ActivityPanelProp
     activity.state === "live" ? countStatuses(activity.agents) : [];
 
   /**
-   * Whether the panel claims the route's spare vertical height (Alex,
-   * 2026-07-31: "activity window can be full height, it's only 50% vertically
-   * atm"). The card grid is the only thing in here that can USE that height, so
-   * the panel only takes it when there is a grid to put in it: collapsed, or
-   * showing nothing but an offline note or the empty-state line, it goes back
+   * Whether the panel claims the route's spare vertical height. The card grid is the only thing in here that can USE
+   * that height, so the panel only takes it when there is a grid to put in it:
+   * collapsed, or showing nothing but an offline note or the empty-state line, it goes back
    * to sizing to its content rather than leaving a card's worth of dead space
    * above the page's footer caption.
    *

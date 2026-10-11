@@ -6,13 +6,13 @@
  * 1. Subject derivation. Regression for the compose subject-bleed bug: the
  *    reply subject was derived from inbox.readBlocks(agent, user) keyed on the
  *    ROUTE PARAM, but the reply is written to writeTarget = payload.targetAgent
- *    ?? agent. On the TASK-500 deliver-on-switch path (route open on thread A,
+ *    ?? agent. On the deliver-on-switch path (route open on thread A,
  *    pending batch targets thread B) these diverge, so the reply landed in B
  *    carrying A's subject. Fix: writeTarget is hoisted above the subject read
  *    and the blocks are read from writeTarget, so the subject always matches
  *    the thread the reply lands in.
  *
- * 2. TASK-475 open-card auto-resolve: a free-text reply into a thread whose
+ * 2. Open-card auto-resolve: a free-text reply into a thread whose
  *    most-recent decision card is still open resolves that card as its custom
  *    (option C) answer, instead of landing as a plain message and leaving the
  *    card awaiting a tap forever. Same harness, same action export - hence
@@ -21,7 +21,7 @@
  * Drives the route's `action` export directly (see agent-model.test.ts /
  * api-cron.test.ts) against a sandboxed INBOX_ROOT (see inbox-targeting.test.ts).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -212,7 +212,7 @@ describe("threads compose subject derivation (deliver-on-switch bleed)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-475: free text into a thread with an open decision card resolves it
+// Free text into a thread with an open decision card resolves it
 // ---------------------------------------------------------------------------
 
 /** Count blocks in a raw inbox file (one "## " header line per block). */
@@ -225,11 +225,10 @@ function bodyLineCount(file: string, text: string): number {
   return file.split("\n").filter((l) => l === text).length;
 }
 
-// EXPLICIT SKIP (2026-07-31): TASK-475 auto-resolve was emergency-disabled
-// 2026-07-29 after its unbounded-age scan silently overwrote
-// long-abandoned decision cards with unrelated free text (the corruption
-// the platform agent recovered 8 cards from). Alex's call after reviewing the
-// tradeoff: auto-completing a card without an explicit reply is the wrong
+// EXPLICIT SKIP: auto-resolve was emergency-disabled after its
+// unbounded-age scan silently overwrote long-abandoned decision cards with
+// unrelated free text (the corruption took a manual recovery of 8 cards). The
+// decision after reviewing the tradeoff: auto-completing a card without an explicit reply is the wrong
 // UX regardless of the age bug - the manual dismiss button already covers
 // the "clear an accidental card" case. Not reverting the feature (SPEC/
 // history preserved) - the kill switch stays on and these tests stay

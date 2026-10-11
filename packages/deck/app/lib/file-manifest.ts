@@ -14,7 +14,7 @@
  * most-recent mention), and attaches a small window of surrounding messages
  * (N before/after) for the gemini description generator.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import type { MessageBlock } from "./blocks/model.js";

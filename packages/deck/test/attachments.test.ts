@@ -14,7 +14,7 @@
  *   - readAttachment containment.
  *
  * Each test uses isolated mkdtemp dirs. MC_SANDBOX_ONLY is set globally by
- * test/setup.ts. VALID-03: afterAll assertGitClean - tests must write to
+ * test/setup.ts. afterAll assertGitClean checks that tests write to
  * os.tmpdir() only.
  */
 
@@ -126,23 +126,23 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/projects.test.ts") ||
       file.startsWith("e2e/flows/responsive.test.ts") ||
       file.startsWith("app/root.tsx") ||
-      // TASK-433: voice proxy files (new server/ directory shown as "?? server/")
+      // Voice proxy files (new server/ directory shown as "?? server/")
       file.startsWith("server/") ||
       file.startsWith("app/lib/voice.server.ts") ||
       file.startsWith("test/voice-relay.test.ts") ||
       file.startsWith("test/voice-compose.test.ts") ||
-      // TASK-446: additive voice inserts + silence auto-stop
+      // Additive voice inserts + silence auto-stop
       file.startsWith("app/lib/voice-insert.ts") ||
       file.startsWith("test/voice-insert.test.ts") ||
-      // TASK-435 (platform work in flight): daemon + Tailscale dev allowance
+      // Daemon and Tailscale dev allowance
       file.startsWith("vite.config.ts") ||
       file.startsWith(".gitignore") ||
       file.startsWith("scripts/start-production.mjs") ||
-      // TASK-435.1: time.ts crash guard + regression
+      // time.ts crash guard and regression
       file.startsWith("app/lib/time.ts") ||
       file.startsWith("test/time.test.ts") ||
       file.startsWith("e2e/flows/malformed-block.test.ts") ||
-      // TASK-437: tmux Team tab + per-thread toggle amendment
+      // tmux Team tab and per-thread toggle
       file.startsWith("app/lib/tmux.server.ts") ||
       file.startsWith("app/components/TmuxPane.tsx") ||
       file.startsWith("app/routes/tmux.tsx") ||
@@ -150,13 +150,13 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/tmux-tab.test.ts") ||
       file.startsWith("e2e/setup.mjs") ||
       file.startsWith("docs/plans/TASK-437-tmux-tab-PLAN.md") ||
-      // TASK-456: resizable panels
+      // Resizable panels
       file.startsWith("app/components/ui/resizable.tsx") ||
       file.startsWith("e2e/flows/resizable.test.ts") ||
       file.startsWith("docs/plans/TASK-456-resizable-panels-PLAN.md") ||
       file.startsWith("package.json") ||
       file.startsWith("pnpm-lock.yaml") ||
-      // TASK-457: avatar render side
+      // Avatar render side
       file.startsWith("app/lib/avatars.server.ts") ||
       file.startsWith("app/routes/avatars.$agent.tsx") ||
       file.startsWith("app/routes.ts") ||
@@ -165,24 +165,24 @@ function assertGitClean(): void {
       file.startsWith("test/avatars.test.ts") ||
       file.startsWith("e2e/flows/avatars.test.ts") ||
       file.startsWith("docs/plans/TASK-457-avatar-render-PLAN.md") ||
-      // TASK-454: vertical real-estate + scroll-to-latest
+      // Vertical real-estate and scroll-to-latest
       file.startsWith("app/lib/scroll-follow.ts") ||
       file.startsWith("test/scroll-follow.test.ts") ||
       file.startsWith("e2e/flows/scroll-follow.test.ts") ||
       file.startsWith("docs/plans/TASK-454-vertical-real-estate-PLAN.md") ||
-      // TASK-455: live updates v1
+      // Live updates v1
       file.startsWith("app/lib/use-live-revalidate.ts") ||
       file.startsWith("test/use-live-revalidate.test.ts") ||
       file.startsWith("e2e/flows/live-updates.test.ts") ||
       file.startsWith("app/components/AppShell.tsx") ||
       file.startsWith("docs/plans/TASK-455-live-updates-v1-PLAN.md") ||
-      // TASK-453: done-card polish
+      // Done-card polish
       file.startsWith("app/components/ActionCard.tsx") ||
       file.startsWith("app/components/DecisionCard.tsx") ||
       file.startsWith("e2e/flows/tap-to-answer.test.ts") ||
       file.startsWith("e2e/flows/action-card.test.ts") ||
       file.startsWith("docs/plans/TASK-453-done-card-polish-PLAN.md") ||
-      // TASK-443: read ticks
+      // Read ticks
       file.startsWith("test/skeleton.test.ts") ||
       file.startsWith("test/blocks/roundtrip.test.ts") ||
       file.startsWith("app/components/MessageBubble.tsx") ||
@@ -193,14 +193,14 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/voice.test.ts") ||
       file.startsWith("docs/plans/TASK-433-voice-bug-debug-panel-PLAN.md") ||
       file.startsWith("tsconfig.json") ||
-      // TASK-438: action cards + needs-you queue
+      // Action cards and needs-you queue
       file.startsWith("fixtures/inbox/quill/") ||
       file.startsWith("test/blocks/") ||
       file.startsWith("test/queue/derive-needs-you.test.ts") ||
       file.startsWith("e2e/flows/action-card.test.ts") ||
       file.startsWith("e2e/flows/needs-you.test.ts") ||
       file.startsWith("docs/plans/TASK-438-needs-you-PLAN.md") ||
-      // TASK-439: card detail + work strip
+      // Card detail and work strip
       file.startsWith("app/components/CardDetail.tsx") ||
       file.startsWith("app/components/WorkStrip.tsx") ||
       file.startsWith("fixtures/projects/task-439-card-detail.md") ||
@@ -208,18 +208,18 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/card-detail.test.ts") ||
       file.startsWith("test/queue/derive-needs-you.test.ts") ||
       file.startsWith("docs/plans/TASK-439-card-detail-work-strip-PLAN.md") ||
-      // TASK-440: needs-you v1.1 (dismiss, done-note, blocked-on, sections, timestamps)
+      // Needs-you v1.1 (dismiss, done-note, blocked-on, sections, timestamps)
       file.startsWith("fixtures/projects/task-398-portal-readonly.md") ||
       file.startsWith("docs/plans/TASK-440-needs-you-v1.1-PLAN.md") ||
       file.startsWith("e2e/flows/needs-you.test.ts") ||
-      // TASK-442: morning brief panel
+      // Morning brief panel
       file.startsWith("app/lib/briefs.server.ts") ||
       file.startsWith("app/components/MorningBrief.tsx") ||
       file.startsWith("test/briefs.test.ts") ||
       file.startsWith("fixtures/inbox/quill/briefs/") ||
       file.startsWith("e2e/flows/morning-brief.test.ts") ||
       file.startsWith("docs/plans/TASK-442-morning-brief-PLAN.md") ||
-      // TASK-444: working state indicator
+      // Working state indicator
       file.startsWith("app/lib/blocks/working.ts") ||
       file.startsWith("app/lib/blocks/model.ts") ||
       file.startsWith("app/lib/blocks/header.ts") ||
@@ -231,7 +231,7 @@ function assertGitClean(): void {
       file.startsWith("fixtures/inbox/scribe/inbox/alex.md") ||
       file.startsWith("e2e/flows/read-ticks.test.ts") ||
       file.startsWith("docs/plans/TASK-444-working-state-PLAN.md") ||
-      // TASK-445: ticket field + ticket-thread lens
+      // Ticket field and ticket-thread lens
       file.startsWith("app/lib/ticket.ts") ||
       file.startsWith("app/lib/ticket-thread.ts") ||
       file.startsWith("app/lib/projects.shared.ts") ||
@@ -243,16 +243,16 @@ function assertGitClean(): void {
       file.startsWith("test/ticket-thread.test.ts") ||
       file.startsWith("e2e/flows/ticket-lens.test.ts") ||
       file.startsWith("docs/plans/TASK-445-ticket-field-lens-PLAN.md") ||
-      // TASK-450: attachment chips + clipboard paste
+      // Attachment chips and clipboard paste
       file.startsWith("app/lib/compose-attach.ts") ||
       file.startsWith("test/compose-attach.test.ts") ||
       file.startsWith("docs/plans/TASK-450-attachment-chips-paste-PLAN.md") ||
-      // 2026-06-11 lifeline hardening: error boundaries + crash guards
+      // Error boundaries and crash guards
       file.startsWith("app/components/RouteErrorPanel.tsx") ||
-      // TASK-462: per-instance user (multi-user fork prep)
+      // Per-instance user (multi-user fork prep)
       file.startsWith("app/lib/instance.server.ts") ||
       file.startsWith("test/instance.test.ts") ||
-      // TASK-460: cron admin page
+      // Cron admin page
       file.startsWith("app/lib/cron.server.ts") ||
       file.startsWith("app/lib/cron-validate.ts") ||
       file.startsWith("app/routes/api.cron.tsx") ||
@@ -271,7 +271,7 @@ function assertGitClean(): void {
       file.startsWith("test/safe-fs.test.ts") ||
       file.startsWith("test/projects.test.ts") ||
       file.startsWith(".notes/") ||
-      // TASK-500: typing-aware message batching
+      // Typing-aware message batching
       file.startsWith("app/lib/pending-batch.ts") ||
       file.startsWith("app/components/PendingBubble.tsx") ||
       file.startsWith("test/pending-batch.test.ts")
@@ -423,7 +423,7 @@ describe("attachments.server", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Confinement (replaces the .the-vault substring ban, TASK-434)
+  // Confinement (replaces the old .the-vault substring ban)
   // -------------------------------------------------------------------------
 
   describe("confinement", () => {
@@ -472,7 +472,7 @@ describe("attachments.server", () => {
     });
 
     it("rejects serving a symlink whose resolved extension differs (extension swap)", () => {
-      // TASK-431 lesson applied to attachments: notes.md -> secrets.env inside
+      // Same lesson as for other file readers, applied to attachments: notes.md -> secrets.env inside
       // the root must not serve .env bytes under the .md policy.
       withAttachmentsRoot(sandbox, () => {
         const realFile = path.join(sandbox, "secrets.env");
@@ -782,7 +782,7 @@ describe("attachments.server", () => {
     });
   });
 
-  describe("manager review fixes (Atlas fold-ins + agent validation)", () => {
+  describe("manager review fixes (agent validation)", () => {
     it("readAttachment serves an unmapped extension as an uninterpreted download (any-type policy, 2026-06-12)", () => {
       process.env["ATTACHMENTS_ROOT"] = sandbox;
       try {

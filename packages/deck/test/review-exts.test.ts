@@ -1,5 +1,5 @@
 /**
- * Tests for app/lib/review-exts.ts (TASK-562).
+ * Tests for app/lib/review-exts.ts.
  *
  * Covers:
  *   - REVIEW_MD_EXTS: markdown extensions present.
@@ -7,10 +7,10 @@
  *   - ALL_REVIEW_EXTS: union.
  *   - extToLang: common mappings, plaintext fallback.
  *   - extKind: markdown vs code.
- *   - isSecretBasename: secret denylist (peer-review addition 2026-06-28).
+ *   - isSecretBasename: secret denylist.
  *   - isReviewablePath: path-shaped links pass/fail predicates including denylist.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";
@@ -224,7 +224,7 @@ describe("isReviewablePath", () => {
     expect(isReviewablePath("/attachments/file.md")).toBe(true);
   });
 
-  // Secret denylist integration in isReviewablePath (peer-review 2026-06-28).
+  // Secret denylist integration in isReviewablePath.
   it("returns false for signing_key.json even though .json is in the code allowlist", () => {
     expect(isReviewablePath("/home/you/git-repos/inkie-app/supabase/signing_key.json")).toBe(false);
     expect(isReviewablePath("~/git-repos/inkie-app/supabase/signing_key.json")).toBe(false);
@@ -510,7 +510,7 @@ describe("isSecretBasename", () => {
     expect(isSecretBasename("prod.secrets.json")).toBe(true);
   });
 
-  // CR regression tests (2026-06-28): separator-aware token check catches
+  // Regression tests: separator-aware token check catches
   // names not covered by the earlier prefix/include patterns.
   it("denies secret.json (bare 'secret' token at start)", () => {
     expect(isSecretBasename("secret.json")).toBe(true);
@@ -530,7 +530,7 @@ describe("isSecretBasename", () => {
     expect(isSecretBasename("google_client_secret.json")).toBe(true);
   });
 
-  // CR round 2 (2026-06-28): plural 'secrets', dot-separated tokens, and
+  // Second round: plural 'secrets', dot-separated tokens, and
   // service-account anywhere in the name (not only at the start).
   it("denies secrets.json, private.key.json, gcp-service-account-prod.json", () => {
     expect(isSecretBasename("secrets.json")).toBe(true);

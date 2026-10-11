@@ -1,5 +1,5 @@
 /**
- * working.test.ts - Unit tests for app/lib/blocks/working.ts (TASK-444).
+ * working.test.ts - Unit tests for app/lib/blocks/working.ts.
  *
  * Covers:
  *   - isSuperseded: matrix of block orderings.
@@ -7,7 +7,7 @@
  *   - Parse + round-trip: a status: working block parses and serializes byte-identically.
  *   - Fixture regression: the working blocks in the scribe fixture parse correctly.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import fs from "node:fs";
@@ -188,7 +188,7 @@ describe("working block parse + round-trip", () => {
     // A header with an unrecognised status does not match HEADER_RE and falls
     // back to the empty-header sentinel. The sentinel status is "read" (not
     // "sent"): an unparseable block must never generate a perpetual unread
-    // signal (2026-06-12 phantom-dot fix). CARD-05 family.
+    // signal.
     const rawUnknown =
       "## 2026-06-09T15:35:00Z - from: alex - status: pondering - subject: test\n\nBody.\n\n---";
     const parsed = parseBlock(rawUnknown);
@@ -270,7 +270,7 @@ describe("fixture regression: working blocks in the scribe fixture", () => {
 });
 
 // ---------------------------------------------------------------------------
-// workingAgeSuffix (Atlas fold pin, TASK-444 plan s6)
+// workingAgeSuffix
 // ---------------------------------------------------------------------------
 
 describe("workingAgeSuffix - stale-working self-disclosure", () => {

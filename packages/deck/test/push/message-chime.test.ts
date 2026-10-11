@@ -1,5 +1,5 @@
 /**
- * message-chime.test.ts - the chime's pure detection logic (TASK-470 follow-up).
+ * message-chime.test.ts - the chime's pure detection logic.
  *
  * Proves:
  *   1. First render (prev=null) never chimes - history is baseline.

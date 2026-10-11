@@ -1,5 +1,5 @@
 /**
- * VoiceDebugPanel.tsx - Debug event strip for the voice pipeline (TASK-433 reopened).
+ * VoiceDebugPanel.tsx - Debug event strip for the voice pipeline.
  *
  * Mounts above the compose box inside the sticky footer when ?debug=1 is present
  * in the thread route URL. Consumed by Compose.tsx which owns the event ring buffer
@@ -18,8 +18,8 @@
  *   parse  - gray-400   (parse results, ignored shapes)
  *   error  - red-400    (any error)
  *
- * FND-02: no env or server imports.
- * FND-05: ASCII only, no em-dashes.
+ * No env or server imports.
+ * ASCII only, no em-dashes.
  */
 import { useEffect, useRef } from "react";
 

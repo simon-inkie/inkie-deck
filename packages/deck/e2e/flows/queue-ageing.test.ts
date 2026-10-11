@@ -1,10 +1,10 @@
 /**
- * queue-ageing.test.ts - VALID-02 flow (c): action-queue persists and SLA ages
+ * queue-ageing.test.ts - flow (c): action-queue persists and SLA ages
  * correctly across a page reload.
  *
- * QUEUE-06: overdue item shows the /Overdue:/ label.
- * QUEUE-08: item persists with stable order and ageing string across reload.
- * ASCII only - no em-dashes per FND-05.
+ * An overdue item shows the /Overdue:/ label.
+ * An item persists with stable order and ageing string across reload.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";
@@ -16,7 +16,7 @@ test.afterAll(() => assertGitClean(path.resolve(".")));
 test("QUEUE-06: overdue queue item shows Overdue label (MC_NOW seam)", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Needs you")).toBeVisible();
-  // Use .first() since multiple overdue items may appear (TASK-438: three kinds)
+  // Use .first() since multiple overdue items may appear (three kinds).
   await expect(page.getByText(/Overdue:/).first()).toBeVisible({ timeout: 10_000 });
   await expect(page.locator('[data-testid="needs-you-item"]').first()).toBeVisible();
 });
@@ -46,7 +46,7 @@ test("QUEUE: Handled button clears the item and item stays cleared", async ({ pa
   });
 
   await page.goto("/");
-  // Use .first() since multiple overdue items may appear (TASK-438: three kinds)
+  // Use .first() since multiple overdue items may appear (three kinds).
   await expect(page.getByText(/Overdue:/).first()).toBeVisible({ timeout: 10_000 });
 
   // Wait for hydration to complete (JS loads and React mounts).

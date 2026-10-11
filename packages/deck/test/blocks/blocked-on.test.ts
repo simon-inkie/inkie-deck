@@ -1,5 +1,5 @@
 /**
- * Unit tests for blocked-on: frontmatter key parsing (TASK-440).
+ * Unit tests for blocked-on: frontmatter key parsing.
  *
  * Covers:
  * - blocked-on: string accepted -> blockedOn field populated
@@ -8,7 +8,7 @@
  * - Round-trip serialize fidelity: blocked-on: survives applyTargetedEdits
  *   (body and unknown frontmatter keys survive byte-identical)
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
@@ -68,17 +68,17 @@ describe("listCards - blocked-on field (TASK-440)", () => {
       "agent: quill",
       "column: blocked",
       "updated: 2026-06-10T10:00:00Z",
-      "blocked-on: Alex Deepgram key",
+      "blocked-on: an API key",
       "---",
       "",
-      "Waiting on Alex.",
+      "Waiting on a key.",
     ].join("\n"));
 
     withProjectsRoot(tmpDir, () => {
       const cards = listCards();
       const card = cards.find(c => c.id === "blocked-card.md");
       expect(card).toBeDefined();
-      expect(card!.blockedOn).toBe("Alex Deepgram key");
+      expect(card!.blockedOn).toBe("an API key");
     });
   });
 

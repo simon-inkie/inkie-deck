@@ -8,10 +8,10 @@
  * scribe runs the claude runtime with NO .model (inherit default); quill runs
  * codex (no catalog options -> no control).
  *
- * VALID-03: every write lands in the temp agents root; assertGitClean proves
+ * Every write lands in the temp agents root; assertGitClean proves
  * the repo (and the real ~/agents) untouched.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

@@ -13,9 +13,8 @@ import {
 } from "~/lib/batch-durability";
 
 /**
- * Cover for the third of 2026-07-26's delivery defects: a message that was
- * never written anywhere because it only ever existed in the browser tab that
- * composed it. Alex lost a link this way.
+ * Cover for a delivery defect: a message that was never written anywhere
+ * because it only ever existed in the browser tab that composed it. The operator lost a link this way.
  */
 
 class MemoryStorage implements Storage {
@@ -127,7 +126,7 @@ describe("batch durability mirror", () => {
   });
 
   it("an empty saveBatch WIPES the mirror, which is why recovery must run first", () => {
-    // CodeRabbit Critical 1: on mount pendingBatch.paragraphs is [] because the
+    // Review finding: on mount pendingBatch.paragraphs is [] because the
     // hook knows nothing about a prior session. If the mirror effect runs before
     // the recovery effect, this call destroys the record recovery was about to
     // read, and reopening the SAME thread recovers nothing - the exact scenario
@@ -157,7 +156,7 @@ describe("batch durability mirror", () => {
   });
 
   it("a claim-key cleanup failure does not discard the already-claimed record", () => {
-    // Local CodeRabbit CLI, 2026-07-28: setItem(claimKey)/removeItem(key)/
+    // Review finding: setItem(claimKey)/removeItem(key)/
     // removeItem(claimKey) used to share one try block. If the FIRST removeItem
     // (the actual record) succeeded but the second (claim-key cleanup) threw,
     // the catch returned none and the already-recovered record was discarded -
@@ -177,7 +176,7 @@ describe("batch durability mirror", () => {
   });
 
   it("a data key and a claim key can never collide, whatever the agentKey", () => {
-    // Local CodeRabbit CLI, 2026-07-28: the claim key used to be `${dataKey}.claim`,
+    // Review finding: the claim key used to be `${dataKey}.claim`,
     // so agentKey "a.claim" produced the same string as agentKey "a"'s claim key.
     // Recovering one agent could then claim/delete another's record. The two
     // prefixes now diverge before any agentKey-controlled text appears, so no
@@ -195,7 +194,7 @@ describe("storage key version", () => {
   it("is v2, so every record the pre-2026-07-29 writer left behind is inert", () => {
     // The bump IS the defusal. Poisoned v1 records (thread A's text stamped as
     // thread B's) are indistinguishable from good ones, and they are already
-    // sitting in Alex's and Robin's browsers waiting for recovery to deliver
+    // sitting in users' browsers waiting for recovery to deliver
     // them to the wrong inbox. Reading under a new prefix is what makes them
     // permanently unreachable; a code fix alone cannot unwrite them.
     expect(KEY_PREFIX).toBe("mc.pendingBatch.v2.");
@@ -205,7 +204,7 @@ describe("storage key version", () => {
   it("cannot read a v1 record, however well-formed", () => {
     const poisoned = JSON.stringify({
       agentKey: "atlas", // stamped as atlas...
-      paragraphs: ["a message Alex typed to quill"], // ...carrying quill's text
+      paragraphs: ["a message the user typed to quill"], // ...carrying quill's text
       dictated: false,
       savedAt: NOW,
     });
@@ -250,7 +249,7 @@ describe("shouldMirrorBatch (the route's per-render mirror-effect guard)", () =>
   });
 
   it("never mirrors an empty batch, which is why an empty saveBatch cannot be a side effect of a mount", () => {
-    // Remote CodeRabbit review: a SECOND tab mounting on the same agent
+    // Review finding: a SECOND tab mounting on the same agent
     // thread starts with paragraphCount 0. Its own first pass through the
     // mirror effect used to call saveBatch(agent, [], ...) unconditionally,
     // which clearBatch's - wiping a FIRST tab's live, not-yet-delivered
@@ -277,7 +276,7 @@ describe("mirrorPendingBatch (guard plus write, so the key is not the caller's t
     expect(r.recovered!.agentKey).toBe("quill");
     // The payload, not just its labels: the owner-keyed write exists to get this
     // text back to the right thread, so a round-trip that lost it would be no
-    // use however correctly it was addressed (CodeRabbit).
+    // use however correctly it was addressed.
     expect(r.recovered!.paragraphs).toEqual(["mine"]);
     expect(r.recovered!.dictated).toBe(true);
   });
@@ -285,7 +284,7 @@ describe("mirrorPendingBatch (guard plus write, so the key is not the caller's t
   it("writes NOTHING ANYWHERE when the rendered thread is not the owner", () => {
     // The incident, at storage level: agentA's paragraphs, agentB on screen.
     // Neither slot may end up holding them - not agentB's (the mislabel that
-    // misdirected three of Alex's messages) and not agentA's either (the
+    // misdirected three of the operator's messages) and not agentA's either (the
     // deliver-on-switch effect has already delivered and cleared them, so
     // re-writing agentA's record would resurrect a delivered batch).
     const wrote = mirrorPendingBatch(

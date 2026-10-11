@@ -1,6 +1,6 @@
 /**
  * RED tests for app/lib/blocks/answer.ts
- * Verifies: answered-flip, structured reply block, idempotency (CARD-04 contract).
+ * Verifies: answered-flip, structured reply block, idempotency.
  * Ref: T-01-05 (Tampering - double-answer / conflicting answer writeback)
  */
 import { describe, it, expect } from "vitest";

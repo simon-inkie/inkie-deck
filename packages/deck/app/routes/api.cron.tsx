@@ -1,5 +1,5 @@
 /**
- * api.cron.tsx - resource route for the cron admin page (TASK-460 create-cron).
+ * api.cron.tsx - resource route for the cron admin page.
  *
  * POST form-encoded with an "intent" field:
  *   create     - { intent, schedule, target, message, enabled }
@@ -8,10 +8,10 @@
  *
  * GET - returns listCrons() result for the page loader.
  *
- * SEAM RULE (FND-02): imports ONLY from ~/lib/cron.server + ~/lib/instance.server.
+ * SEAM RULE: imports ONLY from ~/lib/cron.server + ~/lib/instance.server.
  * The crontab runner is never called here directly - cron.server.ts is the seam.
  * Zod-at-boundary, never-throws, degrades to { ok: false }.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { z } from "zod";
@@ -57,7 +57,7 @@ const deleteSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Action - write path (gated to Alex's instance)
+// Action - write path (gated to the operator instance)
 // ---------------------------------------------------------------------------
 
 export async function action({ request }: Route.ActionArgs) {

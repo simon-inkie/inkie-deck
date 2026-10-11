@@ -8,7 +8,7 @@
  *     in the Authorization header (server-side only), relays binary audio frames
  *     up and maps Deepgram JSON responses to interim/final messages downstream.
  *
- * Buffer-until-open (TASK-433 fix): binary frames received while the upstream is
+ * Buffer-until-open: binary frames received while the upstream is
  * still CONNECTING are queued via makeFrameBuffer rather than dropped. On upstream
  * open the queue is flushed in order so the webm EBML container header (chunk 1)
  * is never lost. On overflow: sends status overflow and closes both sockets.
@@ -26,7 +26,7 @@
  *
  * Spawned by scripts/dev.mjs alongside the RR dev server.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -44,13 +44,13 @@ import {
 
 const PORT = parseInt(process.env["VOICE_PROXY_PORT"] ?? "5176", 10);
 
-// Peer-review fold (Atlas, TASK-433 plan): the key was protected but the
+// Hardening: the key was protected but the
 // keyhole was open. Two closures:
-// (a) Bind 127.0.0.1 by default - widening the bind is an TASK-435/Tailscale
-//     decision, never a default.
+// (a) Bind 127.0.0.1 by default - widening the bind is a deliberate
+//     network decision, never a default.
 const HOST = process.env["VOICE_PROXY_HOST"] ?? "127.0.0.1";
 // (b) Origin allowlist on the WS upgrade: browsers do NOT apply same-origin
-//     policy to WebSocket connects, so without this any webpage the operator
+//     policy to WebSocket connects, so without this any webpage the user
 //     visits could open ws://localhost:5176 and spend Deepgram minutes
 //     through our key. Absent or non-matching Origin = reject the upgrade
 //     before any upstream connection exists.
@@ -60,9 +60,9 @@ const HOST = process.env["VOICE_PROXY_HOST"] ?? "127.0.0.1";
 //     would reject every upgrade.
 const ALLOWED_ORIGINS = resolveAllowedOrigins(process.env);
 
-// Model + language are explicit (2026-06-11): with `model` unspecified,
+// Model + language are explicit: with `model` unspecified,
 // Deepgram silently falls back to the legacy "base-general" model, which is
-// what made Alex's dictation wonky - nothing to do with his accent. nova-3
+// what made dictation wonky - nothing to do with the speaker's accent. nova-3
 // is the current best for UK English; en-GB hints the variant. Both
 // env-overridable so an instance can pin a different model without a code
 // change.
@@ -82,7 +82,7 @@ const DG_LANGUAGE = process.env["DEEPGRAM_LANGUAGE"] ?? "en-GB";
 const DG_URL_BASE =
   process.env["DEEPGRAM_URL_BASE"] ?? "wss://api.deepgram.com/v1/listen";
 
-// Keyterm prompting (measured 2026-07-28 against real dictation): a bare
+// Keyterm prompting (measured against real dictation): a bare
 // roster name transcribed as a common English near-neighbour mid-sentence on
 // the untouched config; a keyterm entry for it fixed that directly, and
 // smart_format/language variants did not, which rules both out as the cause.
@@ -111,7 +111,7 @@ const DG_KEYTERMS = process.env["DEEPGRAM_KEYTERMS"]
 //
 // Comma-separated find:replacement pairs in the env var, e.g.
 // DEEPGRAM_REPLACEMENTS="inky:Inkie,foo:Bar" - same convention as
-// DEEPGRAM_KEYTERMS above. Parsed defensively (CR on !31): split on the FIRST
+// DEEPGRAM_KEYTERMS above. Parsed defensively: split on the FIRST
 // colon only, so a replacement containing its own colon survives intact;
 // `find` is lowercased, since Deepgram requires that and a hand-set env var
 // will not always match it; and a malformed or whitespace-only env var falls
@@ -355,10 +355,10 @@ wss.on("connection", (client) => {
 
   client.on("close", () => {
     console.log("[voice-proxy] client disconnected");
-    // Atlas landed-review micro-note: a client that disconnects while the
+    // A client that disconnects while the
     // upstream is still CONNECTING must not leave that connect to complete
     // and idle until Deepgram times it out - the last sliver of the
-    // orphaned-upstream-socket leak the plan named.
+    // orphaned-upstream-socket leak.
     if (upstream.readyState === WebSocket.CONNECTING) {
       upstream.terminate();
     } else if (upstream.readyState === WebSocket.OPEN) {

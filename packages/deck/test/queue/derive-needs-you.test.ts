@@ -14,7 +14,7 @@
  * - newDeadlines contains only freshly-computed anchors
  * - MC_NOW determinism
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { addHours } from "date-fns";
@@ -201,7 +201,7 @@ describe("deriveNeedsYou - filtering", () => {
   it("excludes entries where from === 'alex'", () => {
     const block: MessageBlock = {
       header: { timestamp: "2026-06-10T10:00:00Z", from: "alex", status: "sent", subject: "self" },
-      body: "Alex's own message",
+      body: "The user's own message",
       rawMeta: "",
     };
     const { items } = deriveNeedsYou(
@@ -507,7 +507,7 @@ describe("deriveNeedsYou - deep links and metadata", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite: TASK-440 - dismissed exclusion
+// Suite: dismissed exclusion
 // ---------------------------------------------------------------------------
 
 describe("deriveNeedsYou - TASK-440 dismissed exclusion", () => {
@@ -777,7 +777,7 @@ describe("deriveNeedsYou - closed work leaves the homepage queue", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite: TASK-440 - summary threading for blocked items
+// Suite: summary threading for blocked items
 // ---------------------------------------------------------------------------
 
 describe("deriveNeedsYou - TASK-440 blocked summary threading", () => {
@@ -805,11 +805,11 @@ describe("deriveNeedsYou - TASK-440 blocked summary threading", () => {
       updated: "2026-06-10T08:00:00Z",
       summary: "Some summary",
       body: "Some body",
-      blockedOn: "Alex Deepgram key",
+      blockedOn: "the owner Deepgram key",
     };
     const { items } = deriveNeedsYou([], [card], new Set(), new Map(), FIXED_NOW);
     expect(items).toHaveLength(1);
-    expect(items[0]!.blockedOn).toBe("Alex Deepgram key");
+    expect(items[0]!.blockedOn).toBe("the owner Deepgram key");
   });
 
   it("blocked item has no summary when card.summary is empty", () => {
@@ -845,7 +845,7 @@ describe("deriveNeedsYou - TASK-440 blocked summary threading", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite: TASK-440 - badge=sum invariant pin
+// Suite: badge=sum invariant pin
 // ---------------------------------------------------------------------------
 
 describe("deriveNeedsYou - TASK-440 badge=sum invariant", () => {
@@ -887,7 +887,7 @@ describe("deriveNeedsYou - TASK-440 badge=sum invariant", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Malformed-timestamp guard (2026-06-11 MC lifeline incident)
+// Malformed-timestamp guard
 //
 // A block whose header timestamp failed to parse leaves an empty timestamp on
 // a block that still carries a card. deriveNeedsYou must NOT throw "Invalid

@@ -1,11 +1,11 @@
 /**
- * resizable.test.ts - TASK-456: resizable sidebar / thread split.
+ * resizable.test.ts - resizable sidebar / thread split.
  *
  * Covers: drag grows the sidebar, the split persists across reload
  * (library autoSaveId -> localStorage), and the phone layout never sees
  * the handle (display:none removes it from flex layout entirely).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import path from "node:path";
 import { test, expect } from "@playwright/test";

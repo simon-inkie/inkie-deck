@@ -1,10 +1,10 @@
 /**
- * projects.tsx - Projects kanban board route (TASK-432, extended TASK-439).
+ * projects.tsx - Projects kanban board route.
  *
  * Loader reads cards via listCards() from projects.server.ts.
  * Action validates a "move" intent via zod and calls moveCard().
  *
- * TASK-439 additions:
+ * Additions:
  *   - ?card=<cardId> URL state: CardDetail overlay (desktop centred modal,
  *     mobile full-screen sheet). Close clears ?card=. Refresh keeps state.
  *   - ?doc= URL state: ReviewPanel mounted on /projects (same wiring as
@@ -12,13 +12,13 @@
  *     SETS ?doc= and CLEARS ?card= (doc panel wins).
  *   - Board face: summary line under the title (rendered in ProjectCard).
  *
- * SEAM RULE (FND-02, T-01-12): no direct fs imports; no env-key literals here.
+ * SEAM RULE: no direct fs imports; no env-key literals here.
  * All fs/env access is in projects.server.ts.
  *
  * MC_NOW pattern (Gotcha 10): the loader passes a server "now" derived from
  * process.env["MC_NOW"] when set, so staleness labels are deterministic in e2e.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFetcher, useSearchParams } from "react-router";
@@ -54,8 +54,8 @@ const moveSchema = z.object({
   column: z.string().min(1, "column is required"),
 });
 
-// TASK-462 Phase 1: user-created todo from the board. Agent is REQUIRED at
-// create time (Alex's call - every card has a lane owner from birth).
+// User-created todo from the board. Agent is REQUIRED at create time, so
+// every card has a lane owner from birth.
 const createSchema = z.object({
   intent: z.literal("create"),
   title: z.string().min(1).max(200),
@@ -73,7 +73,7 @@ export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData();
   const raw = Object.fromEntries(formData);
 
-  // TASK-462 Phase 1: create intent (createCard validates + guards paths).
+  // Create intent (createCard validates + guards paths).
   if (raw["intent"] === "create") {
     const parsedCreate = createSchema.safeParse(raw);
     if (!parsedCreate.success) {
@@ -104,11 +104,11 @@ export async function action({ request }: Route.ActionArgs) {
 // ---------------------------------------------------------------------------
 
 export async function loader() {
-  // TASK-462: scoped to this instance's agents (no-op on Alex's).
+  // Scoped to this instance's agents.
   const cards = filterCardsForInstance(listCards(), process.env);
   // MC_NOW (Gotcha 10): deterministic clock for staleness labels in e2e.
   const now = resolveNow(process.env["MC_NOW"]);
-  // TASK-462 Phase 1: roster for the Add-todo agent picker + instance user
+  // Roster for the Add-todo agent picker + instance user
   // as the default assignee. listAgents degrades to [] if the root is unset.
   let agents: string[] = [];
   try {
@@ -144,12 +144,12 @@ export default function Projects({ loaderData }: Route.ComponentProps) {
 
   return (
     // Outer flex row: board column + optional review panel (same 55/45 idiom
-    // as the thread route but applied on the projects surface - TASK-439).
+    // as the thread route but applied on the projects surface).
     <div className="flex h-full">
       {/* Board column. min-w-0: without it the flex item defaults to
           min-width:auto and the wide kanban forces the whole column (header
           included) past a mobile viewport. min-w-0 bounds the column; the
-          board keeps its own horizontal scroll. (TASK-435 mobile bug.) */}
+          board keeps its own horizontal scroll. */}
       <div className="flex min-h-full min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between gap-4 border-b border-border px-6 py-4">
           <div>
@@ -167,22 +167,22 @@ export default function Projects({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
-      {/* TASK-439: Review panel (55/45 split on desktop, full-screen sheet on mobile) */}
+      {/* Review panel (55/45 split on desktop, full-screen sheet on mobile) */}
       <ReviewPanel />
 
-      {/* TASK-439: Card detail overlay (desktop modal, mobile sheet) */}
+      {/* Card detail overlay (desktop modal, mobile sheet) */}
       <CardDetail cards={cards} now={now} />
     </div>
   );
 }
 
 /**
- * AddTodo (TASK-462 Phase 1) - user-created todos from the board.
+ * AddTodo - user-created todos from the board.
  *
  * Collapsed to a single button by default; expands to a compact row form.
- * Agent is REQUIRED at create time (every card has a lane owner from birth -
- * Alex's call); assignee defaults to the instance user. Posts intent=create
- * to this route's action; the card lands in the todo column on the next
+ * Agent is REQUIRED at create time (every card has a lane owner from birth);
+ * assignee defaults to the instance user. Posts intent=create to this
+ * route's action; the card lands in the todo column on the next
  * revalidation (the AppShell poll makes that feel immediate).
  */
 function AddTodo({ agents, defaultAssignee }: { agents: string[]; defaultAssignee: string }) {
@@ -328,7 +328,7 @@ function AddTodo({ agents, defaultAssignee }: { agents: string[]; defaultAssigne
                   <span className="label-mono text-[10px] text-muted-foreground">Ticket (optional)</span>
                   <input
                     name="ticket"
-                    placeholder="TASK-123"
+                    placeholder="PROJ-123"
                     className="min-h-[40px] w-full rounded-md border border-border bg-background px-3 text-sm"
                   />
                 </label>
@@ -364,7 +364,7 @@ function AddTodo({ agents, defaultAssignee }: { agents: string[]; defaultAssigne
 }
 
 /**
- * Scoped error boundary (2026-06-11 lifeline hardening): a failure in this
+ * Scoped error boundary: a failure in this
  * route renders here, inside the shell - the sidebar and the rest of MC stay
  * usable. Real error text shown (tailnet-only internal tool).
  */

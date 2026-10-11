@@ -9,7 +9,7 @@
  * A bare "---" line is the writer's trailing block separator, but it is NOT a
  * reliable boundary: a message body may legitimately contain a standalone "---"
  * line (a common visual-divider habit). Boundary detection on "---" silently
- * dropped everything after such a body line (hit Alex twice, 1 + 15 Jul). Each
+ * dropped everything after such a body line. Each
  * returned block string therefore carries everything up to the next header,
  * including any trailing "---" separator the writer appended AND any body-internal
  * "---" line. Stripping the genuine trailing separator is _parseBlock's job.
@@ -25,7 +25,7 @@ import { HEADER_RE } from "./header.js";
  * section 4 says so in as many words: "A line beginning with `## ` that does
  * not match the header grammar in section 5 does NOT begin a block."
  *
- * Testing only the "## " prefix, as this did until 2026-08-14, ended the
+ * Testing only the "## " prefix, as this did until a later fix, ended the
  * preceding block at the first markdown heading its author typed and dropped
  * everything from there to the next real header out of the rendered message,
  * with no error and no visible gap. The bytes stayed on disk, so it was loss on

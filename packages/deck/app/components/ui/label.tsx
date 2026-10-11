@@ -1,6 +1,6 @@
 /**
  * ui/label.tsx - shadcn-equivalent Label on the Inkie theme.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import * as React from "react";
 import { cn } from "~/lib/utils";

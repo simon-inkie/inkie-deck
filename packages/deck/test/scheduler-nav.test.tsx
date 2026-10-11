@@ -20,7 +20,7 @@
  * scheduler-route.test.ts's. This file only covers what the shell renders once
  * the flag has been decided.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";

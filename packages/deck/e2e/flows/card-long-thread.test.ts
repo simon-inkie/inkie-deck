@@ -1,19 +1,19 @@
 /**
- * card-long-thread.test.ts - Alex's live repro, on a LONG thread.
+ * card-long-thread.test.ts - the operator's live repro, on a LONG thread.
  *
- * Alex: summit thread (short) cards work, but a decision card deep in the quill
- * thread (long, ~2000 lines) misbehaves - "clicked C and it went to A",
- * "can't choose after I've typed". This test reproduces the interaction on a
- * synthetic ~100-message thread on the CURRENT build, to settle whether the bug
+ * Reported: on the summit thread (short) cards work, but a decision card deep in
+ * the quill thread (long, ~2000 lines) misbehaves - a click on C resolves to A,
+ * and the choice cannot be changed after typing. This test reproduces the
+ * interaction on a synthetic ~100-message thread on the CURRENT build, to settle whether the bug
  * is length-dependent and present WITHOUT the (reverted) memo, or whether it was
- * the memo all along (in which case this passes clean and Alex was on a stale
- * cached build).
+ * the memo all along (in which case this passes clean and the report came from
+ * a stale cached build).
  *
  * The distilled repro = the assertion: tap "OR write something" (C path), type a
  * custom answer, then tap option A -> A must be the resolved option (not C, not
- * dead). This is also the gate for TASK-466 (the Markdown-only memo re-do).
+ * dead). This is also the gate for the Markdown-only memo re-do.
  *
- * VALID-03: seeds + writes only under INBOX_ROOT (temp). ASCII only (FND-05).
+ * Seeds + writes only under INBOX_ROOT (temp). ASCII only.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

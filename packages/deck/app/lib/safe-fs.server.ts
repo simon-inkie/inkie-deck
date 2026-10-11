@@ -1,9 +1,9 @@
 /**
  * safe-fs.server.ts
  *
- * Root-table write confinement for every MC filesystem write (TASK-434).
+ * Root-table write confinement for every MC filesystem write.
  *
- * The old FND-04 guard was a blunt substring ban on ".the-vault". That was a
+ * The old guard was a blunt substring ban on ".the-vault". That was a
  * build-era invariant (test inbox only) encoded at the wrong layer: production
  * MC points INBOX_ROOT at the real ~/.the-vault/agents and must write there.
  * The rework replaces deny-known-bad with allowlist confinement:
@@ -30,7 +30,7 @@
  *   safeWrite(targetPath, data) - assert + write convenience for the inbox seam.
  *
  * The .server suffix guarantees this module is stripped from the client bundle
- * by the RR7 bundler (FND-02 mechanism).
+ * by the RR7 bundler.
  *
  * Symlink semantics (load-bearing for the inbox thread mirror): thread files
  * are symlinked between agent folders. Both endpoints resolve INSIDE the root
@@ -42,7 +42,7 @@
  * POSIX rename within one filesystem is atomic) because write-file-atomic@8's
  * engine floor (^22.22.2) is above Node v22.22.0 on this machine.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -69,7 +69,7 @@ export const AGENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
  * Read process.env.INBOX_ROOT and return it as an absolute path string.
  *
  * Throws if:
- *   - INBOX_ROOT is unset or empty (FND-03: no default).
+ *   - INBOX_ROOT is unset or empty.
  *   - INBOX_ROOT is not an absolute path (relative paths are rejected).
  */
 export function resolveInboxRoot(): string {
@@ -78,20 +78,20 @@ export function resolveInboxRoot(): string {
     throw new Error(
       "INBOX_ROOT is required but not set. " +
         "Set INBOX_ROOT to an absolute path to the inbox directory. " +
-        "There is no default (FND-03)."
+        "There is no default."
     );
   }
   if (!path.isAbsolute(root)) {
     throw new Error(
       `INBOX_ROOT must be an absolute path, got: "${root}". ` +
-        "Relative paths are rejected (FND-03)."
+        "Relative paths are rejected."
     );
   }
   return root;
 }
 
 // ---------------------------------------------------------------------------
-// assertNoLiveSiloRoot (MC_SANDBOX_ONLY semantics - the relocated FND-04 ban)
+// assertNoLiveSiloRoot (MC_SANDBOX_ONLY semantics)
 // ---------------------------------------------------------------------------
 
 /**
@@ -104,7 +104,7 @@ export function resolveInboxRoot(): string {
  * configurable. The variable exists because the guard below is the ONLY thing
  * standing between a dev instance and a real fleet's messages, and it can only
  * do that job on a machine whose silo happens to carry the default name.
- * README states FND-04's other half as "a sandbox configuration may never be
+ * README states the other half of that ban as "a sandbox configuration may never be
  * pointed at a live agent silo" - no directory named - while the code could
  * only ever recognise one particular directory. On every other deployment the
  * flag was a no-op that read, from .env.example, as a protection. Naming your
@@ -135,12 +135,12 @@ export function resolveLiveSiloRoot(): string {
  * When MC_SANDBOX_ONLY is set to a non-empty value (test/setup.ts sets "1";
  * dev .env should too), refuse any root that realpath-resolves to the live
  * agent silo (see resolveLiveSiloRoot) or below. This preserves the original
- * FND-04 intent - sandbox configurations must never point at live agent silos
- * - WITHOUT the per-write substring matching that blocked production's
+ * intent (sandbox configurations must never point at live agent silos)
+ * WITHOUT the per-write substring matching that blocked production's
  * legitimate paths.
  *
  * Production unsets MC_SANDBOX_ONLY as a deliberate step of the real-inbox
- * cutover (separate Alex-gated commit).
+ * cutover.
  *
  * The comparison is against the RESOLVED silo path, never a string match, so
  * test fixtures that happen to contain the silo's name in a tmpdir name are
@@ -166,7 +166,7 @@ export function assertNoLiveSiloRoot(rootReal: string, label: string): void {
     throw new Error(
       `Refusing to operate: ${label} root "${rootReal}" resolves inside the live ` +
         `agent silo "${siloReal}" while MC_SANDBOX_ONLY is set. Sandbox ` +
-        `configurations must never point at live silos (FND-04). Unset ` +
+        `configurations must never point at live silos. Unset ` +
         `MC_SANDBOX_ONLY only as part of the deliberate production cutover.`
     );
   }
@@ -247,7 +247,7 @@ export function confineToRootReal(
     throw new Error(
       `Refusing to access: resolved path "${finalResolved}" is outside the ` +
         `${options.label} root "${rootReal}". This may indicate a ` +
-        `path-traversal or symlink-escape attempt (FND-03).`
+        `path-traversal or symlink-escape attempt.`
     );
   }
 
@@ -284,7 +284,7 @@ export function confineToRoot(
  *   2. WRITE SHAPE on the resolved-relative path: exactly
  *      <agentName>/inbox/<filename>.md, where agentName matches the ROSTER
  *      convention and filename is a single .md component. Asserted on the
- *      RESOLVED path (TASK-431 lesson: a symlinked intermediate must not be
+ *      RESOLVED path (lesson from the review panel: a symlinked intermediate must not be
  *      able to dress another write as an inbox write).
  *
  * Layer 2 is what keeps memory/, MEMORY.md, live-state.json and every other
@@ -295,7 +295,7 @@ export function confineToRoot(
  *
  * Layer 3 (optional, default-open): MC_INBOX_AGENT_ALLOWLIST - a comma-
  * separated list of agent names MC may write to. UNSET or empty = all agents
- * (Quill's call on the TASK-434 plan: MC messages are Alex's own messages, same
+ * (MC messages are the operator's own messages, same
  * trust as direct inbox DMs; the hook exists so the list can be flipped the
  * moment a concrete risk shows, without a code change).
  *
@@ -325,8 +325,8 @@ export function assertSafeWritePath(targetPath: string): string {
   if (!shapeOk) {
     throw new Error(
       `Refusing to write: resolved path "${finalResolved}" does not match the ` +
-        `inbox write shape "<agent>/inbox/<file>.md" under root "${rootReal}" ` +
-        `(FND-04). MC writes thread files only - never memory, state, or ` +
+        `inbox write shape "<agent>/inbox/<file>.md" under root "${rootReal}". ` +
+        `MC writes thread files only - never memory, state, or ` +
         `anything else inside an agent silo.`
     );
   }
@@ -361,7 +361,7 @@ export function getInboxAgentAllowlist(): Set<string> | null {
 }
 
 // ---------------------------------------------------------------------------
-// validateConfiguredRoots (boot-time fail-fast, TASK-434)
+// validateConfiguredRoots (boot-time fail-fast)
 // ---------------------------------------------------------------------------
 
 /** The declared root table: every MC write surface and its root env var. */
@@ -382,10 +382,10 @@ export function resetRootsValidationForTests(): void {
 /**
  * Validate every configured root once per process (memoised). Called from the
  * root loader so a misconfigured deployment fails on the FIRST request with a
- * clear named-root error instead of a lazy 500 hours later (TASK-435 wants the
- * daemonised unit to die loudly at start).
+ * clear named-root error instead of a lazy 500 hours later (a daemonised unit
+ * should die loudly at start).
  *
- * Per root: required (FND-03 no-default), absolute, must exist and
+ * Per root: required, absolute, must exist and
  * realpath-resolve, and must pass the MC_SANDBOX_ONLY live-silo refusal.
  *
  * Also WARNS (never throws) when two roots nest: the shape rules of one
@@ -401,13 +401,13 @@ export function validateConfiguredRoots(): void {
     const value = process.env[name];
     if (!value || value.trim() === "") {
       throw new Error(
-        `${name} is required but not set (TASK-434 boot validation). ` +
-          `Set ${name} to an absolute path. There is no default (FND-03).`
+        `${name} is required but not set. ` +
+          `Set ${name} to an absolute path. There is no default.`
       );
     }
     if (!path.isAbsolute(value)) {
       throw new Error(
-        `${name} must be an absolute path, got: "${value}" (FND-03).`
+        `${name} must be an absolute path, got: "${value}".`
       );
     }
     let real: string;
@@ -416,7 +416,7 @@ export function validateConfiguredRoots(): void {
     } catch {
       throw new Error(
         `${name} points at "${value}" which does not exist or cannot be ` +
-          `resolved (TASK-434 boot validation).`
+          `resolved.`
       );
     }
     assertNoLiveSiloRoot(real, name);
@@ -478,7 +478,7 @@ export function atomicWriteBuffer(finalPath: string, data: Buffer): void {
 }
 
 // ---------------------------------------------------------------------------
-// withInboxLock (P1 lost-update fix, 2026-06-24)
+// withInboxLock (lost-update fix)
 // ---------------------------------------------------------------------------
 
 const INBOX_LOCK_STALE_MS = 10_000; // legit holds are ms; >10s => holder died
@@ -492,8 +492,9 @@ const _sleep = (ms: number): Promise<void> =>
 /**
  * Run fn() while holding a cross-process advisory lock on `${resolvedPath}.lock`.
  *
- * WHY: inbox thread files are written by THREE uncoordinated processes - Alex's
- * MC, Robin's MC, and the agent CLI (packages/base/bin/inbox). Every MC write is a
+ * WHY: inbox thread files are written by THREE uncoordinated processes - the operator's
+ * MC, a second user's MC, and the agent CLI (packages/base/bin/inbox).
+ * Every MC write is a
  * full-file read-modify-write via atomicWrite (temp + rename); the rename swaps
  * the inode and ORPHANS any concurrent append, silently losing the message
  * (the P1 disappearing-message bug). atomicWrite stops torn files, not lost

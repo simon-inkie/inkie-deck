@@ -1,5 +1,5 @@
 /**
- * CodeView.tsx - Syntax-highlighted code file renderer (TASK-562).
+ * CodeView.tsx - Syntax-highlighted code file renderer.
  *
  * Input: content (raw file text) + lang (highlight.js language id).
  * Highlights with highlight.js directly (v11, already installed as a direct
@@ -14,13 +14,13 @@
  *   - Monospace, overflow-x: auto (no wrap for long lines).
  *   - Line-number gutter rendered as a left column (CSS counter-based).
  *
- * Uses the .code-view .hljs* VS Code Dark Modern theme from app.css (TASK-562 follow-up).
+ * Uses the .code-view .hljs* VS Code Dark Modern theme from app.css.
  * The .prose-mc Inkie palette is deliberately NOT applied here so fenced code
  * blocks in markdown docs keep the cream/teal look while code files get the
  * dark editor look.
  *
- * No .server imports - pure client component (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - pure client component.
+ * ASCII only - no em-dashes.
  */
 import { useMemo } from "react";
 import hljs from "highlight.js";
@@ -91,7 +91,7 @@ function highlightContent(content: string, lang: string): string {
  * The line-number gutter is implemented as a separate <code> column so it does
  * not interfere with copy-pasting the code content itself. Each line of the
  * highlighted output becomes a <span data-line> so future diff anchoring
- * (TASK-563) can query them by line number without DOM changes here.
+ * can query them by line number without DOM changes here.
  */
 export function CodeView({ content, lang }: CodeViewProps) {
   const plain = useMemo(() => shouldRenderPlainCode(content), [content]);

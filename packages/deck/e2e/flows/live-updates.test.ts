@@ -1,11 +1,11 @@
 /**
- * live-updates.test.ts - TASK-455 v1: polling revalidation.
+ * live-updates.test.ts - v1: polling revalidation.
  *
  * The ticket's exact symptom as a test: a message written to the inbox
  * OUT-OF-BAND (fs append, not via the UI) appears in the open thread
  * without any user action, within a couple of poll ticks.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

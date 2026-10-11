@@ -4,7 +4,7 @@
  * Warm-tan surface, theme border, 12px radius. CardTitle uses the display
  * font (League Spartan). Soft by default; the retro hard-offset shadow is a
  * separate opt-in utility (.shadow-retro) reserved for the decision card.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import * as React from "react";
 import { cn } from "~/lib/utils";

@@ -12,16 +12,16 @@
  * Keeping the param names, the href shape and the validation predicate together
  * means a change to one end cannot silently miss the other.
  *
- * Pure module: no fs, no .server imports, no React (FND-02). Safe on both
+ * Pure module: no fs, no .server imports, no React. Safe on both
  * sides of the seam and unit-testable without a router.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { isDecisionResolved } from "./queue-derive";
 
 /**
  * Loader input. Extends the thread's read window back far enough to include
- * the target card (TASK-469 windowing), and the scroll effect reads it too.
+ * the target card, and the scroll effect reads it too.
  * SERVER-VISIBLE and long-lived: it must stay in the URL for as long as the
  * thread is open, or the next revalidation shrinks the window back to the tail
  * and unmounts the card being answered.

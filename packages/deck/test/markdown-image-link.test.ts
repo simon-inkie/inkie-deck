@@ -14,7 +14,7 @@
  * No JSX here: the file is a .test.ts (the vitest include glob is *.test.ts),
  * so components are constructed via React.createElement.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import React from "react";

@@ -1,11 +1,11 @@
 /**
- * push.test.ts - TASK-470 web push surfaces.
+ * push.test.ts - web push surfaces.
  *
  * Proves:
  *   1. The PWA shell is served: /sw.js + /manifest.webmanifest + icons 200.
  *   2. /api/push-subscribe GET self-provisions and returns a VAPID public key
  *      (stable across calls - key churn would orphan subscriptions).
- *   3. POST subscribe stores the subscription (tmp DATA_ROOT per VALID-03);
+ *   3. POST subscribe stores the subscription,
  *      POST unsubscribe removes it; malformed bodies 400.
  *   4. The bell dropdown renders the enable-notifications affordance.
  *

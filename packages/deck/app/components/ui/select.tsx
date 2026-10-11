@@ -2,7 +2,7 @@
  * ui/select.tsx - shadcn-style Select using native HTML (no Radix dep).
  * @radix-ui/react-select is not installed; this is a styled native wrapper
  * that matches the Inkie design system.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import * as React from "react";
 import { cn } from "~/lib/utils";

@@ -1,12 +1,12 @@
 /**
- * seam.test.ts - FND-02 seam integrity tests
+ * seam.test.ts - seam integrity tests
  *
  * Proves:
  *   1. makeStores returns an object exposing InboxRepository and QueueStore
  *      behind their interfaces (real FileQueueStore in Phase 3).
  *   2. No file under app/routes/** imports "node:fs", "fs", or a literal
  *      inbox path (".the-vault" or "INBOX_ROOT") directly.
- *      This is the static "no-fs-in-routes" assertion (T-01-12).
+ *      This is the static "no-fs-in-routes" assertion.
  *
  * Security: T-01-12 (routes importing fs would leak it to the client bundle
  * and bypass the data-access seam).
@@ -93,7 +93,7 @@ describe("makeStores factory (FND-02)", () => {
 
 // ---------------------------------------------------------------------------
 // Suite 2: Static grep-style assertion - no fs or literal inbox path in routes
-// (T-01-12 mitigaton: the seam strip guarantee)
+// (the seam strip guarantee).
 // ---------------------------------------------------------------------------
 
 describe("No fs or literal inbox path in app/routes/** (T-01-12)", () => {
@@ -186,7 +186,7 @@ describe("No fs or literal inbox path in app/routes/** (T-01-12)", () => {
   });
 
   it("no route file hardcodes a literal 'ACTIVITY_ROOT' path string", () => {
-    // Routes must not reference ACTIVITY_ROOT directly (TASK-691) - that belongs
+    // Routes must not reference ACTIVITY_ROOT directly - that belongs
     // in the activity.server.ts seam only. The Team tab reads the activity
     // state file through activityEnabled + readActivity and never learns the
     // path shape, same rule as every other root.
@@ -217,7 +217,7 @@ describe("No fs or literal inbox path in app/routes/** (T-01-12)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 3: TASK-433 - DEEPGRAM_API_KEY must never appear in app/ files
+// Suite 3: DEEPGRAM_API_KEY must never appear in app/ files
 // (routes AND components). The key name is banned from the client-bundled tree.
 // The key is held only in server/voice-proxy.mjs (outside app/, not bundled).
 // ---------------------------------------------------------------------------
@@ -239,12 +239,12 @@ describe("DEEPGRAM_API_KEY banned from app/ (TASK-433 FND-02)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 4: TASK-434 - raw write primitives banned from routes; every route
+// Suite 4: raw write primitives are banned from routes; every route
 // write goes through a confined seam (the plan's "every MC write is confined
 // to a declared root" claim, asserted at the import layer).
 // ---------------------------------------------------------------------------
 
-describe("raw atomicWrite banned from app/routes/** (TASK-434)", () => {
+describe("raw atomicWrite banned from app/routes/**", () => {
   it("no route file imports atomicWrite or atomicWriteBuffer", () => {
     const routeFiles = collectSourceFiles(ROUTES_DIR);
     expect(routeFiles.length).toBeGreaterThan(0);
@@ -273,7 +273,7 @@ describe("raw atomicWrite banned from app/routes/** (TASK-434)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 5: TASK-434 - production-shape cutover, end-to-end through the seam.
+// Suite 5: production-shape cutover, end-to-end through the seam.
 // A look-alike production root (tmpdir/.the-vault/agents) must accept a
 // writeReply through the REAL FileInboxRepository and read it back. This is
 // the integration proof that the substring-ban removal actually unlocks the

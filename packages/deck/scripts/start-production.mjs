@@ -1,5 +1,5 @@
 /**
- * scripts/start-production.mjs - daemon launcher (TASK-435 layer 2).
+ * scripts/start-production.mjs - daemon launcher.
  *
  * The systemd unit's ExecStart. Differences from dev.mjs, deliberately:
  *   - NO fixture seeding, NO .runtime sandbox, NO MC_NOW pin (real clock).
@@ -7,7 +7,7 @@
  *     systemd, or from a local .env for a hand-run start, and are
  *     validated HERE, fail-fast, before anything listens - a misconfigured
  *     daemon must crash with the bad root named in the journal, not sit
- *     "active (running)" while 500ing (TASK-434 boot validation, daemon shape).
+ *     "active (running)" while 500ing.
  *   - Serves the production build via react-router-serve. Run `pnpm build`
  *     before (re)starting the unit.
  *   - Spawns the voice proxy as a sibling, in the same SHAPE dev.mjs uses but
@@ -21,7 +21,7 @@
  *     VOICE_ALLOWED_ORIGINS for any non-localhost origin, are in .env.example
  *     and walked through in INSTALL.md "Voice dictation".
  *
- * ASCII only - no em-dashes (FND-05 / check:dashes gate).
+ * ASCII only - no em-dashes.
  */
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -63,7 +63,7 @@ const REQUIRED_ROOTS = [
 for (const name of REQUIRED_ROOTS) {
   const value = process.env[name];
   if (!value || value.trim() === "") {
-    console.error(`[prod] FATAL: ${name} is required but not set (FND-03).`);
+    console.error(`[prod] FATAL: ${name} is required but not set.`);
     process.exit(1);
   }
   if (!path.isAbsolute(value)) {
@@ -123,9 +123,9 @@ voiceProxy.on("error", (err) => {
   console.error("[prod] voice-proxy spawn error:", err.message);
 });
 
-// --- Push watcher (TASK-470, same sibling shape) -----------------------------
+// --- Push watcher (same sibling shape) -----------------------------
 // Crash-isolated by design: if the watcher dies, pushes stop but the daemon
-// lives on (degrade, never drag down the lifeline). Exit is logged so the
+// lives on (degrade, never drag down the serving proxy). Exit is logged so the
 // journal shows the gap; no respawn loop v1.
 const pushWatcher = spawn(
   process.execPath,
@@ -187,8 +187,7 @@ if (!existsSync(serveCli)) {
 // large Cookie header (stale/duplicated cookies survive a hard-refresh), which
 // the 16KB default rejects with HTTP 431 "Request Header Fields Too Large"
 // before the app ever sees the request. MC sets no cookies of its own, so this
-// is tolerance, not a leak; the client-side fix is clearing site-data. (Quill,
-// 2026-06-15 incident.)
+// is tolerance, not a leak; the client-side fix is clearing site-data.
 // The app never reads the speech key; see scripts/voice-env.mjs.
 const appEnv = withVoiceDisabledReason({
   ...process.env,

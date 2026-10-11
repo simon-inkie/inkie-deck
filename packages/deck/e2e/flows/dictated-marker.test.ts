@@ -1,9 +1,9 @@
 /**
  * dictated-marker.test.ts - a block carrying the "dictated: true" meta line
- * renders the mic + "dictated" provenance marker in its bubble footer
- * (2026-06-11, Alex: "header so you know it's dictated").
+ * renders the mic + "dictated" provenance marker in its bubble footer,
+ * so a dictated message is visibly marked.
  *
- * VALID-03: writes only under INBOX_ROOT (temp). ASCII only (FND-05).
+ * Writes only under INBOX_ROOT (temp). ASCII only.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

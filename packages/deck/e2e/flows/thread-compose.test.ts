@@ -1,10 +1,10 @@
 /**
- * thread-compose.test.ts - VALID-02 flow (d): sending a reply appends to the
+ * thread-compose.test.ts - flow (d): sending a reply appends to the
  * (temp) fixture inbox and the reply appears in the thread.
  *
- * THRD-04: compose writes a new block and it appears after revalidation.
- * VALID-03: writeback goes to INBOX_ROOT (temp dir), never the committed fixtures.
- * ASCII only - no em-dashes per FND-05.
+ * compose writes a new block and it appears after revalidation.
+ * Writeback goes to INBOX_ROOT (temp dir), never the committed fixtures.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import {
@@ -35,7 +35,7 @@ test("THRD-04: sending a reply appends to temp fixture inbox and appears in thre
   // Submit the reply
   await sendButton(page).click();
 
-  // VALID-03: the reply landed in the TEMP fixture file. Polled, because a
+  // The reply landed in the TEMP fixture file. Polled, because a
   // submit is not a send - the composer holds the text for the settle window
   // first, so a synchronous read here races the delivery it is asserting.
   await expectDelivered("scribe", replyBody);

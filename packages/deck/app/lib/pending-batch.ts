@@ -1,5 +1,5 @@
 /**
- * pending-batch.ts - Per-thread PENDING outbound batch state machine (TASK-500).
+ * pending-batch.ts - Per-thread PENDING outbound batch state machine.
  *
  * Implements the typing-aware message batching described in the SPEC. The state
  * machine holds submitted messages in a client-side batch and delivers them as a
@@ -29,7 +29,7 @@
  * carry over the pending batch (it stays keyed to the previous thread). The caller
  * (threads.$agent.tsx) resets on navigation by passing the new agentKey.
  *
- * OWNERSHIP TRAVELS WITH THE BATCH (2026-07-29). `ownerKey` and `dictated` live
+ * OWNERSHIP TRAVELS WITH THE BATCH. `ownerKey` and `dictated` live
  * in the reducer state, stamped at the first SUBMIT, and every write path
  * (deliver, mirror, beacon) addresses the batch by THAT key - never by whichever
  * thread happens to be rendered when the write fires. The two are the same
@@ -42,11 +42,11 @@
  * paragraphs while `agent` already read B, and wrote them into B's localStorage
  * slot stamped `agentKey: "B"`. Nothing in the record's own shape revealed the
  * mislabel; recovery later delivered A's text to B as a genuine-looking compose
- * POST. Three of Alex's messages went to the wrong agent that night, with
+ * POST. Three of the operator's messages went to the wrong agent that night, with
  * delays from 71 seconds to 45 minutes. Effect ORDER cannot be relied on to
  * prevent this; the key travelling with the paragraphs can.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { useReducer, useEffect, useLayoutEffect, useRef, useCallback } from "react";
@@ -94,8 +94,8 @@ export interface PendingBatchState {
    * "dictated" marker on the written block so the reader knows to expect
    * transcription errors rather than deliberate wording.
    *
-   * In state rather than a route-level ref (which is what it was until
-   * 2026-07-29) so the provenance belongs to the batch instead of to "the last
+   * In state rather than a route-level ref, so the provenance belongs to the
+   * batch instead of to "the last
    * dictated submit anywhere in the component". The ref was only ever reset
    * inside onDeliver, so a CANCELLED dictation - or one handed over by the
    * beacon flush, which also resets via batchCancel - left the flag armed and
@@ -298,7 +298,7 @@ export interface PendingBatchCallbacks {
 
 export interface PendingBatchOptions extends PendingBatchCallbacks {
   /**
-   * TASK-500.1: settle window in ms (default: SETTLE_MS = 18_000).
+   * Settle window in ms (default: SETTLE_MS = 18_000).
    * An in-flight pending batch keeps its current timer; the next arm uses the
    * new value. Changing this between renders does not crash. The SAFETY_CAP_MS
    * is independent and never configurable.
@@ -339,7 +339,7 @@ export interface PendingBatchHandle {
  * onDeliver: called whenever a delivery fires (settle, send-now, safety-cap, or
  * deliver-on-switch). targetAgent is only set on the deliver-on-switch path.
  *
- * TODO(TASK-500 Phase 2): durability on tab-close -- sendBeacon flush
+ * TODO: durability on tab-close -- sendBeacon flush
  * When the tab closes/hides while phase !== "IDLE", the pending paragraphs
  * are lost. A flush via navigator.sendBeacon to the compose action would cover
  * the common "closes tab / switches away" case.
@@ -363,8 +363,8 @@ export function usePendingBatch(
   // agentKey in onSubmit's dep list (which would re-create the callback, and so
   // Compose's onBatchSubmit prop, on every navigation).
   //
-  // Updated in a LAYOUT EFFECT, never during render (CodeRabbit, react-doctor
-  // no-ref-current-in-render). React can replay or discard render work, so a ref
+  // Updated in a LAYOUT EFFECT, never during render.
+  // React can replay or discard render work, so a ref
   // written in the render body can end up holding a key from a render that never
   // committed - and this ref is what onSubmit stamps as `ownerKey`, i.e. the
   // exact ownership guarantee this whole change exists to make structural. A ref

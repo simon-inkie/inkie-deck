@@ -1,5 +1,5 @@
 /**
- * push-watch-core.mjs - pure logic for the push watcher (TASK-470).
+ * push-watch-core.mjs - pure logic for the push watcher.
  *
  * Plain functions, no IO, unit-tested directly. The watcher process
  * (push-watcher.mjs) feeds it file contents and acts on the results.
@@ -7,10 +7,10 @@
  * Block grammar: the same append-only inbox format the app parses, but the
  * watcher only needs three facts per block - who sent it, the subject, and
  * how many blocks the file holds. The header delimiter is tolerant of
- * ASCII hyphen AND em/en dash (agents hand-write em-dash headers; the
- * 2026-06-11 lifeline incident taught us never to choke on them).
+ * ASCII hyphen AND em/en dash (agents hand-write em-dash headers, so the
+ * parser must never choke on them).
  *
- * ASCII only in THIS file - no em-dashes (FND-05); the dash variants below
+ * ASCII only in THIS file - no em-dashes; the dash variants below
  * are unicode escapes.
  */
 

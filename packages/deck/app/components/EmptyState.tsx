@@ -7,8 +7,8 @@
  *   - Empty thread: no messages in the selected thread.
  *   - Empty queue: no items needing attention.
  *
- * Callers supply the copy via props. ASCII only - no em-dashes (FND-05).
- * No .server imports (FND-02).
+ * Callers supply the copy via props. ASCII only - no em-dashes.
+ * No .server imports.
  */
 
 import type { ComponentType } from "react";

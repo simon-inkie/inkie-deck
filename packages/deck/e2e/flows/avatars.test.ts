@@ -1,10 +1,10 @@
 /**
- * avatars.test.ts - TASK-457: real avatars with initials fallback.
+ * avatars.test.ts - real avatars with initials fallback.
  *
- * Drops a tiny PNG into the TEMP fixture inbox root (tmpdir-only, VALID-03)
+ * Drops a tiny PNG into the TEMP fixture inbox root (tmpdir-only)
  * and asserts the serving route + the render chain + the fallback.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -78,7 +78,7 @@ test("TASK-457: thread bubbles carry the sender's face; app-bar identity uses it
   seedAvatar("scribe");
   await page.goto("/threads/scribe");
 
-  // App-bar identity (TASK-454 fold) renders the image.
+  // App-bar identity renders the image.
   await expect(
     page.locator("header").getByTestId("avatar-image")
   ).toBeVisible({ timeout: 5_000 });

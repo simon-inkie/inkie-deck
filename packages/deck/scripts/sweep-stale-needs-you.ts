@@ -1,6 +1,5 @@
 /**
- * One-off sweep (Alex, 2026-06-11 22:11): mark every needs-you item older
- * than 36h as handled in the queue store. Decisions were resolved out-of-band;
+ * One-off sweep: mark every needs-you item older than 36h as handled in the queue store. Decisions were resolved out-of-band;
  * the bell was choking on them. Uses the same FileQueueStore the daemon uses
  * (atomic write; worst-case race = an item reappearing, by design).
  * Usage: INBOX_ROOT=... DATA_ROOT=... PROJECTS_ROOT=... pnpm tsx scripts/sweep-stale-needs-you.ts

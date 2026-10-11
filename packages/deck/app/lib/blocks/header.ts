@@ -1,7 +1,7 @@
 /**
  * parseHeader / serializeHeader for inbox message block headers.
  *
- * Grammar (ASCII-normalised, per spec section 2.2 + FND-05):
+ * Grammar (ASCII-normalised, per spec section 2.2):
  *   ## <ISO-8601-timestamp> - from: <name> - status: <sent|read|working> - subject: <subject>
  *
  * Key-anchored regex (NOT a naive " - " split) so hyphens in from-names and subjects
@@ -15,7 +15,7 @@ import type { BlockHeader } from "./model.js";
  * Key-anchored regex for the block header line.
  * - ts: the ISO-8601 timestamp (non-whitespace)
  * - from: non-greedy, up to the " - status:" anchor
- * - status: literal "sent", "read", or "working" (TASK-444); the whole
+ * - status: literal "sent", "read", or "working"; the whole
  *   "status: <...> -" segment is OPTIONAL on READ - headers that drop it
  *   (e.g. "## <ts> - from: <name> - subject: <subject>") still parse, with
  *   status defaulting to "read" in parseHeader. A status-less header that
@@ -26,8 +26,8 @@ import type { BlockHeader } from "./model.js";
  * Field delimiter accepts an ASCII hyphen OR an em-dash (U+2014) OR an
  * en-dash (U+2013): agents repeatedly slip em-dashes into hand-written
  * headers despite the no-em-dash rule, and a header that fails to parse here
- * leaves an empty timestamp that took down the whole queue loader (2026-06-11
- * lifeline incident). Tolerating the dash variants on READ keeps such cards
+ * leaves an empty timestamp that took down the whole queue loader.
+ * Tolerating the dash variants on READ keeps such cards
  * fully functional; serializeHeader still emits ASCII hyphens, so any
  * writeback self-heals the file back to the canonical grammar. The class uses
  * \u escapes (not literal glyphs) so this source stays clean for check:dashes.
@@ -40,13 +40,13 @@ import type { BlockHeader } from "./model.js";
 // fail, the group is skipped, and the plain non-greedy ".+?" backtracks to
 // swallow the literal "status: pondering" into `from` - the header then parses
 // ok:true with junk in `from` instead of failing outright and triggering the
-// CARD-05 sentinel fallback. Tempering the token means "- status: <invalid>"
+// sentinel fallback. Tempering the token means "- status: <invalid>"
 // can never be absorbed, so an invalid status value fails the whole match. A
 // valid status (sent|read|working) still stops `from` at the same boundary and
 // is captured by the optional group; a status-omitted header ("- subject:") is
 // unaffected (no "- status:" ahead, so the lookahead never bites).
 // Exported so callers that need the exact char range of a captured group (e.g.
-// TASK-700's byte-patch flip, which must locate the "status" value unambiguously
+// the byte-patch flip in inbox.server.ts, which must locate the "status" value unambiguously
 // rather than re-searching the line with a second loose pattern) can derive
 // match indices from THIS anchored grammar instead of duplicating it.
 export const HEADER_RE =
@@ -98,12 +98,12 @@ export function serializeHeader(header: BlockHeader): string {
   // empty timestamp/from/subject, and interpolating those emits
   // "##  - from:  - status: read - subject: ", which does NOT match HEADER_RE. So
   // reading a file and writing it back PERMANENTLY destroyed the header, and the
-  // damage compounded with every read. 318 lines across 17 inbox files were
-  // produced this way, including 50 in Alex's thread with Quill.
+  // damage compounded with every read. Many header lines were
+  // produced this way.
   //
   // Fixing it here rather than by making this throw: a throw pushes the decision
   // onto every caller and one of them gets it wrong quietly. Fixing it by deleting
-  // the parse fallback is also wrong - that fallback exists for the 2026-06-12
+  // the parse fallback is also wrong - that fallback exists for the
   // phantom-unread dots.
   if (header.rawHeader !== undefined) return header.rawHeader;
   return `## ${header.timestamp} - from: ${header.from} - status: ${header.status} - subject: ${header.subject}`;

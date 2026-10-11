@@ -1,8 +1,8 @@
 /**
- * attachments.test.ts - E2E tests for the TASK-430/TASK-450 attachment feature.
+ * attachments.test.ts - E2E tests for the attachment feature.
  *
  * Tests:
- *   - picker-upload flow (TASK-450 chip flow): setInputFiles a fixture PNG ->
+ *   - picker-upload flow: setInputFiles a fixture PNG ->
  *     chip appears above textarea (NOT markdown in textarea) -> send ->
  *     ONE new message block containing the inline image.
  *   - chip-remove flow: upload -> chip visible -> click X -> chip gone ->
@@ -13,10 +13,10 @@
  *   - synthetic paste: attempted via page.evaluate (DataTransfer + File +
  *     ClipboardEvent dispatch on textarea). Disclosed below if unreliable.
  *
- * Uses resetFixtureInbox + baseline assertGitClean helpers (VALID-03).
+ * Uses resetFixtureInbox + baseline assertGitClean helpers.
  * Workers stay 1 per playwright.config.ts.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import {
@@ -47,7 +47,7 @@ test("TASK-450 picker: upload png, chip visible, textarea clean, send renders im
   const fileInput = page.getByTestId("attach-file-input");
   await fileInput.setInputFiles(path.join(FIXTURES_DIR, "test-image.png"));
 
-  // TASK-450: a chip should appear above the textarea, NOT markdown in the textarea.
+  // A chip should appear above the textarea, NOT markdown in the textarea.
   await expect(page.getByTestId("pending-attachment-chip")).toBeVisible({ timeout: 10_000 });
 
   // The textarea should NOT contain markdown syntax.
@@ -151,7 +151,7 @@ test("TASK-450 md-chip: upload .md file, chip renders, GET returns 200 + nosniff
     /\[test-notes\.md\]\(\/attachments\/[^)]+\.md\)/
   );
 
-  // TASK-431: .md chips render as a ReviewableChip (button, aria-label contains
+  // .md chips render as a ReviewableChip (button, aria-label contains
   // "Open in review panel") or AttachmentChip (anchor, aria-label "Attachment: ...").
   // Scoped to the message list: a chip is only rendered from a delivered block,
   // and held text can never reach this scope.

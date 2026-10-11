@@ -1,5 +1,5 @@
 /**
- * e2e/flows/morning-brief.test.ts - E2E tests for TASK-442 morning brief panel.
+ * e2e/flows/morning-brief.test.ts - E2E tests for morning brief panel.
  *
  * Tests:
  * 1. BRIEF-01: Brief panel visible on home with the fixture heading rendered.
@@ -19,7 +19,7 @@
  * from the temp inbox) rather than a separate inbox root, so no env changes
  * are needed. The brief panel must be absent; needs-you items must still render.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";
@@ -45,7 +45,7 @@ test("BRIEF-01: morning brief panel renders on home with fixture heading", async
   // The label-mono "Morning brief" text should be present.
   await expect(panel.getByText("Morning brief", { exact: true })).toBeVisible();
 
-  // The formatted date should appear (10 June 2026 for 2026-06-10) in the header label span.
+  // The formatted date should appear in the header label span.
   await expect(panel.getByText("10 June 2026", { exact: true })).toBeVisible();
 
   // The body should be expanded by default for today's brief.
@@ -87,7 +87,7 @@ test("BRIEF-02: toggle collapses the brief; state persists across reload", async
   // Body should now be hidden.
   await expect(body).not.toBeVisible();
 
-  // Reload the page - the body should stay collapsed (localStorage mc-brief-seen-2026-06-10).
+  // Reload the page - the body should stay collapsed.
   await page.reload();
   await expect(page.getByTestId("morning-brief")).toBeVisible();
   // After reload with seen state, body should remain collapsed.

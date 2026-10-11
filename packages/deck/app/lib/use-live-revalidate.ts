@@ -1,5 +1,5 @@
 /**
- * use-live-revalidate.ts - Polling live updates, v1 (TASK-455).
+ * use-live-revalidate.ts - Polling live updates, v1.
  *
  * One hook, mounted ONCE in AppShell: React Router revalidation re-runs
  * every active loader (shell sidebar + bell, home, thread, projects, lens),
@@ -13,7 +13,7 @@
  *
  * shouldPoll is exported pure for the unit truth table.
  *
- * Client-side module, no env/fs (FND-02). ASCII only (FND-05).
+ * Client-side module, no env/fs. ASCII only.
  */
 import { useEffect } from "react";
 import { useRevalidator } from "react-router";

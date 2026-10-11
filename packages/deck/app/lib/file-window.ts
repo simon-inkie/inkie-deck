@@ -14,7 +14,7 @@
  * image tile vs a text/media-object row), so the cumulative offsets are
  * exact-from-data - no per-row measurement, no drift.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 /** Extensions that render as a full-bleed image tile (must match FilesPanel). */

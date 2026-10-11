@@ -20,7 +20,7 @@
  * here and nobody has walked it. Naming that is the point: this test does not
  * claim to cover upstream failure in general.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -200,7 +200,7 @@ async function setupRejectedUpgrade(): Promise<{
   // Neither caller needs the socket itself, only the frames it received. If
   // the promise above settled via the 8s timeout branch (not close/error),
   // the socket would otherwise be left open with no explicit teardown -
-  // afterEach only kills the proxy process, not this client (CR finding).
+  // afterEach only kills the proxy process, not this client.
   client.terminate();
   return { frames };
 }

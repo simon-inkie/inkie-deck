@@ -1,9 +1,8 @@
 /**
- * StatusPill.tsx - the ONE rendering of an agent activity status (TASK-691).
+ * StatusPill.tsx - the ONE rendering of an agent activity status.
  *
  * Extracted from ActivityPanel.tsx when the left-hand Sidebar grew the same
- * pill (Alex, 2026-07-31: "can we add the status pills to the agent list in
- * the left hand pane?"). Two renderings of the same concept in two files is how
+ * pill. Two renderings of the same concept in two files is how
  * "working" ends up primary-tinted in one column and muted in the other, so the
  * tint + glyph table lives here and both surfaces import it.
  *
@@ -22,9 +21,9 @@
  *      pill and says "last known" in its tooltip: the glyph and the label stay
  *      legible as history, the confident colour does not.
  *
- * Presentational only, no .server imports - FND-02 (types come from
+ * Presentational only, no .server imports (types come from
  * activity.shared).
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import {
   Activity as ActivityGlyph,

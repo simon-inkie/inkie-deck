@@ -57,25 +57,25 @@ STAGED_FOREIGN=$'output\n> half-typed staged text'
 # Our own push as the terminal renders it when it wraps: only the glyph-bearing
 # line is visible, so the composer shows a PREFIX of MSG, not the whole thing.
 STAGED_OURS=$'output\n> [inbox from courier] hel'
-# A REAL busy pane as Claude renders it today, captured live off alice
-# 2026-07-26 while he was mid-turn. Deliberately kept verbatim: every
+# A REAL busy pane as Claude renders it today, captured live
+# while mid-turn. Deliberately kept verbatim: every
 # enumerated literal in check_idle misses this line, which is why a busy pane
 # read as idle. Multi-word status, a hyphen inside the first token, and a
 # U+2026 terminator rather than three ASCII dots. The only thing that survives
 # is the parenthesised elapsed counter.
-BUSY_MODERN=$'\u00b7 BUG-609 (High): "info not saving" churn bug - audit\u2026 (59s \u00b7 thought for 2s)\n\u276f '
-# 2026-07-27: the counter does NOT always carry a middot. BUSY_MODERN and
+BUSY_MODERN=$'\u00b7 Fix flaky retry test - audit\u2026 (59s \u00b7 thought for 2s)\n\u276f '
+# the counter does NOT always carry a middot. BUSY_MODERN and
 # COMPACTING both do, so they were the only counter fixtures and the suite pinned
-# the SHAPE the 26 July incident produced rather than the CATEGORY it belonged to.
+# the SHAPE an earlier incident produced rather than the CATEGORY it belonged to.
 # These two are the forms that read as IDLE while genuinely busy. Found live on
-# alice mid-compact showing "(1m 26s)".
+# a pane mid-compact showing "(1m 26s)".
 BUSY_BARE_SECONDS=$'\u00b7 Thinking\u2026 (12s)\n\u276f '
-# alice, 2026-07-27: the spinner glyph is NOT a closed set. Measured ✽ (U+273D) live on
-# another agent's pane, outside the class the first anchored fix enumerated. This fixture pins
-# a glyph nobody has enumerated AND a status word nobody has enumerated, so it can
+# The spinner glyph is NOT a closed set. Measured ✽ (U+273D) live on
+# another agent's pane, outside the class the first anchored fix enumerated.
+# This fixture pins a glyph nobody has enumerated AND a status word nobody has enumerated, so it can
 # only pass via the structural end-of-line counter rule.
 BUSY_UNKNOWN_GLYPH=$'\u273d Dilly-dallying\u2026 (16s)\n\u276f '
-BUSY_BARE_MINUTES=$'\u00b7 Auditing the sentinel ledger\u2026 (1m 26s)\n\u276f '
+BUSY_BARE_MINUTES=$'\u00b7 Auditing the build cache\u2026 (1m 26s)\n\u276f '
 # NEGATIVE CONTROLS. A completed-turn summary carries a spinner glyph and a
 # duration but the turn is OVER: these must read IDLE or every finished agent
 # looks permanently busy and delivery wedges.
@@ -91,25 +91,24 @@ NO_COMPOSER=$'output with no prompt glyph at all'
 # treat the NBSP as whitespace, so this used to false-skip:staged on every idle
 # pane (the default-on push was silently no-op). Must read as CLEAN.
 IDLE_CLEAN_NBSP=$'some transcript output\n\n\xe2\x9d\xaf\xc2\xa0'
-# Compacting: captured LIVE off alice's pane mid-/compact, 2026-07-09 (the exact
+# Compacting: captured LIVE off a live pane mid-/compact (the exact
 # line that missed every prior busy marker -- two words + a UNICODE ellipsis
 # U+2026, not one word + three ASCII dots, so spinner_re never matched, and
 # neither "esc to interrupt" nor "Cerebrating" show during a real compact).
 # This is the fixture that regression-locks the "message dropped during
-# /compact" fix (2026-07-09).
+# /compact" fix.
 COMPACTING=$'* Compacting conversation\xe2\x80\xa6 (8s \xc2\xb7 \xe2\x86\x91 3.5k tokens)\n> '
 
-# BACKGROUND-TASK LIST BELOW THE COMPOSER (2026-07-29). Modelled on a live
-# capture off alice's pane while a general-purpose subagent was visible. The
+# BACKGROUND-TASK LIST BELOW THE COMPOSER. Modelled on a live
+# capture off a live pane while a general-purpose subagent was visible. The
 # STRUCTURE is the load-bearing part: a rule carrying the agent's name, the REAL
 # (empty, idle) composer, the closing rule, the status bar, then "● main" and a
 # task-list entry Claude ALSO prefixes with ❯. That entry is the LAST ❯ line in
 # the capture, so `grep '^[[:space:]]*(❯|›|>)' | tail -1` returned it, read
 # "◯ general-purpose ..." as staged text, and every live push to that agent
 # silently skipped for as long as the subagent stayed visible -- three human
-# DMs to alice sat persisted-but-undelivered for 32+ minutes, twice in one
-# evening. Must read CLEAN: the composer is the prompt line under the RULE, not
-# the last one in the pane.
+# DMs sat persisted-but-undelivered for a long time. Must read CLEAN: the
+# composer is the prompt line under the RULE, not the last one in the pane.
 IDLE_WITH_BG_TASK_LIST_BELOW_COMPOSER=$'  … +3 in progress, 19 pending, 42 completed\n                        new task? /clear to save 235.9k tokens\n──────────────────────────────────────── alice ──\n❯  \n────────────────────────────────────────────────\n  alice │ Sonnet 5 │ ~/agents/alice │ ██░░░░░░░░ 29%    /rc\n  ⏵⏵ auto mode on · 1 shell, 1 monitor · ← 1 agent\n\n  ● main\n❯ ◯ general-purpose  MR opener - BUG-731 API key revoke fixes    32m 4s · ↑ 75.1k tokens'
 # NEGATIVE CONTROL for the same pane shape: a human really IS half-way through
 # typing. Anchoring must not buy the false positive back by simply ignoring
@@ -124,7 +123,7 @@ STAGED_WITH_BG_TASK_LIST=$'  … +3 in progress, 19 pending, 42 completed\n─�
 # one. The composer line here is bold+highlighted, deliberately NOT dim.
 STAGED_WITH_BG_TASK_LIST_RAW=$'  … +3 in progress, 19 pending, 42 completed\n──────────────────────────────────────── alice ──\n\033[1m❯\033[0m\033[48;5;235m actually half-typed by a human\033[0m\n────────────────────────────────────────────────\n  alice │ Sonnet 5 │ ~/agents/alice │ 29%\n\n  ● main\n\033[2m❯ ◯ general-purpose  MR opener - BUG-731 API key revoke fixes    32m 4s\033[0m'
 
-# Agy (Gemini) pane fixtures -- captured live 2026-06-28.
+# Agy (Gemini) pane fixtures -- captured live.
 # IDLE: footer "? for shortcuts", bare ">" composer between horizontal rule lines.
 # BUSY: braille spinner + "Generating...", footer "esc to cancel". The ">" composer
 #       is present in both states -- it is NOT a sole busy discriminator.
@@ -132,7 +131,7 @@ AGY_IDLE=$'some transcript\n─────────────────�
 AGY_BUSY=$'\xe2\xa0\xbf  Generating...\n────────────────────\n>\n────────────────────\nesc to cancel                    Gemini 3.5 Flash (Medium)'
 AGY_STAGED=$'some transcript\n────────────────────\n> half-typed agy text\n────────────────────\n? for shortcuts                  Gemini 3.5 Flash (Medium)'
 
-# Codex pane fixtures -- captured live off dana's pane, 2026-07-17.
+# Codex pane fixtures -- captured live off a live pane.
 # IDLE: composer glyph is U+203A (›), never bare, always shows the persistent
 #       hint placeholder "Implement {feature}" (stable across many separate
 #       idle captures this session) -- check_composer_clean special-cases this
@@ -143,7 +142,7 @@ CODEX_IDLE=$'some transcript\n\n\xe2\x80\xba Implement {feature}\n\n  gpt-5.6-so
 CODEX_BUSY=$'\xe2\x97\xa6 Working (2s \xe2\x80\xa2 esc to interrupt)\n\n\n\xe2\x80\xba Implement {feature}'
 CODEX_STAGED=$'some transcript\n\n\xe2\x80\xba do something real\n\n  gpt-5.6-sol default \xc2\xb7 ~/agents/dana'
 # Codex ROTATES through several hint placeholders, not just "Implement
-# {feature}" -- caught live off dana's pane, 2026-07-18 (reported as "is it a bug
+# {feature}" -- caught live off a live pane (reported as "is it a bug
 # with tmux keys?" -- no, it was this exact-string allowlist missing a second
 # hint, "Run /review on my current changes", so a genuinely-idle pane read as
 # staged). Plain -p capture (no ANSI) is indistinguishable from real typed
@@ -152,7 +151,7 @@ CODEX_STAGED=$'some transcript\n\n\xe2\x80\xba do something real\n\n  gpt-5.6-so
 CODEX_IDLE_ROTATING_HINT=$'some transcript\n\n\xe2\x80\xba Run /review on my current changes\n\n  gpt-5.6-sol default \xc2\xb7 ~/agents/dana'
 CODEX_IDLE_ROTATING_HINT_RAW=$'some transcript\n\n\033[1m\xe2\x80\xba\033[0m\033[48;5;235m \033[2mRun /review on my current changes\033[0m\033[48;5;235m \n\n  gpt-5.6-sol default \xc2\xb7 ~/agents/dana'
 
-# Codex paste-collapse (2026-07-28, reproduced live off a real Codex pane
+# Codex paste-collapse (reproduced live off a real Codex pane
 # TWICE, both requiring a manual bare-Enter to unstick): send-keys -l of a
 # message this long lands in Codex's composer as a collapsed placeholder
 # ("[Pasted Content N chars]"), never the literal text, so the retry-Enter
@@ -164,7 +163,7 @@ CODEX_IDLE_ROTATING_HINT_RAW=$'some transcript\n\n\033[1m\xe2\x80\xba\033[0m\033
 CODEX_STAGED_PASTE_OURS=$'some transcript\n\n\xe2\x80\xba [Pasted Content 26 chars]\n\n  gpt-5.6-sol default \xc2\xb7 ~/agents/dana'
 CODEX_STAGED_PASTE_FOREIGN=$'some transcript\n\n\xe2\x80\xba [Pasted Content 500 chars]\n\n  gpt-5.6-sol default \xc2\xb7 ~/agents/dana'
 
-# CODEX BANNER BOX (captured live off dana's pane, 2026-07-29, WITH real staged
+# CODEX BANNER BOX (captured live off a live pane, WITH real staged
 # text in the composer -- a genuinely stuck message). This fixture exists because
 # of a wrong turn taken while fixing the ❯-task-list bug above: the first attempt
 # rule-anchored the RAW (-e) lookup the same way as the plain one, and since SGR
@@ -172,7 +171,7 @@ CODEX_STAGED_PASTE_FOREIGN=$'some transcript\n\n\xe2\x80\xba [Pasted Content 500
 # the line -- which makes every boxed line a candidate. Codex's banner box
 # "│ >_ OpenAI Codex (v0.145.0) │" sits directly under a rule and is rendered DIM,
 # and dim is exactly what the rotating-hint check reads as "not real text", so
-# that version declared dana's genuinely-staged composer CLEAN and would have
+# that version declared a genuinely-staged composer CLEAN and would have
 # typed onto the stuck message. Caught by diffing old-vs-new verdicts across all
 # 13 live panes before commit, not by the suite -- hence this fixture. Must stay
 # skip:staged; it goes green-to-red if the raw lookup is ever rule-anchored again.
@@ -245,7 +244,7 @@ MSG="[inbox from courier] hello"
   run_case "verify: post=busy -> pushed" "pushed" 0 ); tally $?
 
 # Busy AT GATE + post shows our text staged => CC has QUEUED it (auto-submits on
-# turn end, verified live 2026-06-23). Must report queued + NOT clear it -- the
+# turn end, verified live). Must report queued + NOT clear it -- the
 # old Ctrl-U here was the spurious skip:could-not-submit (us fighting CC's queue).
 ( export PANE_OVERRIDE="$BUSY" PANE_OVERRIDE_2="$STAGED_FOREIGN"
   run_case "verify: busy-at-gate + post-staged -> queued (don't clear queue)" "queued" 0 ); tally $?
@@ -294,7 +293,7 @@ MSG="[inbox from courier] hello"
 # "half-typed staged text" should receive an Enter. That is the defect: the
 # branch's comment claimed the staged text was ours, and check_composer_clean
 # only ever answered "is there text". If a human had begun typing during the
-# ~1.6s window, inbox-push would have submitted his half-written line believing
+# ~1.6s window, inbox-push would have submitted a half-written line believing
 # it was completing its own delivery. The suite asserted that as correct.
 ( export PANE_OVERRIDE="$IDLE_CLEAN" PANE_OVERRIDE_2="$STAGED_FOREIGN" PANE_OVERRIDE_3="$BUSY"
   run_case "verify: staged-FOREIGN -> no retry -> pushed-unverified (identity check blocks)" "pushed-unverified" 0 ); tally $?
@@ -435,7 +434,7 @@ STUB
 ( export PANE_OVERRIDE="$BUSY" PANE_OVERRIDE_2="$STAGED_FOREIGN"
   run_case "claude: busy-at-gate + post-staged -> still queued (codex-only change)" "queued" 0 ); tally $?
 
-# ---- claude background-task list below the composer (2026-07-29) ----
+# ---- claude background-task list below the composer ----
 # THE BUG. An idle pane with an empty composer and a visible subagent's task
 # entry below it must read clean and push. Before the rule-anchoring fix this
 # returned skip:staged and kept returning it for as long as the subagent was
@@ -454,18 +453,17 @@ STUB
 ( export PANE_OVERRIDE="$STAGED_WITH_BG_TASK_LIST" PANE_RAW_OVERRIDE="$STAGED_WITH_BG_TASK_LIST_RAW" \
          RUNTIME_OVERRIDE="claude"
   run_case "bg-task list DIM in raw + staged -> skip:staged" "skip:staged" 2 ); tally $?
-# The mirror hazard on the OTHER runtime, found live on dana: Codex's DIM banner
+# The mirror hazard on the OTHER runtime, found live: Codex's DIM banner
 # box also sits under a rule, so a rule-anchored raw lookup reads it as the
 # composer and its dimness declares a genuinely stuck message clean.
 ( export PANE_OVERRIDE="$CODEX_STAGED_BANNER_BOX" PANE_RAW_OVERRIDE="$CODEX_STAGED_BANNER_BOX_RAW" \
          RUNTIME_OVERRIDE="codex"
   run_case "codex banner box + staged text -> skip:staged" "skip:staged" 2 ); tally $?
 
-# ---- codex third Enter (2026-07-29 live incident) ----
-# THE INCIDENT SHAPE. A real DM to dana: our paste-collapsed text staged in his
+# ---- codex third Enter ----
+# THE INCIDENT SHAPE. A real DM: our paste-collapsed text staged in the
 # composer, Enter #1 did not register, Enter #2 did not register either, and it
-# sat genuinely unsubmitted for ~46 minutes until a human pressed Enter a third
-# time by hand. Before this fix the script gave up after two and reported
+# sat genuinely unsubmitted until a human pressed Enter a third time by hand. Before this fix the script gave up after two and reported
 # "pushed-unverified" -- true, but one keypress short of delivering. POST2 still
 # staged, POST3 busy => the third attempt lands => pushed.
 ( export PANE_OVERRIDE="$CODEX_IDLE" PANE_OVERRIDE_2="$CODEX_STAGED_PASTE_OURS" \
@@ -505,7 +503,7 @@ STUB
          PANE_OVERRIDE_3="$STAGED_OURS" PANE_OVERRIDE_4="$BUSY"
   run_case "runtime unset: two Enters fail -> NO third attempt" "pushed-unverified" 0 ); tally $?
 
-# ---- codex approval dialog (2026-09) --------------------------------------
+# ---- codex approval dialog --------------------------------------
 # THE HAZARD. A pane wedged on an UNANSWERED Codex approval dialog is running
 # nothing and waiting on a human, so check_idle answers IDLE -- and IDLE is what
 # sends this script down the deliver path. Deliver is text + Enter, and Enter is
@@ -613,7 +611,7 @@ fi
 # above pins a scenario that cannot occur, which is how the suite stayed 57/57
 # green on a live file that stranded four consecutive real messages.
 #
-# Measured live 2026-08-12: real messages of 1234, 1795, 2142 and 4072 chars ALL
+# Measured live: real messages of 1234, 1795, 2142 and 4072 chars ALL
 # rendered as "[Pasted Content 1024 chars]". The number is a CEILING wearing the
 # costume of a measurement, so paste_diff is the overshoot and never <= 3. And
 # `emit` calls exit, so the not-ours branch terminated the script before Enter
@@ -674,7 +672,7 @@ CODEX_PASTE_CAPPED_FOREIGN=$'some transcript\n\n\xe2\x80\xba [Pasted Content 102
 # STRUCTURAL. The two properties the verdict tests above cannot observe, because
 # send-keys is suppressed in test mode: what keys exist in the script at all.
 # (1) Ctrl-U is never sent -- clearing a composer can destroy a genuinely-queued
-#     message (standing rule, 2026-06-23), and the third-Enter change must not have
+#     message, and the third-Enter change must not have
 #     smuggled a clear back in as a "recovery".
 if grep -qE 'send-keys.*C-[uU]' "$PUSH"; then
   printf 'FAIL  %-42s -> a C-u send-keys exists in inbox-push\n' "structural: no Ctrl-U anywhere"; tally 1
@@ -692,7 +690,7 @@ else
 fi
 
 echo "-----------------------------------------------"
-# ---- context gate (2026-08) ---------------------------------------------
+# ---- context gate ---------------------------------------------
 # NB the delivered cases assert "pushed-unverified", not "pushed": these fixtures set
 # no post-send capture, so the harness cannot confirm the composer cleared. The
 # distinction this gate is about is DELIVERED (rc=0) vs BLOCKED (skip:ctx-over, rc=2).
@@ -721,7 +719,7 @@ echo "-----------------------------------------------"
 
 echo "-----------------------------------------------"
 # ===========================================================================
-# check_idle: "esc to cancel" must LEAD ITS CLAUSE  (2026-08-21)
+# check_idle: "esc to cancel" must LEAD ITS CLAUSE
 # ===========================================================================
 # THE INCIDENT. Codex renders an approval dialog whose footer reads "Press
 # enter to confirm or esc to cancel" -- captured live off a real pane. The
@@ -729,7 +727,7 @@ echo "-----------------------------------------------"
 # cancel", so it fired on that footer too, and a pane sitting on an UNANSWERED
 # confirmation dialog reported BUSY. That pane is stuck waiting on a human, and
 # every caller that asks "is this busy?" before escalating skipped it in
-# silence: one agent sat that way for over two hours before somebody noticed.
+# silence: an agent can sit that way for hours before anyone notices.
 #
 # THE FIX is positional, not an enumerated wording: the phrase counts as a busy
 # marker only when it opens its own line (a footer, indented or not) or sits
