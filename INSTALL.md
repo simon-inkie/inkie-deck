@@ -69,13 +69,13 @@ wrong, the rig goes red.
 
 Deck runs on Linux. On Windows 11 you run it inside WSL2, which is a real Ubuntu
 that Windows starts for you, and you use it from your normal Windows browser.
-Do the first four subsections below first, up to and including Install the
-tools, then follow the rest of the document from inside Ubuntu. The later
-subsections (the model CLI, opening Deck, keeping it running) are for when
-section 4 or 5 sends you back here. Every Linux step is the same step as for any
-Ubuntu machine, and this section only covers what is different on Windows. The blocks marked
-`powershell` run in Windows PowerShell. Every other block runs in the Ubuntu
-window.
+Do the first five subsections below first, up to and including Line endings,
+then follow the rest of the document from inside Ubuntu. The later subsections
+(the model CLI, opening Deck, keeping Deck running) are for when section 4 or 5
+sends you back here. Every Linux step is the same step as for any Ubuntu
+machine, and this section only covers what is different on Windows. The blocks
+marked `powershell` run in Windows PowerShell. Every other block runs in the
+Ubuntu window.
 
 ### Install WSL2 and Ubuntu
 
@@ -272,7 +272,7 @@ check that the launcher is still running (below), then try
 <http://127.0.0.1:4242>. If that fails too, run `wsl --shutdown` in PowerShell,
 open Ubuntu again, start Deck again and retry. Do not change anything else.
 
-### Keep it running
+### Keep Deck running on Windows
 
 Closing every Ubuntu window can stop Linux, and Deck with it, however you
 started it. Minimise the window instead of closing it. Of the two ways in
@@ -323,7 +323,10 @@ machine that has run this so far already had them:
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
 | xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
 
-On Ubuntu or Debian, as root. If you are not root, type `sudo -i` for a root shell first, paste the block, `exit`, and set the `export` line again in your own shell (`sudo` in front of single lines breaks the Node line and `export`):
+On Ubuntu or Debian, as root. If you are not root, type `sudo -i` for a root
+shell first, paste the block, `exit`, and set the `export` line again in your
+own shell. (`sudo` in front of single lines breaks the Node line and `export`.)
+The block is:
 
 ```sh
 apt-get update

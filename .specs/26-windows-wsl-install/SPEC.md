@@ -70,5 +70,10 @@ Opus round 1 (changes needed), all addressed:
 Nits: `/etc/wsl.conf` user default now set via an editor, not `printf >>`;
 "carry on with section 2 and onwards"; sh-manual bullet says the WSL blocks
 were not run by hand.
+Opus round 2: the Windows "Keep it running" heading stole the
+`#keep-it-running` anchor from section 4, so existing links pointed at it.
+Renamed it "Keep Deck running on Windows" (link in the section intro
+updated by wording). Nits: wrapped the long line and the intro, and added
+Line endings to the "do first" list.
 Not done here, separate issue: the tier table anchors at the top of
 INSTALL.md (`#1-try-it` etc.) do not match the real headings.
