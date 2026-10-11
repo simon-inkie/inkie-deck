@@ -944,6 +944,34 @@ if [ -z "$c7_bad" ]; then
 else
   fail "C7 launchers no longer run claude --resume <name>" "still in:$c7_bad"
 fi
+
+# C8: the day-one message rides a new session only, exactly once. Reuses C_HOME
+# (wren), whose pin and transcript the cases above left behind.
+rm -f "$C_HOME/.session-id"
+c8_first="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+c8_prompt="$(eval "printf '%s' $(claude_first_boot_prompt "$c8_first")")"
+if [[ "$c8_prompt" == *"first session"* && "$c8_prompt" == *"day-one"* ]]; then
+  pass "C8 new session: carries the day-one first message"
+else
+  fail "C8 new session: carries the day-one first message" "prompt=$c8_prompt"
+fi
+c8_pin="$(cat "$C_HOME/.session-id")"
+printf '{"type":"custom-title","customTitle":"wren","sessionId":"%s"}\n' "$c8_pin" > "$C_PROJECT/$c8_pin.jsonl"
+c_convo "$c8_pin" >> "$C_PROJECT/$c8_pin.jsonl"
+c8_second="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+c8_none="$(claude_first_boot_prompt "$c8_second")"
+c8_third="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+if [ "$c8_second" = "--resume $c8_pin -n wren" ] && [ -z "$c8_none" ] && [ -z "$(claude_first_boot_prompt "$c8_third")" ]; then
+  pass "C8 later launches: resume, no first message again"
+else
+  fail "C8 later launches: resume, no first message again" "second=$c8_second prompt=$c8_none"
+fi
+# A first boot that was killed before any message was recorded gets it again.
+rm -f "$C_PROJECT/$c8_pin.jsonl"
+c8_retry="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+[ -n "$(claude_first_boot_prompt "$c8_retry")" ] \
+  && pass "C8 a first boot that recorded no message is repeated" \
+  || fail "C8 a first boot that recorded no message is repeated" "args=$c8_retry"
 unset CLAUDE_CONFIG_DIR
 
 # Full boot fixtures use exported shell functions, so no call reaches tmux.
@@ -961,14 +989,26 @@ boot_fixture() {
   : > "$BOOT_BOX/log"
   : > "$BOOT_BOX/homes/demo/.auto-arm-watcher"
   printf 'claude\n' > "$BOOT_BOX/homes/demo/.runtime"
-  [[ "$scenario" == opt-out ]] && rm -f "$BOOT_BOX/homes/demo/.auto-arm-watcher"
+  [[ "$scenario" == opt-out || "$scenario" == first-boot* ]] && rm -f "$BOOT_BOX/homes/demo/.auto-arm-watcher"
   [[ "$scenario" == codex || "$scenario" == codex-verify-fail || "$scenario" == existing-codex ]] && printf 'codex\n' > "$BOOT_BOX/homes/demo/.runtime"
   if [[ "$scenario" == codex-verify-fail ]]; then
     mkdir -p "$BOOT_BOX/homes/demo/.codex-home/sessions"
     : > "$BOOT_BOX/homes/demo/.codex-home/config.toml"
     printf '{"originator":"codex-tui","thread_source":"user","cwd":"%s","id":"boot-test-id"}\n' "$BOOT_BOX/homes/demo" > "$BOOT_BOX/homes/demo/.codex-home/sessions/rollout-fixture-boot-test-id.jsonl"
   fi
+  rm -f "$BOOT_BOX/homes/demo/.model"
+  [[ "$scenario" == first-boot* ]] && printf 'claude-sonnet-5-5' > "$BOOT_BOX/homes/demo/.model"
   export BOOT_SCENARIO="$scenario"
+  # Every scenario but first-boot* is an agent that already has a conversation,
+  # so it resumes and no first message is sent. See claude-session.sh.
+  export CLAUDE_CONFIG_DIR="$BOOT_BOX/claude"
+  local boot_proj="$CLAUDE_CONFIG_DIR/projects/$(cd "$BOOT_BOX/homes/demo" && pwd -P | sed 's/[^a-zA-Z0-9]/-/g')"
+  rm -rf "$CLAUDE_CONFIG_DIR" "$BOOT_BOX/homes/demo/.session-id"
+  if [[ "$scenario" != first-boot* ]]; then
+    mkdir -p "$boot_proj"
+    printf '%s\n' 55555555-5555-4555-8555-555555555555 > "$BOOT_BOX/homes/demo/.session-id"
+    c_convo 55555555-5555-4555-8555-555555555555 > "$boot_proj/55555555-5555-4555-8555-555555555555.jsonl"
+  fi
   output=$(bash -c '
     tmux() {
       printf "%s\n" "$*" >> "$BOOT_BOX/log"
@@ -1015,7 +1055,7 @@ boot_fixture() {
             resume) printf "Resume a conversation\n❯ demo\n" ;;
             fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
             unknown) printf "An unfamiliar first-run prompt\n❯ Proceed\n" ;;
-            busy) printf "────────\nThinking (esc to interrupt)\n❯ \n" ;;
+            busy|first-boot-busy) printf "────────\nThinking (esc to interrupt)\n❯ \n" ;;
             staged) printf "────────\n❯ draft\n" ;;
             codex)
               [[ -f "$BOOT_BOX/armed" ]] && echo "Monitor started"
@@ -1061,11 +1101,26 @@ boot_fixture() {
     sends=$(grep -c 'arm your monitor' "$BOOT_BOX/log")
     [[ "$sends" -eq 1 ]] && pass "full boot: $scenario sends once" || fail "full boot: $scenario sends once" "sends=$sends"
   fi
+  if [[ "$scenario" == first-boot* ]]; then
+    # Exactly once: the first launch carries the first message; a second boot,
+    # once the transcript holds that message, resumes and carries none.
+    local firsts
+    firsts=$(grep -c 'This\\ is\\ your\\ first\\ session' "$BOOT_BOX/log")
+    [[ "$firsts" -eq 1 ]] && pass "first boot sends the day-one message once" || fail "first boot sends the day-one message once" "sends=$firsts"
+    # #36: focus-events is on before the first pane starts, and the per-agent
+    # .model file reaches the launch command.
+    [[ "$(grep -n 'focus-events on' "$BOOT_BOX/log" | head -1 | cut -d: -f1)" -lt "$(grep -n 'send-keys' "$BOOT_BOX/log" | head -1 | cut -d: -f1)" ]] \
+      && pass "focus-events is set before the first pane launches" || fail "focus-events is set before the first pane launches"
+    grep -q -- '--model claude-sonnet-5-5' "$BOOT_BOX/log" \
+      && pass "the agent's .model file reaches the launch command" || fail "the agent's .model file reaches the launch command"
+    grep -q -- '--session-id' "$BOOT_BOX/log" && pass "first boot starts a pinned new session" || fail "first boot starts a pinned new session"
+  fi
   if [[ "$scenario" == busy-history ]]; then
     [[ $(cat "$BOOT_BOX/captures") -ge 4 ]] && pass "busy history uses readiness budget" || fail "busy history uses readiness budget"
   fi
   if [[ "$scenario" == trust ]] && ! printf '%s' "$output" | grep -q 'No is preselected'; then fail "folder trust names the default and manual action"; fi
 }
+boot_fixture first-boot-busy 0 '1 launched and ready'
 boot_fixture delayed 0 '1 launched and ready, 1 monitors armed'
 boot_fixture existing-resume 3 'demo waiting: resume picker'
 boot_fixture existing-fullscreen 3 'demo waiting: fullscreen offer'
@@ -1086,7 +1141,7 @@ boot_fixture missing-runtime 3 'demo waiting: runtime not running'
 boot_fixture session-fail 1 'session creation failed'
 boot_fixture window-fail 1 'demo launch failed'
 boot_fixture send-fail 1 'demo launch failed'
-boot_fixture opt-out 0 '1 launched and ready, 0 monitors armed'
+boot_fixture opt-out 0 '1 launched and ready'
 boot_fixture history 0 '1 launched and ready, 1 monitors armed'
 boot_fixture old-monitor 3 'demo monitor unconfirmed'
 boot_fixture ready 0 '1 launched and ready, 1 monitors armed'

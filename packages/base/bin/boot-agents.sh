@@ -626,6 +626,16 @@ existing_readiness() {
   return 0
 }
 
+# A first boot is launched with its first message, so a busy composer is the
+# expected state, not a fault. Anything else wait_for_readiness reports still is.
+first_boot_readiness() {
+  local reason
+  reason=$(wait_for_readiness "$@") && return 0
+  [[ "$reason" == "runtime busy" ]] && return 0
+  printf '%s\n' "$reason"
+  return 1
+}
+
 wait_for_readiness() {
   local target="$1" runtime="$2" reason="unconfirmed" attempt pane prompt
   local budget="${BOOT_READY_SECS:-45}"
@@ -697,6 +707,10 @@ if [[ "${BOOT_AGENTS_LIB_ONLY:-0}" == "1" ]]; then
 fi
 
 tmux start-server 2>/dev/null || true
+# Turn on focus-events before any pane starts, so Claude Code does not show its
+# "tmux focus-events off" hint. tmux has no per-session form of this option
+# (it is a server option), so it applies to the tmux server these scripts use.
+tmux set -g focus-events on 2>/dev/null || true
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$AGENTS_HOME/${AGENTS[0]}" || { echo "boot-agents: session creation failed" >&2; exit 1; }
 fi
@@ -736,7 +750,9 @@ launch_agent() {
       echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
       session_args="-n $(printf '%q' "$a")"
     }
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag" Enter || return 1
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args")" Enter || return 1
+    # The first message is already on its way, so the pane may be busy at once.
+    [[ "$session_args" == "--session-id "* ]] && { echo "launched:first-boot"; return; }
   elif [[ "$runtime" == "codex" ]]; then
     # codex (Codex CLI runtime). AGENT_NAME/AGENT_ROLE must
     # be REAL OS-level env vars set before the codex process starts.
@@ -785,8 +801,9 @@ for a in "${AGENTS[@]}"; do
   if outcome=$(launch_agent "$a"); then
     readiness_check=wait_for_readiness
     [[ "$outcome" == skipped ]] && readiness_check=existing_readiness
+    [[ "$outcome" == launched:first-boot ]] && readiness_check=first_boot_readiness
     if reason=$("$readiness_check" "$SESSION:$a" "$(get_runtime "$a")"); then
-      if [[ "$outcome" == "launched" ]]; then
+      if [[ "$outcome" == launched* ]]; then
         FRESH+=("$a")
         LAUNCHED=$((LAUNCHED + 1))
         echo "boot-agents: $a launched, ready"

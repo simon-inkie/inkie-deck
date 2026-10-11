@@ -482,6 +482,14 @@ packages/base/bin/create-agent.sh inkie --role "keeps the notes"
 `inkie` is only an example: any lowercase name works (letters, digits and
 hyphens).
 
+**Choose a model, because it is a cost decision.** Without `--model <id>` the
+agent uses your model CLI's own default, which on a paid plan can be a more
+expensive model, and several always-on agents add up. Pass
+`--model <id>` (for example `--model claude-sonnet-5-5`) to write the agent's
+`.model` file; `boot-agents.sh` and `workspace.sh` launch the runtime with
+`--model <id>` from it. You can also create or edit `$AGENTS_HOME/<name>/.model`
+by hand at any time.
+
 That writes both, links the `inbox` CLI onto your `PATH`, and then tries to
 prove the persona actually reached the model by asking the agent, in one
 non-interactive turn, for a boot phrase that exists nowhere but its own
@@ -519,6 +527,14 @@ named after the agent, and launches each agent's runtime in its window. Run it
 again and an agent whose pane already has its runtime running in it is left
 alone; one whose runtime has exited is relaunched, which is what makes this
 safe to fire on boot.
+
+On an agent's first launch, `boot-agents.sh` starts a new session and gives it
+a first message: do your day-one steps from your persona files, then say hello.
+Expect it to fill in `IDENTITY.md` and `SOUL.md` and may ask you questions
+about itself. It is sent once; later launches resume the same conversation.
+`boot-agents.sh` also turns on tmux `focus-events` (a tmux server option, so it
+applies to that tmux server, not only the `agents` session), which stops Claude
+Code showing its focus-events hint in each pane.
 
 On first boot, attach to the session and answer any runtime setup prompts
 manually. Folder trust defaults to No: do not press Enter while No is

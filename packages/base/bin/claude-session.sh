@@ -136,3 +136,24 @@ claude_session_args() {
   printf '%s\n' "$id" > "$pin" || return 1
   printf -- '--session-id %s -n %q\n' "$id" "$a"
 }
+
+# claude_first_boot_prompt <session_args> -- print the first message to launch
+# the agent with, shell-quoted and ready to append to the claude command line,
+# when <session_args> (from claude_session_args) start a brand new session
+# (`--session-id`). Prints nothing for a resume.
+#
+# WHY. Whether a new agent did its day-one persona work used to depend on what
+# the user's first message said: "hello" got it, a test ping did not. Passing
+# the message as claude's initial prompt makes the first launch do it, with no
+# typing into the pane.
+#
+# EXACTLY ONCE. The prompt rides only the `--session-id` branch, which
+# claude_session_args takes only when the pinned transcript holds no
+# conversation. The prompt becomes the first message of that transcript, so the
+# next boot resumes (`--resume`) and sends nothing. A first boot killed before
+# the message was recorded has no conversation either, and correctly gets it
+# again, because day one has not happened yet.
+claude_first_boot_prompt() {
+  [[ "$1" == "--session-id "* ]] || return 0
+  printf '%q\n' "This is your first session. Do your day-one steps from your persona files (IDENTITY.md and SOUL.md), then say hello."
+}

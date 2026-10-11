@@ -85,7 +85,7 @@ start_agent() {
       echo "workspace: could not pin a session id for $agent; launching an unpinned session" >&2
       session_args="-n $(printf '%q' "$agent")"
     }
-    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag" Enter
+    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args")" Enter
   else
     # Any other runtime: launch it plainly and let its own config (hooks,
     # AGENT_NAME wiring) do the rest. Add a branch here if a given runtime
@@ -111,6 +111,9 @@ start_watcher() {
 }
 
 # Create the base session if it doesn't exist
+# Before any pane starts, so Claude Code shows no "focus-events off" hint.
+tmux start-server 2>/dev/null || true
+tmux set -g focus-events on 2>/dev/null || true
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   FIRST="${AGENTS[0]}"
   tmux new-session -d -s "$SESSION" -n "$FIRST" -c "$AGENTS_HOME/$FIRST"

@@ -33,11 +33,16 @@
 #
 # Usage:
 #   bin/create-agent.sh <name> [--role "<tagline>"] [--runtime <runtime>]
-#                              [--verify | --no-verify] [--inbox-root <path>]
+#                              [--model <id>] [--verify | --no-verify]
+#                              [--inbox-root <path>]
 #                              [--agents-home <path>] [--no-install-path]
 #   bin/create-agent.sh --verify-only <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
+#   --model <id>                 write <agent home>/.model, which boot-agents.sh
+#                                and workspace.sh pass as `--model <id>`. Without
+#                                it the agent uses the runtime's own default,
+#                                which may be a costlier model on a paid plan.
 #   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
 #                                makes `inbox` resolve as a bare command name.
 #
@@ -408,12 +413,14 @@ VERIFY_ONLY=0
 INBOX_ROOT_ARG=""
 AGENTS_HOME_ARG=""
 INSTALL_PATH=1
+MODEL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)      usage; exit 0 ;;
     --role)         [[ $# -ge 2 ]] || die_scaffold "--role needs a value";        ROLE="$2";            shift 2 ;;
     --runtime)      [[ $# -ge 2 ]] || die_scaffold "--runtime needs a value";     RUNTIME="$2";         shift 2 ;;
+    --model)        [[ $# -ge 2 ]] || die_scaffold "--model needs a value";        MODEL="$2";           shift 2 ;;
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
@@ -550,6 +557,15 @@ fi
 AGENT_HOME="$AGENTS_HOME/$NAME"
 AGENT_INBOX="$INBOX_ROOT/$NAME/inbox"
 
+# The launchers put .model on a shell command line unquoted, so only a plain
+# model id is accepted.
+if [[ -n "$MODEL" && ! "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
+  die_scaffold "--model '$MODEL' is not a plain model id" \
+    "use letters, digits, dots, colons and hyphens, for example claude-sonnet-5-5"
+fi
+MODEL_ARGS=()
+[[ -n "$MODEL" ]] && MODEL_ARGS=(--model "$MODEL")
+
 # ---------------------------------------------------------------------------
 # create
 # ---------------------------------------------------------------------------
@@ -623,6 +639,11 @@ else
   printf '%s' "$RUNTIME" > "$AGENT_HOME/.runtime" \
     || die_scaffold "could not write $AGENT_HOME/.runtime"
 
+  if [[ -n "$MODEL" ]]; then
+    printf '%s' "$MODEL" > "$AGENT_HOME/.model" \
+      || die_scaffold "could not write $AGENT_HOME/.model"
+  fi
+
   mkdir -p "$AGENT_HOME/.claude" || die_scaffold "could not create $AGENT_HOME/.claude"
   CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_NAME="$NAME" CA_ROLE="$ROLE" \
     CA_INBOX_ROOT="$INBOX_ROOT" merge_settings \
@@ -643,6 +664,7 @@ else
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
+  say "  model          ${MODEL:-"(runtime default; see INSTALL.md)"}"
   say "  boot phrase    $NONCE"
   say
   say "  IDENTITY.md and SOUL.md are scaffolded, not written. The agent fills"
@@ -735,10 +757,10 @@ say "  one non-interactive turn, from $AGENT_HOME"
 # slug of that directory. A probe run from anywhere else verifies a different
 # project and tells you nothing about this agent.
 if command -v timeout >/dev/null 2>&1; then
-  ( cd "$AGENT_HOME" && timeout "$PROBE_TIMEOUT" claude -p "$PROBE_PROMPT" ) \
+  ( cd "$AGENT_HOME" && timeout "$PROBE_TIMEOUT" claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) \
     >"$PROBE_OUT" 2>"$PROBE_ERR"
 else
-  ( cd "$AGENT_HOME" && claude -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
+  ( cd "$AGENT_HOME" && claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
 fi
 PROBE_STATUS=$?
 
