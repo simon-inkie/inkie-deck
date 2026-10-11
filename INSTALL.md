@@ -12,6 +12,8 @@ promise different things.
 | [2. Run it for real](#2-run-it-for-real) | Deck over your own files, production build | four directories and a `.env` |
 | [3. Bring your agents to life](#3-bring-your-agents-to-life) | actual agents in tmux sessions | a model CLI that you install, sign in to and pay for |
 
+On Windows, start with [Windows (via WSL)](#windows-via-wsl).
+
 Tiers 1 and 2 are executed from this document on every rig run (see
 [How this document is tested](#how-this-document-is-tested)). Tier 3 is
 verified as far as a machine with no model subscription can go, which is
@@ -55,9 +57,236 @@ wrong, the rig goes red.
 - Blocks tagged `sh-manual` are not executed either: a container has no
   systemd user manager, and a second Deck would collide with the one the run
   already started. They were run by hand when written, and can drift without
-  the rig going red. They are all in [Keep it running](#keep-it-running).
+  the rig going red. They are in [Keep it running](#keep-it-running), and in
+  the [Windows section](#windows-via-wsl), where the ones that only make sense
+  under WSL have not been run by hand either.
+- Blocks tagged `powershell` are the Windows side of that section. A Linux
+  container cannot run them, so they are neither executed nor measured.
 
 `rig/README.md` describes the harness. `node rig/run.mjs` runs it.
+
+## Windows (via WSL)
+
+Deck runs on Linux. On Windows 11 you run it inside WSL2, which is a real Ubuntu
+that Windows starts for you, and you use it from your normal Windows browser.
+Do this section first, then follow the rest of the document from inside
+Ubuntu: every Linux step below is the same step as for any Ubuntu machine, and
+this section only covers what is different on Windows. The blocks marked
+`powershell` run in Windows PowerShell. Every other block runs in the Ubuntu
+window.
+
+### Install WSL2 and Ubuntu
+
+Open the Start menu, type PowerShell, right-click it and choose Run as
+administrator. Then:
+
+```powershell
+wsl --install -d Ubuntu-24.04
+```
+
+Restart Windows if it asks. After the restart an Ubuntu window opens and asks
+you to choose a username and a password. Use a short lowercase username, and
+type it in that window: Ubuntu only offers to create your user when you start
+it by hand, from the Start menu. The password is for `sudo` and does not show
+as you type.
+
+If a script or a remote session started Ubuntu for you instead, no user was
+created and you are the all-powerful `root` user. You can tell by the prompt:
+
+```text
+root@PC:/mnt/c/Users/you#
+```
+
+To fix it, create your user from that prompt (replace `you`):
+
+```sh-manual
+adduser you
+usermod -aG sudo you
+printf '[user]\ndefault=you\n' >> /etc/wsl.conf
+```
+
+Then close the window, run `wsl --shutdown` in PowerShell, and open Ubuntu
+again. The prompt should now read `you@PC:~$`.
+
+### Make sure Ubuntu is the one that opens
+
+Some Windows tools, Docker Desktop among them, add their own small Linux and
+can quietly become the default, so typing `wsl` lands you somewhere that is not
+Ubuntu. Look at the list. The star marks the default, and the version column
+should say 2:
+
+```powershell
+wsl --list --verbose
+```
+
+```text
+  NAME              STATE           VERSION
+* Ubuntu-24.04      Running         2
+  docker-desktop    Stopped         2
+```
+
+If the star is on something else:
+
+```powershell
+wsl --set-default Ubuntu-24.04
+```
+
+From now on, open Ubuntu with the Ubuntu-24.04 entry in the Start menu, or from
+PowerShell with `wsl --cd ~`, which starts in your Linux home folder instead of
+in your Windows one.
+
+### Keep everything in the Linux home folder
+
+Everything below, the clone included, goes under your Linux home folder,
+`/home/you`, which `~` stands for in the commands. Do not put it under
+`/mnt/c`, which is your Windows drive seen from Linux. That path is the default
+if you start Ubuntu from a Windows folder, and it is the wrong place for three
+reasons: file access across the boundary is much slower, so installs and test
+runs take many times as long; Windows files do not carry Linux permissions, so
+scripts lose the right to run; and Windows tools that touch the files can
+change their line endings (below).
+
+Check where you are before you clone:
+
+```sh-manual
+pwd
+```
+
+```text
+/home/you
+```
+
+If it starts with `/mnt/c`, run `cd ~` first. You can still browse the files
+from Windows: type `\\wsl.localhost\Ubuntu-24.04\home\you` into the File
+Explorer address bar. Open them to read or copy. Do not edit the scripts with a
+Windows editor that saves Windows line endings.
+
+### Install the tools
+
+Run the Ubuntu commands in [1. Prerequisites](#1-prerequisites) in the Ubuntu
+window, with `sudo` in front of each line, and then carry on through section 2.
+tmux is in that list and you need it on Windows too.
+
+Check that Node is the Linux one. WSL adds your Windows programs to the end of
+the search path, so a Node installed on Windows can answer if the Linux one is
+missing:
+
+```sh-manual
+command -v node
+```
+
+```text
+/usr/bin/node
+```
+
+A path starting `/mnt/c` means the Linux install did not happen, and Deck will
+fail in confusing ways until it does.
+
+### Line endings
+
+Windows ends each line with two characters and Linux with one. A shell script
+with the Windows ending fails at its very first line:
+
+```text
+/usr/bin/env: 'bash\r': No such file or directory
+```
+
+The repository forces the Linux ending in every file it checks out
+(`.gitattributes`), whatever your git settings say, so a fresh clone made
+inside Ubuntu is already right and you do not need to change anything. It
+matters when the files come from somewhere else: a clone made with Windows git
+and then copied across, or a ZIP unpacked by Windows. If you see the error
+above, make a new clone inside Ubuntu rather than repairing the files.
+
+### The model CLI
+
+This is for [5. Bring your agents to life](#5-bring-your-agents-to-life). Two
+traps are worth avoiding before you get there.
+
+Install the CLI inside Ubuntu, with the Linux instructions from its own
+documentation, not the Windows ones. A Windows copy is visible from Ubuntu
+because of the path rule above, and it starts but runs half-configured: it
+looks for its settings in the wrong place and cannot see your Linux files. Ask
+Ubuntu which one it will run:
+
+```sh-manual
+command -v claude
+```
+
+```text
+/home/you/.local/bin/claude
+```
+
+A path starting `/mnt/c` is the Windows copy. The cure is to stop Ubuntu seeing
+Windows programs at all. Open the file with `sudo nano /etc/wsl.conf` and make
+sure it contains:
+
+```text
+[interop]
+appendWindowsPath = false
+```
+
+Save with Ctrl-O, Enter, then Ctrl-X. Run `wsl --shutdown` in PowerShell and
+open Ubuntu again. The side effect is that Windows programs such as `code` and
+`explorer.exe` no longer answer by name from Ubuntu. If you need them, leave the
+setting alone and make sure `command -v claude` is the Linux path.
+
+The first time the CLI runs it asks you to sign in. Ubuntu has no browser, so it
+prints a web address: select it, copy it, paste it into your Windows browser,
+approve the sign-in there, and paste the code the page gives you back into the
+Ubuntu window. Do this from an empty throwaway folder, not from wherever you
+happen to be:
+
+```sh-manual
+mkdir -p ~/scratch && cd ~/scratch
+```
+
+The CLI also asks whether you trust the folder it was started in, and a yes
+covers everything inside it. If Ubuntu was started from your Windows home, that
+folder is your whole Windows home, and the right answer there is no.
+
+### Open Deck from Windows
+
+Start Deck inside Ubuntu as in [4. Run it for real](#4-run-it-for-real), then
+open <http://localhost:4242> in your Windows browser. WSL2 passes `localhost`
+through to Ubuntu, so Deck can stay bound to loopback and nothing else on your
+network can reach it. Do not set `HOST=0.0.0.0` to get around a page that does
+not load: it publishes a Deck with no login to your whole network, and the
+warning at the top of this document applies in full. If the page does not load,
+check that the launcher is still running (below) before changing anything.
+
+### Keep it running
+
+Closing every Ubuntu window can stop Linux, and Deck with it, however you
+started it. Minimise the window instead of closing it. Of the two ways in
+[Keep it running](#keep-it-running), the tmux one is the simplest on Windows: it
+keeps Deck alive when you close the terminal tab, though not when Windows
+stops Ubuntu itself. Start it from the root of your clone, after `pnpm build`.
+
+For a service that Linux starts for you, WSL needs systemd switched on. Check
+first, because recent Ubuntu images often have it already:
+
+```sh-manual
+ps -p 1 -o comm=
+```
+
+```text
+systemd
+```
+
+If that prints anything else (usually `init`), open `sudo nano /etc/wsl.conf`
+and add:
+
+```text
+[boot]
+systemd=true
+```
+
+Save, run `wsl --shutdown` in PowerShell, open Ubuntu again and repeat the
+check. Then follow the systemd user service steps in
+[Keep it running](#keep-it-running). After a Windows restart, Deck is back as
+soon as Ubuntu starts, which is when you first open an Ubuntu window; it does
+not start with Windows.
 
 ## 1. Prerequisites
 
@@ -141,7 +370,7 @@ git clone https://github.com/simon-inkie/inkie-deck.git && cd inkie-deck
 
 While the repository is private, that clone needs you signed in to GitHub.
 Install the GitHub CLI (`gh`) and run `gh auth login` inside the same Linux
-environment you are installing in, which on Windows means inside WSL, not in
+environment you are installing in, which on Windows means inside Ubuntu, not in
 PowerShell. Delete this paragraph once the repository is public.
 
 This block is the one exception to "executed from this document": the rig
@@ -390,9 +619,8 @@ If that is refused, run it with `sudo`. After a rebuild, `systemctl --user
 restart deck` serves the new build, and `journalctl --user -u deck` shows the
 launcher's output. `systemctl --user enable deck` also starts it when your
 user manager starts, but starting Deck on boot is a separate piece of work and
-has not been checked here. On WSL, systemd has to be switched on in
-`/etc/wsl.conf`, which recent Ubuntu images already do; that is unverified
-here too.
+has not been checked here. On WSL, systemd has to be switched on first; see
+the [Windows section](#windows-via-wsl).
 
 ### Voice dictation (optional)
 
@@ -808,8 +1036,9 @@ worked through in `rig/container-image-note.md`.
 
 **macOS and Windows are unverified.** The rig runs Linux containers. The
 Ubuntu path in this document is executed on every run, apart from the
-`sh-manual` blocks in Keep it running; the macOS block is not, and no one has
-run this on Windows.
+`sh-manual` blocks in Keep it running; the macOS block is not. The Windows
+section follows Microsoft's WSL documentation, and the Linux commands in it are
+the Ubuntu ones above. No rig run has used a real Windows machine.
 
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
 only a display name: it is a filename in your inbox root.
