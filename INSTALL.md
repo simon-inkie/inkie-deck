@@ -472,8 +472,7 @@ tmux capture-pane -t agents:wren -p | grep -v '^$' | tail -5
 ```
 
 ```text
-you@host:~/agents/wren$ printf '\033]0;wren\007'; [ -f /home/you/agents/wren/.env.secrets ] && . /home/you/agents/wren/.env.secrets; claude --resume wren  || claude
--bash: claude: command not found
+you@host:~/agents/wren$ printf '\033]0;wren\007'; [ -f /home/you/agents/wren/.env.secrets ] && . /home/you/agents/wren/.env.secrets; claude --session-id 0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d -n wren
 -bash: claude: command not found
 you@host:~/agents/wren$
 ```
