@@ -371,6 +371,29 @@ else
     "the numeric validation itself errored past the integer range, and both fallbacks were silenced"
 fi
 
+# Portability guard: BSD/macOS grep has no -P, so a grep -P in bin/ makes the
+# call error and the check behind it silently stop working. Linux-only runs
+# cannot see that, so assert it statically.
+PCRE_HITS=$(grep -rnE 'grep +(-[A-Za-z]*P|[^|]* -[A-Za-z]*P)' "$BIN" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+if [ -n "$PCRE_HITS" ]; then
+  fail "portability: no grep -P in bin/" "$PCRE_HITS"
+else
+  pass "portability: no grep -P in bin/"
+fi
+
+# pane_ctx_pct: the bar percentage, and a pipe-delimited segment must not leak
+# a percentage into a bar glyph that sits behind a vertical rule.
+if [ "$(pane_ctx_pct $'x \xe2\x96\x88\xe2\x96\x91 46%')" = "46" ]; then
+  pass "ctx pct: bar glyph then percent"
+else
+  fail "ctx pct: bar glyph then percent"
+fi
+if pane_ctx_pct $'\xe2\x96\x88 bar \xe2\x94\x82 46%' >/dev/null; then
+  fail "ctx pct: a vertical rule between glyph and percent is not a match"
+else
+  pass "ctx pct: a vertical rule between glyph and percent is not a match"
+fi
+
 echo
 echo "pane-idle: $PASS passed, $FAILS failed"
 exit "$FAILS"

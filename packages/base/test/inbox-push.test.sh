@@ -47,9 +47,9 @@ IDLE_CLEAN=$'some transcript output\n\n> '
 # Context-gate fixtures. Real statusline shapes, both live formats. The ctx bar is
 # the anchor, NOT the model name: an "Opus"-anchored parser went blind to every
 # Sonnet/Haiku agent when the model mix changed.
-IDLE_CTX_92=$'some transcript output\n\n> \n  alice \u2502 Opus 5 \u2502 ~/agents/alice \u2502 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591 92%'
-IDLE_CTX_46=$'some transcript output\n\n> \n  alice \u2502 Opus 5 \u2502 ~/agents/alice \u2502 \u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591 46%'
-IDLE_CTX_80=$'some transcript output\n\n> \n  alice \u2502 Opus 5 \u2502 ~/agents/alice \u2502 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591 80%'
+IDLE_CTX_92=$'some transcript output\n\n> \n  alice \xe2\x94\x82 Opus 5 \xe2\x94\x82 ~/agents/alice \xe2\x94\x82 \xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91 92%'
+IDLE_CTX_46=$'some transcript output\n\n> \n  alice \xe2\x94\x82 Opus 5 \xe2\x94\x82 ~/agents/alice \xe2\x94\x82 \xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91\xe2\x96\x91\xe2\x96\x91\xe2\x96\x91\xe2\x96\x91\xe2\x96\x91 46%'
+IDLE_CTX_80=$'some transcript output\n\n> \n  alice \xe2\x94\x82 Opus 5 \xe2\x94\x82 ~/agents/alice \xe2\x94\x82 \xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x91\xe2\x96\x91 80%'
 IDLE_CTX_ALT=$'some transcript output\n\n> \n  ~/agents/alice  Opus 5  ctx:91%'
 BUSY=$'· Thinking... (esc to interrupt)\n> '
 BUSY_STAGED=$'· Thinking... (esc to interrupt)\n> half-typed while busy'
@@ -63,28 +63,28 @@ STAGED_OURS=$'output\n> [inbox from courier] hel'
 # read as idle. Multi-word status, a hyphen inside the first token, and a
 # U+2026 terminator rather than three ASCII dots. The only thing that survives
 # is the parenthesised elapsed counter.
-BUSY_MODERN=$'\u00b7 Fix flaky retry test - audit\u2026 (59s \u00b7 thought for 2s)\n\u276f '
+BUSY_MODERN=$'\xc2\xb7 Fix flaky retry test - audit\xe2\x80\xa6 (59s \xc2\xb7 thought for 2s)\n\xe2\x9d\xaf '
 # the counter does NOT always carry a middot. BUSY_MODERN and
 # COMPACTING both do, so they were the only counter fixtures and the suite pinned
 # the SHAPE an earlier incident produced rather than the CATEGORY it belonged to.
 # These two are the forms that read as IDLE while genuinely busy. Found live on
 # a pane mid-compact showing "(1m 26s)".
-BUSY_BARE_SECONDS=$'\u00b7 Thinking\u2026 (12s)\n\u276f '
+BUSY_BARE_SECONDS=$'\xc2\xb7 Thinking\xe2\x80\xa6 (12s)\n\xe2\x9d\xaf '
 # The spinner glyph is NOT a closed set. Measured ✽ (U+273D) live on
 # another agent's pane, outside the class the first anchored fix enumerated.
 # This fixture pins a glyph nobody has enumerated AND a status word nobody has enumerated, so it can
 # only pass via the structural end-of-line counter rule.
-BUSY_UNKNOWN_GLYPH=$'\u273d Dilly-dallying\u2026 (16s)\n\u276f '
-BUSY_BARE_MINUTES=$'\u00b7 Auditing the build cache\u2026 (1m 26s)\n\u276f '
+BUSY_UNKNOWN_GLYPH=$'\xe2\x9c\xbd Dilly-dallying\xe2\x80\xa6 (16s)\n\xe2\x9d\xaf '
+BUSY_BARE_MINUTES=$'\xc2\xb7 Auditing the build cache\xe2\x80\xa6 (1m 26s)\n\xe2\x9d\xaf '
 # NEGATIVE CONTROLS. A completed-turn summary carries a spinner glyph and a
 # duration but the turn is OVER: these must read IDLE or every finished agent
 # looks permanently busy and delivery wedges.
-DONE_BREWED=$'\u273b Brewed for 39s\n\u276f \u00a0'
-DONE_WORKED=$'\u273b Worked for 2m 24s\n\u276f \u00a0'
+DONE_BREWED=$'\xe2\x9c\xbb Brewed for 39s\n\xe2\x9d\xaf \xc2\xa0'
+DONE_WORKED=$'\xe2\x9c\xbb Worked for 2m 24s\n\xe2\x9d\xaf \xc2\xa0'
 # And prose: panes are full of message text, so a parenthesised duration in a
 # sentence must NOT read as busy. This is the false-positive an unanchored
 # widening would introduce.
-PROSE_WITH_DURATION=$'  I hit it live: my pane showed (1m 26s) mid-compact\n\u276f \u00a0'
+PROSE_WITH_DURATION=$'  I hit it live: my pane showed (1m 26s) mid-compact\n\xe2\x9d\xaf \xc2\xa0'
 NO_COMPOSER=$'output with no prompt glyph at all'
 # The REAL idle Claude composer: prompt glyph (U+276F) + a NO-BREAK SPACE
 # (U+00A0, bytes C2 A0), NOT a regular space. [[:space:]] does not reliably

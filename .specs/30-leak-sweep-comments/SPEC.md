@@ -198,3 +198,10 @@ Sixth review at df75826: merge after fixes.
 - User-visible string changes (error text, generated script header, validation
   example, placeholder, manifest description) are now listed in the PR
   description.
+
+- Merge with main: main was merged into this branch after the host independent
+  base tests change (#62) landed. One file conflicted, the inbox push test
+  fixtures. Resolved keeping both sides: the byte-escape fixtures from main
+  (locale independent) and this PR's neutral wording for the comments and
+  sample text. The other overlapping files merged cleanly. No test was
+  weakened, skipped or removed, and the leak gate cut-off is unchanged.
