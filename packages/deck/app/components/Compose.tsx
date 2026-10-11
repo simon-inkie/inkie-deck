@@ -66,7 +66,7 @@
  */
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useFetcher } from "react-router";
-import { FileImage, FileText, Mic, Paperclip, Settings2, X } from "lucide-react";
+import { FileImage, FileText, Mic, MicOff, Paperclip, Settings2, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import type { BatchPrefs, HoldIndicator } from "~/lib/batch-prefs";
@@ -110,6 +110,12 @@ interface ComposeProps {
    * When omitted the mic renders in the unavailable state.
    */
   voiceProxyUrl?: string;
+  /**
+   * Why voice is off, supplied by the loader (#27), e.g. "voice disabled: no
+   * <key name>". When set the mic renders disabled with this text instead of
+   * opening a WebSocket that can only fail. Null or absent means voice is on.
+   */
+  voiceDisabledReason?: string | null;
   /**
    * When true, mount the voice debug panel and emit debug events.
    * Driven by ?debug=1 search param in the thread route (FND-02: pure UI state,
@@ -520,6 +526,7 @@ export function Compose({
   onSent,
   onCancel,
   voiceProxyUrl,
+  voiceDisabledReason = null,
   debug,
   onBatchSubmit,
   onBatchType,
@@ -736,6 +743,15 @@ export function Compose({
       debug ? handleDebugEvent : undefined,
       debug
     );
+
+  const voiceEnabled = voiceDisabledReason === null;
+  const micLabel = voiceDisabledReason !== null
+    ? voiceDisabledReason
+    : !micAvailable
+      ? "Voice unavailable"
+      : isActive
+        ? "Stop voice recording"
+        : "Start voice recording";
 
   // Capture the anchor at the voice-session activation edge; clear on end so
   // the next session re-anchors at the then-current cursor. Deliberately NOT
@@ -1136,7 +1152,8 @@ export function Compose({
 
           <div className="flex items-end gap-2">
             {/* Textarea wrapper: mic + attach icons sit inside the border, bottom-right */}
-            <div className="relative flex-1">
+            <div className="flex-1">
+            <div className="relative">
               <textarea
                 id="compose-body"
                 ref={textareaRef}
@@ -1181,20 +1198,15 @@ export function Compose({
                   <Paperclip className={cn("h-5 w-5", uploading ? "animate-pulse" : "")} />
                 </Button>
 
-                {/* Mic button - live when voiceProxyUrl present and mic available */}
+                {/* Mic button - live when voiceProxyUrl present and mic available;
+                    disabled with an explicit reason when no key is configured (#27). */}
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  disabled={!micAvailable}
-                  aria-label={
-                    !micAvailable
-                      ? "Voice unavailable"
-                      : isActive
-                        ? "Stop voice recording"
-                        : "Start voice recording"
-                  }
-                  title={!micAvailable ? "Voice unavailable" : isActive ? "Stop voice recording" : "Start voice recording"}
+                  disabled={!voiceEnabled || !micAvailable}
+                  aria-label={micLabel}
+                  title={micLabel}
                   className="relative h-9 w-9 p-0 min-h-0 min-w-0 text-muted-foreground"
                   onClick={toggleMic}
                   data-testid="mic-button"
@@ -1203,9 +1215,23 @@ export function Compose({
                   {isActive ? (
                     <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary animate-pulse" />
                   ) : null}
-                  <Mic className={cn("h-5 w-5", isActive ? "text-primary" : "")} />
+                  {voiceEnabled ? (
+                    <Mic className={cn("h-5 w-5", isActive ? "text-primary" : "")} />
+                  ) : (
+                    <MicOff className="h-5 w-5" />
+                  )}
                 </Button>
               </div>
+            </div>
+            {/* Outside the textarea box so it can never sit over typed text (#27). */}
+            {!voiceEnabled ? (
+              <p
+                className="mt-1 text-xs text-muted-foreground"
+                data-testid="voice-disabled-note"
+              >
+                {voiceDisabledReason}
+              </p>
+            ) : null}
             </div>
 
             {/* Right-hand column: gear above, Send below */}

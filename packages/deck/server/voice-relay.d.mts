@@ -69,3 +69,18 @@ export function buildDeepgramUrlQuery(opts: {
   language: string;
   keyterms: readonly string[];
 }): string;
+
+/**
+ * Default origin allowlist: http://localhost:$PORT (default 4242) then the dev
+ * port http://localhost:5174, without duplicates.
+ */
+export function defaultAllowedOrigins(
+  env?: Record<string, string | undefined>
+): string[];
+
+/**
+ * VOICE_ALLOWED_ORIGINS when non-blank, else defaultAllowedOrigins.
+ */
+export function resolveAllowedOrigins(
+  env?: Record<string, string | undefined>
+): string[];

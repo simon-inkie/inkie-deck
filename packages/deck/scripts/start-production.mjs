@@ -11,26 +11,22 @@
  *   - Serves the production build via react-router-serve. Run `pnpm build`
  *     before (re)starting the unit.
  *   - Spawns the voice proxy as a sibling, in the same SHAPE dev.mjs uses but
- *     with none of its configuration. dev.mjs derives VOICE_ALLOWED_ORIGINS
- *     from the app port and sets VOICE_PROXY_URL for the RR server; this
- *     launcher sets neither, so a production start keeps the proxy's own
- *     defaults: a loopback bind, an allowlist naming the dev server's old port,
- *     and a client URL of ws://localhost:5176/voice that the BROWSER resolves
- *     (so it means the reader's machine, not this one). All three have to come
- *     from the environment, and none of them is in .env.example. An earlier
- *     version of this comment pointed at .env.example for them. No revision of
- *     that file in this repository has ever carried one, so the pointer sent a
- *     reader after something that was not there. How they reached the
- *     deployment this was copied from is not recorded here, and is not being
- *     guessed at a second time. See INSTALL.md
- *     "Optional subsystems are unverified here" and section 2 of
- *     rig/container-image-note.md.
+ *     with less configuration. The proxy's origin allowlist now defaults to
+ *     this app's own http://localhost:$PORT (see defaultAllowedOrigins in
+ *     server/voice-relay.mjs), so a local start needs only DEEPGRAM_API_KEY.
+ *     Two things still come from the environment: VOICE_PROXY_URL, because the
+ *     client URL falls back to ws://localhost:5176/voice, which the BROWSER
+ *     resolves (so it means the reader's machine, not this one), and
+ *     VOICE_PROXY_HOST, because the proxy binds loopback. Both, and
+ *     VOICE_ALLOWED_ORIGINS for any non-localhost origin, are in .env.example
+ *     and walked through in INSTALL.md "Voice dictation".
  *
  * ASCII only - no em-dashes (FND-05 / check:dashes gate).
  */
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { withVoiceDisabledReason } from "./voice-env.mjs";
 
 const root = process.cwd();
 
@@ -193,12 +189,18 @@ if (!existsSync(serveCli)) {
 // before the app ever sees the request. MC sets no cookies of its own, so this
 // is tolerance, not a leak; the client-side fix is clearing site-data. (Quill,
 // 2026-06-15 incident.)
+// The app never reads the speech key; see scripts/voice-env.mjs.
+const appEnv = withVoiceDisabledReason({
+  ...process.env,
+  PORT: appPort,
+  HOST: appHost,
+});
 const child = spawn(
   process.execPath,
   ["--max-http-header-size=65536", serveCli, buildEntry],
   {
     stdio: "inherit",
-    env: { ...process.env, PORT: appPort, HOST: appHost },
+    env: appEnv,
   }
 );
 

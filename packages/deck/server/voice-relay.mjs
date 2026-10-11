@@ -87,6 +87,51 @@ export function isOriginAllowed(origin, allowed) {
   return typeof origin === "string" && Array.isArray(allowed) && allowed.includes(origin);
 }
 
+/**
+ * The dev-server origin (port 5174) that the proxy has always allowed.
+ */
+const DEV_ORIGIN = "http://localhost:5174";
+
+/**
+ * Default origin allowlist for the voice proxy (issue #27).
+ *
+ * Deck's own origin comes first, built from the same PORT the production
+ * launcher binds (default 4242), then the dev port. Only used when
+ * VOICE_ALLOWED_ORIGINS is unset or blank; an explicit value replaces it.
+ * The host is `localhost` only: a browser reaching Deck by another name
+ * (a Tailscale hostname, 127.0.0.1) sends a different Origin and must list
+ * it in VOICE_ALLOWED_ORIGINS.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string[]}
+ */
+export function defaultAllowedOrigins(env = process.env) {
+  const rawPort = (env["PORT"] ?? "").trim();
+  // Digits only: anything else (PORT=abc) would build an origin no browser
+  // sends, so fall back to the launcher's own default instead.
+  const port = /^\d{1,5}$/.test(rawPort) ? rawPort : "4242";
+  const own = `http://localhost:${port}`;
+  return own === DEV_ORIGIN ? [own] : [own, DEV_ORIGIN];
+}
+
+/**
+ * Resolve the allowlist from the environment: a non-empty comma-separated
+ * VOICE_ALLOWED_ORIGINS wins (trailing slashes stripped), else
+ * defaultAllowedOrigins.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {string[]}
+ */
+export function resolveAllowedOrigins(env = process.env) {
+  const explicit = (env["VOICE_ALLOWED_ORIGINS"] ?? "")
+    .split(",")
+    // Browsers send origins without a trailing slash, so a pasted
+    // "http://host/" would never match.
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  return explicit.length > 0 ? explicit : defaultAllowedOrigins(env);
+}
+
 // ---------------------------------------------------------------------------
 // makeFrameBuffer - pure buffer helper for CONNECTING-phase audio frames.
 // (TASK-433 reopened: the primary bug is that frames sent before upstream open

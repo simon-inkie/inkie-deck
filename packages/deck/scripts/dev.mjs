@@ -21,6 +21,7 @@
 import { cpSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { withVoiceDisabledReason } from "./voice-env.mjs";
 
 const root = process.cwd();
 const demoInbox = path.join(root, "fixtures", "demo-inbox");
@@ -146,9 +147,11 @@ const args = [
   ...(portFlagIdx === -1 ? ["--port", appPort] : []),
   ...passthrough,
 ];
+// The app never reads the speech key; see scripts/voice-env.mjs.
+const appEnv = withVoiceDisabledReason(env);
 const child = spawn("react-router", args, {
   stdio: "inherit",
-  env,
+  env: appEnv,
   shell: true,
 });
 
