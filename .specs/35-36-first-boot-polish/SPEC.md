@@ -41,7 +41,8 @@ makes the agent's model an explicit, documented choice (#36).
   agent.
 - Existing agents with a conversation, or a written `IDENTITY.md`, are untouched.
 - A first-boot agent is not sent "arm your monitor" (it is mid first turn);
-  it prints a note, and the next boot arms it.
+  it prints a note. Arming only happens on a relaunch (a running agent is
+  skipped), so the user exits the runtime and runs boot-agents.sh again.
 - A busy composer after a first boot is treated as ready, as the agent is
   working on its first message. Any other readiness failure still reports.
 - focus-events is a tmux server option with no per-session form, so it is set
@@ -74,3 +75,10 @@ Opus review of PR 61, round 1 (no blockers):
    original label.
 5. Nits: `.model` validated in both launchers (`agent_model_flag`, C9);
    focus-events override documented in INSTALL.md; INSTALL.md grammar fixed.
+
+Round 2 (re-review at eb23583, no blockers): one docs should-fix. "Restart it" /
+"the next boot arms it" was wrong, since boot-agents.sh skips a running agent.
+Reworded in INSTALL.md, the boot-agents.sh note and this SPEC to "exit the
+runtime, then run boot-agents.sh again". Nits not taken: a stderr pointer to
+`.first-boot-done` on a failed launch, and the workspace.sh marker left behind by
+a failed send (same documented trade-off; delete the marker to resend).

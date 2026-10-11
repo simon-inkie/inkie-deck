@@ -809,7 +809,7 @@ for a in "${AGENTS[@]}"; do
         if [[ "$outcome" == launched:first-boot ]]; then
           # Typing "arm your monitor" into a pane busy with its first turn
           # would queue it behind day-one setup, so leave it to the next boot.
-          [[ -f "$AGENTS_HOME/$a/.auto-arm-watcher" ]] && echo "boot-agents: $a monitor not armed on its first boot; restart it after its first turn to arm it" >&2
+          [[ -f "$AGENTS_HOME/$a/.auto-arm-watcher" ]] && echo "boot-agents: $a monitor not armed on its first boot; after its first turn, exit its runtime and run boot-agents.sh again to arm it" >&2
         else
           FRESH+=("$a")
         fi

@@ -537,7 +537,9 @@ about itself. The message is sent once per agent: the launcher leaves a
 is already written never gets it. If a launch dies before the agent has
 recorded the message, delete `.first-boot-done` to send it again. An agent
 armed with `.auto-arm-watcher` is not told to arm its monitor on that first
-boot, because it is busy with day one; restart it afterwards.
+boot, because it is busy with day one. Once its first turn is done, exit the
+agent's runtime and run `boot-agents.sh` again to relaunch and arm it. (Running
+it while the runtime is still up leaves the agent alone and arms nothing.)
 
 `boot-agents.sh` and `workspace.sh` also run `tmux set -g focus-events on`
 before starting any pane, which stops Claude Code showing its focus-events
