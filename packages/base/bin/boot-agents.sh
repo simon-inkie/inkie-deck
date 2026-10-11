@@ -726,7 +726,7 @@ launch_agent() {
   runtime=$(get_runtime "$a")
   # Per-agent model override (selector): $AGENTS_HOME/<a>/.model -> --model flag.
   # Absent = no flag = inherit the global default. Applies to all runtimes.
-  [[ -f "$AGENTS_HOME/$a/.model" ]] && model_flag="--model $(cat "$AGENTS_HOME/$a/.model")"
+  model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
   if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
     tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
   fi
@@ -750,9 +750,11 @@ launch_agent() {
       echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
       session_args="-n $(printf '%q' "$a")"
     }
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args")" Enter || return 1
+    local first_prompt
+    first_prompt="$(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$a")"
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $first_prompt" Enter || return 1
     # The first message is already on its way, so the pane may be busy at once.
-    [[ "$session_args" == "--session-id "* ]] && { echo "launched:first-boot"; return; }
+    [[ -n "$first_prompt" ]] && { echo "launched:first-boot"; return; }
   elif [[ "$runtime" == "codex" ]]; then
     # codex (Codex CLI runtime). AGENT_NAME/AGENT_ROLE must
     # be REAL OS-level env vars set before the codex process starts.
@@ -804,7 +806,13 @@ for a in "${AGENTS[@]}"; do
     [[ "$outcome" == launched:first-boot ]] && readiness_check=first_boot_readiness
     if reason=$("$readiness_check" "$SESSION:$a" "$(get_runtime "$a")"); then
       if [[ "$outcome" == launched* ]]; then
-        FRESH+=("$a")
+        if [[ "$outcome" == launched:first-boot ]]; then
+          # Typing "arm your monitor" into a pane busy with its first turn
+          # would queue it behind day-one setup, so leave it to the next boot.
+          [[ -f "$AGENTS_HOME/$a/.auto-arm-watcher" ]] && echo "boot-agents: $a monitor not armed on its first boot; restart it after its first turn to arm it" >&2
+        else
+          FRESH+=("$a")
+        fi
         LAUNCHED=$((LAUNCHED + 1))
         echo "boot-agents: $a launched, ready"
         [[ "$STAGGER_SECS" -gt 0 ]] && sleep "$STAGGER_SECS"

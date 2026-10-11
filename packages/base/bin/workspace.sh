@@ -68,7 +68,7 @@ start_agent() {
   runtime=$(get_runtime "$agent")
   # Per-agent model override (selector): $AGENTS_HOME/<agent>/.model -> --model.
   # Absent = no flag = inherit the global default.
-  [[ -f "$AGENTS_HOME/$agent/.model" ]] && model_flag="--model $(cat "$AGENTS_HOME/$agent/.model")"
+  model_flag="$(agent_model_flag "$AGENTS_HOME/$agent")"
   if [[ "$runtime" == "claude" ]]; then
     # Source the agent's gitignored .env.secrets (if any) before claude, so
     # anything referencing a live secret via ${VAR} resolves in that shell.
@@ -85,7 +85,7 @@ start_agent() {
       echo "workspace: could not pin a session id for $agent; launching an unpinned session" >&2
       session_args="-n $(printf '%q' "$agent")"
     }
-    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args")" Enter
+    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$agent")" Enter
   else
     # Any other runtime: launch it plainly and let its own config (hooks,
     # AGENT_NAME wiring) do the rest. Add a branch here if a given runtime

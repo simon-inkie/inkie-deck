@@ -487,8 +487,9 @@ agent uses your model CLI's own default, which on a paid plan can be a more
 expensive model, and several always-on agents add up. Pass
 `--model <id>` (for example `--model claude-sonnet-5-5`) to write the agent's
 `.model` file; `boot-agents.sh` and `workspace.sh` launch the runtime with
-`--model <id>` from it. You can also create or edit `$AGENTS_HOME/<name>/.model`
-by hand at any time.
+`--model <id>` from it. You can also edit `$AGENTS_HOME/<name>/.model` by
+hand at any time. It must be a plain id (letters, digits, dots, colons and
+hyphens); the launchers ignore anything else and say so.
 
 That writes both, links the `inbox` CLI onto your `PATH`, and then tries to
 prove the persona actually reached the model by asking the agent, in one
@@ -530,11 +531,19 @@ safe to fire on boot.
 
 On an agent's first launch, `boot-agents.sh` starts a new session and gives it
 a first message: do your day-one steps from your persona files, then say hello.
-Expect it to fill in `IDENTITY.md` and `SOUL.md` and may ask you questions
-about itself. It is sent once; later launches resume the same conversation.
-`boot-agents.sh` also turns on tmux `focus-events` (a tmux server option, so it
-applies to that tmux server, not only the `agents` session), which stops Claude
-Code showing its focus-events hint in each pane.
+Expect it to fill in `IDENTITY.md` and `SOUL.md`, and it may ask you questions
+about itself. The message is sent once per agent: the launcher leaves a
+`.first-boot-done` file in the agent's home, and an agent whose `IDENTITY.md`
+is already written never gets it. If a launch dies before the agent has
+recorded the message, delete `.first-boot-done` to send it again. An agent
+armed with `.auto-arm-watcher` is not told to arm its monitor on that first
+boot, because it is busy with day one; restart it afterwards.
+
+`boot-agents.sh` and `workspace.sh` also run `tmux set -g focus-events on`
+before starting any pane, which stops Claude Code showing its focus-events
+hint. It is a tmux server option with no per-session form, so it applies to
+the whole tmux server, including any other sessions on it. Add
+`tmux set -g focus-events off` after a boot if you want it off.
 
 On first boot, attach to the session and answer any runtime setup prompts
 manually. Folder trust defaults to No: do not press Enter while No is

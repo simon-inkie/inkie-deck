@@ -9,7 +9,7 @@ makes the agent's model an explicit, documented choice (#36).
 
 ## Scope
 
-- `claude-session.sh`: `claude_first_boot_prompt`.
+- `claude-session.sh`: `claude_first_boot_prompt`, `agent_model_flag`.
 - `boot-agents.sh`, `workspace.sh`: append it to the claude launch command; set
   tmux `focus-events on` before any pane starts.
 - `create-agent.sh`: `--model <id>` writes `.model`.
@@ -31,17 +31,24 @@ makes the agent's model an explicit, documented choice (#36).
 ## Decisions log
 
 - Trigger is claude's positional initial prompt on the `--session-id` branch,
-  the same branch #23 uses for a new pinned session. "Exactly once" follows from
-  the pin: the prompt becomes the first message, so the next boot resumes.
-- A first boot killed before any message was recorded gets the message again,
-  which is right: day one has not happened.
-- Existing agents with a conversation are untouched (resume path).
+  the same branch #23 uses for a new pinned session. That branch alone is not
+  "once": a pruned transcript or a moved config dir also lands there. So the
+  message is sent only when the branch is taken, `.first-boot-done` is absent
+  (written at launch) and `IDENTITY.md` is still the scaffold or missing.
+- Limit: the marker is written at launch, not when claude records the message.
+  A launch that dies first does not retry on its own; delete the marker. This
+  was chosen over repeating, which risked re-running day one on an established
+  agent.
+- Existing agents with a conversation, or a written `IDENTITY.md`, are untouched.
+- A first-boot agent is not sent "arm your monitor" (it is mid first turn);
+  it prints a note, and the next boot arms it.
 - A busy composer after a first boot is treated as ready, as the agent is
   working on its first message. Any other readiness failure still reports.
 - focus-events is a tmux server option with no per-session form, so it is set
   globally, as the scripts already do for mouse. Documented in INSTALL.md.
 - `--model` accepts plain ids only, because launchers put `.model` unquoted on
-  a shell command line.
+  a shell command line. The launchers re-validate (`agent_model_flag`), since
+  the file can be hand-edited.
 - The `create-agent.sh` verification probe uses the chosen model too.
 
 ## Follow-ups
@@ -52,4 +59,18 @@ makes the agent's model an explicit, documented choice (#36).
 
 ## Review feedback
 
-(none yet)
+Opus review of PR 61, round 1 (no blockers):
+
+1. Should-fix: "exactly once" held only while the `--session-id` branch was
+   taken once; a pruned transcript sent an established agent day one again.
+   Fixed: `.first-boot-done` marker plus an `IDENTITY.md`-is-scaffold check;
+   limit documented here and in INSTALL.md. Tests C8.
+2. Should-fix: first-boot agents with `.auto-arm-watcher` were sent the arm
+   prompt mid first turn. Fixed: skipped with a note; fixtures no longer delete
+   the marker for first-boot, and assert the arm prompt is never typed.
+3. Should-fix: test comment claimed a second boot the fixture did not run. Fixed:
+   added a `first-boot-again` full-boot fixture (resume, no message, arms).
+4. Should-fix: opt-out expectation loosened without reason. Restored to the
+   original label.
+5. Nits: `.model` validated in both launchers (`agent_model_flag`, C9);
+   focus-events override documented in INSTALL.md; INSTALL.md grammar fixed.
