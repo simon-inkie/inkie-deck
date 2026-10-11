@@ -805,6 +805,147 @@ fi
 rm -rf "$P3_DIR" "$TMUX_LOG_P3"
 unset CODEX_SESSIONS_DIR
 
+# ---------------------------------------------------------------------------
+# Claude pinned session ids (claude-session.sh, sourced by boot-agents.sh).
+# Issue #23: `--resume <name>` on a new agent opens a picker, so every claude
+# agent is pinned by id in $AGENTS_HOME/<name>/.session-id instead. These cases
+# never run claude; they point CLAUDE_CONFIG_DIR at a scratch tree and write
+# transcript files where Claude Code would, then read claude_session_args.
+# ---------------------------------------------------------------------------
+export CLAUDE_CONFIG_DIR="$BOX/claude-config"
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+if ! declare -F claude_session_args >/dev/null; then
+  fail "claude-session.sh is sourced by boot-agents.sh"
+else
+  pass "claude-session.sh is sourced by boot-agents.sh"
+fi
+
+# C1: a brand new agent gets a fresh, named, pinned session, never a resume.
+C_HOME="$AGENTS_HOME/wren"
+rm -f "$C_HOME/.session-id"
+c1_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c1_rc=$?
+c1_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c1_rc" -eq 0 ] \
+  && [[ "$c1_pin" =~ $UUID_RE ]] \
+  && [ "$c1_args" = "--session-id $c1_pin -n wren" ]; then
+  pass "C1 new agent: --session-id <fresh id> -n <name>, id pinned"
+else
+  fail "C1 new agent: --session-id <fresh id> -n <name>, id pinned" "rc=$c1_rc args=$c1_args pin=$c1_pin"
+fi
+
+# C2: once the session has a transcript, the next boot resumes that same id.
+C_PROJECT="$(claude_project_dir_for "$C_HOME")"
+mkdir -p "$C_PROJECT"
+c_convo() { printf '{"type":"user","message":{"role":"user","content":"hello"},"sessionId":"%s"}\n' "$1"; }
+printf '{"type":"custom-title","customTitle":"wren","sessionId":"%s"}\n' "$c1_pin" > "$C_PROJECT/$c1_pin.jsonl"
+c_convo "$c1_pin" >> "$C_PROJECT/$c1_pin.jsonl"
+c2_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c2_rc=$?
+c2b_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+c2_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c2_rc" -eq 0 ] \
+  && [ "$c2_args" = "--resume $c1_pin -n wren" ] \
+  && [ "$c2b_args" = "$c2_args" ] \
+  && [ "$c2_pin" = "$c1_pin" ]; then
+  pass "C2 relaunch: --resume <pinned id> -n <name>, same id every time"
+else
+  fail "C2 relaunch: --resume <pinned id> -n <name>, same id every time" "rc=$c2_rc args=$c2_args again=$c2b_args pin=$c2_pin"
+fi
+
+# C3: the pinned transcript is gone. Start a fresh named session under a new
+# pinned id; never a resume, which would exit "No conversation found".
+rm -f "$C_PROJECT/$c1_pin.jsonl"
+c3_args="$(claude_session_args wren "$C_HOME" 2>"$BOX/c3.err")"; c3_rc=$?
+c3_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c3_rc" -eq 0 ] \
+  && [[ "$c3_pin" =~ $UUID_RE ]] \
+  && [ "$c3_pin" != "$c1_pin" ] \
+  && [ "$c3_args" = "--session-id $c3_pin -n wren" ] \
+  && grep -q "has no conversation" "$BOX/c3.err"; then
+  pass "C3 missing transcript: fresh named session, new id pinned, reason on stderr"
+else
+  fail "C3 missing transcript: fresh named session, new id pinned, reason on stderr" "rc=$c3_rc args=$c3_args pin=$c3_pin"
+fi
+
+# C3b: the transcript exists but holds no message. Claude Code leaves exactly
+# this behind for a session opened and closed without anyone typing, and
+# `--resume <id>` on it exits "No conversation found". Fresh session instead.
+c3b_old="$c3_pin"
+printf '{"type":"custom-title","customTitle":"wren","sessionId":"%s"}\n{"type":"mode","mode":"normal","sessionId":"%s"}\n' "$c3b_old" "$c3b_old" > "$C_PROJECT/$c3b_old.jsonl"
+c3b_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c3b_rc=$?
+c3b_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c3b_rc" -eq 0 ] && [[ "$c3b_pin" =~ $UUID_RE ]] && [ "$c3b_pin" != "$c3b_old" ] \
+  && [ "$c3b_args" = "--session-id $c3b_pin -n wren" ]; then
+  pass "C3b metadata-only transcript: fresh named session, not a resume"
+else
+  fail "C3b metadata-only transcript: fresh named session, not a resume" "rc=$c3b_rc args=$c3b_args pin=$c3b_pin old=$c3b_old"
+fi
+
+# C4: a corrupt pin is treated like a missing transcript, not passed to claude.
+printf 'not-a-uuid\n' > "$C_HOME/.session-id"
+c4_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c4_rc=$?
+c4_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c4_rc" -eq 0 ] && [[ "$c4_pin" =~ $UUID_RE ]] \
+  && [ "$c4_args" = "--session-id $c4_pin -n wren" ]; then
+  pass "C4 corrupt pin: replaced with a fresh id"
+else
+  fail "C4 corrupt pin: replaced with a fresh id" "rc=$c4_rc args=$c4_args pin=$c4_pin"
+fi
+
+# C5: migration. An agent from before the pin has no .session-id but a session
+# named by hand. The newest transcript whose LATEST title is the agent's name
+# is pinned and resumed; one renamed away since, an older match, and a newer
+# one with no messages in it, are not.
+mkdir -p "$AGENTS_HOME/fern"; : > "$AGENTS_HOME/fern/SOUL.md"
+F_HOME="$AGENTS_HOME/fern"
+F_PROJECT="$(claude_project_dir_for "$F_HOME")"
+mkdir -p "$F_PROJECT"
+F_OLD=11111111-1111-4111-8111-111111111111
+F_NEW=22222222-2222-4222-8222-222222222222
+F_AWAY=33333333-3333-4333-8333-333333333333
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n' "$F_OLD" > "$F_PROJECT/$F_OLD.jsonl"
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n' "$F_NEW" > "$F_PROJECT/$F_NEW.jsonl"
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n{"type":"custom-title","customTitle":"other","sessionId":"%s"}\n' "$F_AWAY" "$F_AWAY" > "$F_PROJECT/$F_AWAY.jsonl"
+for f_id in "$F_OLD" "$F_NEW" "$F_AWAY"; do c_convo "$f_id" >> "$F_PROJECT/$f_id.jsonl"; done
+F_EMPTY=44444444-4444-4444-8444-444444444444
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n' "$F_EMPTY" > "$F_PROJECT/$F_EMPTY.jsonl"
+touch -t 202601040000 "$F_PROJECT/$F_EMPTY.jsonl"
+touch -t 202601010000 "$F_PROJECT/$F_OLD.jsonl"
+touch -t 202601020000 "$F_PROJECT/$F_NEW.jsonl"
+touch -t 202601030000 "$F_PROJECT/$F_AWAY.jsonl"
+c5_args="$(claude_session_args fern "$F_HOME" 2>/dev/null)"; c5_rc=$?
+c5_pin="$(cat "$F_HOME/.session-id" 2>/dev/null)"
+if [ "$c5_rc" -eq 0 ] && [ "$c5_pin" = "$F_NEW" ] \
+  && [ "$c5_args" = "--resume $F_NEW -n fern" ]; then
+  pass "C5 migration: newest session still named after the agent is pinned and resumed"
+else
+  fail "C5 migration: newest session still named after the agent is pinned and resumed" "rc=$c5_rc args=$c5_args pin=$c5_pin"
+fi
+
+# C6: the transcript directory is derived from the PHYSICAL path, because that
+# is what the claude process records as its working directory.
+ln -s "$AGENTS_HOME" "$BOX/homes-link"
+c6_via_link="$(claude_project_dir_for "$BOX/homes-link/wren")"
+c6_direct="$(claude_project_dir_for "$(cd "$C_HOME" && pwd -P)")"
+c6_expect="$CLAUDE_CONFIG_DIR/projects/$(cd "$C_HOME" && pwd -P | sed 's/[^a-zA-Z0-9]/-/g')"
+if [ "$c6_via_link" = "$c6_direct" ] && [ "$c6_direct" = "$c6_expect" ]; then
+  pass "C6 project dir: symlinks resolved, non-alphanumerics become '-'"
+else
+  fail "C6 project dir: symlinks resolved, non-alphanumerics become '-'" "link=$c6_via_link direct=$c6_direct expect=$c6_expect"
+fi
+
+# C7: neither launcher still resumes by name.
+c7_bad=""
+for f in boot-agents.sh workspace.sh; do
+  grep -q 'claude --resume \$' "$(dirname "$BIN")/$f" && c7_bad="$c7_bad $f"
+done
+if [ -z "$c7_bad" ]; then
+  pass "C7 launchers no longer run claude --resume <name>"
+else
+  fail "C7 launchers no longer run claude --resume <name>" "still in:$c7_bad"
+fi
+unset CLAUDE_CONFIG_DIR
+
 echo
 echo "boot-agents: $PASS passed, $FAILS failed"
 [ "$FAILS" -eq 0 ]
