@@ -52,4 +52,23 @@ launchers or Deck itself.
 
 ## Review feedback
 
-(none yet)
+Opus round 1 (changes needed), all addressed:
+
+1. Blocker: "sudo in front of each line" broke the Node and `export` lines.
+   Now `sudo -i`, paste, `exit`, re-run the `export`; the same fix applied to
+   the pre-existing "prefix each line with sudo" prose in section 1.
+2. Limitation line now says plainly that nobody has followed the Windows
+   section end to end.
+3. PR uses "Refs #26", not "Fixes", since acceptance needs a real clean
+   Windows 11 run.
+4. Section intro says which subsections to do first, and sections 4 and 5
+   link back to the later ones.
+5. Localhost fallback added (127.0.0.1, then `wsl --shutdown`), still no
+   `HOST=0.0.0.0`.
+6. tmux survival is flagged inline as unchecked, systemd named as the
+   dependable option.
+Nits: `/etc/wsl.conf` user default now set via an editor, not `printf >>`;
+"carry on with section 2 and onwards"; sh-manual bullet says the WSL blocks
+were not run by hand.
+Not done here, separate issue: the tier table anchors at the top of
+INSTALL.md (`#1-try-it` etc.) do not match the real headings.

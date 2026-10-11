@@ -59,7 +59,7 @@ wrong, the rig goes red.
   already started. They were run by hand when written, and can drift without
   the rig going red. They are in [Keep it running](#keep-it-running), and in
   the [Windows section](#windows-via-wsl), where the ones that only make sense
-  under WSL have not been run by hand either.
+  under WSL were not run by hand at all, because nothing here runs Windows.
 - Blocks tagged `powershell` are the Windows side of that section. A Linux
   container cannot run them, so they are neither executed nor measured.
 
@@ -69,9 +69,11 @@ wrong, the rig goes red.
 
 Deck runs on Linux. On Windows 11 you run it inside WSL2, which is a real Ubuntu
 that Windows starts for you, and you use it from your normal Windows browser.
-Do this section first, then follow the rest of the document from inside
-Ubuntu: every Linux step below is the same step as for any Ubuntu machine, and
-this section only covers what is different on Windows. The blocks marked
+Do the first four subsections below first, up to and including Install the
+tools, then follow the rest of the document from inside Ubuntu. The later
+subsections (the model CLI, opening Deck, keeping it running) are for when
+section 4 or 5 sends you back here. Every Linux step is the same step as for any
+Ubuntu machine, and this section only covers what is different on Windows. The blocks marked
 `powershell` run in Windows PowerShell. Every other block runs in the Ubuntu
 window.
 
@@ -102,11 +104,18 @@ To fix it, create your user from that prompt (replace `you`):
 ```sh-manual
 adduser you
 usermod -aG sudo you
-printf '[user]\ndefault=you\n' >> /etc/wsl.conf
 ```
 
-Then close the window, run `wsl --shutdown` in PowerShell, and open Ubuntu
-again. The prompt should now read `you@PC:~$`.
+Then open the file with `nano /etc/wsl.conf` and make sure it contains the
+lines below, adding the section if it is not there and editing it if it is:
+
+```text
+[user]
+default=you
+```
+
+Save with Ctrl-O, Enter, then Ctrl-X. Close the window, run `wsl --shutdown` in
+PowerShell, and open Ubuntu again. The prompt should now read `you@PC:~$`.
 
 ### Make sure Ubuntu is the one that opens
 
@@ -164,8 +173,14 @@ Windows editor that saves Windows line endings.
 ### Install the tools
 
 Run the Ubuntu commands in [1. Prerequisites](#1-prerequisites) in the Ubuntu
-window, with `sudo` in front of each line, and then carry on through section 2.
-tmux is in that list and you need it on Windows too.
+window. They are written for the root user, and you are not root, so first
+type `sudo -i` and enter your password; that gives you a root shell. Paste the
+block, type `exit` to come back to your own prompt, and then run the
+`export COREPACK_ENABLE_DOWNLOAD_PROMPT=0` line again, because it only applied
+inside the root shell. Do not put `sudo` in front of the lines one by one: it
+does not carry across the `|` in the Node line or work with `export`. Then
+carry on with section 2 and onwards. tmux is in that list and you need it on
+Windows too.
 
 Check that Node is the Linux one. WSL adds your Windows programs to the end of
 the search path, so a Node installed on Windows can answer if the Linux one is
@@ -253,15 +268,19 @@ through to Ubuntu, so Deck can stay bound to loopback and nothing else on your
 network can reach it. Do not set `HOST=0.0.0.0` to get around a page that does
 not load: it publishes a Deck with no login to your whole network, and the
 warning at the top of this document applies in full. If the page does not load,
-check that the launcher is still running (below) before changing anything.
+check that the launcher is still running (below), then try
+<http://127.0.0.1:4242>. If that fails too, run `wsl --shutdown` in PowerShell,
+open Ubuntu again, start Deck again and retry. Do not change anything else.
 
 ### Keep it running
 
 Closing every Ubuntu window can stop Linux, and Deck with it, however you
 started it. Minimise the window instead of closing it. Of the two ways in
-[Keep it running](#keep-it-running), the tmux one is the simplest on Windows: it
-keeps Deck alive when you close the terminal tab, though not when Windows
-stops Ubuntu itself. Start it from the root of your clone, after `pnpm build`.
+[Keep it running](#keep-it-running), the tmux one is the simplest to start: it
+keeps Deck alive when you close the terminal tab. Whether it survives Windows
+stopping Ubuntu when no window is open has not been checked, so treat the
+systemd service below as the dependable option. Start tmux from the root of your
+clone, after `pnpm build`.
 
 For a service that Linux starts for you, WSL needs systemd switched on. Check
 first, because recent Ubuntu images often have it already:
@@ -304,7 +323,7 @@ machine that has run this so far already had them:
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
 | xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
 
-On Ubuntu or Debian, as root (prefix each line with `sudo` if you are not):
+On Ubuntu or Debian, as root. If you are not root, type `sudo -i` for a root shell first, paste the block, `exit`, and set the `export` line again in your own shell (`sudo` in front of single lines breaks the Node line and `export`):
 
 ```sh
 apt-get update
@@ -453,6 +472,9 @@ against it gets nothing); and it has no tmux, no agents and no clock that
 moves. For those, keep going.
 
 ## 4. Run it for real
+
+On Windows, the [Windows section](#windows-via-wsl) covers opening Deck in your
+browser and keeping it running.
 
 Deck reads and writes plain files. Four directories are required, they must be
 absolute, and **the application creates none of them**: it refuses to boot
@@ -685,6 +707,9 @@ serve --help` against the lines above. They have not been run here.
 proxy, which points at `VOICE_PROXY_URL` or at the proxy's bind address.
 
 ## 5. Bring your agents to life
+
+On Windows, read [The model CLI](#the-model-cli) in the Windows section before
+you install the CLI.
 
 **This tier is manual, and cannot be otherwise from here.** An agent is a
 model CLI running in a terminal. You have to install that CLI, sign in to it,
@@ -1037,8 +1062,8 @@ worked through in `rig/container-image-note.md`.
 **macOS and Windows are unverified.** The rig runs Linux containers. The
 Ubuntu path in this document is executed on every run, apart from the
 `sh-manual` blocks in Keep it running; the macOS block is not. The Windows
-section follows Microsoft's WSL documentation, and the Linux commands in it are
-the Ubuntu ones above. No rig run has used a real Windows machine.
+section follows Microsoft's WSL documentation. Nobody, neither the rig nor a
+person, has followed it from start to finish on a Windows machine.
 
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
 only a display name: it is a filename in your inbox root.
