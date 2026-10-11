@@ -419,12 +419,12 @@ One from iota." > /dev/null
 Body for inplace test.")
 
   BEFORE=$(cat "$TPATH" | wc -c)
-  BEFORE_BYTES=$(cat "$TPATH" | xxd -p | tr -d '\n')
+  BEFORE_BYTES=$(cat "$TPATH" | od -An -v -tx1 | tr -d ' \n')
 
   run_inbox "$T" "alpha" read omega > /dev/null 2>&1
 
   AFTER=$(cat "$TPATH" | wc -c)
-  AFTER_BYTES=$(cat "$TPATH" | xxd -p | tr -d '\n')
+  AFTER_BYTES=$(cat "$TPATH" | od -An -v -tx1 | tr -d ' \n')
 
   # Verify length unchanged
   if [ "$BEFORE" -ne "$AFTER" ]; then

@@ -78,7 +78,10 @@
 # --------------------------------------------------------------------------
 check_idle() {
   local pane="$1"
-  local spinner_re='^[·✻✶✢\*][[:space:]]*[A-Za-z]+\.\.\.'
+  # Alternation, not a [...] class: in a non-UTF-8 locale (LC_ALL=C, cron, a
+  # minimal WSL) a class of multibyte glyphs matches single bytes and the
+  # spinner is silently missed. Literal alternatives match byte-wise anywhere.
+  local spinner_re='^(·|✻|✶|✢|\*)[[:space:]]*[A-Za-z]+\.\.\.'
   # Claude-family busy markers
   if echo "$pane" | grep -qF 'esc to interrupt' 2>/dev/null; then return 0; fi
   if echo "$pane" | grep -qF 'Cerebrating' 2>/dev/null; then return 0; fi
