@@ -37,7 +37,17 @@ export async function action({ request }: Route.ActionArgs) {
   if (!parsed.success) {
     return { ok: false as const, error: "Invalid send payload." };
   }
-  // sendKeysToWindow carries the ROSTER + live-allowlist gate and degrades to
-  // { ok: false } on any failure - it never throws.
-  return sendKeysToWindow(process.env, parsed.data.window, parsed.data.text);
+  // sendKeysToWindow carries the ROSTER + live-allowlist gate, verifies the
+  // submit, and degrades to { ok: false } on any failure - it never throws.
+  const result = await sendKeysToWindow(process.env, parsed.data.window, parsed.data.text);
+  if (result.status === "submitted") {
+    return { ok: true as const };
+  }
+  // "unverified" means text AND Enter were sent but delivery could not be
+  // proven. Surface it distinctly so the operator is told "sent, could not
+  // confirm" rather than "failed", which would invite a duplicate resend.
+  if (result.status === "unverified") {
+    return { ok: false as const, unverified: true as const, error: result.error };
+  }
+  return { ok: false as const, error: result.error };
 }

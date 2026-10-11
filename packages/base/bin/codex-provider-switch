@@ -1,0 +1,674 @@
+#!/usr/bin/env python3
+"""Transactional manual Codex provider switch for one exact tmux pane."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import subprocess
+import sys
+import time
+import uuid
+
+
+class SwitchError(RuntimeError):
+    pass
+
+
+BIN_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BIN_DIR.parent
+LOCK_BIN = BIN_DIR / "provider-switch-lock"
+BOOT_SCRIPT = BIN_DIR / "boot-agents.sh"
+AGENT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+TX_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+ROLE_RE = re.compile(r"^[A-Za-z0-9 _-]{0,80}$")
+PANE_RE = re.compile(r"^%[0-9]+$")
+
+
+def now() -> int:
+    override = os.environ.get("PROVIDER_SWITCH_NOW")
+    return int(override) if override else int(time.time())
+
+
+def agents_root() -> Path:
+    return Path(os.environ.get("PROVIDER_SWITCH_AGENTS_ROOT", str(Path.home() / "agents"))).resolve()
+
+
+def state_root() -> Path:
+    return Path(
+        os.environ.get("PROVIDER_SWITCH_STATE_ROOT", str(Path.home() / ".the-vault" / "agents"))
+    ).resolve()
+
+
+def validate_agent(agent: str) -> Path:
+    if not AGENT_RE.fullmatch(agent):
+        raise SwitchError("invalid agent name")
+    root = agents_root()
+    home = (root / agent).resolve()
+    if home.parent != root or not home.is_dir():
+        raise SwitchError("agent home does not exist")
+    return home
+
+
+def validate_tx(transaction: str) -> None:
+    if not TX_RE.fullmatch(transaction):
+        raise SwitchError("invalid transaction id")
+
+
+def transaction_dir(agent: str) -> Path:
+    return state_root() / agent / "provider-switch"
+
+
+def transaction_path(agent: str) -> Path:
+    return transaction_dir(agent) / "transaction.json"
+
+
+def provider_path(agent: str) -> Path:
+    return transaction_dir(agent) / "provider.json"
+
+
+def audit_path(agent: str) -> Path:
+    return transaction_dir(agent) / "audit.jsonl"
+
+
+def atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def append_audit(agent: str, transaction: str, event: str, **fields: object) -> None:
+    safe = {
+        "at": now(),
+        "agent": agent,
+        "transaction_id": transaction,
+        "event": event,
+        **fields,
+    }
+    path = audit_path(agent)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    line = json.dumps(safe, sort_keys=True, separators=(",", ":")) + "\n"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def load_transaction(agent: str, transaction: str | None = None) -> dict:
+    path = transaction_path(agent)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SwitchError("no readable provider-switch transaction") from exc
+    if transaction is not None:
+        validate_tx(transaction)
+        if value.get("transaction_id") != transaction:
+            raise SwitchError("transaction id does not match active record")
+    return value
+
+
+def lock(action: str, agent: str, transaction: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+    argv = [str(LOCK_BIN), action, agent]
+    if transaction is not None:
+        argv.append(transaction)
+    return subprocess.run(argv, text=True, capture_output=True, check=check)
+
+
+def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    binary = os.environ.get("PROVIDER_SWITCH_TMUX_BIN", "tmux")
+    return subprocess.run([binary, *args], text=True, capture_output=True, check=check)
+
+
+def pane_details(agent: str) -> tuple[str, str, str]:
+    session = os.environ.get("PROVIDER_SWITCH_TMUX_SESSION", "agents")
+    target = f"{session}:{agent}"
+    result = tmux(
+        "list-panes",
+        "-t",
+        target,
+        "-F",
+        "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}",
+    )
+    rows = [line.split("\t") for line in result.stdout.splitlines() if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise SwitchError("agent target must resolve to exactly one pane")
+    pane, command, cwd = rows[0]
+    if not PANE_RE.fullmatch(pane):
+        raise SwitchError("tmux returned an invalid pane id")
+    return pane, command.lower(), cwd
+
+
+def exact_pane(agent: str) -> tuple[str, str, str]:
+    pane, command, cwd = pane_details(agent)
+    if command not in {"codex", "node"}:
+        raise SwitchError(f"pane is not running Codex: {command!r}")
+    return pane, command, cwd
+
+
+BUSY_MARKERS = (
+    "esc to interrupt",
+    "esc to cancel",
+    "Cerebrating",
+    "Generating",
+    "Compacting conversation",
+    "Press enter to confirm or esc to cancel",
+)
+
+DIM_SGR = "\x1b[2m"
+
+
+def pane_is_quiescent(pane_id: str) -> bool:
+    raw_text = tmux("capture-pane", "-e", "-p", "-t", pane_id).stdout
+    if not raw_text or any(marker in raw_text for marker in BUSY_MARKERS):
+        return False
+    lines = raw_text.splitlines()
+    prompt = ""
+    previous_rule = False
+    anchored = ""
+    for line in lines:
+        plain_line = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", line).lstrip()
+        if plain_line.startswith(("❯", "›", ">")):
+            prompt = line
+            if previous_rule:
+                anchored = line
+        previous_rule = "────────" in plain_line
+    prompt = anchored or prompt
+    if not prompt:
+        return False
+    plain_prompt = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", prompt).replace("\u00a0", "")
+    content = re.sub(r"^\s*(?:❯|›|>)\s*", "", plain_prompt)
+    if not content.strip():
+        return True
+    if DIM_SGR in prompt:
+        return True
+    return False
+
+
+def confirm_quiescent(agent: str, expected_pane: str | None = None) -> tuple[str, str]:
+    delay = float(os.environ.get("PROVIDER_SWITCH_QUIESCE_DELAY", "1"))
+    seen: list[tuple[str, str]] = []
+    for index in range(2):
+        pane, _command, cwd = exact_pane(agent)
+        if expected_pane is not None and pane != expected_pane:
+            raise SwitchError("exact pane changed since prepare")
+        if not pane_is_quiescent(pane):
+            raise SwitchError("pane is not idle with a clean composer")
+        seen.append((pane, cwd))
+        if index == 0 and delay > 0:
+            time.sleep(delay)
+    if seen[0] != seen[1]:
+        raise SwitchError("pane identity or working directory changed during quiescence check")
+    return seen[0]
+
+
+def confirm_rollback_ready(agent: str, expected_pane: str) -> tuple[str, str, str]:
+    """Confirm the exact locked pane twice, including a failed-launch shell."""
+    delay = float(os.environ.get("PROVIDER_SWITCH_QUIESCE_DELAY", "1"))
+    seen: list[tuple[str, str, str]] = []
+    for index in range(2):
+        pane, command, cwd = pane_details(agent)
+        if pane != expected_pane:
+            raise SwitchError("exact pane changed since prepare")
+        if command in {"codex", "node"}:
+            if not pane_is_quiescent(pane):
+                raise SwitchError("pane is not idle with a clean composer")
+        elif command not in {"bash", "sh", "zsh", "fish"}:
+            raise SwitchError(f"rollback refuses unexpected pane process: {command!r}")
+        seen.append((pane, command, cwd))
+        if index == 0 and delay > 0:
+            time.sleep(delay)
+    if seen[0] != seen[1]:
+        raise SwitchError("pane identity, process or working directory changed during rollback check")
+    return seen[0]
+
+
+def provider_command(agent: str, role: str, codex_home: str) -> str:
+    if not AGENT_RE.fullmatch(agent) or not ROLE_RE.fullmatch(role):
+        raise SwitchError("agent role cannot be represented safely")
+    if codex_home and not re.fullmatch(r"[A-Za-z0-9_./-]+", codex_home):
+        raise SwitchError("Codex home cannot be represented safely")
+    home = agents_root() / agent
+    model_file = home / ".model"
+    model_flag = ""
+    if model_file.is_file():
+        m = model_file.read_text(encoding="utf-8").strip()
+        if m and re.fullmatch(r"[A-Za-z0-9_.-]+", m):
+            model_flag = f"--model {m}"
+    fixed_program = (
+        'BOOT_AGENTS_LIB_ONLY=1 source "$1"; '
+        'codex_launch_command "$2" "$3" "$4" "" "$5"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", fixed_program, "provider-switch", str(BOOT_SCRIPT), agent, role, codex_home, model_flag],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise SwitchError(f"provider envelope construction failed: {result.stderr.strip()}")
+    command = result.stdout.strip()
+    if " resume " in f" {command} ":
+        raise SwitchError("provider switch must never resume a physical thread")
+    return command
+
+
+def latest_thread_id(sessions: Path, cwd: str) -> str | None:
+    if not sessions.is_dir():
+        return None
+    files = sorted(sessions.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in files:
+        try:
+            first = json.loads(path.open(encoding="utf-8").readline())
+            payload = first.get("payload", {})
+            if (
+                first.get("type") == "session_meta"
+                and payload.get("cwd") == cwd
+                and payload.get("originator") == "codex-tui"
+                and payload.get("thread_source") == "user"
+            ):
+                return payload.get("id") or payload.get("session_id")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+    return None
+
+
+def nested_role_text(value: object, role: str, text: str) -> bool:
+    if isinstance(value, dict):
+        if value.get("role") == role and text in json.dumps(value, sort_keys=True):
+            return True
+        return any(nested_role_text(child, role, text) for child in value.values())
+    if isinstance(value, list):
+        return any(nested_role_text(child, role, text) for child in value)
+    return False
+
+
+def find_verified_rollout(sessions: Path, cwd: str, nonce: str, launched_at: int, old_thread: str | None) -> str:
+    if not re.fullmatch(r"[0-9a-f]{32}", nonce):
+        raise SwitchError("invalid canary nonce")
+    candidates = sorted(sessions.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True) if sessions.is_dir() else []
+    for path in candidates:
+        try:
+            if int(path.stat().st_mtime) < launched_at:
+                continue
+            with path.open(encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle if line.strip()]
+            if not records:
+                continue
+            meta = records[0]
+            payload = meta.get("payload", {})
+            thread_id = payload.get("id") or payload.get("session_id")
+            if (
+                meta.get("type") != "session_meta"
+                or payload.get("cwd") != cwd
+                or payload.get("originator") != "codex-tui"
+                or payload.get("thread_source") != "user"
+                or not thread_id
+                or thread_id == old_thread
+            ):
+                continue
+            user_index = next(
+                (index for index, record in enumerate(records[1:], start=1) if nested_role_text(record, "user", nonce)),
+                None,
+            )
+            if user_index is not None and any(
+                nested_role_text(record, "assistant", "CANARY OK") for record in records[user_index + 1 :]
+            ):
+                return str(thread_id)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+    raise SwitchError("no new Azure rollout contains the bound canary nonce")
+
+
+def validate_confirmation(tx: dict, token: str, timestamp: int, pane_id: str) -> None:
+    if not TOKEN_RE.fullmatch(token):
+        raise SwitchError("invalid confirmation token")
+    if tx.get("token_used_at") is not None:
+        raise SwitchError("confirmation token was already used")
+    if timestamp > int(tx.get("token_expires_at", 0)):
+        raise SwitchError("confirmation token expired")
+    if tx.get("pane_id") != pane_id or tx.get("target_provider") != "azure":
+        raise SwitchError("confirmation token binding does not match pane/provider")
+    actual = hashlib.sha256(token.encode()).hexdigest()
+    if not secrets.compare_digest(actual, str(tx.get("token_hash", ""))):
+        raise SwitchError("confirmation token does not match")
+
+
+def ensure_lock_owner(agent: str, transaction: str) -> None:
+    result = lock("owns", agent, transaction, check=False)
+    if result.returncode != 0:
+        raise SwitchError("transaction does not own the provider-switch lock")
+
+
+def read_role(home: Path) -> str:
+    path = home / ".role"
+    role = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    if not ROLE_RE.fullmatch(role):
+        raise SwitchError("agent role contains unsafe characters")
+    return role
+
+
+def terminate_codex(pane_id: str) -> None:
+    wait = float(os.environ.get("PROVIDER_SWITCH_START_TIMEOUT", "2"))
+    for _ in range(2):
+        tmux("send-keys", "-t", pane_id, "C-c")
+        if wait > 0:
+            time.sleep(wait)
+        result = tmux("list-panes", "-t", pane_id, "-F", "#{pane_current_command}")
+        command = result.stdout.strip().lower()
+        if command not in {"codex", "node"}:
+            return
+    raise SwitchError("Codex process did not stop; launch aborted with lock held")
+
+
+def send_fresh(pane_id: str, command: str) -> None:
+    tmux("send-keys", "-t", pane_id, "-l", command)
+    tmux("send-keys", "-t", pane_id, "Enter")
+
+
+def wait_for_clean_codex(pane_id: str) -> None:
+    timeout = float(os.environ.get("PROVIDER_SWITCH_START_TIMEOUT", "15"))
+    deadline = time.monotonic() + timeout
+    while True:
+        result = tmux("list-panes", "-t", pane_id, "-F", "#{pane_current_command}")
+        if result.stdout.strip().lower() in {"codex", "node"} and pane_is_quiescent(pane_id):
+            return
+        if time.monotonic() >= deadline:
+            raise SwitchError("fresh Codex did not reach a clean idle composer")
+        time.sleep(0.5)
+
+
+def prepare(agent: str) -> None:
+    home = validate_agent(agent)
+    try:
+        runtime = (home / ".runtime").read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SwitchError("agent runtime marker is missing or unreadable") from exc
+    if runtime != "codex":
+        raise SwitchError("manual provider switch supports Codex agents only")
+    azure_home = (home / ".codex-home").resolve()
+    if azure_home.parent != home or not (azure_home / "config.toml").is_file():
+        raise SwitchError("isolated Azure home is not provisioned")
+    read_role(home)
+    transaction = str(uuid.uuid4())
+    if not provider_path(agent).is_file():
+        raise SwitchError("prepare requires authoritative provider state showing plus")
+    try:
+        current_provider = json.loads(provider_path(agent).read_text(encoding="utf-8")).get("provider")
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        raise SwitchError("current provider state is malformed") from exc
+    if current_provider != "plus":
+        raise SwitchError("prepare requires current provider state to be plus")
+    acquired = lock("acquire", agent, transaction, check=False)
+    if acquired.returncode != 0:
+        raise SwitchError(acquired.stderr.strip() or "agent already locked")
+    try:
+        pane_id, cwd = confirm_quiescent(agent)
+        if Path(cwd).resolve() != home:
+            raise SwitchError("pane working directory is not the agent home")
+        token = os.environ.get("PROVIDER_SWITCH_TOKEN") or secrets.token_urlsafe(32)
+        nonce = os.environ.get("PROVIDER_SWITCH_NONCE") or secrets.token_hex(16)
+        if not TOKEN_RE.fullmatch(token) or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+            raise SwitchError("generated token or nonce has invalid format")
+        timestamp = now()
+        old_thread = latest_thread_id(Path.home() / ".codex" / "sessions", str(home))
+        handovers = sorted(home.glob("HANDOVER-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        tx = {
+            "schema_version": 1,
+            "transaction_id": transaction,
+            "agent": agent,
+            "stage": "prepared",
+            "source_provider": "plus",
+            "target_provider": "azure",
+            "pane_id": pane_id,
+            "working_directory": str(home),
+            "azure_home": str(azure_home),
+            "old_thread_id": old_thread,
+            "new_thread_id": None,
+            "handover": str(handovers[0]) if handovers else None,
+            "inbox": str(state_root() / agent / "inbox"),
+            "prepared_at": timestamp,
+            "updated_at": timestamp,
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "token_expires_at": timestamp + 300,
+            "token_used_at": None,
+            "canary_nonce": nonce,
+        }
+        atomic_json(transaction_path(agent), tx)
+        append_audit(agent, transaction, "prepared", pane_id=pane_id, target_provider="azure")
+    except BaseException:
+        lock("release", agent, transaction, check=False)
+        raise
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "confirmation_token": token, "expires_at": tx["token_expires_at"]}))
+
+
+def launch(agent: str, transaction: str, token: str) -> None:
+    home = validate_agent(agent)
+    tx = load_transaction(agent, transaction)
+    ensure_lock_owner(agent, transaction)
+    if tx.get("stage") != "prepared":
+        raise SwitchError("launch requires prepared stage")
+    pane_id, _cwd = confirm_quiescent(agent, str(tx["pane_id"]))
+    validate_confirmation(tx, token, now(), pane_id)
+    tx["token_used_at"] = now()
+    tx["stage"] = "launching"
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "launch-authorised", pane_id=pane_id)
+    command = provider_command(agent, read_role(home), str(tx["azure_home"]))
+    terminate_codex(pane_id)
+    launched = now()
+    tx["launched_at"] = launched
+    send_fresh(pane_id, command)
+    wait_for_clean_codex(pane_id)
+    canary = f"[provider-switch-canary nonce={tx['canary_nonce']}] Reply exactly: CANARY OK"
+    tmux("send-keys", "-t", pane_id, "-l", canary)
+    tmux("send-keys", "-t", pane_id, "Enter")
+    tx["stage"] = "canary-sent"
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "azure-launched", pane_id=pane_id, canary_nonce=tx["canary_nonce"])
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "stage": tx["stage"]}))
+
+
+def verify_canary(agent: str, transaction: str) -> None:
+    validate_agent(agent)
+    tx = load_transaction(agent, transaction)
+    ensure_lock_owner(agent, transaction)
+    if tx.get("stage") != "canary-sent":
+        raise SwitchError("verify-canary requires canary-sent stage")
+    pane, _command, _cwd = exact_pane(agent)
+    if pane != tx.get("pane_id"):
+        raise SwitchError("exact pane changed before canary verification")
+    thread_id = find_verified_rollout(
+        Path(str(tx["azure_home"])) / "sessions",
+        str(tx["working_directory"]),
+        str(tx["canary_nonce"]),
+        int(tx["launched_at"]),
+        tx.get("old_thread_id"),
+    )
+    tx["new_thread_id"] = thread_id
+    tx["stage"] = "verified"
+    tx["verified_at"] = now()
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "canary-verified", new_thread_id=thread_id)
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "stage": "verified", "thread_id": thread_id}))
+
+
+def commit_switch(agent: str, transaction: str) -> None:
+    validate_agent(agent)
+    tx = load_transaction(agent, transaction)
+    ensure_lock_owner(agent, transaction)
+    if tx.get("stage") != "verified":
+        raise SwitchError("commit requires verified stage")
+    provider = {
+        "schema_version": 1,
+        "agent": agent,
+        "provider": "azure",
+        "codex_home": tx["azure_home"],
+        "thread_id": tx["new_thread_id"],
+        "transaction_id": transaction,
+        "updated_at": now(),
+    }
+    legacy_path = state_root() / "provider-switch" / "current" / f"{agent}.json"
+    atomic_json(provider_path(agent), provider)
+    atomic_json(legacy_path, provider)
+    tx["stage"] = "committed"
+    tx["committed_at"] = now()
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "committed", provider="azure", thread_id=tx["new_thread_id"])
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "stage": "committed"}))
+
+
+def rollback(agent: str, transaction: str) -> None:
+    home = validate_agent(agent)
+    tx = load_transaction(agent, transaction)
+    ensure_lock_owner(agent, transaction)
+    if tx.get("stage") in {"finalised", "rolled-back"}:
+        raise SwitchError("transaction cannot be rolled back from current stage")
+    if tx.get("stage") == "prepared":
+        pane_id, _cwd = confirm_quiescent(agent, str(tx["pane_id"]))
+        command_name = "codex"
+    else:
+        pane_id, command_name, _cwd = confirm_rollback_ready(agent, str(tx["pane_id"]))
+    # Before launch, rollback is a pure abort. Once the Azure launch has begun,
+    # restore service with a fresh Plus thread, never the old physical thread.
+    if tx.get("stage") != "prepared":
+        command = provider_command(agent, read_role(home), "")
+        if command_name in {"codex", "node"}:
+            terminate_codex(pane_id)
+        send_fresh(pane_id, command)
+    provider = {
+        "schema_version": 1,
+        "agent": agent,
+        "provider": "plus",
+        "codex_home": None,
+        "thread_id": None,
+        "transaction_id": transaction,
+        "updated_at": now(),
+    }
+    legacy_path = state_root() / "provider-switch" / "current" / f"{agent}.json"
+    atomic_json(provider_path(agent), provider)
+    atomic_json(legacy_path, provider)
+    tx["stage"] = "rolled-back"
+    tx["rolled_back_at"] = now()
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "rolled-back", provider="plus", pane_id=pane_id)
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "stage": "rolled-back"}))
+
+
+def abort(agent: str, transaction: str) -> None:
+    validate_agent(agent)
+    tx = load_transaction(agent, transaction)
+    ensure_lock_owner(agent, transaction)
+    if tx.get("stage") != "prepared":
+        raise SwitchError("abort is only permitted before launch (prepared stage)")
+    tx["stage"] = "aborted"
+    tx["aborted_at"] = now()
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "aborted")
+    released = lock("release", agent, transaction, check=False)
+    if released.returncode != 0:
+        raise SwitchError("transaction aborted but lock release failed")
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "stage": "aborted"}))
+
+
+def finalise(agent: str, transaction: str) -> None:
+    validate_agent(agent)
+    tx = load_transaction(agent, transaction)
+    ensure_lock_owner(agent, transaction)
+    if tx.get("stage") not in {"committed", "rolled-back"}:
+        raise SwitchError("finalise requires committed or rolled-back stage")
+    outcome = tx["stage"]
+    tx["stage"] = "finalised"
+    tx["outcome"] = outcome
+    tx["finalised_at"] = now()
+    tx["updated_at"] = now()
+    atomic_json(transaction_path(agent), tx)
+    append_audit(agent, transaction, "finalised", outcome=outcome)
+    released = lock("release", agent, transaction, check=False)
+    if released.returncode != 0:
+        raise SwitchError("state finalised but lock release failed; delivery remains blocked")
+    print(json.dumps({"agent": agent, "transaction_id": transaction, "stage": "finalised", "outcome": outcome}))
+
+
+def status(agent: str) -> None:
+    validate_agent(agent)
+    tx = None
+    provider = None
+    try:
+        tx = json.loads(transaction_path(agent).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        provider = json.loads(provider_path(agent).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    active = lock("active", agent, check=False).returncode == 0
+    print(json.dumps({"agent": agent, "locked": active, "transaction": tx, "provider": provider}, sort_keys=True))
+
+
+def usage() -> None:
+    print(
+        "usage: codex-provider-switch prepare AGENT | "
+        "launch AGENT TRANSACTION TOKEN | verify-canary AGENT TRANSACTION | "
+        "commit AGENT TRANSACTION | rollback AGENT TRANSACTION | "
+        "abort AGENT TRANSACTION | finalise AGENT TRANSACTION | status AGENT",
+        file=sys.stderr,
+    )
+
+
+def main(argv: list[str]) -> int:
+    try:
+        if len(argv) == 3 and argv[1] == "prepare":
+            prepare(argv[2])
+        elif len(argv) == 5 and argv[1] == "launch":
+            launch(argv[2], argv[3], argv[4])
+        elif len(argv) == 4 and argv[1] == "verify-canary":
+            verify_canary(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "commit":
+            commit_switch(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "rollback":
+            rollback(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "abort":
+            abort(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "finalise":
+            finalise(argv[2], argv[3])
+        elif len(argv) == 3 and argv[1] == "status":
+            status(argv[2])
+        else:
+            usage()
+            return 2
+        return 0
+    except SwitchError as exc:
+        print(f"codex-provider-switch: {exc}", file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip()
+        print(f"codex-provider-switch: command failed: {detail or exc.returncode}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

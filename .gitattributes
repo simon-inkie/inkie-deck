@@ -1,0 +1,19 @@
+# Force LF in the repository and in every working tree, whatever the
+# platform's core.autocrlf says. Shell scripts, the Python CLI and .env files
+# fail under bash with a CRLF shebang.
+* text=auto eol=lf
+
+# Binary types: never convert, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.gz binary

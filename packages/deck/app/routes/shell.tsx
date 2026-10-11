@@ -24,6 +24,7 @@ import { mcUser, tmuxEnabled, instanceLabel, filterCardsForInstance, modelSelect
 import { getAgentModelInfo } from "~/lib/agent-model.server";
 import { readActivity, resolveEscalationThresholdMs } from "~/lib/activity.server";
 import { escalatedAgents, type ActivityStatus, type EscalatedAgent } from "~/lib/activity.shared";
+import { loadCodexQuotaDisplay } from "~/lib/codex-quota-display.server";
 import { AppShell } from "~/components/AppShell";
 import type { SidebarAgent } from "~/components/Sidebar";
 import type { NeedsItem } from "~/components/AppShell";
@@ -232,11 +233,20 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
-  return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env), escalated };
+  // Ticket 3: one read-only quota view for the shared Plus account plus
+  // explicit per-agent provider records. Provider is never inferred from the
+  // quota snapshot. Missing or malformed provider records become `unknown`.
+  const codexQuota = loadCodexQuotaDisplay(
+    process.env,
+    now.getTime(),
+    agentNames
+  );
+
+  return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env), escalated, codexQuota };
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { agents, needsItems, needsCount, workCards, tmuxOn, instanceLabel, modelSelector, cronAdminOn, activityNavOn, escalated } = loaderData;
+  const { agents, needsItems, needsCount, workCards, tmuxOn, instanceLabel, modelSelector, cronAdminOn, activityNavOn, escalated, codexQuota } = loaderData;
   return (
     <AppShell
       agents={agents}
@@ -249,6 +259,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       cronAdminOn={cronAdminOn}
       activityNavOn={activityNavOn}
       escalated={escalated}
+      codexQuota={codexQuota}
     />
   );
 }

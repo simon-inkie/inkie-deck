@@ -19,7 +19,9 @@ import { useFetcher } from "react-router";
 import { EmptyState } from "./EmptyState";
 import { TerminalSquare, CornerDownLeft } from "lucide-react";
 
-type SendData = { ok: true } | { ok: false; error: string };
+type SendData =
+  | { ok: true }
+  | { ok: false; unverified?: boolean; error: string };
 
 /**
  * The write affordance. A small textarea + Send that posts to the one send
@@ -31,9 +33,15 @@ function TmuxCompose({ sendTarget }: { sendTarget: string }) {
   const [text, setText] = useState("");
   const prevState = useRef(fetcher.state);
   const busy = fetcher.state !== "idle";
+  const data = fetcher.data;
   const error =
-    fetcher.data !== undefined && fetcher.data.ok === false
-      ? fetcher.data.error
+    data !== undefined && data.ok === false
+      ? data.unverified === true
+        ? // Text and Enter were sent but delivery could not be confirmed: keep
+          // the text in the box and say so plainly rather than "failed", which
+          // would invite a duplicate resend.
+          `${data.error} It may still submit; check the pane before resending.`
+        : data.error
       : undefined;
 
   // Clear the box only when a submission transitions back to idle with ok.

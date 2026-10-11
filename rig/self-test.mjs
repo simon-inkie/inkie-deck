@@ -353,6 +353,19 @@ export async function selfTest(options = {}) {
     runs: { only: ["first-section/sh#1"] },
   });
   assert("an executable block no run claims is reported", cover.unclaimed.includes("second-section/sh#1"), cover.unclaimed);
+  const skippedCover = coverage(docBlocks, {
+    executableLangs: ["sh"],
+    knownLangs: ["sh", "text"],
+    runs: { only: ["first-section/sh#1"] },
+    skipped: { "second-section/sh#1": "declared skip" },
+  });
+  assert("a declared skip is accounted for, not reported as unclaimed", skippedCover.unclaimed.length === 0, skippedCover.unclaimed);
+  assert("a skip on a block that does not exist is reported as stale", coverage(docBlocks, {
+    executableLangs: ["sh"],
+    knownLangs: ["sh", "text"],
+    runs: { only: ["first-section/sh#1", "second-section/sh#1"] },
+    skipped: { "first-section/sh#9": "stale" },
+  }).unknownIds.length === 1);
   assert("a claim on a block that does not exist is reported separately", coverage(docBlocks, {
     executableLangs: ["sh"],
     knownLangs: ["sh", "text"],

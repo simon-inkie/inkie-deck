@@ -38,6 +38,7 @@ import {
   ACTIVE_PANE_RE,
   paneTextIsActive,
   IDLE_PROMPT_RE,
+  lineHasPromptGlyph,
   paneTextIsIdle,
   SHELL_PROMPT_RE,
   isAgentPaneIdle,
@@ -165,24 +166,24 @@ describe("sendKeysToWindow - gate before subprocess (no keys really sent here)",
   it("rejects invalid/injection-shaped window names", async () => {
     for (const bad of ["quill;ls", "../quill", "agents:quill", "-quill", ""]) {
       const r = await sendKeysToWindow(env, bad, "hi");
-      expect(r.ok, JSON.stringify(bad)).toBe(false);
+      expect(r.status, JSON.stringify(bad)).toBe("not-submitted");
     }
   });
 
   it("rejects empty / whitespace-only text", async () => {
-    expect((await sendKeysToWindow(env, "quill", "")).ok).toBe(false);
-    expect((await sendKeysToWindow(env, "quill", "   \n  ")).ok).toBe(false);
+    expect((await sendKeysToWindow(env, "agent-a", "")).status).toBe("not-submitted");
+    expect((await sendKeysToWindow(env, "agent-a", "   \n  ")).status).toBe("not-submitted");
   });
 
   it("rejects over-length text", async () => {
     const huge = "x".repeat(SEND_KEYS_MAX_LEN + 1);
-    expect((await sendKeysToWindow(env, "quill", huge)).ok).toBe(false);
+    expect((await sendKeysToWindow(env, "agent-a", huge)).status).toBe("not-submitted");
   });
 
   it("rejects a well-formed name that is not live in the session", async () => {
     // Valid name, valid text, but the session cannot exist -> not allowlisted.
-    const r = await sendKeysToWindow(env, "quill", "hello");
-    expect(r.ok).toBe(false);
+    const r = await sendKeysToWindow(env, "agent-a", "hello");
+    expect(r.status).toBe("not-submitted");
   });
 });
 
@@ -258,15 +259,23 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
     },
     { label: "lone bare prompt with trailing space", text: "\u276F " },
     { label: "lone bare prompt no trailing space", text: "\u276F" },
+    {
+      label: "agy/Gemini runtime (bare > prompt)",
+      text: "───\n>\n───\n? for shortcuts   Gemini 3.5 Flash (Medium) · 1 task(s)",
+    },
   ];
 
-  // NO WAKE: every unsafe state - dirty composer, permission dialog, bash shell, agy, ghost
+  // NO WAKE: every unsafe state - dirty composer, permission dialog, bash shell, ghost
   const noWake = [
     {
       label: "dirty composer - staged text",
       text: "─── quill ──\n\u276F ping me when summit recommits\n───\n  Opus 4.8 | quill  32%",
     },
     { label: "dirty composer 2 - text after prompt", text: "\u276F do the folder reorg" },
+    {
+      label: "dirty agy composer - text after > prompt",
+      text: "───\n> git status\n───\n? for shortcuts   Gemini 3.8 Flash",
+    },
     {
       label: "permission dialog",
       text: "Do you want to proceed?\n\u276F 1. Yes\n  2. No",
@@ -276,8 +285,15 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
       text: "alex@demobox:~/agents/echo$ \nalex@demobox:~/agents/echo$ ",
     },
     {
-      label: "agy/Gemini runtime (different glyph)",
-      text: "───\n>\n───\n? for shortcuts   Gemini 3.5 Flash (Medium) · 1 task(s)",
+      // Bash PS2 continuation: an unterminated quote renders a bare ">" with
+      // the shell prompt ABOVE it and no agy frame border. Must NOT be woken.
+      label: "bash PS2 continuation prompt (bare >)",
+      text: 'alex@demobox:~/agents/echo$ echo "foo\n>',
+    },
+    {
+      // node REPL left behind by an exited agent: a lone ">" prompt.
+      label: "node REPL prompt (bare >)",
+      text: "> \nundefined",
     },
     { label: "ghost/auto-suggest text after prompt", text: "\u276F /compact" },
     {
@@ -312,6 +328,43 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
   it("IDLE_PROMPT_RE matches a bare Codex prompt glyph (U+203A)", () => {
     expect(IDLE_PROMPT_RE.test("\u203A ")).toBe(true);
     expect(IDLE_PROMPT_RE.test("\u203A do something real")).toBe(false);
+  });
+
+  it("IDLE_PROMPT_RE matches a bare agy prompt glyph (>)", () => {
+    expect(IDLE_PROMPT_RE.test("> ")).toBe(true);
+    expect(IDLE_PROMPT_RE.test(">")).toBe(true);
+    expect(IDLE_PROMPT_RE.test("> do something real")).toBe(false);
+  });
+
+  // M1: a bare ">" is only an agy composer when the frame border sits above it.
+  it("WAKE - agy frame: bare > with a border above is idle", () => {
+    expect(paneTextIsIdle("───────\n>\n───────\n? for shortcuts   Gemini 3.8 Flash")).toBe(true);
+  });
+
+  it("NO WAKE - bare > with NO border above (PS2 continuation) is refused", () => {
+    expect(paneTextIsIdle('alex@demobox:~/agents/echo$ echo "foo\n>')).toBe(false);
+  });
+
+  it("NO WAKE - bare > with output (node REPL) is refused", () => {
+    expect(paneTextIsIdle("> \nundefined")).toBe(false);
+  });
+
+  // M2: a ">" in a statusline/footer must NOT hijack the last-glyph-line scan
+  // for a Claude composer. lineHasPromptGlyph anchors ">" to the line start.
+  it("WAKE - Claude composer with a > in the statusline below (must not hijack)", () => {
+    expect(
+      paneTextIsIdle(
+        "\u276F \n──────\n  Opus 4.8 | main -> origin  32%"
+      )
+    ).toBe(true);
+  });
+
+  it("NO WAKE - Claude composer with a > in a footer, composer still dirty", () => {
+    expect(
+      paneTextIsIdle(
+        "\u276F git checkout main\n  main -> origin  32%"
+      )
+    ).toBe(false);
   });
 
   // CRITICAL false-negative regression: idle agent with ctx-percent statusline
@@ -364,6 +417,36 @@ describe("paneTextIsIdle - positive clean-prompt gate (#91 false-positive fix)",
   });
 
   // SHELL_PROMPT_RE direct assertions
+  // Sonnet follow-up coverage: a ">" that appears in a Codex statusline must
+  // not hijack the dim-hint path, a dirty agy composer must not wake, and a
+  // narrow pane with a wrapped composer must stay conservative.
+  it("NO WAKE - dirty agy composer with text after the prompt glyph", () => {
+    expect(paneTextIsIdle("───────\n> refactor the parser\n───────\nGemini 3.8 Flash")).toBe(false);
+  });
+
+  it("WAKE - a > in a Codex statusline below the hint must not hijack detection", () => {
+    const plain = "transcript\n\u203A Implement {feature}\nmain -> origin  42%";
+    const raw = "transcript\n\x1b[2m\u203A Implement {feature}\x1b[0m\nmain -> origin  42%";
+    expect(paneTextIsIdle(plain, raw)).toBe(true);
+  });
+
+  it("NO WAKE - narrow pane: wrapped continuation row containing a glyph is not clean", () => {
+    // A narrow pane wraps the draft; the continuation row carries a stray glyph.
+    // The composer is not bare, so it must not read as a safe wake.
+    expect(
+      paneTextIsIdle("\u276F a long draft\n  that wrapped \u276F here")
+    ).toBe(false);
+  });
+
+  it("lineHasPromptGlyph anchors > to the line start, keeps includes for TUI glyphs", () => {
+    expect(lineHasPromptGlyph("> ")).toBe(true);
+    expect(lineHasPromptGlyph("  > ")).toBe(true);
+    expect(lineHasPromptGlyph("main -> origin")).toBe(false);
+    expect(lineHasPromptGlyph("a => b")).toBe(false);
+    expect(lineHasPromptGlyph("\u276F ")).toBe(true);
+    expect(lineHasPromptGlyph("prefix \u203A")).toBe(true);
+  });
+
   it("SHELL_PROMPT_RE matches a user@host bash prompt", () => {
     expect(SHELL_PROMPT_RE.test("alex@demobox:~/agents/echo$")).toBe(true);
   });

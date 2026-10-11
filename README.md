@@ -38,6 +38,16 @@ A pnpm workspace with two packages:
   (Playwright). It implements the `packages/base` protocol directly; there is
   deliberately no second implementation anywhere in the repository.
 
+## Contributing
+
+The contributing rules, the checks a pull request must pass and the Developer
+Certificate of Origin are in [CONTRIBUTING.md](CONTRIBUTING.md). The workflow
+around them is [DEVELOPMENT.md](DEVELOPMENT.md), and it applies to AI coding
+agents as much as to humans: that is the file `AGENTS.md` and `CLAUDE.md` point
+at, so every runtime reads one set of rules. If you are starting work on an
+issue, the [`start-issue` skill](.agents/skills/start-issue/SKILL.md) creates
+the branch and the SPEC skeleton for you.
+
 ## The rules the machines enforce
 
 - `packages/base` never imports from `packages/deck`, and `packages/deck`
