@@ -682,17 +682,17 @@ which would put it down to the wrong cause.
 
 ## Known limitations
 
+Current, verified, and written down rather than discovered later.
+
+**No authentication.** Repeated here because it belongs on any list of this
+kind. See the top of this document.
+
 **On WSL, `claude` can resolve to a Windows binary.** PATH often includes
 Windows directories, so `command -v claude` may return a path under `/mnt/c/`
 or ending in `.exe` or `.cmd`. The boot, workspace and create-agent scripts
 print a warning naming that path and carry on; they do not stop, because a
 Windows binary can still work through WSL interop. If agents fail to start,
 install the Linux build inside WSL or put its directory earlier in `PATH`.
-
-Current, verified, and written down rather than discovered later.
-
-**No authentication.** Repeated here because it belongs on any list of this
-kind. See the top of this document.
 
 **A complete, valid header quoted inside a message body splits that message
 in two.** Fixed on 2026-08-14, and this is what is left of it. Both readers,

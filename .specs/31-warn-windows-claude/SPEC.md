@@ -5,7 +5,7 @@ On WSL, `claude` can resolve to a Windows executable. Add one shared check that 
 
 ## Scope
 - `packages/base/bin/claude-binary-check.sh`: `claude_binary_is_foreign`, `warn_if_foreign_claude`.
-- Called from `boot-agents.sh`, `workspace.sh` (before launching claude) and `create-agent.sh` (before the verify probe).
+- Called once per run from `boot-agents.sh` and `workspace.sh` (before the launch loop) and `create-agent.sh` (before the verify probe).
 - INSTALL.md note under Known limitations.
 
 ## Acceptance
@@ -24,4 +24,8 @@ On WSL, `claude` can resolve to a Windows executable. Add one shared check that 
 None.
 
 ## Review feedback
-None yet.
+Opus round 1 (approve, no blockers):
+1. Warning printed once per agent. Fixed: called once before the loop in boot-agents.sh and workspace.sh.
+2. INSTALL.md note sat above the section's opening line. Fixed: moved alongside the other bold entries.
+3. Check runs in the script's shell, not the tmux pane's. Documented as best-effort in the lib header.
+Nits, not changed: symlinks are not resolved (noted in the lib header); any Linux path under /mnt/ warns (accepted); mixed-case .Exe missed (deliberate).

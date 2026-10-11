@@ -732,7 +732,6 @@ launch_agent() {
     # claude-session.sh for the pin, the missing-transcript case and the
     # one-off migration of sessions named by hand. If no pin can be written,
     # launch a fresh named session rather than nothing.
-    warn_if_foreign_claude
     local session_args
     session_args="$(claude_session_args "$a" "$AGENTS_HOME/$a")" || {
       echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
@@ -783,6 +782,8 @@ ALREADY_UP=0
 WAITING=0
 FAILED=0
 ARMED=0
+# Once for the whole boot, not per agent. Best-effort: see claude-binary-check.sh.
+warn_if_foreign_claude
 for a in "${AGENTS[@]}"; do
   if outcome=$(launch_agent "$a"); then
     readiness_check=wait_for_readiness

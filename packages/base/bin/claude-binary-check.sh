@@ -11,6 +11,12 @@
 # the path alone does not prove it is broken. Refusing to launch would lock out
 # a setup that works, so this prints a warning to stderr and returns 0 either
 # way. The launchers carry on.
+#
+# BEST-EFFORT. The check resolves `claude` in the calling script's shell, but
+# the launchers start it in a tmux pane shell via send-keys, whose PATH can
+# differ (rc files, .env.secrets). The warning can therefore be wrong in either
+# direction. Symlinks are not followed, so a link into /mnt/ stays silent.
+# Launchers call it once per run, not per agent.
 
 # claude_binary_is_foreign <path>: success if the path looks like a Windows
 # binary reached from WSL (under /mnt/, or ending in .exe or .cmd).

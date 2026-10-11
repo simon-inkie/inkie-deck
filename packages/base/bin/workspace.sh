@@ -81,7 +81,6 @@ start_agent() {
     # `|| claude` fallback never ran. See claude-session.sh for the pin, the
     # missing-transcript case and the one-off migration of sessions named by
     # hand. If no pin can be written, launch a fresh named session.
-    warn_if_foreign_claude
     local session_args
     session_args="$(claude_session_args "$agent" "$AGENTS_HOME/$agent")" || {
       echo "workspace: could not pin a session id for $agent; launching an unpinned session" >&2
@@ -111,6 +110,9 @@ start_watcher() {
   # Slim side pane (15%) for the watcher; -d keeps focus on the agent pane.
   tmux split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
 }
+
+# Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
+warn_if_foreign_claude
 
 # Create the base session if it doesn't exist
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
