@@ -181,7 +181,9 @@ claude_first_boot_prompt() {
 agent_model_flag() {
   local file="$1/.model" id
   [[ -f "$file" ]] || return 0
-  id="$(tr -d '[:space:]' < "$file" 2>/dev/null)"
+  # First line only, ends trimmed: an interior space must stay in the id so the
+  # check below rejects it, rather than being squeezed into a different id.
+  id="$(head -n 1 "$file" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   [[ -n "$id" ]] || return 0
   if [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
     printf -- '--model %s\n' "$id"

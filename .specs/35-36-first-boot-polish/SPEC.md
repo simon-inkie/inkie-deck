@@ -82,3 +82,7 @@ Reworded in INSTALL.md, the boot-agents.sh note and this SPEC to "exit the
 runtime, then run boot-agents.sh again". Nits not taken: a stderr pointer to
 `.first-boot-done` on a failed launch, and the workspace.sh marker left behind by
 a failed send (same documented trade-off; delete the marker to resend).
+
+Round 3 (maintainer review comment): `agent_model_flag` stripped all whitespace, so
+`claude sonnet` became `claudesonnet` and passed. Now takes the first line and
+trims the ends only, so an interior space is refused; tests added (C9).

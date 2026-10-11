@@ -988,6 +988,11 @@ printf 'claude-sonnet-5-5\n' > "$C_HOME/.model"
 printf 'x; touch /tmp/pwned' > "$C_HOME/.model"
 c9_out="$(agent_model_flag "$C_HOME" 2>/dev/null)"
 [ -z "$c9_out" ] && pass "C9 .model: unsafe value is refused" || fail "C9 .model: unsafe value is refused" "out=$c9_out"
+printf '  claude-sonnet-5-5  \n' > "$C_HOME/.model"
+[ "$(agent_model_flag "$C_HOME")" = "--model claude-sonnet-5-5" ] && pass "C9 .model: surrounding whitespace is trimmed" || fail "C9 .model: surrounding whitespace is trimmed"
+printf 'claude sonnet\n' > "$C_HOME/.model"
+c9_ws="$(agent_model_flag "$C_HOME" 2>/dev/null)"
+[ -z "$c9_ws" ] && pass "C9 .model: interior space is refused, not squeezed" || fail "C9 .model: interior space is refused, not squeezed" "out=$c9_ws"
 rm -f "$C_HOME/.model"
 unset CLAUDE_CONFIG_DIR
 
