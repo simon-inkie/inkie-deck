@@ -61,7 +61,7 @@ Opus review, round 1 (approve with minor changes):
 - Nits: PATH comment in create-agent test, `grep -P` (superseded by round 2) and system-claude
   assumptions logged under Follow-ups, Acceptance command corrected.
 
-Human review, round 2 (maintainer, merge after fixes)::
+Human review, round 2 (maintainer, merge after fixes):
 - Major: `grep -P` in `pane_ctx_pct` breaks on BSD/macOS grep. Fixed: the
   context percentage is now extracted with awk (split on the rule glyph), and the
   spinner match in `check_idle` moved from `grep -qP` to `grep -qE`.
