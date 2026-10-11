@@ -86,7 +86,7 @@ check_idle() {
   if echo "$pane" | grep -qF 'esc to interrupt' 2>/dev/null; then return 0; fi
   if echo "$pane" | grep -qF 'Cerebrating' 2>/dev/null; then return 0; fi
   if echo "$pane" | grep -qF 'Compacting conversation' 2>/dev/null; then return 0; fi
-  if echo "$pane" | grep -qP "$spinner_re" 2>/dev/null; then return 0; fi
+  if echo "$pane" | grep -qE "$spinner_re" 2>/dev/null; then return 0; fi
   # LIVE ELAPSED COUNTER -- the general busy signal.
   #
   # Every marker above is an enumerated LITERAL, and the UI moved out from
@@ -340,7 +340,13 @@ pane_has_codex_approval_dialog() {
 # scrollback.
 pane_ctx_pct() {
   local pane="$1" line
-  line=$(printf '%s\n' "$pane" | grep -P 'ctx:[0-9]+%|(?:█|░)(?:(?!│).)*[0-9]+%' | tail -1)
+  # awk, not `grep -E '(█|░)[^│]*[0-9]+%'`: a negated class of a multibyte glyph
+  # is byte-wise under LC_ALL=C, and grep's PCRE flag is absent from BSD/macOS.
+  # Splitting on │ makes each piece │-free, where `[^│]*` is just `.*`.
+  line=$(printf '%s\n' "$pane" | awk '
+    /ctx:[0-9]+%/ { print; next }
+    { n = split($0, piece, "│")
+      for (i = 1; i <= n; i++) if (piece[i] ~ /(█|░).*[0-9]+%/) { print; break } }' | tail -1)
   [ -z "$line" ] && return 1
   printf '%s\n' "$line" | grep -oE '[0-9]+%' | tail -1 | tr -d '%'
 }

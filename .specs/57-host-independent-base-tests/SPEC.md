@@ -47,7 +47,6 @@ Before and after counts under the stripped environment, recorded in the PR.
 ## Follow-ups
 
 - `rig/` stages list `xxd` as a required tool; can be dropped.
-- `bin/pane-idle` uses `grep -P`, which BSD/macOS grep lacks.
 - The create-agent no-runtime case assumes no system-wide `claude` in
   /usr/bin or /bin.
 
@@ -59,5 +58,14 @@ Opus review, round 1 (approve with minor changes):
 - Should-fix: README overclaimed, and `BEFORE_BYTES`/`AFTER_BYTES` were never
   compared. Case 11 now asserts the after-bytes equal the before-bytes with only
   sent->read flipped; README reworded.
-- Nits: PATH comment in create-agent test, `grep -P` and system-claude
+- Nits: PATH comment in create-agent test, `grep -P` (superseded by round 2) and system-claude
   assumptions logged under Follow-ups, Acceptance command corrected.
+
+Human review, round 2 (Simon, merge after fixes):
+- Major: `grep -P` in `pane_ctx_pct` breaks on BSD/macOS grep. Fixed: the
+  context percentage is now extracted with awk (split on the rule glyph), and the
+  spinner match in `check_idle` moved from `grep -qP` to `grep -qE`.
+  `pane-idle.test.sh` gains a static guard that fails if a PCRE grep is
+  reintroduced in `bin/`, plus two `pane_ctx_pct` cases (bar then percent; a
+  rule between glyph and percent is not a match). Checked the guard fails when
+  the flag is put back.
