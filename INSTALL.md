@@ -1007,11 +1007,12 @@ is the coverage gap named at the end of tier 3, repeated here because this is
 where a reader looks for it. By hand it has been seen working: on WSL 2 with
 Ubuntu 24.04, on 2026-09-27, a message sent from Deck reached a live agent, and
 the agent replied within about ten seconds. That was one run, by a person, and
-the rig has not measured it. The refusals are covered from every angle, and one of them
-(`no-window`, described above) is exercised on every rig run, with the exact
-wording recorded in the report - it declines before a pane is ever inspected,
-since the walkthrough's recipient is you rather than an agent. The other outcome, where the
-gate decides the pane is ready and types, has no test behind it anywhere: the
+the rig has not measured it. The refusals are covered from every angle, and one
+of them (`no-window`, described above) is exercised on every rig run, with the
+exact wording recorded in the report - it declines before a pane is ever
+inspected, since the walkthrough's recipient is you rather than an agent. The
+other outcome, where the gate decides the pane is ready and types, has no test
+behind it anywhere: the
 delivery suite runs its cases against pane text the test itself supplies, with
 every real keystroke suppressed, and the rig has no agent to be typed at. So
 "the message arrived in the pane, and arrived whole" is, to the rig, a belief.
@@ -1030,8 +1031,9 @@ supplied pane text, so it has the same limit as the rest of this entry.
 
 Closing the gap means a stub agent that can be started in a pane, typed at, and
 asked what it received. That is a named follow-up (`rig/README.md` still lists
-the stage as not built) and deliberately not part of this phase, because it wants the container and process-supervision groundwork
-recorded in `rig/container-image-note.md` first.
+the stage as not built) and deliberately not part of this phase, because it
+wants the container and process-supervision groundwork recorded in
+`rig/container-image-note.md` first.
 
 **The browser test suite is not a guarantee.** `pnpm -C packages/deck e2e`
 runs Playwright journeys that have real, currently un-diagnosed flakes. It is
@@ -1083,7 +1085,7 @@ case where a non-root user can still go wrong is a container with a bind-mounted
 state directory handing you back files you do not own, and that is worked
 through in `rig/container-image-note.md`.
 
-**Only Linux is measured by the rig; Windows works through WSL 2 and macOS is
+**Only Linux is measured by the rig; Windows has run by hand under WSL 2 and macOS is
 unverified.** The rig runs Linux containers. The Ubuntu path in this document is
 executed on every run, apart from the `sh-manual` blocks in Keep it running. By
 hand, WSL 2 with Ubuntu 24.04 was run end to end on 2026-09-27, before the
@@ -1096,7 +1098,7 @@ session but cannot answer the runtime's own setup prompts (folder trust, the
 resume picker, the fullscreen offer). It reports a launch as ready only when it
 has seen the composer, exits `3` while that is pending, and does not arm an
 opted-in monitor on a launch that was not ready. See tier 3 for the exact steps.
-Checked: `boot-agents.sh` waits up to `BOOT_READY_SECS` (default 45) per fresh
+Checked: `boot-agents.sh:631` waits up to `BOOT_READY_SECS` (default 45) per fresh
 launch.
 
 **Starting Deck on boot has not been checked.** The systemd user service in

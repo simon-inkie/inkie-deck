@@ -41,6 +41,13 @@ Out of scope: anything outside that section (see Follow-ups).
   document: first boot needs a person, boot start unchecked, native Windows
   unsupported (folded into the Windows entry).
 
+## Check results
+
+- Pass: `pnpm typecheck`, `pnpm test` (2227 passed, 11 skipped),
+  `check:boundaries`, `check:leaks`, `check:licence`, `check:lib-version`,
+  `pnpm -C packages/deck check:dashes`, `node rig/self-test.mjs`.
+- Not run: the Docker install rig (no Docker here).
+
 ## Follow-ups
 
 - The prerequisites table and `xxd` apt line in section 1, and the locale
@@ -53,4 +60,7 @@ Out of scope: anything outside that section (see Follow-ups).
 
 ## Review feedback
 
-(none yet)
+Opus round 1: clean, no blockers. Optional nits taken: rewrapped two
+over-long paragraphs, softened the Windows entry heading to "has run by hand
+under WSL 2", added a Check results section here, cited
+`boot-agents.sh:631`.
