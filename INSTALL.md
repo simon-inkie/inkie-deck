@@ -1085,8 +1085,8 @@ case where a non-root user can still go wrong is a container with a bind-mounted
 state directory handing you back files you do not own, and that is worked
 through in `rig/container-image-note.md`.
 
-**Only Linux is measured by the rig; Windows has run by hand under WSL 2 and macOS is
-unverified.** The rig runs Linux containers. The Ubuntu path in this document is
+**Only Linux is measured by the rig; Windows has run by hand under WSL 2 and
+macOS is unverified.** The rig runs Linux containers. The Ubuntu path in this document is
 executed on every run, apart from the `sh-manual` blocks in Keep it running. By
 hand, WSL 2 with Ubuntu 24.04 was run end to end on 2026-09-27, before the
 Windows section existed; nobody has followed that section as written from start
