@@ -6,9 +6,9 @@
  *   2. parseHeader (key-anchored regex)
  *   3. extractMetaRegion (lines between header and first blank line)
  *   4. YAML.parse(region) - wrapped so YAML errors become plain bubbles
- *   5. CardSchema.safeParse - on failure, card:undefined (CARD-05 never-throw contract)
+ *   5. CardSchema.safeParse - on failure, card:undefined
  *
- * CARD-05: parseBlock NEVER throws. Any failure at any stage yields card:undefined.
+ * parseBlock NEVER throws. Any failure at any stage yields card:undefined.
  * A plain message with no metadata region is the NORMAL case, not an error.
  */
 import YAML from "yaml";
@@ -59,12 +59,12 @@ export function parseBlock(raw: string): MessageBlock {
   try {
     return _parseBlock(raw);
   } catch {
-    // Absolute last-resort catch - should not be reached, but ensures CARD-05 contract.
+    // Absolute last-resort catch - should not be reached, but ensures the never-throw contract.
     // status "read" (not "sent"): an unparseable block must NOT generate a perpetual
     // unread signal. With "sent", the sidebar's hasUnread (from != user && status ==
     // "sent") lit a phantom magenta dot that markRead could never clear - the block
     // re-serializes to a header that fails parse again, so it falls back to unread
-    // forever (2026-06-12 Alex phantom-dot report). A block we cannot even parse is
+    // forever. A block we cannot even parse is
     // far likelier to be old/corrupt than a fresh message; default it read.
     return {
       header: { timestamp: "", from: "", status: "read", subject: "" },
@@ -108,7 +108,7 @@ function _parseBlock(raw: string): MessageBlock {
   // Fall back to minimal header on parse failure (never throw).
   // status "read" (not "sent"): a header we cannot parse (e.g. blanked
   // timestamp/from from a lossy re-serialize) must not nag as unread forever -
-  // this is the exact path that lit quill/atlas phantom dots (2026-06-12).
+  // this is the exact path that lit phantom unread dots.
   const header = headerResult.ok
     ? headerResult.header
     : {
@@ -154,7 +154,7 @@ function _parseBlock(raw: string): MessageBlock {
   // Only strip a trailing "---" when it is the LAST non-blank line of the block:
   // that is the writer's genuine block separator. A "---" with more content after
   // it is body text (a visual divider) and must be preserved verbatim - scanning
-  // for the FIRST "---" silently truncated such bodies (Alex, 1 + 15 Jul).
+  // for the FIRST "---" silently truncated such bodies.
   let bodyEndIdx = lines.length;
   let lastNonBlankIdx = -1;
   for (let i = lines.length - 1; i >= bodyStartIdx; i--) {
@@ -183,11 +183,11 @@ function _parseBlock(raw: string): MessageBlock {
     try {
       const parsed: unknown = YAML.parse(rawMeta);
 
-      // Stage 5: zod safeParse for CARD-05 compliance
+      // Stage 5: zod safeParse, so the never-throw contract holds
       if (parsed !== null && typeof parsed === "object") {
         const rawObj = parsed as Record<string, unknown>;
 
-        // Try decision schema FIRST (CARD-05: decision wins when both ids present).
+        // Try decision schema FIRST: it wins when both ids are present.
         const cardResult = CardSchema.safeParse(parsed);
         if (cardResult.success) {
           // If both decision-id and action-id are present, warn and treat as decision.
@@ -277,7 +277,7 @@ function _parseBlock(raw: string): MessageBlock {
 
             actionCard = {
               actionId: data["action-id"],
-              // Pinned vocabulary with tolerant fallback (Atlas, TASK-438):
+              // Pinned vocabulary with tolerant fallback:
               // unknown values warn + normalise to "normal", never skip.
               priority: normalisePriority(data.priority, data["action-id"]),
               ticket: data.ticket,
@@ -289,7 +289,7 @@ function _parseBlock(raw: string): MessageBlock {
               supersedeNote,
             };
           }
-          // Both schemas failed -> card and actionCard remain undefined (CARD-05 plain bubble)
+          // Both schemas failed -> card and actionCard remain undefined (plain bubble)
         }
       } else {
         // YAML parsed to null or a non-object (e.g. a bare string): the "meta region"

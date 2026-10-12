@@ -1,5 +1,5 @@
 /**
- * thread-windowing.test.ts - TASK-469 chunked lazy-load on the thread view.
+ * thread-windowing.test.ts - chunked lazy-load on the thread view.
  *
  * Proves the three user-visible behaviours of the windowing:
  *   1. A long thread initially renders only the tail window (~30 blocks),
@@ -12,7 +12,7 @@
  *
  * Seeds a synthetic long thread in the scribe inbox (same pattern as
  * card-long-thread.test.ts) and restores the canonical fixtures after each
- * test. VALID-03: writes only under INBOX_ROOT (temp). ASCII only (FND-05).
+ * test. Writes only under INBOX_ROOT (temp). ASCII only.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

@@ -1,7 +1,7 @@
 /**
- * avatars.server.ts - guarded reads of agent avatar files (TASK-457).
+ * avatars.server.ts - guarded reads of agent avatar files.
  *
- * Convention (Quill, 2026-06-07): a square avatar.png at the agent's silo root,
+ * Convention: a square avatar.png at the agent's silo root,
  * <INBOX_ROOT>/<agent>/avatar.png. Reads come off the SAME root the inbox
  * seam reads - no new root (the brief's constraint). This module is a NEW
  * reader that MIRRORS the safe-fs guard shapes by importing them; it does
@@ -20,7 +20,7 @@
  * to callers - an absent avatar is NORMAL (initials fallback), and the
  * serving route turns undefined into a reasonless 404.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -48,7 +48,7 @@ function avatarPath(agent: string): string | undefined {
       forWrite: false,
     });
   } catch {
-    // Atlas fold (457 review): a PRESENT-but-rejected file - typically an
+    // A PRESENT-but-rejected file - typically an
     // avatar.png symlinked to somewhere outside the inbox root - would
     // otherwise fail as SILENT initials with no trail. Warn server-side;
     // the external response stays a reasonless 404.
@@ -57,7 +57,7 @@ function avatarPath(agent: string): string | undefined {
       console.warn(
         `[avatars] avatar present but rejected for "${agent}": it resolves ` +
           `outside the inbox root. Copy the file into the silo - do not ` +
-          `symlink from outside (FND-03 containment).`
+          `symlink from outside.`
       );
     } catch {
       // Plain missing file - the normal initials-fallback case, no noise.

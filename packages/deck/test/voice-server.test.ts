@@ -1,7 +1,7 @@
 /**
- * voice-server.test.ts - voice.server.ts config helpers (issue #27).
+ * voice-server.test.ts - voice.server.ts config helpers.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

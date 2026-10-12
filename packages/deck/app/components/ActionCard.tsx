@@ -8,7 +8,7 @@
  * LIVE card: title in the body, footer row (avatar + staleness + priority +
  * ticket), 44px tick + dismiss X controls.
  *
- * RESOLVED card (done or dismissed, TASK-453): the card becomes a RECEIPT -
+ * RESOLVED card: the card becomes a RECEIPT -
  * title moves INTO the header strip alongside an obvious resolution chip
  * (tick + "Done 7h ago" / "Dismissed 2h ago") and the timestamp; the body
  * collapses to a two-line clamp; dead controls are REMOVED, not disabled
@@ -16,12 +16,12 @@
  * completed action; the chip carries the indication). The header strip is
  * a button toggling expansion: expanded shows the full body, done-note /
  * dismiss-reason, the meta footer, and the still-live "+ add note"
- * affordance. CARD-06 (resolved cards stay visible) untouched.
+ * affordance. Resolved cards stay visible as a historical record.
  *
  * body rendered via Markdown; onOpenDoc passthrough like DecisionCard.
  *
- * No .server imports - all data arrives via props (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props.
+ * ASCII only - no em-dashes.
  */
 import { useState } from "react";
 import { useFetcher } from "react-router";
@@ -70,7 +70,7 @@ interface ActionCardProps {
  *
  * When the action is not yet done, renders a DONE tick button (44px).
  * When the action is already done, renders a "Done <time>" success badge with
- * the tick disabled (card stays visible as historical record, CARD-06).
+ * the tick disabled (the card stays visible as a historical record).
  */
 export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boolean(postAction) }: ActionCardProps) {
   const fetcher = useFetcher();
@@ -82,7 +82,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
   const [noteText, setNoteText] = useState("");
   const [showSupersedeForm, setShowSupersedeForm] = useState(false);
   const [supersedeNote, setSupersedeNote] = useState("");
-  // Resolved-card expansion (TASK-453): collapsed by default, throwaway UI state.
+  // Resolved-card expansion: collapsed by default, throwaway UI state.
   const [expanded, setExpanded] = useState(false);
 
   if (!actionCard) return null;
@@ -102,7 +102,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
   // Waiting duration: from block filed-at to now.
   // formatRelative (time.ts) is the guarded helper: a malformed timestamp on
   // EITHER side returns "" instead of throwing "Invalid time value" and
-  // killing the whole page render (2026-06-11 lifeline hardening). The nowDate
+  // killing the whole page render. The nowDate
   // candidate itself is also coalesced - a garbage `now` prop must not crash.
   const nowCandidate = now ? new Date(now) : new Date();
   const nowDate = Number.isNaN(nowCandidate.getTime()) ? new Date() : nowCandidate;
@@ -126,7 +126,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
   const resolved = optimisticDone || optimisticDismissed || optimisticSuperseded;
 
   // -------------------------------------------------------------------------
-  // RESOLVED receipt (TASK-453): header strip carries label + title + chip +
+  // RESOLVED receipt: header strip carries label + title + chip +
   // time + chevron; body clamps; dead controls removed.
   // -------------------------------------------------------------------------
   if (resolved) {
@@ -146,10 +146,9 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
           data-testid="action-card-toggle"
           className="flex min-h-11 w-full items-center gap-2 border-b border-accent/20 bg-accent/10 px-4 py-2 text-left hover:bg-accent/15 transition-colors"
         >
-          {/* Label in the accent hue (Alex live feedback: the foreground-on-
-              tint read as washed-out white) - matches Decision's text-primary. */}
+          {/* Label in the accent hue - matches Decision's text-primary. */}
           <span className="label-mono shrink-0 text-accent">Action</span>
-          {/* Atlas fold: truncate only when collapsed - title= is mouse-only,
+          {/* Truncate only when collapsed - title= is mouse-only,
               so expansion un-clamps the title for keyboard/touch readers. */}
           <span
             className={cn(
@@ -184,8 +183,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
         </button>
 
         {/* Collapsed: two-line clamped description. Expanded: the full record.
-            The clamp region is a pointer-convenience expand target (Alex live
-            feedback: "clicking anywhere on the done card body expands it") -
+            The clamp region is a pointer-convenience expand target -
             keyboard semantics stay on the strip button; links inside the
             clamp keep working via the closest() guard. */}
         {!expanded ? (
@@ -258,7 +256,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
                 </a>
               ) : null}
               <span className="flex-1" />
-              {/* The one still-live affordance: add a done note (TASK-440) */}
+              {/* The one still-live affordance: add a done note */}
               {optimisticDone && !actionCard.doneNote && !showNoteForm ? (
                 <Button
                   type="button"
@@ -319,7 +317,7 @@ export function ActionCard({ block, now, onOpenDoc, postAction, withDate = Boole
       className="shadow-retro mb-4 scroll-mt-4 overflow-hidden rounded-lg border-2 border-accent/50 bg-card"
     >
       {/* Card header row - burnt-orange accent banner. Label in the accent
-          hue (Alex live feedback, TASK-453) - same treatment as the receipt. */}
+          hue - same treatment as the receipt. */}
       <div className="flex items-center justify-between border-b border-accent/20 bg-accent/10 px-4 py-2">
         <span className="label-mono text-accent">Action</span>
         <Timestamp iso={block.header.timestamp} now={now} withDate={withDate} />

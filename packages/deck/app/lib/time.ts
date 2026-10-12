@@ -7,7 +7,7 @@
  * The returned strings cross the loader serialization boundary as plain strings.
  * No .server suffix needed (no fs), but these are called from loaders.
  *
- * ASCII only - no em-dashes per FND-05 (check:dashes gate).
+ * ASCII only - no em-dashes (check:dashes gate).
  */
 import { formatDistance } from "date-fns";
 
@@ -34,7 +34,7 @@ function safeDate(iso: string): Date | null {
  * from a serialized string prop, so a garbage `now` arrives here as an Invalid
  * Date. Passed on unchecked that either throws (date-fns formatDistance raises
  * "Invalid time value") or poisons arithmetic with NaN - both the failure shape
- * the 2026-06-11 lifeline hardening exists to prevent. ActionCard already
+ * the malformed-timestamp guard exists to prevent. ActionCard already
  * coalesces its own candidate for exactly this reason; this is the same guard
  * at the sink, so every caller of the exported helpers gets it.
  *
@@ -55,12 +55,12 @@ function safeNow(now: Date): Date {
  * Every loader derives its clock as `process.env["MC_NOW"] ? new Date(...) :
  * new Date()`. A garbage MC_NOW value used to produce an Invalid Date that
  * later threw "Invalid time value" inside toISOString/date-fns - killing the
- * shell loader and with it the whole app (same family as the 2026-06-11
- * lifeline incident). This helper coalesces unparseable input to the real
- * wall clock so a bad env var can degrade timestamps but never crash MC.
+ * shell loader and with it the whole app. This helper coalesces unparseable
+ * input to the real wall clock so a bad env var can degrade timestamps but
+ * never crash MC.
  *
  * Pure: callers pass the env VALUE (loaders read process.env themselves,
- * preserving the FND-02 .server seam and test injectability).
+ * preserving the .server seam and test injectability).
  *
  * @param candidate - The MC_NOW value (or undefined when unset)
  * @returns A valid Date: parsed candidate when valid, else current wall clock
@@ -174,8 +174,8 @@ export function formatClockTime(iso: string): string {
  * 48h. Boundary is INCLUSIVE on the absolute side: an age of exactly 48h
  * renders "23 Jul, 14:40", not "2 days ago". Reason: date-fns coarsens to whole
  * days from 24h onward, so by 48h the relative phrasing has already lost the
- * precision Alex needs to judge whether a card is stale ("2 days ago" reads
- * the same for 48h and 60h). Making the switch inclusive keeps the two branches
+ * precision the operator needs to judge whether a card is stale ("2 days ago"
+ * reads the same for 48h and 60h). Making the switch inclusive keeps the two branches
  * disjoint with no ambiguous instant and is trivially pinnable in a test.
  */
 const CARD_STAMP_ABSOLUTE_AFTER_MS = 48 * 60 * 60 * 1000;
@@ -213,7 +213,7 @@ function londonStamp(date: Date, withYear: boolean): string {
  *
  * The Cards tab (unlike the thread view) is a flat list with no day dividers,
  * so a bare clock time gives no age signal at all: "05:05" could be this
- * morning or three weeks ago, and a dead card looks live (TASK-719).
+ * morning or three weeks ago, and a dead card looks live.
  *
  * Under 48h old this returns the same relative phrasing the tooltip has always
  * used ("about 2 hours ago"), so the two never disagree. From 48h onward it
@@ -232,7 +232,7 @@ function londonStamp(date: Date, withYear: boolean): string {
  * branch implicitly. Unguarded, `age` is NaN, `NaN < CARD_STAMP_ABSOLUTE_AFTER_MS`
  * is false, and the absolute branch (which never reads `now`) silently wins, so
  * a five-minute-old card would render "25 Jul, 19:40" instead of "5 minutes
- * ago". That is exactly the fresh-looks-stale confusion TASK-719 exists to kill,
+ * ago". That is exactly the fresh-looks-stale confusion that the card stamp exists to kill,
  * and it fails with no error anywhere. Pinned by test.
  *
  * @param iso - An ISO-8601 timestamp string
@@ -257,7 +257,7 @@ export function formatCardStamp(iso: string, now: Date = new Date()): string {
  *
  * The visible stamp only ever shows one of the two (see formatCardStamp), so
  * the tooltip carries both, with the year that the visible form omits. This is
- * the "full timestamp on hover" half of TASK-719.
+ * the "full timestamp on hover" half of the card timestamp display.
  *
  * @param iso - An ISO-8601 timestamp string
  * @param now - Reference instant (default: new Date()); tests MUST inject one.

@@ -1,8 +1,8 @@
 /**
- * malformed-block.test.ts - TASK-435.1 regression.
+ * malformed-block.test.ts - regression test for a thread crash on a malformed timestamp.
  *
  * A block whose header has no parseable timestamp (e.g. a headerless first
- * line like "## 14 open questions for Alex") makes blocks/parse.ts fall
+ * line like "## 14 open questions for the owner") makes blocks/parse.ts fall
  * back to timestamp:"". Before the time.ts guard, the formatters threw
  * "RangeError: Invalid time value" and crashed the WHOLE ThreadView - a
  * single bad block took down the thread.
@@ -15,8 +15,8 @@
  * it is a different claim: the formatters' unit suite was green throughout,
  * and this bug shipped behind it.
  *
- * VALID-03: writes only to the temp INBOX_ROOT, never committed fixtures.
- * ASCII only - no em-dashes (FND-05).
+ * Writes only to the temp INBOX_ROOT, never committed fixtures.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";
@@ -30,12 +30,12 @@ test("TASK-435.1: a malformed-timestamp block renders the thread without crashin
   page,
 }) => {
   // Prepend a malformed block (header with NO timestamp) to the temp fixture -
-  // the exact shape that crashed Alex's dev tree (the old "14 open questions"
+  // the exact shape that crashed the operator's dev tree (the old "14 open questions"
   // header). parse.ts -> timestamp:"" -> the formatters must tolerate it.
   const inboxRoot = process.env["INBOX_ROOT"];
   const inboxFile = path.join(inboxRoot!, "scribe", "inbox", "alex.md");
   const malformed = [
-    "## 14 open questions for Alex",
+    "## 14 open questions for the owner",
     "",
     "This block has no parseable timestamp and must not crash the thread.",
     "",

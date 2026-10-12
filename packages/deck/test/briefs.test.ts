@@ -1,5 +1,5 @@
 /**
- * test/briefs.test.ts - Unit tests for app/lib/briefs.server.ts (TASK-442).
+ * test/briefs.test.ts - Unit tests for app/lib/briefs.server.ts.
  *
  * Covers:
  *   - Newest-by-filename-date selection across several date files.
@@ -11,8 +11,8 @@
  * All tests use isolated tmpdir fixtures; INBOX_ROOT is set and restored around
  * each test. MC_SANDBOX_ONLY is set globally by test/setup.ts.
  *
- * VALID-03: writes only to os.tmpdir(). No repo files are mutated.
- * ASCII only - no em-dashes (FND-05).
+ * writes only to os.tmpdir(). No repo files are mutated.
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -346,7 +346,7 @@ describe("getLatestBrief - content fidelity", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Symlinked INBOX_ROOT (manager-review fix pin, TASK-442)
+// Symlinked INBOX_ROOT (manager-review fix pin)
 // ---------------------------------------------------------------------------
 
 describe("getLatestBrief - symlinked INBOX_ROOT", () => {

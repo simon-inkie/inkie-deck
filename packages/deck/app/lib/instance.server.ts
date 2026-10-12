@@ -1,34 +1,34 @@
 /**
- * instance.server.ts - per-instance configuration (TASK-462).
+ * instance.server.ts - per-instance configuration.
  *
- * Inkie Deck runs as one instance per person: Alex's lifeline daemon
- * and Robin's customisable daemon are the SAME codebase started with
- * different env. This module is the single place that env is interpreted.
+ * Inkie Deck can run as one instance per person: each daemon is the SAME
+ * codebase started with different env. This module is the single place that env is interpreted.
  *
  * - MC_USER: whose world this instance serves. Drives which participant
  *   files are read/written (<agent>/inbox/<user>.md), the own-message
  *   exclusion in the queue, and the `from:` on replies/card answers.
- *   Default "alex" - an instance with no env behaves exactly as before.
+ *   Default is the built-in operator id, so an instance with no env behaves as the
+ *   single-user default.
  *
  * - MC_TMUX_ENABLED: the tmux view + send surface. Typing into agent
- *   sessions is the classifier-consent surface and stays Alex's; Robin's
+ *   sessions is the classifier-consent surface and stays the operator's; any other
  *   instance starts with this off. Default enabled; set "0" or "false" to
  *   disable. Gates the nav item, the thread toggle, the /tmux route body,
  *   and the api/tmux-send action (server-side, not just UI).
  *
- * - ACTIVITY_ROOT / MC_ACTIVITY_ENABLED: the agent-activity panel (TASK-691).
+ * - ACTIVITY_ROOT / MC_ACTIVITY_ENABLED: the agent-activity panel.
  *   Presence of the root IS the gate; see activityEnabled below.
  *
- * SEAM RULE (FND-02): .server module - loaders/actions call these with
+ * SEAM RULE: .server module - loaders/actions call these with
  * process.env; nothing client-side imports this.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { resolveActivityRoot } from "./activity.server";
 
 type Env = Record<string, string | undefined>;
 
-/** The user this instance serves. Defaults to "alex" (zero-change legacy). */
+/** The user this instance serves. Defaults to the built-in operator id (zero-change legacy). */
 export function mcUser(env: Env): string {
   const v = env["MC_USER"]?.trim();
   return v ? v : "alex";
@@ -41,14 +41,14 @@ export function tmuxEnabled(env: Env): boolean {
 }
 
 /**
- * Whether the agent-activity panel (TASK-691) is exposed on this instance.
+ * Whether the agent-activity panel is exposed on this instance.
  *
  * CONFIG PRESENCE IS THE GATE. An instance sees the panel exactly when its
- * .env names an ACTIVITY_ROOT for it to read; Robin's does not, so hers shows
- * nothing without any explicit disable flag anywhere, and turning it on for her
- * later is one line in her .env rather than a code change (decision Q6). This
+ * .env names an ACTIVITY_ROOT for it to read; another instance does not,
+ * so it shows nothing without any explicit disable flag anywhere, and turning it
+ * on there later is one line in its .env rather than a code change. This
  * is deliberately NOT a second boolean mirroring MC_TMUX_ENABLED: a
- * default-enabled boolean would need Robin's instance to carry an explicit
+ * default-enabled boolean would need every other instance to carry an explicit
  * "off", which is a rule you can only get wrong by forgetting it, and the panel
  * cannot render a single thing without the root anyway.
  *
@@ -64,11 +64,11 @@ export function activityEnabled(env: Env): boolean {
 }
 
 /**
- * Top-bar workspace label for this instance (Alex's ask, 2026-06-11):
- * Robin's instance shows "Robin's workspace" next to the wordmark so it is
+ * Top-bar workspace label for this instance. A non-default user's instance
+ * shows a "<name>'s workspace" label next to the wordmark so it is
  * unmistakable whose world you are in. MC_INSTANCE_LABEL overrides; default
- * derives from MC_USER for any non-alex user; Alex's instance shows none
- * (his daily driver needs no extra chrome).
+ * derives from MC_USER for any user other than the default; the operator's
+ * instance shows none (it is their daily driver and needs no extra chrome).
  */
 export function instanceLabel(env: Env): string | undefined {
   const override = env["MC_INSTANCE_LABEL"]?.trim();
@@ -81,11 +81,10 @@ export function instanceLabel(env: Env): string | undefined {
 /**
  * Whether the per-agent model selector (selector contract, M4-M6) is exposed
  * on this instance. OPERATOR control: which model an agent runs is a cost +
- * capability decision, and a "change Sprout's model" dropdown on Robin's
- * surface is a footgun and out of her domain (boot-agents.README.md,
- * "Per-agent model selection"). The operator today IS the default "alex"
- * user, so neither daemon needs new env: Alex's instance (MC_USER unset)
- * gets the control, Robin's (MC_USER=robin) never sees it. Gates the
+ * capability decision, and a "change an agent's model" dropdown on another user's
+ * surface is a footgun and out of their remit. The operator IS the default
+ * user, so no new env is needed: the operator's instance (MC_USER unset)
+ * gets the control, an instance with MC_USER set to another user never sees it. Gates the
  * top-bar UI via the shell loader AND the api/agent-model loader + action
  * server-side (same posture as the api/tmux-send gate - hidden UI alone is
  * not a gate).
@@ -95,10 +94,10 @@ export function modelSelectorEnabled(env: Env): boolean {
 }
 
 /**
- * Whether the cron admin page is enabled on this instance (TASK-460).
+ * Whether the cron admin page is enabled on this instance.
  *
- * Enabled for alex and robin by default. Writing the system crontab is
- * operator-grade but both are trusted principals. Set
+ * Enabled for the known trusted principals by default. Writing the system
+ * crontab is operator-grade, so the list is deliberately short. Set
  * MC_CRON_ADMIN_ENABLED=0 or "false" to explicitly disable on any instance.
  */
 export function cronAdminEnabled(env: Env): boolean {
@@ -109,11 +108,11 @@ export function cronAdminEnabled(env: Env): boolean {
 }
 
 /**
- * Per-instance projects-board scope (Alex's ask, 2026-06-11: Robin's board
- * must show HER agents' cards, not the whole team kanban).
+ * Per-instance projects-board scope: a second user's board must show their own
+ * agents' cards, not the whole team kanban.
  *
  * MC_PROJECTS_AGENTS: comma-separated agent allowlist. Unset/empty = no
- * filter (Alex's instance sees everything, unchanged). Applied to every
+ * filter (the operator's instance sees everything, unchanged). Applied to every
  * listCards consumer: the board, the bell's blocked feed, the home queue's
  * blocked kind, the work strip, and the ticket-lens card match.
  */
@@ -130,7 +129,7 @@ export function projectsAgents(env: Env): string[] | undefined {
 /**
  * Filter project cards to this instance's scope (no-op when unset).
  * A card passes when its agent is allowlisted OR it is explicitly assigned
- * to this instance's user (TASK-462 Phase 1) - a todo another agent owns but
+ * to this instance's user - a todo another agent owns but
  * this user is waiting on still reaches their board.
  */
 export function filterCardsForInstance<T extends { agent: string; assignee?: string }>(

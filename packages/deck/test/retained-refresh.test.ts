@@ -3,9 +3,8 @@
  *
  * Unit tests for refreshesRetainedBlocks, the pure gate exported from
  * threads.$agent.tsx that decides whether a completing fetcher must re-fetch
- * the retained BELOW-WINDOW block range (the 2026-06-11 "clicking doesn't
- * work" fix). Same shape as action-intent.test.ts: a named pure export from
- * the route, imported directly, node env, no DOM and no router.
+ * the retained BELOW-WINDOW block range. Same shape as action-intent.test.ts: a named pure
+ * export from the route, imported directly, node env, no DOM and no router.
  *
  * The behaviour under test is a RISING EDGE, not a single boolean: the route
  * holds the previous value in a ref and fires the refetch on the true -> false
@@ -13,13 +12,13 @@
  * transition rule the route uses (replayLifecycle below) and assert whether a
  * refresh fired, rather than only probing one frame.
  *
- * The cost claim is the point of this file. TASK-475 made compose able to flip
- * an existing card, but compose is overwhelmingly a plain reply, and putting
+ * The cost claim is the point of this file. Auto-resolve made compose able to
+ * flip an existing card, but compose is overwhelmingly a plain reply, and putting
  * "compose" in CARD_ACTION_INTENTS would have fired a below-window refetch on
  * every message ever sent. The plain-reply lifecycles below assert the gate is
  * false at EVERY frame, so there is no edge to fire on.
  *
- * ASCII only (FND-05).
+ * ASCII only.
  */
 import { describe, it, expect } from "vitest";
 import {
@@ -106,7 +105,7 @@ describe("plain compose reply does not refresh retained blocks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The fix: an TASK-475 auto-resolve DOES refresh, same as a card action
+// The fix: an auto-resolve DOES refresh, same as a card action
 // ---------------------------------------------------------------------------
 
 describe("compose that auto-resolved a card refreshes retained blocks", () => {

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { buildPanePayload, SEND_KEYS_MAX_LEN } from "~/lib/tmux.server";
 
 /**
- * Regression cover for the silent-truncation data loss found 2026-07-26.
+ * Regression cover for the silent-truncation data loss found earlier.
  *
- * Alex's 4919-char brief was delivered as 2000 chars with a well-formed
+ * The operator's 4919-char brief was delivered as 2000 chars with a well-formed
  * "[reply via inbox: ...]" footer appended after the cut, so it read as a
  * complete thought. 2974 characters vanished and the recipient acted on the
  * remainder believing it whole.
@@ -99,7 +99,7 @@ describe("buildPanePayload", () => {
     // not reconcile with what the recipient reads in the stored thread, which
     // is the whole value of the marker.
     const rewritten = "z".repeat(6000); // post-rewrite, longer
-    const sourceLength = 4919; // what Alex actually wrote
+    const sourceLength = 4919; // what the user actually wrote
     const out = buildPanePayload(tag, rewritten, sourceLength);
     expect(out).toContain("4919 chars");
     expect(out).not.toContain("6000 chars");
@@ -128,7 +128,7 @@ describe("buildPanePayload", () => {
   });
 
   /**
-   * Dictation provenance (2026-08-11). The stored block carried "dictated: true"
+   * Dictation provenance. The stored block carried "dictated: true"
    * and the pane push dropped it, so an agent read transcribed speech with no
    * sign it was transcribed. Dictation mangles words ("Binky" for "Inkie",
    * "Norator" for "Narrator", both real, both same-day), and the marker changes
@@ -175,7 +175,7 @@ describe("buildPanePayload", () => {
       // Explicit false must behave exactly as omitted, and "exactly" means the
       // WHOLE payload, not merely the absence of the marker: asserting only that
       // both lack [DICTATED] would stay green if the prefix, body or reply hint
-      // regressed on one path and not the other (CodeRabbit, 2026-08-11).
+      // regressed on one path and not the other.
       expect(buildPanePayload(tag, "short one", undefined, false)).toBe(omitted);
     });
 
@@ -210,7 +210,7 @@ describe("buildPanePayload", () => {
     });
   });
 
-  it("does not lean on a subject line (Alex's are routinely stale)", () => {
+  it("does not lean on a subject line (a user's subjects are routinely stale)", () => {
     const out = buildPanePayload(tag, "Subject-ish first line\nrest of body");
     expect(buildPanePayload(tag, "x".repeat(9000))).not.toContain("Subject-ish");
     expect(out).toContain("Subject-ish first line");

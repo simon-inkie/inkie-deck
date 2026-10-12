@@ -1,5 +1,5 @@
 /**
- * generate-icons.mjs - one-off PWA + favicon icon generation (TASK-470 / TASK-472).
+ * generate-icons.mjs - one-off PWA + favicon icon generation.
  * Teal rounded square + cream MC wordmark, Inkie design tokens
  * (#1a7a7a teal / #fffdf5 cream). Outputs public/icons/mc-{192,512}.png
  * + apple-touch-icon (180), plus the browser-tab favicon set

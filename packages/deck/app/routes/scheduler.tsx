@@ -1,8 +1,8 @@
 /**
- * scheduler.tsx - Scheduler admin page (TASK-460 create-cron; renamed user-facing).
+ * scheduler.tsx - Scheduler admin page.
  *
  * Lists managed schedules (MC-CRON-tagged crontab lines) and provides a form to
- * create new ones. Hidden entirely + server-refused when not on Alex's
+ * create new ones. Hidden entirely + server-refused when not on the operator's
  * instance (cronAdminEnabled = false).
  *
  * Internal names (cron.server, cron-validate, MC-CRON tag, cronAdminEnabled,
@@ -12,9 +12,9 @@
  * Ask-2: every-N-min presets added to SCHEDULE_PRESETS in cron-validate.ts.
  * Ask-3: targetType toggle (agent | script).
  *
- * SEAM RULE (FND-02): imports ONLY from ~/lib/*.server and ~/lib/cron-validate.
+ * SEAM RULE: imports ONLY from ~/lib/*.server and ~/lib/cron-validate.
  * No fs, no subprocess, no literal paths in this file.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { useState, useEffect } from "react";
@@ -40,7 +40,7 @@ import { Badge } from "~/components/ui/badge";
 // ---------------------------------------------------------------------------
 
 export async function loader(_args: Route.LoaderArgs) {
-  // Gate: only Alex's instance can see/use this page.
+  // Gate: only the operator's instance can see/use this page.
   if (!cronAdminEnabled(process.env)) {
     throw new Response("Not found", { status: 404 });
   }

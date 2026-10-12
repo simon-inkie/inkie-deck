@@ -5,7 +5,7 @@
  * inputs, tailwind-merge dedupes conflicting Tailwind utilities (last wins).
  *
  * No .server suffix: pure, importable from components.
- * ASCII only - no em-dashes (FND-05 / check:dashes gate).
+ * ASCII only - no em-dashes.
  */
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";

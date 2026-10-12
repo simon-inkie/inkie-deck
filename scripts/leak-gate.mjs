@@ -57,11 +57,26 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 /**
- * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[], messageExempt?: boolean, messageExemptPattern?: string[] }} spec
+ * Fixed cut-off for the history-exempt rules: the default-branch commit that was
+ * current when those rules were added. Blobs reachable from it are legacy and
+ * cannot be unpublished. Every blob introduced AFTER it is scanned with every
+ * rule, so new history stays checked. Never move this forward to silence a
+ * finding; a finding in a newer blob is a real one.
  */
-function rule({ label, why, pattern, flags = "i", sample, messageExempt = false, messageExemptPattern, contentExemptPattern }) {
+const LEGACY_CUTOFF = "e398eb22ab24866b8ac5a05aae8d7458a1ea886f";
+
+/**
+ * @param {{ label: string, why: string, pattern: string[], flags?: string, sample: string[], messageExempt?: boolean, messageExemptPattern?: string[], historyExempt?: boolean }} spec
+ */
+function rule({ label, why, pattern, flags = "i", sample, messageExempt = false, messageExemptPattern, contentExemptPattern, historyExempt = false }) {
   return {
     label,
+    // Skipped by the --history scan for LEGACY blobs only, meaning blobs
+    // reachable from LEGACY_CUTOFF. For a rule added AFTER the material it denies
+    // was already published: past blobs cannot be unpublished, so the rule guards
+    // the working tree and every blob introduced after the cut-off, and the
+    // history scan would otherwise fail forever on content already cleaned up.
+    historyExempt,
     why,
     re: new RegExp(pattern.join(""), flags),
     sample: sample.join(""),
@@ -359,6 +374,32 @@ const RULES = [
     sample: ["https://cla", "ude.ai/co", "de/session_abc"],
   }),
 
+  // -- Review provenance and people named in prose ---------------------------
+  rule({
+    label: "review-tool-citation",
+    why: "A numbered change-request reference from the private tracker the code was extracted from, cited as the source of a finding. The number resolves to nothing for an outside reader. State the engineering reason instead of the citation. Shape-scoped: the word finding or fold, or a review tool's name, followed shortly by a change-request sigil and digits. A plain mention that a review tool ran, or a bare change-request reference, is ordinary and does not fire.",
+    pattern: ["(?:\\b(?:finding|fold)\\b|[Cc]ode ?", "[Rr]abbit)[^\\n]{0,24}\\bMR ?[!#]\\d+"],
+    flags: "",
+    sample: ["Code", "Rabbit finding, M", "R !12"],
+    historyExempt: true,
+  }),
+  rule({
+    label: "internal-reviewer-fold-citation",
+    why: "A review credit in the internal 'fold' shape, naming an internal reviewing agent: a reviewing agent's name followed by the word for folding in a finding, or by an amendment or a call. This was the commonest private-context shape found in the comment sweep. Bare agent names stay legal (they are demo roster names in fixtures); only the credit shapes are denied. Word-bounded and case-sensitive.",
+    pattern: ["\\b(?:At", "las|Qu", "ill)(?:'s call| (?:fold|amendment|hole|pin|landed-review)|\\)?, (?:TASK|MR))"],
+    flags: "",
+    sample: ["At", "las fold"],
+    historyExempt: true,
+  }),
+  rule({
+    label: "internal-tracker-prefix-in-comment",
+    why: "An internal tracker or requirement id (the TASK, FND, CARD, VALID, QUEUE, THRD and DETECT families) inside a comment. The ids mean nothing outside the original organisation. Scoped to comment lines (a line starting with a comment marker, or a spaced trailing comment) because the same text appears legitimately as parser test data in ticket-url fixtures. Shell and markdown hash comments are not covered: a hash at line start is also a markdown heading. State the reason, not the id.",
+    pattern: ["(?:^\\s*(?://|\\*|\\{/\\*|/\\*)| // ).*\\b(?:TA", "SK|FN", "D|CA", "RD|VAL", "ID|QUE", "UE|THR", "D|DETE", "CT)-\\d"],
+    flags: "",
+    sample: ["// see TA", "SK-123"],
+    historyExempt: true,
+  }),
+
   // -- Credentials (backstop; gitleaks in CI is the primary scanner) --------
   rule({
     label: "private-key-block",
@@ -407,14 +448,15 @@ const BINARY_SNIFF_BYTES = 8000;
  * @param {string} display @param {Buffer} buffer
  * @returns {{ file: string, line: number, label: string, why: string }[]}
  */
-function scanBuffer(display, buffer) {
+function scanBuffer(display, buffer, legacyBlob = false) {
   if (buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
     return []; // binary file (NUL in the first 8000 bytes, matching git's own heuristic)
   }
   const findings = [];
   const lines = buffer.toString("utf8").split("\n");
   for (const [index, lineText] of lines.entries()) {
-    for (const { label, why, re, contentExemptRe } of RULES) {
+    for (const { label, why, re, contentExemptRe, historyExempt } of RULES) {
+      if (legacyBlob && historyExempt) continue;
       const tested = contentExemptRe ? lineText.replace(contentExemptRe, "") : lineText;
       if (re.test(tested)) {
         findings.push({ file: display, line: index + 1, label, why });
@@ -481,9 +523,24 @@ function git(args) {
  * Paths are scanned too, for the same reason the working-tree mode scans them:
  * a denied string can live in a name with no trace in any content.
  */
-function scanHistory() {
+function scanHistory(repo = REPO_ROOT, cutoff = LEGACY_CUTOFF) {
+  const git = (args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
   const findings = [];
   const seenPath = new Set();
+  // Legacy blobs: everything reachable from the fixed cut-off. A missing cut-off
+  // (a shallow clone) must fail loudly rather than silently exempt nothing or
+  // everything.
+  try {
+    git(["cat-file", "-e", `${cutoff}^{commit}`]);
+  } catch {
+    console.error(`leak-gate: history cut-off ${cutoff} is not in this clone; fetch full history (git fetch --unshallow).`);
+    process.exit(2);
+  }
+  const legacy = new Set();
+  for (const line of git(["rev-list", "--objects", cutoff]).split("\n")) {
+    const space = line.indexOf(" ");
+    if (space > 0) legacy.add(line.slice(0, space));
+  }
   const lines = git(["rev-list", "--objects", "--all"]).split("\n").filter(Boolean);
   const blobs = new Map(); // sha -> first path seen
   for (const line of lines) {
@@ -509,10 +566,10 @@ function scanHistory() {
   for (const [sha, objectPath] of blobs) {
     if (types.get(sha) !== "blob") continue;
     scanned += 1;
-    const buffer = execFileSync("git", ["-C", REPO_ROOT, "cat-file", "blob", sha], {
+    const buffer = execFileSync("git", ["-C", repo, "cat-file", "blob", sha], {
       maxBuffer: 512 * 1024 * 1024,
     });
-    findings.push(...scanBuffer(`${sha.slice(0, 10)} (${objectPath})`, buffer));
+    findings.push(...scanBuffer(`${sha.slice(0, 10)} (${objectPath})`, buffer, legacy.has(sha)));
   }
   return { findings, scanned, paths: seenPath.size };
 }
@@ -629,6 +686,64 @@ function selfTest() {
     if (scanFileName(namedFile).length === 0) {
       console.error("leak-gate self-test: filename scanning failed to catch a denied string in a file name");
       process.exit(1);
+    }
+    // Negative samples: shapes the new prose rules must NOT fire on. Each is
+    // built from fragments so this file does not contain a live instance.
+    const negatives = [
+      ["internal-tracker-prefix-in-comment", "ticket: https://tracker.example/TA" + "SK-12"],
+      ["internal-tracker-prefix-in-comment", "# TA" + "SK-12 as a markdown heading"],
+      ["internal-reviewer-fold-citation", "the At" + "las agent wrote this fixture"],
+      ["review-tool-citation", "a bare !123 is not a citation"],
+      ["review-tool-citation", "see MR !12 for background"],
+      ["review-tool-citation", "try { } catch (e) { } // see MR !12"],
+      ["review-tool-citation", "A review tool ran on the public pull request"],
+      ["review-tool-citation", "Code" + "Rabbit finding: prefer a Map here"],
+      ["review-tool-citation", "Code" + "Rabbit is a hosted review tool"],
+    ];
+    for (const [label, text] of negatives) {
+      const hit = scanBuffer("negative-sample", Buffer.from(`${text}\n`, "utf8")).some((f) => f.label === label);
+      if (hit) {
+        console.error(`leak-gate self-test: ${label} fired on a sample it must allow: ${text}`);
+        process.exit(1);
+      }
+    }
+    // Pin the cut-off: moving it must be a deliberate, visible edit to this line
+    // as well as to the constant, never a side effect of another change.
+    if (LEGACY_CUTOFF !== "e398eb22ab24866b8ac5a05aae8d7458a1ea886f") {
+      console.error("leak-gate self-test: LEGACY_CUTOFF changed; update this pin deliberately");
+      process.exit(1);
+    }
+    // Prove historyExempt is bounded, not blind: in a throwaway repository a
+    // legacy blob (reachable from the cut-off) is exempt, and a blob introduced
+    // AFTER the cut-off is still scanned with every rule.
+    const exemptRules = RULES.filter((r) => r.historyExempt);
+    if (exemptRules.length === 0) {
+      console.error("leak-gate self-test: no historyExempt rules to prove");
+      process.exit(1);
+    }
+    const repoDir = path.join(dir, "history-repo");
+    fs.mkdirSync(repoDir);
+    const run = (...args) =>
+      execFileSync("git", ["-C", repoDir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
+    run("init", "-q");
+    exemptRules.forEach((r, i) => fs.writeFileSync(path.join(repoDir, `legacy-${i}.txt`), `${r.sample}\n`));
+    run("add", "-A");
+    run("commit", "-q", "-m", "legacy");
+    const cutoff = run("rev-parse", "HEAD").trim();
+    exemptRules.forEach((r, i) => fs.writeFileSync(path.join(repoDir, `newer-${i}.txt`), `${r.sample} new\n`));
+    run("add", "-A");
+    run("commit", "-q", "-m", "newer");
+    const found = scanHistory(repoDir, cutoff);
+    for (const [i, r] of exemptRules.entries()) {
+      const hits = found.findings.filter((f) => f.label === r.label);
+      if (hits.some((f) => f.file.includes(`legacy-${i}.txt`))) {
+        console.error(`leak-gate self-test: ${r.label} fired on a legacy blob it is exempt for`);
+        process.exit(1);
+      }
+      if (!hits.some((f) => f.file.includes(`newer-${i}.txt`))) {
+        console.error(`leak-gate self-test: ${r.label} did not fire on a blob added after the cut-off`);
+        process.exit(1);
+      }
     }
     // Prove the BINARY SNIFF is a leading window and not a whole-file check.
     // This is the regression pin for an observed miss, not a hypothetical: one

@@ -5,7 +5,7 @@
  * 300-row manifest must yield a small, bounded rendered slice regardless of
  * total size, with exact spacer heights derived from the bimodal row height.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

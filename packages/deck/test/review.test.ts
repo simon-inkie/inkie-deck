@@ -1,7 +1,7 @@
 /**
- * Tests for app/lib/review.server.ts (TASK-431, TASK-562).
+ * Tests for app/lib/review.server.ts.
  *
- * Covers (per plan sections 7 + TASK-562 test plan):
+ * Covers:
  *   - resolveReviewRoots: parsing, absolute-only, implicit INBOX_ROOT, unset.
  *   - readReviewFile: containment in/out per root, symlinked root + symlink
  *     escape; no silo-name substring ban; THE .env test - .env inside
@@ -12,9 +12,9 @@
  *
  * Each test uses isolated mkdtemp dirs under os.tmpdir().
  * MC_SANDBOX_ONLY is set globally by test/setup.ts.
- * VALID-03: afterAll assertGitClean.
+ * afterAll assertGitClean.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
@@ -118,7 +118,7 @@ function assertGitClean(): void {
   const lines = out.split("\n").filter((l) => l.trim() !== "");
   for (const line of lines) {
     const file = line.slice(3);
-    // Ignore all known-dirty files from the TASK-431 implementation batch.
+    // Ignore all known-dirty files from the implementation batch.
     if (
       file.startsWith("test/") ||
       file.startsWith("app/") ||
@@ -133,13 +133,13 @@ function assertGitClean(): void {
       file.startsWith("playwright.config.ts") ||
       file.startsWith("fixtures/") ||
       file.startsWith("docs/") ||
-      // TASK-433: voice proxy files (new server/ directory shown as "?? server/")
+      // voice proxy files (new server/ directory shown as "?? server/")
       file.startsWith("server/") ||
       file.startsWith("app/lib/voice.server.ts") ||
       file.startsWith("test/voice-relay.test.ts") ||
       file.startsWith("e2e/flows/voice.test.ts") ||
       file.startsWith("tsconfig.json") ||
-      // TASK-435 (platform work in flight): Tailscale dev allowance
+      // Tailscale dev allowance
       file.startsWith("vite.config.ts")
     ) {
       continue;
@@ -358,8 +358,8 @@ describe("review.server", () => {
   // -------------------------------------------------------------------------
   //
   // This block used to assert the opposite: that any path whose text contained
-  // a particular silo directory name was refused. TASK-434 had already retired
-  // that pattern everywhere else (safe-fs, attachments, projects) in favour of
+  // a particular silo directory name was refused. An earlier change had already
+  // retired that pattern everywhere else (safe-fs, attachments, projects) in favour of
   // realpath containment, and it was left standing here alone. It denied
   // nothing on a deployment that does not use that name, and on a deployment
   // that DOES it contradicted resolveReviewRoots, which always appends
@@ -687,7 +687,7 @@ describe("review.server", () => {
       });
     });
 
-    // TASK-562: code extensions are now in the allowlist and should be accepted.
+    // code extensions are now in the allowlist and should be accepted.
     it("accepts a .ts source file (TASK-562 code ext)", () => {
       const tsFilePath = path.join(sandbox, "index.ts");
       fs.writeFileSync(tsFilePath, "export const x = 1;");
@@ -786,7 +786,7 @@ describe("review.server", () => {
   });
 
   // -------------------------------------------------------------------------
-  // TASK-562: binary-NUL guard
+  // binary-NUL guard
   // -------------------------------------------------------------------------
 
   describe("readReviewFile - binary-NUL guard (TASK-562)", () => {
@@ -810,8 +810,7 @@ describe("review.server", () => {
     });
 
     it("does NOT apply binary guard to markdown files (NUL in .md is unusual but not blocked here)", () => {
-      // The binary guard is code-only. Markdown files with NUL are served as-is
-      // (already the case pre-TASK-562; guard is not widened retroactively).
+      // The binary guard is code-only. Markdown files with NUL are served as-is.
       const mdPath = path.join(sandbox, "weird.md");
       // NUL in markdown: passes (guard is code-only per spec).
       fs.writeFileSync(mdPath, Buffer.from("# Hello\x00"));
@@ -824,7 +823,7 @@ describe("review.server", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Secret denylist (Gate 4a) - peer review addition 2026-06-28
+  // Secret denylist (Gate 4a)
   // -------------------------------------------------------------------------
 
   describe("readReviewFile - secret denylist (deny-before-allow)", () => {
@@ -958,7 +957,7 @@ describe("review.server", () => {
       });
     });
 
-    // CR regression (2026-06-28): separator-aware token check.
+    // Regression: separator-aware token check.
     it("denies client_secret.json (token match via regex)", () => {
       const filePath = path.join(sandbox, "client_secret.json");
       fs.writeFileSync(filePath, '{"client_secret":"SUPERSECRET"}');
@@ -1092,7 +1091,7 @@ describe("review.server", () => {
     });
   });
 
-  describe("Atlas hole: extension gate on the RESOLVED path (symlink rename bypass)", () => {
+  describe("extension gate on the RESOLVED path (symlink rename bypass)", () => {
     it("denies a notes.md symlink pointing at a .env file inside an allowed root", () => {
       process.env["INBOX_ROOT"] = sandbox;
       process.env["REVIEW_ROOTS"] = sandbox;

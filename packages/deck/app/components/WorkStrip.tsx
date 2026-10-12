@@ -1,10 +1,9 @@
 /**
- * WorkStrip.tsx - the agent's live cards as a vertical list (TASK-439,
- * reshaped TASK-454).
+ * WorkStrip.tsx - the agent's live cards as a vertical list.
  *
- * TASK-454: the strip left its row under the thread header. It now renders
+ * The strip used to sit in a row under the thread header. It now renders
  * INSIDE the slide-out work panel (AppShell), opened from the top-bar
- * trigger left of the bell - Alex's "properties style column". Rows are
+ * trigger left of the bell, as a properties-style column. Rows are
  * full-width: untruncated title, column Badge, age, stale clock glyph.
  *
  * ENTIRELY READ-ONLY: no moves, no ticks, no editing. The list is a
@@ -13,12 +12,11 @@
  * The list is absent when the agent has no live cards (the panel trigger
  * itself is also absent - AppShell gates on cards.length).
  *
- * Staleness is signalled by a Clock glyph + accent text (not colour alone -
- * WCAG 1.4.1, Atlas fold on the TASK-454 plan).
+ * Staleness is signalled by a Clock glyph + accent text (not colour alone, per WCAG 1.4.1).
  *
  * 44px min targets throughout (touch-target compliance).
  *
- * No .server imports - FND-02. ASCII only - no em-dashes - FND-05.
+ * No .server imports. ASCII only - no em-dashes.
  */
 import { Link } from "react-router";
 import { Clock } from "lucide-react";

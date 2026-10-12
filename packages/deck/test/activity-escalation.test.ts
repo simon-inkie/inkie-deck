@@ -9,7 +9,7 @@
  * degrade path, since a sweep older than that producer field writes documents
  * with no `statusSince` on any record at all.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, vi } from "vitest";
 import {

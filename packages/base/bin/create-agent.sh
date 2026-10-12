@@ -468,7 +468,7 @@ else
   # This value is the silo layout this project ships, NOT a reading of the
   # deployment. It used to be announced as "the value from the application's
   # .env.example", which was never true - that file ships INBOX_ROOT empty,
-  # because there is no default (FND-03) - and it invited the reader to trust a
+  # because there is no default - and it invited the reader to trust a
   # guess as though something had confirmed it.
   INBOX_ROOT="$HOME/.the-vault/agents"
   INBOX_ROOT_SOURCE="default (INBOX_ROOT was unset)"

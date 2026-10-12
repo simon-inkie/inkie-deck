@@ -5,17 +5,17 @@
  *
  * Covers:
  *   - tap "OR write something" -> compose enters custom mode
- *   - type a custom answer + press ENTER -> submits as intent=custom (Alex's
- *     "not sure Enter is working" check; the typed path has no IME composition
- *     so the isComposing guard does not apply - Enter must submit)
+ *   - type a custom answer + press ENTER -> submits as intent=custom (Enter must
+ *     submit: the typed path has no IME composition, so the isComposing guard
+ *     does not apply)
  *   - the card resolves to answered with the typed text
- *   - REGRESSION (Quill's repro for the Markdown-only memo re-do): tap C-path,
- *     then ensure a normal option still selects correctly (no stale-render
+ *   - REGRESSION (for the Markdown-only memo re-do): tap the C-path, then
+ *     ensure a normal option still selects correctly (no stale-render
  *     misselect). On the un-memoised build this passes; a future full-feed
  *     memo would fail it.
  *
- * VALID-03: writeback to INBOX_ROOT temp dir; committed fixtures untouched.
- * ASCII only - no em-dashes (FND-05).
+ * Writeback to INBOX_ROOT temp dir; committed fixtures untouched.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

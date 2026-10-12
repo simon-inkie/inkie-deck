@@ -21,7 +21,7 @@
 #         "queued"            -- pane was BUSY at the gate AND still busy after the
 #                                send; the runtime queued our message and auto-
 #                                submits it when the turn ends (verified live for
-#                                Claude Code 2026-06-23). We never clear it.
+#                                Claude Code). We never clear it.
 #                                A Codex pane that was busy at the gate but reads
 #                                IDLE-with-staged-text afterwards is a DIFFERENT
 #                                case and is not covered by this verdict: it falls
@@ -127,7 +127,7 @@ TMUX_SESSION="${INBOX_PUSH_TMUX_SESSION:-agents}"
 # name the package has rather than hardcoding one deployment's layout.
 AGENTS_HOME="${AGENTS_HOME:-$HOME/agents}"
 VERIFY_SLEEP="${PUSH_VERIFY_SLEEP:-0.8}"
-# Settle for the codex-only THIRD Enter (2026-07-29). Deliberately longer than
+# Settle for the codex-only THIRD Enter. Deliberately longer than
 # VERIFY_SLEEP, not a reuse of it -- reasoning at the branch that uses it.
 # A literal default rather than arithmetic on VERIFY_SLEEP: these are fractional
 # seconds and bash has no float arithmetic.
@@ -185,8 +185,8 @@ emit() {
 #
 # MOVED to the shared bin/pane-idle library in an earlier revision. It used to be
 # copy-pasted here and in inbox-poke-all, and the copies drifted: every busy-signal
-# fix from 2026-07-26 onwards landed in THIS file only, so inbox-poke-all has
-# been poking mid-turn panes it misread as idle. One copy now, sourced by both,
+# fix landed in THIS file only, so inbox-poke-all has been poking mid-turn
+# panes it misread as idle. One copy now, sourced by both,
 # plus stuck-pane-sweep.sh. All the reasoning for each marker lives there.
 #
 # Resolved by BASH_SOURCE, not PATH: this script runs from cron and from the
@@ -385,12 +385,10 @@ PANE_RAW="$(capture_raw "$RECIPIENT")"
 
 # 3b. CONTEXT gate: stop pushing at an agent that is nearly full.
 #
-#     The requirement, as stated by the operator: "we need to stop the tmux sender
-#     sending messages to any agent when they are over, like, say, 60% usage.
-#     Because it gets to the point where the agents are just so busy that they do
-#     not compact." Then, on the carve-out: "Block tmux pushes at 80 as long as
-#     it's not a compaction and handover message. Handover and compaction should
-#     always be allowed through, no blocking."
+#     The requirement: stop live pushes to an agent whose context usage is high
+#     (default threshold 80%), because an agent that is that busy never gets
+#     round to compacting. Handover and compaction messages are exempt and
+#     always go through.
 #
 #     THE CARVE-OUT IS THE WHOLE POINT. Without it this gate blocks the one message
 #     that would fix the condition it is gating on, and a full agent can never be
@@ -456,7 +454,7 @@ if [ "${_RUNTIME:-}" = "codex" ] && pane_has_codex_approval_dialog "$PANE"; then
   emit "skip:dialog-pending"
 fi
 
-# 4. BUSY pane -> deliver-and-QUEUE (2026-06-23). A busy CC pane queues
+# 4. BUSY pane -> deliver-and-QUEUE. A busy CC pane queues
 #    typed input and runs it when the current turn ends, so we no longer skip a
 #    busy pane -- we deliver and report "queued". The composer-clean gate (5)
 #    below still guards against concatenating into a real half-typed/ghost
@@ -535,7 +533,7 @@ check_composer_clean "$POST" "$POST_RAW"
 case $? in
   0)
     # Composer holds our text. If the pane was BUSY at the gate, CC has QUEUED
-    # it and auto-submits when the turn ends -- VERIFIED LIVE 2026-06-23 (a
+    # it and auto-submits when the turn ends -- VERIFIED LIVE (a
     # mid-turn send queued behind the active turn and delivered after it). Do
     # NOT retry/clear: the old Ctrl-U was destroying CC's queued message (the
     # root cause of the spurious skip:could-not-submit). Leave it queued.
@@ -636,15 +634,13 @@ case $? in
     # our message from offset 1024, starting MID-WORD and with no separating
     # space.
     #
-    # So this is a SUBSTRING test, not a suffix test. My first attempt asserted
-    # the composer ends with the end of the message, which is false twice over:
+    # So this is a SUBSTRING test, not a suffix test. Asserting that the
+    # composer ends with the end of the message is false twice over:
     # check_composer_clean reads only the LAST PROMPT LINE, and that line holds
-    # the START of the remainder, with the rest wrapping below it. It passed its
-    # own test because I built the fixture from what I assumed the pane looked
-    # like instead of from a capture -- the identical defect to the 26-char
-    # fixture this commit exists to correct, committed one iteration later. The
-    # fixture below is now copied from a real pane, mid-word break and missing
-    # space included.
+    # the START of the remainder, with the rest wrapping below it. The fixture
+    # below is copied from a real pane, mid-word break and missing space
+    # included, because a fixture built from assumptions about the pane passes
+    # its own test while proving nothing.
     #
     # Safe: a foreign paste would have to contain 24+ consecutive characters of
     # the message we just sent. That is a strictly stronger claim than the count
@@ -679,11 +675,10 @@ case $? in
     if check_idle "$POST2"; then
       emit "pushed"
     fi
-    # THIRD AND FINAL Enter -- codex only (2026-07-29 live incident). A real DM
-    # to an agent on the codex runtime sat paste-collapsed and genuinely
-    # unsubmitted in
-    # its composer for ~46 minutes: BOTH Enters above failed to register, and a
-    # human eventually unstuck it with one more bare Enter -- the same keypress
+    # THIRD AND FINAL Enter -- codex only. Observed in practice:
+    # a message to an agent on the codex runtime sat paste-collapsed and
+    # genuinely unsubmitted in its composer: BOTH Enters above failed to
+    # register, and one more bare Enter delivered it -- the same keypress
     # this script had already sent twice. So the two-try ceiling was empirically
     # one short for Codex, and the give-up below was reporting
     # "pushed-unverified" for a message that one more try would have delivered.
@@ -701,8 +696,8 @@ case $? in
     # Bounded at exactly one extra attempt: if it misses, we fall straight
     # through to the unchanged give-up. Three tries then stop is the ceiling.
     #
-    # Claude is deliberately excluded. Its queue-and-autosubmit IS verified
-    # (2026-06-23), so a Claude pane in this state is more likely holding a
+    # Claude is deliberately excluded. Its queue-and-autosubmit IS verified,
+    # so a Claude pane in this state is more likely holding a
     # queued message than a stuck one, and the reasoning below about not
     # fighting CC's queue still governs. Same gating precedent as the
     # codex-only paste-identity recovery above.
@@ -723,7 +718,7 @@ case $? in
       fi
     fi
     # Not busy after the retries. Do NOT Ctrl-U clear, even if our text is still
-    # staged (standing rule, 2026-06-23): clearing risks destroying a CC-QUEUED message
+    # staged: clearing risks destroying a CC-QUEUED message
     # on a pane whose busy state check_idle missed -- its busy-detection is
     # unreliable (e.g. the `…` / `✽` spinner glyphs it does not match). If the
     # text is queued, CC auto-submits it; if it is a genuine idle stall, the

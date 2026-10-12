@@ -17,7 +17,7 @@ export const OptionSchema = z.object({
  * Uses z.object (strict default in zod 4 strips unknown keys, but that's fine
  * because unknown fields are preserved verbatim in rawMeta, not via zod).
  *
- * CARD-05: Use safeParse - never parse() - so malformed cards fall back to plain bubbles.
+ * Use safeParse - never parse() - so malformed cards fall back to plain bubbles.
  */
 export const CardSchema = z.object({
   "decision-id": z.string().min(1),
@@ -31,7 +31,7 @@ export type CardSchemaOutput = z.output<typeof CardSchema>;
  * Validates the known fields of an action card.
  * 'action-id' is required; 'priority' and 'ticket' are optional.
  *
- * CARD-05: Use safeParse - never parse() - so malformed blocks fall back to plain bubbles.
+ * Use safeParse - never parse() - so malformed blocks fall back to plain bubbles.
  */
 export const ActionSchema = z.object({
   "action-id": z.string().min(1),
@@ -43,9 +43,9 @@ export type ActionSchemaInput = z.input<typeof ActionSchema>;
 export type ActionSchemaOutput = z.output<typeof ActionSchema>;
 
 /**
- * Pinned priority vocabulary (peer review, Atlas TASK-438): left open, agents
- * file 'urgent', 'P1', '1', 'high' and the ranking comparator turns to
- * garbage-in. The schema stays a tolerant string (CARD-05); normalisation
+ * Pinned priority vocabulary. Left open, agents
+ * file 'urgent', 'P1', '1', 'high' and the ranking comparator turns that
+ * into garbage-in. The schema stays a tolerant string; normalisation
  * happens here at parse time, in the defaults-over-skip spirit: an unknown
  * value WARNS and normalises to "normal" - it never skips the card, because
  * a mistyped priority that vanishes an action from the morning list would be

@@ -1,13 +1,13 @@
 /**
  * review-exts.ts
  *
- * Shared extension + language mappings for the review panel (TASK-562).
+ * Shared extension + language mappings for the review panel.
  * Imported by both the server (review.server.ts) and client components
  * (Markdown.tsx, ReviewPanel.tsx) so the allowlist and link-open predicate
  * stay in one place.
  *
  * No .server suffix - safe to import in the browser bundle (no fs/os/env).
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 // ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ export const REVIEW_MD_EXTS = new Set([".md", ".txt", ".markdown"]);
  *
  * Deliberately excludes:
  *   - .env (real, secret-bearing - allowed only as *.example / *.sample)
- *   - .svg (inline asset risk - TASK-431 decision)
+ *   - .svg (inline asset risk)
  *   - binary-typical extensions (.wasm, .bin, etc.)
  *
  * The binary-NUL guard in readReviewFile handles mislabeled binary files.
@@ -250,8 +250,8 @@ export function extKind(ext: string): "markdown" | "code" {
 
 /**
  * Image extensions the /api/review-asset endpoint will serve. Kept SEPARATE
- * from ALL_REVIEW_EXTS on purpose: images are never opened in the review panel
- * (TASK-431 decision) - they render inline or open in a new tab. This set MUST
+ * from ALL_REVIEW_EXTS on purpose: images are never opened in the review panel;
+ * they render inline or open in a new tab. This set MUST
  * stay in sync with REVIEW_ASSET_EXTS in review.server.ts (the server-side gate
  * that actually serves the bytes): png / jpg / jpeg / gif / webp, no SVG.
  */

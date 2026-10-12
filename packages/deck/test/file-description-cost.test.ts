@@ -4,7 +4,7 @@
  * The cost-per-call formula is the cost-control mechanism, so the math is
  * pinned here. Pure - no fs, no gemini call.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

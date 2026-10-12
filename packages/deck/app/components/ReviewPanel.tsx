@@ -1,5 +1,5 @@
 /**
- * ReviewPanel.tsx - Side panel for reviewing markdown documents (TASK-431).
+ * ReviewPanel.tsx - Side panel for reviewing markdown documents.
  *
  * Desktop (md+): renders as a resizable column beside the thread with
  * independent scroll and a sticky header (basename + truncated full path +
@@ -22,7 +22,7 @@
  * Relative image srcs inside the doc are rewritten to /api/review-asset by the
  * Markdown renderer (via reviewDocBasePath prop).
  *
- * No .server imports - FND-02. ASCII only - no em-dashes - FND-05.
+ * No .server imports. ASCII only - no em-dashes.
  */
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useFetcher } from "react-router";
@@ -251,7 +251,7 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
     if (isImage) return;
 
     if (isAttachment) {
-      // Fetch /attachments/ URL as text directly (already guarded by TASK-430 route).
+      // Fetch /attachments/ URL as text directly.
       fetch(fetchUrl)
         .then((res) => {
           if (!res.ok) {
@@ -353,7 +353,7 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
             )
             : fileKind === "code"
             ? (
-              // TASK-562: code files rendered through CodeView (syntax-highlighted).
+              // Code files rendered through CodeView (syntax-highlighted).
               // Negative margin (-1rem all sides) cancels the parent px-4 py-4
               // padding so the dark code body fills the panel edge-to-edge
               // (full-bleed, like a real editor pane). Markdown docs keep their
@@ -378,7 +378,7 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
   );
 }
 
-// TASK-705: memoise PanelContent so a ReviewPanel re-render that leaves
+// Memoise PanelContent so a ReviewPanel re-render that leaves
 // docParam/onClose/onOpenDoc unchanged (e.g. a panel resize) does not cascade
 // into a fresh Markdown parse. The callback props are stabilised via useCallback
 // in ReviewPanel, so this shallow comparison actually holds. Exported so the
@@ -398,7 +398,6 @@ export const PanelContent = memo(PanelContentImpl);
  * Usage:
  *   const [searchParams, setSearchParams] = useSearchParams();
  *   const docParam = searchParams.get(DOC_PARAM);
- *   ...
  *   <ReviewPanel />  // reads/writes ?doc= internally
  */
 function ReviewPanelImpl() {
@@ -406,7 +405,7 @@ function ReviewPanelImpl() {
   const docParam = searchParams.get(DOC_PARAM);
   const { panelWidth, handleProps } = useResizablePanel();
 
-  // TASK-705: useCallback keeps the handler references stable across ReviewPanel
+  // The useCallback wrappers keep the handler references stable across ReviewPanel
   // re-renders so the memo boundaries below (PanelContent -> Markdown) hold.
   // setSearchParams is the only dependency. Note it is NOT referentially stable:
   // React Router v7 memoises it with deps [navigate, searchParams], so it changes
@@ -484,7 +483,7 @@ function ReviewPanelImpl() {
   );
 }
 
-// TASK-705: memoise ReviewPanel. It takes zero props, so React.memo's shallow
+// Memoise ReviewPanel. It takes zero props, so React.memo's shallow
 // prop comparison always succeeds and the render is SKIPPED whenever the parent
 // (ThreadView) re-renders for unrelated reasons - notably a composer keystroke
 // updating liveDraft, which was defeating Markdown's own memo by re-creating the

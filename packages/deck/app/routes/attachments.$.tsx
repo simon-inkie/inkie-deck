@@ -9,11 +9,11 @@
  *
  * 404 on ANY guard failure - no information leak about the reason.
  *
- * SEAM RULE (FND-02): this file imports ONLY from the .server module.
+ * SEAM RULE: this file imports ONLY from the .server module.
  * It does NOT import node:fs, node:path, or any env var string directly.
  * The seam.test.ts ban-list covers this route (same discipline as the inbox seam).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/attachments.$";
 import { readAttachment } from "~/lib/attachments.server";
@@ -38,7 +38,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     return new Response(null, { status: 404 });
   }
 
-  // Peer-review fold-in (Atlas, TASK-430 plan): constrain served paths to the
+  // Constrain served paths to the
   // documented convention shape <agent>/mc/<filename> (single agent segment,
   // fixed mc segment, single filename segment). The route's authority matches
   // the convention, not the whole root tree.

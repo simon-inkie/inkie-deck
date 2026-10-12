@@ -1,7 +1,7 @@
 /**
- * Tests for parseHeader delimiter tolerance (2026-06-11 MC lifeline incident).
+ * Tests for parseHeader delimiter tolerance.
  *
- * The block-header grammar is ASCII (FND-05): fields separated by " - ".
+ * The block-header grammar is ASCII: fields separated by " - ".
  * Agents nonetheless slip em-dashes into hand-written headers. A header that
  * fails to parse leaves an empty timestamp on a block that still carries a
  * card, and the queue loader then threw "Invalid time value" on every page.

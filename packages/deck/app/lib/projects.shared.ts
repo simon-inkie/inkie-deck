@@ -5,10 +5,10 @@
  * projects.server.ts imports from here; ProjectBoard and ProjectCard import from here.
  *
  * Keeping these values outside projects.server.ts avoids importing a .server module
- * into client components (FND-02 discipline: .server suffix keeps fs out of the bundle,
+ * into client components (the .server suffix keeps fs out of the bundle,
  * but value imports from .server modules can still pull node builtins in some bundlers).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 export const VALID_COLUMNS = [
@@ -31,12 +31,12 @@ export interface ProjectCard {
   /** Optional Linear / external ticket URL. */
   ticket?: string;
   /**
-   * ADDITIVE (TASK-462 Phase 1): the human user this card is for / waiting
-   * on (alex|robin). Distinct from agent (the working lane owner).
+   * ADDITIVE: the human user this card is for / waiting
+   * on (the instance user id). Distinct from agent (the working lane owner).
    */
   assignee?: string;
   /**
-   * ADDITIVE (TASK-445): normalised ticket identifier (e.g. "TASK-432") derived
+   * ADDITIVE: normalised ticket identifier (e.g. "PROJ-123") derived
    * from the ticket: frontmatter field at read time. File value is untouched.
    * Absent when ticket: is missing or the value does not normalise.
    */
@@ -44,35 +44,35 @@ export interface ProjectCard {
   /** ISO-8601 string. */
   updated: string;
   /**
-   * ADDITIVE (TASK-439): first body paragraph, truncated to ~140 chars.
+   * ADDITIVE: first body paragraph, truncated to ~140 chars.
    * Empty string when the card has no body. Derived; not stored.
    */
   summary: string;
   /**
-   * ADDITIVE (TASK-439): full body text (everything after the frontmatter fence).
+   * ADDITIVE: full body text (everything after the frontmatter fence).
    * Empty string when the card has no body. Derived; not stored.
    */
   body: string;
   /**
-   * ADDITIVE (TASK-439): optional links: frontmatter key - string list of
+   * ADDITIVE: optional links: frontmatter key - string list of
    * local artefact paths. Absent when the key is missing or non-list.
    * Tolerant reader: non-string entries are filtered out with a warn.
    */
   links?: string[];
   /**
-   * ADDITIVE (TASK-440): optional blocked-on: frontmatter key - free string
-   * describing what is blocking this card (e.g. "TASK-429 merge", "Alex's Deepgram key").
+   * ADDITIVE: optional blocked-on: frontmatter key - free string
+   * describing what is blocking this card (e.g. "PROJ-123 merge", "the owner's API key").
    * Absent when the key is missing or non-string (tolerant reader: non-string warns + ignored).
    */
   blockedOn?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Mini-card derivation (TASK-439, lifted here in TASK-454)
+// Mini-card derivation
 // ---------------------------------------------------------------------------
 
 /**
- * Compact view-model for the work panel rows (TASK-454 slide-out; previously
+ * Compact view-model for the work panel rows (slide-out; previously
  * the thread work strip). Serialisable - built in a loader, passed down.
  */
 export interface MiniCard {

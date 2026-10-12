@@ -1,7 +1,8 @@
 /**
  * RouteErrorPanel - the shared error surface for route-level ErrorBoundaries.
  *
- * MC is Alex's lifeline: an error must never be a dead end. Two principles:
+ * MC must stay usable when a route fails, so an error must never be a dead
+ * end. Two principles:
  *
  * 1. SCOPED BLAST RADIUS: every content route under the shell exports an
  *    ErrorBoundary rendering this panel, so a loader/render failure in one
@@ -10,11 +11,11 @@
  *    falls back to the full-page root boundary.
  *
  * 2. HONEST MESSAGING: MC is a tailnet-only internal tool - showing the real
- *    error message in production is a feature, not a leak. Alex (or the
- *    agent he pastes it to) needs the actual failure text, not "Oops".
+ *    error message in production is a feature, not a leak. The operator (or the
+ *    agent they paste it to) needs the actual failure text, not "Oops".
  *
- * Pure presentational: no fs, no env (FND-02 client-safe).
- * ASCII only - no em-dashes (FND-05).
+ * Pure presentational: no fs, no env.
+ * ASCII only - no em-dashes.
  */
 import { isRouteErrorResponse, Link } from "react-router";
 import { AlertTriangle, RefreshCw, Home } from "lucide-react";
@@ -24,7 +25,7 @@ import { cn } from "~/lib/utils";
 interface RouteErrorPanelProps {
   /** The error from Route.ErrorBoundaryProps. */
   error: unknown;
-  /** What broke, in Alex's terms: "this thread", "the project board", ... */
+  /** What broke, in the operator's terms: "this thread", "the project board", ... */
   scope: string;
   /** Optional extra hint line for this surface. */
   hint?: string;

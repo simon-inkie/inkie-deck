@@ -19,7 +19,7 @@
  *
  *   5. Ignored shapes: unknown type fields emit a "parse" ignored event.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

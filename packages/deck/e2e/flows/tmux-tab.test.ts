@@ -1,5 +1,5 @@
 /**
- * tmux-tab.test.ts - TASK-437: the per-thread terminal view, plus what is left
+ * tmux-tab.test.ts - the per-thread terminal view, plus what is left
  * of the old Team tab at /tmux.
  *
  * The e2e env points MC_TMUX_SESSION at a guaranteed-missing session
@@ -7,14 +7,14 @@
  * page loads, the states are honest, and hostile ?window= values never 500.
  * Live capture is exercised manually on the real session.
  *
- * 2026-07-31: /tmux is the Activity page now - the window picker and the
- * always-on pane came off it (Alex: "I dont think we need the constant tmux
- * readout"), so its assertions here moved from "the pane's empty state" to
+ * /tmux is the Activity page now - the window picker and the
+ * always-on pane came off it (a constant tmux readout was judged unnecessary),
+ * so its assertions here moved from "the pane's empty state" to
  * "the page still loads and is honest with no activity configured". The e2e
  * env sets no activity root, so that is the branch it exercises. The per-thread
  * ?view=tmux surface below is untouched and remains the real pane.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -35,7 +35,7 @@ test("TASK-691: the Activity page loads and says so when activity is not configu
 
   // No activity root in the e2e env -> the honest not-available state.
   await expect(page.getByText("Activity is not available on this instance")).toBeVisible();
-  // The pane and its window picker are gone from this page (2026-07-31): the
+  // The pane and its window picker are gone from this page: the
   // live terminal lives on the thread, and nothing here can send.
   await expect(page.getByTestId("tmux-window-picker")).not.toBeVisible();
   await expect(page.getByTestId("tmux-pane")).not.toBeVisible();
@@ -45,7 +45,7 @@ test("TASK-691: the Activity page loads and says so when activity is not configu
 test("TASK-691: leftover ?window= values from old bookmarks never 500", async ({
   page,
 }) => {
-  // The param is not read any more, but the old links exist in Alex's history.
+  // The param is not read any more, but the old links exist in browser history.
   for (const q of ["?window=ghost", "?window=quill%3Bls", "?window=..%2Fio"]) {
     const response = await page.goto(`/tmux${q}`);
     expect(response?.status(), q).toBe(200);
@@ -54,7 +54,7 @@ test("TASK-691: leftover ?window= values from old bookmarks never 500", async ({
 });
 
 // ---------------------------------------------------------------------------
-// TASK-437 amendment: per-thread chat/tmux toggle
+// Per-thread chat/tmux toggle.
 // ---------------------------------------------------------------------------
 
 test("TASK-437.1: toggle flips thread to terminal mode and back; compose follows", async ({
@@ -96,8 +96,7 @@ test("TASK-437.1: tmux view does NOT flip read receipts on disk (receipt honesty
   const after = fs.readFileSync(inboxFile, "utf8");
   expect(after).toContain("from: scribe - status: sent");
 
-  // And the chat half of the toggle carries the unread dot (Atlas
-  // complement: the toggle carries the signal the held-back receipt creates).
+  // And the chat half of the toggle carries the unread dot.
   await expect(page.getByTestId("thread-view-chat-unread")).toBeVisible();
 });
 

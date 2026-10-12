@@ -1,10 +1,10 @@
 /**
- * batch-prefs.test.ts - Unit tests for TASK-500.1 batch preferences.
+ * batch-prefs.test.ts - Unit tests for batch preferences.
  *
  * Tests clamp logic, defaults, localStorage round-trip, and malformed JSON handling.
  * localStorage is mocked via vi.stubGlobal because vitest runs in Node (no DOM).
  *
- * ASCII only (FND-05).
+ * ASCII only.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
@@ -58,7 +58,7 @@ describe("DEFAULT_BATCH_PREFS", () => {
     expect(clampHoldSeconds(DEFAULT_BATCH_PREFS.holdSeconds)).toBe(DEFAULT_BATCH_PREFS.holdSeconds);
   });
 
-  // TASK-500.4
+  // livePreview defaults to on.
   it("default livePreview is true", () => {
     expect(DEFAULT_BATCH_PREFS.livePreview).toBe(true);
   });
@@ -154,7 +154,7 @@ describe("localStorage persistence contract", () => {
     expect(validIndicators).toContain(DEFAULT_BATCH_PREFS.holdIndicator);
   });
 
-  // TASK-500.4: livePreview round-trip and non-boolean fallback.
+  // livePreview round-trip and non-boolean fallback.
   it("livePreview round-trips: true stores and JSON.parses correctly", () => {
     const stored = { holdIndicator: "pill", holdSeconds: 30, livePreview: true };
     stub.setItem(STORAGE_KEY, JSON.stringify(stored));

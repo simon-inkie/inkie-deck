@@ -1,6 +1,6 @@
 /**
  * activity.shared.ts - types + pure view-model helpers for the agent-activity
- * panel (TASK-691 step 1, the MC half).
+ * panel.
  *
  * The producer is an external sweep script, a deterministic 60s
  * sweep that writes ONE file, `$ACTIVITY_ROOT/activity.json`. MC is a
@@ -10,7 +10,7 @@
  *
  * Why a .shared module and not just activity.server.ts: the panel component
  * needs the types and the pure label/tone helpers, and importing values from a
- * .server module into a client component is the exact thing FND-02 forbids
+ * .server module into a client component is exactly what the server/client seam rule forbids
  * (same reasoning as projects.shared.ts, which exists for this).
  *
  * PARSING POSTURE - per-field tolerance, not all-or-nothing. The file is
@@ -21,7 +21,7 @@
  * document are a parse failure and an unrecognised `schema` version, because in
  * both cases nothing below can be trusted to mean what it says.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 // ---------------------------------------------------------------------------
@@ -259,7 +259,7 @@ export interface ActivityOffline {
    * mean what it says (unsupported-schema), and inventing rows for them would
    * be exactly the confident-wrong-answer this feature exists to avoid.
    *
-   * Carried (2026-07-31, Alex after seeing the offline state live) so the
+   * Carried so the
    * panel can keep showing the last cards under the offline banner instead of
    * blanking. The count the banner used to be handed separately is
    * `agents.length` now: one array, no second field to drift out of step with

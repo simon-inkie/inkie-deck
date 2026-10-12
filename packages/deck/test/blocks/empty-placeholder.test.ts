@@ -1,5 +1,5 @@
 /**
- * Regression tests for the 2026-06-11 "clicking doesn't work" bug.
+ * Regression tests for the "clicking doesn't work" bug (empty placeholder values).
  *
  * Some agents author cards with pre-written EMPTY meta fields as a template:
  *   answered:
@@ -13,7 +13,7 @@
  * 2. The placeholder line is filled IN PLACE (no duplicate YAML key, which
  *    would poison the next parse of the block).
  * 3. The applied block round-trips: serialize -> parse shows the answer.
- * 4. Non-empty values still no-op (CARD-04 idempotency unchanged).
+ * 4. Non-empty values still no-op.
  */
 import { describe, it, expect } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";
@@ -27,7 +27,7 @@ import {
   CUSTOM_ANSWER_RESOLUTION,
 } from "~/lib/blocks/answer.js";
 
-/** Card block in the placeholder-template shape (Quill's 2026-06-10 cards). */
+/** Card block in the placeholder-template shape. */
 const PLACEHOLDER_CARD = [
   `## 2026-06-10T15:27:30Z - from: quill - status: read - subject: Decision with template placeholders`,
   `decision-id: PLACEHOLDER-Q1`,

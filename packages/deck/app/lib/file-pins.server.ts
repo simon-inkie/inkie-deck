@@ -3,20 +3,20 @@
  *
  * Pins float a handful of files to the top of the Files panel and persist so
  * they survive a reload. Stored under DATA_ROOT (same root + atomic-write
- * discipline as FileQueueStore), keyed by (threadAgent, participant) so Alex
- * and Robin each pin in their OWN instance (author-agnostic, SPEC D - each
+ * discipline as FileQueueStore), keyed by (threadAgent, participant) so the operator
+ * and a second user each pin in their OWN instance (author-agnostic, SPEC D - each
  * instance runs with its own mcUser + its own DATA_ROOT/data file).
  *
  * Shape: data/file-pins.json
  *   { version: 1, threads: { "<agent>::<participant>": { pins: [path, ...] } } }
  * pins[] is pin ORDER (first pinned first), which the panel renders top-down.
  *
- * Degrades to empty on any read failure (T-03-01 family). Atomic writes via
- * the shared confine + atomicWrite primitive (TASK-434 - every MC write confined).
+ * Degrades to empty on any read failure. Atomic writes via
+ * the shared confine + atomicWrite primitive.
  *
  * The .server suffix strips this from the client bundle.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";

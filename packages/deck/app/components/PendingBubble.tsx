@@ -1,5 +1,5 @@
 /**
- * PendingBubble.tsx - Visual pending batch pseudo-bubble (TASK-500).
+ * PendingBubble.tsx - Visual pending batch pseudo-bubble.
  *
  * Renders inline in the message list above the composer when there is a
  * non-IDLE pending batch. Shows the accumulated message text with a state
@@ -13,8 +13,8 @@
  * also works in Compose). The "editing" indicator has no tap target - it just
  * signals that the current draft must be submitted before delivery resumes.
  *
- * No .server imports - all data arrives via props (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props.
+ * ASCII only - no em-dashes.
  */
 import { Clock, Pencil, X } from "lucide-react";
 import { Badge } from "./ui/badge";
@@ -28,7 +28,7 @@ interface PendingBubbleProps {
   /** Called when the user cancels the held batch (discards without sending). */
   onCancel: () => void;
   /**
-   * TASK-500.4: Live draft text from the composer. When non-empty, rendered as
+   * Live draft text from the composer. When non-empty, rendered as
    * an additional in-progress paragraph after the held text (SUSPENDED only).
    */
   liveDraft?: string;
@@ -131,7 +131,7 @@ export function PendingBubble({ state, onSendNow, onCancel, liveDraft }: Pending
             {para}
           </p>
         ))}
-        {/* TASK-500.4: live draft -- shown while the user is typing a follow-up
+        {/* Live draft -- shown while the user is typing a follow-up
             (SUSPENDED phase). Visually quieter (opacity-70) to distinguish
             in-progress text from the already-held paragraphs above. */}
         {liveDraft ? (

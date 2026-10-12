@@ -1,9 +1,9 @@
 /**
- * test/activity.test.ts - the activity seam (TASK-691 step 1).
+ * test/activity.test.ts - the activity seam.
  *
  * WHAT THIS SUITE IS WEIGHTED TOWARDS, AND WHY. The producer sweep is not on
  * cron yet, so for the whole life of this MR - and for however long after it
- * ships until Alex wires the job - there IS no activity.json. The
+ * ships until the operator wires the job - there IS no activity.json. The
  * missing/stale/corrupt paths are not edge cases here, they are the only paths
  * that run in production today, so they get the same care as the happy path
  * (and more cases). The one invariant above all others: readActivity NEVER
@@ -13,8 +13,8 @@
  * Fixtures are tmpdir-only, and every clock is injected (MC_NOW pattern, same
  * as briefs.test.ts) so the staleness boundary is deterministic in CI.
  *
- * VALID-03: writes only to os.tmpdir(). No repo files are mutated.
- * ASCII only - no em-dashes (FND-05).
+ * Writes only to os.tmpdir(). No repo files are mutated.
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -239,8 +239,8 @@ describe("resolveActivityRoot", () => {
 // The instance gate
 // ---------------------------------------------------------------------------
 
-describe("activityEnabled (the Alex-only gate, decision Q6)", () => {
-  it("is OFF when no ACTIVITY_ROOT is configured (Robin's instance today)", () => {
+describe("activityEnabled (the operator-only gate)", () => {
+  it("is OFF when no ACTIVITY_ROOT is configured (a second user's instance)", () => {
     expect(activityEnabled({})).toBe(false);
     expect(activityEnabled({ MC_USER: "robin" })).toBe(false);
   });
@@ -248,7 +248,7 @@ describe("activityEnabled (the Alex-only gate, decision Q6)", () => {
   it("is ON for any instance whose env names an absolute ACTIVITY_ROOT", () => {
     expect(activityEnabled({ ACTIVITY_ROOT: "/srv/activity" })).toBe(true);
     // The promise the gate exists to keep: adding another instance later is a
-    // config change, not a rewrite. Robin with a root set gets the panel.
+    // config change, not a rewrite. A second user with a root set gets the panel.
     expect(activityEnabled({ MC_USER: "robin", ACTIVITY_ROOT: "/srv/activity" })).toBe(true);
   });
 
@@ -599,7 +599,7 @@ describe("readActivity - staleness (the honest offline-since state)", () => {
     // not a generic error, so this is the load-bearing assertion.
     expect(view.sweptAt).toBe(SWEPT);
     expect(view.detail).toContain("180 minutes ago");
-    // 2026-07-31 (Alex, after seeing the blank version): the rows travel with
+    // The rows travel with
     // the stale verdict so the panel can dim them under the banner rather than
     // show nothing. The seam hands over everything it legitimately knows; the
     // "not a claim about now" half is enforced where they render.
@@ -626,7 +626,7 @@ describe("readActivity - staleness (the honest offline-since state)", () => {
       expect(view.reason).toBe(reason);
       expect(view.agents, reason).toEqual([]);
     }
-    // And the unconfigured instance (Robin's), which reads nothing at all.
+    // And the unconfigured instance, which reads nothing at all.
     const unconfigured = readActivity({}, NOW);
     expect(unconfigured.state).toBe("offline");
     if (unconfigured.state !== "offline") return;

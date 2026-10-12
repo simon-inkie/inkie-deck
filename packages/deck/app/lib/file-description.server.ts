@@ -2,8 +2,8 @@
  * file-description.server.ts - gemini-3.5-flash-lite description generator +
  * HEAVY per-call spend logging + persisted description cache.
  *
- * SPEC B (decided, Alex 2026-06-18): "follow Nova's AI SDK pattern but with
- * heavy logging, especially on spend." Model gemini-3.5-flash-lite via
+ * SPEC B: follow the AI SDK pattern used elsewhere in the platform, but with
+ * heavy logging, especially on spend. Model gemini-3.5-flash-lite via
  * @ai-sdk/google (createGoogleGenerativeAI({ apiKey: process.env
  * .GOOGLE_GENERATIVE_AI_API_KEY }) then googleProvider(model)), generateText.
  *
@@ -13,7 +13,7 @@
  *      is and why it came up here".
  *   2. HEAVY spend logging - EVERY call appends a JSONL line (tokens + computed
  *      USD cost + thread/file context) to data/gemini-spend.jsonl. This is the
- *      cost-control mechanism (per Alex), not a gate. Totalable with `jq` or
+ *      cost-control mechanism, not a gate. Totalable with `jq` or
  *      sumGeminiSpend().
  *   3. Persisted description cache keyed by (path + window hash) so each
  *      description generates ONCE, never on render.
@@ -24,7 +24,7 @@
  * Server-side only (.server suffix strips it from the client bundle). The
  * GOOGLE_GENERATIVE_AI_API_KEY never reaches the client.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -44,11 +44,11 @@ import { descriptionCacheKey } from "./file-manifest.js";
 
 /**
  * The model id. Must be a model the live API serves for generateContent.
- * gemini-3.5-flash-lite is now GA and verified live (2026-07-22): a real
+ * gemini-3.5-flash-lite is now GA and verified live: a real
  * generateContent call returns HTTP 200 with modelVersion
  * gemini-3.5-flash-lite-07-2026. It is the current flash-lite tier.
  *
- * History: at first ship (2026-06-18) gemini-3.5-flash-lite 404'd ("not found
+ * History: at first ship gemini-3.5-flash-lite 404'd ("not found
  * for API version v1beta") and silently degraded every description to
  * link-text, so we fell back to gemini-3.1-flash-lite (the newest GA tier at
  * that time). That fallback is no longer needed now 3.5 has shipped.
@@ -162,7 +162,7 @@ interface DescriptionCacheFile {
 }
 
 /**
- * MR !17: closes the residual N+1 lag behind the file-panel virtualisation fix
+ * Closes the residual N+1 lag behind the file-panel virtualisation fix
  * which cached the manifest read but never touched this cache.
  *
  * In-module memoisation for loadCache(), mirroring file-manifest-cache.server.ts:

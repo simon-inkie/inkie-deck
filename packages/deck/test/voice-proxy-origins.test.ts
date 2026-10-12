@@ -1,5 +1,5 @@
 /**
- * voice-proxy-origins.test.ts - the default origin allowlist (issue #27).
+ * voice-proxy-origins.test.ts - the default origin allowlist.
  *
  * Two layers. The pure suite pins the computation in voice-relay.mjs, imported
  * as the .mjs because that is the copy the running proxy uses. The process
@@ -7,7 +7,7 @@
  * VOICE_ALLOWED_ORIGINS, no key) and asserts on which upgrades a real client
  * gets, since the wiring from the computation into verifyClient is what broke.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, afterEach } from "vitest";

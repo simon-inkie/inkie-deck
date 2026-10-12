@@ -4,8 +4,8 @@
  * When parseHeader failed, parse.ts substituted a blank header; serializeHeader
  * then interpolated those blanks and wrote "##  - from:  - status: read - subject: "
  * back to disk, which no parser can read. So the damage compounded with every
- * read-write cycle, with nobody sending anything wrong. 318 lines across 17 real
- * inbox files were produced this way, including 50 in Alex's thread with Quill.
+ * read-write cycle, with nobody sending anything wrong. Hundreds of header
+ * lines across many real inbox files were produced this way.
  *
  * serializeHeader's own docstring promised HEADER_RE-matching output. These tests
  * pin that promise, which is the thing that was actually false.
@@ -67,8 +67,8 @@ describe("serializeHeader round-trip", () => {
     // set ONLY on the failure path. If it were carried on success too, the
     // read-flip (sent -> read) would serialise the OLD line and never persist.
     //
-    // THROUGH THE PRODUCTION SEAM, parseBlock -> serializeBlock (peer-review
-    // catch, MR !44). The first version called parseHeader directly, which
+    // THROUGH THE PRODUCTION SEAM, parseBlock -> serializeBlock.
+    // The first version called parseHeader directly, which
     // BYPASSES parse.ts - and parse.ts is the exact place rawHeader could
     // accidentally be attached on the success path. A regression adding
     // rawHeader to both arms there would have left the old test green while

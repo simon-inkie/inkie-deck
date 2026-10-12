@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 /**
- * compose-voice-disabled.test.tsx - the mic's disabled state (issue #27).
+ * compose-voice-disabled.test.tsx - the mic's disabled state.
  *
  * Compose uses useFetcher, so it renders inside createRoutesStub, as the other
  * component tests here do.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";

@@ -1,26 +1,26 @@
 /**
- * voice.test.ts - TASK-433 E2E: voice proxy not running + debug panel visibility.
+ * voice.test.ts - E2E: voice proxy not running + debug panel visibility.
  *
  * The E2E server starts without a voice proxy (setup.mjs does not spawn one
  * and VOICE_PROXY_URL is not set in .e2e-env). The mic button must render in
  * the unavailable state and compose must remain fully functional.
  *
- * Debug panel (TASK-433 reopened):
+ * Debug panel:
  *   - ?debug=1 renders the panel (data-testid="voice-debug-panel")
  *   - Without the param the panel must be absent from the DOM
  *
- * Note on mock-proxy drive test: the plan (TASK-433 reopened) specifies an
+ * Note on mock-proxy drive test: the plan specifies an
  * E2E test where a mock proxy emits status+interim+final rows into the panel.
  * That test requires a WS server running inside the E2E process. The
  * infrastructure for that is not present in the current e2e/setup.mjs (the
  * VOICE_PROXY_URL is the default localhost:5176 and no mock server is started).
  * The mock-proxy panel-population test is deferred to the next commission
- * that wires a mock WS server into the e2e setup (see brain-todo: TASK-433
- * mock-proxy e2e). The panel-presence/absence tests fully cover the routing
+ * that wires a mock WS server into the e2e setup (see the brain-todo item
+ * "mock-proxy e2e"). The panel-presence/absence tests fully cover the routing
  * and rendering branch.
  *
- * VALID-03: writes only to tmpdir (no inbox or fixture writes here).
- * ASCII only - no em-dashes (FND-05).
+ * Writes only to tmpdir (no inbox or fixture writes here).
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import path from "node:path";

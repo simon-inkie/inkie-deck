@@ -4,7 +4,7 @@
  * Minimal surface (Root/Trigger/Content/Item/Label/Separator) - the parts the
  * needs-you bell uses. Content renders in a portal, so it is absent from the
  * DOM until opened (keeps the e2e DOM contracts clean).
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import * as React from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";

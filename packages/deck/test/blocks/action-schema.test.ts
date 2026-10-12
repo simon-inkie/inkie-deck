@@ -5,11 +5,11 @@
  * Covers:
  * - Full action-card block (all fields)
  * - Minimal action-card block (action-id only)
- * - Both decision-id and action-id present: decision wins (CARD-05 precedence + console.warn)
- * - Garbage/no action-id: plain bubble, no throw (CARD-05 never-throw contract)
+ * - Both decision-id and action-id present: decision wins
+ * - Garbage/no action-id: plain bubble, no throw
  * - Done field round-trips via rawMeta
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, vi } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";
@@ -97,7 +97,7 @@ describe("parseBlock - action card parsing", () => {
     const block = parseBlock(MINIMAL_ACTION_BLOCK);
     expect(block.actionCard).toBeDefined();
     expect(block.actionCard!.actionId).toBe("action-minimal");
-    // Absent priority normalises to "normal" (pinned vocab, Atlas TASK-438)
+    // Absent priority normalises to "normal" (pinned vocabulary)
     expect(block.actionCard?.priority).toBe("normal");
     expect(block.actionCard!.ticket).toBeUndefined();
   });
@@ -174,7 +174,7 @@ describe("parseBlock - action card parsing", () => {
     expect(block.actionCard).toBeUndefined();
   });
 
-  it("normalises an unknown priority to normal with a warn, never skipping the card (Atlas fold)", () => {
+  it("normalises an unknown priority to normal with a warn, never skipping the card", () => {
     const raw = [
       "## 2026-06-06T10:00:00Z - from: quill - status: sent - subject: Mistyped priority",
       "action-id: act-weird-priority",

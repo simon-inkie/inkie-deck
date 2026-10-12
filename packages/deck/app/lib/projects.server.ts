@@ -1,8 +1,8 @@
 /**
  * projects.server.ts
  *
- * Storage layer for the Projects kanban board (TASK-432).
- * Guarded by the shared confineToRootReal primitive (TASK-434):
+ * Storage layer for the Projects kanban board.
+ * Guarded by the shared confineToRootReal primitive:
  *   - realpath BOTH sides for containment
  *   - sep-suffixed startsWith prefix assert
  *   - MC_SANDBOX_ONLY live-silo refusal on the root
@@ -13,8 +13,8 @@
  *   listCards() - flat *.md scan, YAML frontmatter parse, tolerant skip+warn.
  *   moveCard(cardId, column) - targeted line edits on column: and updated: only.
  *
- * The .server suffix keeps this module out of the client bundle (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * The .server suffix keeps this module out of the client bundle.
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -68,7 +68,7 @@ export function resolveProjectsRoot(): string {
 /**
  * Assert that targetPath is safe to read or write within PROJECTS_ROOT.
  *
- * TASK-434: rebased onto the shared confineToRootReal primitive in
+ * Now built on the shared confineToRootReal primitive in
  * safe-fs.server.ts (realpath both sides, parent-realpath + basename,
  * final-component realpath, sep-suffixed prefix assert). The substring ban
  * is gone; the MC_SANDBOX_ONLY live-silo refusal guards the root instead.
@@ -98,7 +98,7 @@ export function assertSafeProjectPath(
  * Read all *.md files in PROJECTS_ROOT (flat, v1).
  *
  * YAML frontmatter region is parsed tolerantly: a card that is malformed or
- * missing required fields is skipped with a console.warn (CARD-05 spirit).
+ * missing required fields is skipped with a console.warn.
  * An unknown column value renders in "todo" with a warn (visible beats vanished).
  *
  * Returns cards sorted by updated desc within each column call-site can re-sort
@@ -139,7 +139,7 @@ export function listCards(): ProjectCard[] {
     const parsed = parseFrontmatter(raw, name, mtimeIso);
     if (!parsed) continue;
 
-    // ADDITIVE (TASK-439): derive summary + body from the content after frontmatter.
+    // ADDITIVE: derive summary + body from the content after frontmatter.
     const { summary, body, links } = extractBodyFields(raw, name);
 
     cards.push({ ...parsed, id: name, summary, body, links });
@@ -158,7 +158,7 @@ export function listCards(): ProjectCard[] {
 /**
  * Parse the YAML frontmatter region of a card file.
  *
- * DEFAULTS-OVER-SKIP (peer review, Atlas 2026-06-06): skip (null + warn) ONLY
+ * DEFAULTS-OVER-SKIP: skip (null + warn) ONLY
  * when the card is structurally not a card - no frontmatter fence, unparseable
  * YAML, or a non-object region. MISSING FIELDS get defaults instead of a skip
  * (title <- filename sans .md, agent <- "unassigned", updated <- file mtime,
@@ -261,23 +261,23 @@ function parseFrontmatter(
     column = "todo";
   }
 
-  // Optional ticket (raw value preserved; normalised id derived at read time).
-  // TASK-462 Phase 1: optional human assignee (tolerant - absent on old cards).
+  // Optional human assignee (tolerant - absent on old cards).
   const assignee =
     typeof fm["assignee"] === "string" && fm["assignee"].trim() !== ""
       ? fm["assignee"].trim().toLowerCase()
       : undefined;
 
+  // Optional ticket (raw value preserved; normalised id derived at read time).
   const ticket =
     typeof fm["ticket"] === "string" && fm["ticket"].trim() !== ""
       ? fm["ticket"]
       : undefined;
 
-  // ADDITIVE (TASK-445): normalised ticket id, derived from ticket: at read time.
+  // ADDITIVE: normalised ticket id, derived from ticket: at read time.
   // File value is untouched; both bare ids and Linear URLs are accepted.
   const ticketId = ticket !== undefined ? (normaliseTicket(ticket) ?? undefined) : undefined;
 
-  // ADDITIVE (TASK-440): optional blocked-on: key. Tolerant: non-string warns + ignored.
+  // ADDITIVE: optional blocked-on: key. Tolerant: non-string warns + ignored.
   let blockedOn: string | undefined = undefined;
   const blockedOnRaw = fm["blocked-on"];
   if (blockedOnRaw !== undefined) {
@@ -294,7 +294,7 @@ function parseFrontmatter(
 }
 
 // ---------------------------------------------------------------------------
-// extractBodyFields (internal - TASK-439)
+// extractBodyFields (internal)
 // ---------------------------------------------------------------------------
 
 /**
@@ -455,7 +455,7 @@ export function moveCard(cardId: string, column: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// createCard (TASK-462 Phase 1 - user-created todos from the MC board)
+// createCard (user-created todos from the board)
 // ---------------------------------------------------------------------------
 
 /** Input for createCard. Validated here - parse, don't trust the route. */
@@ -493,7 +493,7 @@ export function createCard(input: CreateCardInput): string {
   const ticketRaw = input.ticket?.trim();
   const ticket = ticketRaw === "" ? undefined : ticketRaw;
   if (ticket && !/^https:\/\/linear\.app\//.test(ticket) && !/^[A-Za-z]+-\d+$/.test(ticket)) {
-    throw new Error("Ticket must be a Linear URL or an id like TASK-123.");
+    throw new Error("Ticket must be a Linear URL or an id like PROJ-123.");
   }
 
   const root = resolveProjectsRoot();
@@ -563,7 +563,7 @@ export function applyTargetedEdits(
   // We process by splitting on line boundaries and tracking positions.
   const lines = raw.split(/\r?\n/);
 
-  // Peer-review fold (Atlas, TASK-432 landed review): the file must OPEN with
+  // The file must OPEN with
   // the frontmatter fence. Without this check, a structural non-card whose
   // body contains a "---" horizontal rule would have that rule treated as the
   // closing fence and get column:/updated: spliced into its body - a

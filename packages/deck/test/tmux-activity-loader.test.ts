@@ -1,5 +1,5 @@
 /**
- * tmux-activity-loader.test.ts - the Team tab loader's activity half (TASK-691).
+ * tmux-activity-loader.test.ts - the Team tab loader's activity half.
  *
  * Drives the EXPORTED loader, because the things worth pinning here are wiring
  * claims that neither the seam suite nor the render suite can see:
@@ -12,11 +12,11 @@
  *
  * MC_TMUX_SESSION is pointed at a guaranteed-missing session in every case (the
  * e2e/setup.mjs idiom), so no real agent pane is ever listed here. Nothing is
- * captured at all any more: the pane came off this page on 2026-07-31 and the
+ * captured at all any more: the pane came off this page recently and the
  * loader's only remaining tmux call is the window listing that feeds the
  * "no observation" rows.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -114,7 +114,7 @@ describe("tmux loader - the activity gate", () => {
     delete process.env["ACTIVITY_ROOT"];
     const data = await runLoader();
     expect(data.activity).toBeNull();
-    // Nothing else is left to ship: with the pane gone (2026-07-31) the page
+    // Nothing else is left to ship: with the pane gone the page
     // is the panel, so an ungated instance loads an empty payload, not a
     // half-populated terminal one.
     expect(data.avatars).toEqual({});
@@ -149,7 +149,7 @@ describe("tmux loader - activity is gated independently of tmux (decision Q6)", 
     const data = await runLoader();
     // The tmux surface is off, and the activity panel is NOT collateral
     // damage. Without this, "adding another instance is a config change" would
-    // be false for Robin, whose instance has MC_TMUX_ENABLED off.
+    // be false for a second user, whose instance has MC_TMUX_ENABLED off.
     expect(data.activity).not.toBeNull();
     expect(data.activity!.state).toBe("live");
     // The window listing (the only tmux call left after the pane came out) is
@@ -194,7 +194,7 @@ describe("tmux loader - degrades honestly (the state of the world today)", () =>
     if (data.activity?.state !== "offline") return;
     expect(data.activity.reason).toBe("stale");
     expect(data.activity.sweptAt).toBe(SWEPT);
-    // The last-known rows reach the component, which dims them (2026-07-31).
+    // The last-known rows reach the component, which dims them.
     expect(data.activity.agents.map((a) => a.agent)).toEqual(["summit"]);
     // The avatar map is keyed off those ROWS now, not off the (empty here)
     // window list. Whether summit HAS an avatar file is avatarUrl's business

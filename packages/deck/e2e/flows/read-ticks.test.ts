@@ -1,5 +1,5 @@
 /**
- * read-ticks.test.ts - TASK-443/TASK-444 read receipts and working indicator.
+ * read-ticks.test.ts - read receipts and working indicator.
  *
  * The scribe fixture thread carries four from-alex blocks:
  *   - status: read ("re: checking in") -> double tick
@@ -11,7 +11,7 @@
  * working+superseded -> double tick; working+live -> spinner + label.
  * Agent bubbles carry no ticks v1.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import path from "node:path";
 import { test, expect } from "@playwright/test";
@@ -29,7 +29,7 @@ test("TICK-01: own bubbles show sent and read ticks; agent bubbles show none", a
   await page.goto("/threads/scribe");
 
   // Three tick elements: read ("re: checking in"), sent ("one more thing"),
-  // and read (superseded working block). TASK-444: working+superseded -> read tick.
+  // and read (superseded working block). working+superseded -> read tick.
   const ticks = page.getByTestId("bubble-status-tick");
   await expect(ticks).toHaveCount(3);
 
@@ -65,7 +65,7 @@ test("TICK-02: live working block shows spinner indicator; superseded shows doub
   const workingIndicator = page.getByTestId("bubble-status-working");
   await expect(workingIndicator).toHaveCount(1);
   // The fixture's live working block is ~29h old at the e2e clock, so the
-  // stale-working disclosure (Atlas fold) appends the SENT age to the label.
+  // stale-working disclosure appends the SENT age to the label.
   await expect(workingIndicator).toHaveAttribute(
     "aria-label",
     /^scribe is on this - sent .+ ago$/

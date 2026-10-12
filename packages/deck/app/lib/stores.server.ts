@@ -8,7 +8,7 @@
  * concrete implementations (FileInboxRepository, NotImplementedQueueStore)
  * are constructed. A future DB-backed impl swaps here with no route/UI change.
  *
- * FND-02: No route or component imports fs, a literal inbox path, or
+ * No route or component imports fs, a literal inbox path, or
  * constructs a FileInboxRepository directly. They only import makeStores
  * and consume the InboxRepository / QueueStore interfaces.
  *
@@ -57,8 +57,7 @@ export interface Stores {
  *
  * @param env - The process environment (pass `process.env` from a loader/action).
  *   INBOX_ROOT must be set to an absolute path to the sandbox inbox directory.
- *   If unset, FileInboxRepository will throw when its first method is called
- *   (via resolveInboxRoot - FND-03 no-default contract).
+ *   If unset, FileInboxRepository will throw when its first method is called (via resolveInboxRoot, which has no default).
  *   QUEUE_STATE_PATH may be set to override the default queue state file path.
  *   If unset, defaults to data/queue-state.json relative to process.cwd().
  *
@@ -71,7 +70,7 @@ export function makeStores(env: NodeJS.ProcessEnv): Stores {
   const inbox: InboxRepository = new FileInboxRepository(
     // Pass inboxRoot if set; if undefined, FileInboxRepository will call
     // resolveInboxRoot() lazily and throw on first method call if INBOX_ROOT
-    // is still not set in the environment (FND-03).
+    // is still not set in the environment.
     inboxRoot && inboxRoot.trim() !== "" ? inboxRoot : undefined
   );
 

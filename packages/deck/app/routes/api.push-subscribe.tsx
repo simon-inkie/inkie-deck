@@ -1,5 +1,5 @@
 /**
- * api.push-subscribe.tsx - push subscription resource route (TASK-470).
+ * api.push-subscribe.tsx - push subscription resource route.
  *
  * GET  -> { ok, publicKey }  (the instance's VAPID public key, lazily
  *          self-provisioned - the client needs it for PushManager.subscribe)
@@ -10,7 +10,7 @@
  * (per-instance = per-user). The watcher (server/push-watcher.mjs) reads
  * the same store to deliver.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { z } from "zod";
 import type { Route } from "./+types/api.push-subscribe";

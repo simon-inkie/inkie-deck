@@ -1,6 +1,6 @@
 /**
  * inbox-window.test.ts - readBlocksWindow, the thread view's chunked
- * lazy-load read (TASK-469).
+ * lazy-load read.
  *
  * Proves:
  *   1. Default window = the last N blocks with the correct startIndex cursor
@@ -9,13 +9,13 @@
  *      short head chunk at the top of the thread.
  *   3. anchorId (deep-link focus) extends the window back to the target
  *      card through to the thread end; unknown ids fall back to the tail.
- *   4. The read is participant-parameterised (TASK-462 contract): the SAME
+ *   4. The read is participant-parameterised: the SAME
  *      call shape reads robin.md when the participant is robin - no
  *      hardcoded "alex" anywhere in the window path.
  *   5. Missing file -> empty window (totalCount 0), not a throw.
  *
  * The full readBlocks stays the contract for whole-thread consumers
- * (home/shell Needs-You derivation) - untouched by TASK-469.
+ * (home/shell Needs-You derivation) - untouched by the windowed read.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -209,7 +209,7 @@ describe("readBlocksWindow (TASK-469)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 4. Participant parameterisation (TASK-462 contract)
+  // 4. Participant parameterisation (the read is per-participant)
   // -------------------------------------------------------------------------
 
   it("reads the participant's file, not a hardcoded alex.md", async () => {

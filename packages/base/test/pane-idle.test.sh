@@ -29,7 +29,7 @@ fail() { echo "FAIL  $1${2:+ -- $2}"; FAILS=$((FAILS+1)); }
 # ---- fixtures --------------------------------------------------------------------
 # The three shapes that motivated the live-elapsed-counter rule. All are
 # genuinely mid-turn, and none of them carries an enumerated literal.
-BUSY_MODERN=$'· BUG-609 (High): "info not saving" churn bug - audit… (59s · thought for 2s)\n❯ '
+BUSY_MODERN=$'· Fix flaky retry test - audit… (59s · thought for 2s)\n❯ '
 BUSY_UNKNOWN_GLYPH=$'✽ Dilly-dallying… (16s)\n❯ '
 BUSY_BARE_MINUTES=$'· Auditing the ledger… (1m 26s)\n❯ '
 # Controls: markers the classifier has always known about.

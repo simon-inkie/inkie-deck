@@ -6,16 +6,16 @@
  * - Ranking (overdue-first, soonest deadline, older createdAt, lexicographic id)
  * - Deterministic sort order (two identical calls produce the same id ordering)
  * - Ageing display with injected clock
- * - Overdue items stay (QUEUE-06)
- * - QUEUE-09: a new reply after a handled item is NOT suppressed
+ * - Overdue items stay
+ * - A new reply after a handled item is NOT suppressed
  * - All-handled returns empty
  * - Deadline anchor reused from map (no drift)
  * - From=alex blocks are excluded
  * - Answered cards are excluded (reconciliation)
- * - Card items get 24h tier, plain items get 48h tier (QUEUE-02)
+ * - Card items get 24h tier, plain items get 48h tier
  * - newDeadlines only contains new ids (not those already in the map)
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { addHours } from "date-fns";
@@ -331,11 +331,11 @@ describe("deriveQueueItems - QUEUE-09 new reply after handled item", () => {
   it("a new reply from the same agent after a handled block is not suppressed", () => {
     const agent = "ambassador-agent";
 
-    // Older block - Alex handled this one
+    // Older block - the operator handled this one
     const oldBlock = makeBlock({
       timestamp: "2026-06-01T10:00:00Z",
       from: agent,
-      body: "Hello Alex, are you available?",
+      body: "Hello there, are you available?",
     });
     const oldId = deriveItemId(agent, oldBlock);
 
@@ -509,7 +509,7 @@ describe("deriveQueueItems - item shape", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ageDisplay - QUEUE-05 regression (argument-order guard)
+// ageDisplay - regression (argument-order guard)
 // ---------------------------------------------------------------------------
 // Regression: ageDisplay must read "in X" for a FUTURE deadline, not "X ago".
 // The bug was formatDistance(now, deadline) which yields "X ago" for future items

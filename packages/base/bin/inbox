@@ -81,14 +81,10 @@ HEADER_RE = re.compile(
 # ---------------------------------------------------------------------------
 # Bare reference detection (optional, OFF unless configured)
 # ---------------------------------------------------------------------------
-# A recurring complaint in the deployment this was ported from: messages to a
-# human arriving with a bare issue or change-request id in them ("!856",
-# "ENG-793") rather than a link the reader can click. Writing the convention
-# down twice did not stop it, so it became a mechanical block at send time.
-#
-# PORT EDIT. The original hardcoded that deployment's own conventions: one
-# change-request syntax, one issue-tracker prefix, one pair of recipient names,
-# and two URL templates. None of that is true of anyone else, so here the
+# Messages to a human that carry a bare issue or change-request id ("!123",
+# "ENG-123") rather than a link the reader can click are hard to follow. A
+# written convention does not stop that, so this can be a mechanical block at
+# send time. Issue trackers and change-request syntax differ everywhere, so the
 # PATTERN is the configuration and the check is off until you supply one:
 #
 #   INBOX_BARE_REF_PATTERN  a python regex matching the reference shapes you
@@ -97,13 +93,12 @@ HEADER_RE = re.compile(
 #                           a tool that cannot know whether you have a tracker
 #                           at all. Use alternation for more than one shape.
 #   INBOX_BARE_REF_TO       comma-separated correspondent names the check
-#                           applies to. Unset means all of them. This exists
-#                           because the original applied only to messages to
-#                           humans: agent-to-agent threads were not the pain
-#                           point, and a check that fires everywhere gets
+#                           applies to. Unset means all of them. Scoping it to
+#                           humans is usual: agent-to-agent threads are rarely
+#                           the problem, and a check that fires everywhere gets
 #                           switched off.
 #
-# The deployment this came from expresses itself as, with names changed:
+# An example configuration, with invented names:
 #
 #   INBOX_BARE_REF_PATTERN='!\d+|(?<![A-Za-z0-9])ENG-\d+'
 #   INBOX_BARE_REF_TO='alice,bob'
@@ -112,9 +107,8 @@ HEADER_RE = re.compile(
 # pattern matches inside a longer alphanumeric token, so "LINKED-12" trips a
 # rule meant for "ENG-12".
 #
-# Strategy, kept verbatim from the original because it is the load-bearing
-# part: strip every markdown link span [...](...) out of the text FIRST, then
-# scan whatever remains. Anything inside a real [text](url) span is by
+# Strategy, the load-bearing part: strip every markdown link span [...](...)
+# out of the text FIRST, then scan whatever remains. Anything inside a real [text](url) span is by
 # definition already linked and never reaches the scan; anything left over is
 # bare prose. That sidesteps trying to write one regex that tells "!856" as
 # link text apart from "!856" as prose.
@@ -368,7 +362,7 @@ def flip_blocks_in_file(real_path, predicate):
 
         blocks = parse_blocks(text)
 
-        # KNOWN DEVIATION, ported deliberately unchanged -- see docs/protocol.md
+        # KNOWN DEVIATION from the protocol -- see docs/protocol.md
         # section 8.3 and the conformance corpus case "flip-sender-lookalike".
         # This loose search takes the FIRST match in the header line, and
         # `from:` precedes `status:` in the grammar, so a sender name
@@ -376,9 +370,8 @@ def flip_blocks_in_file(real_path, predicate):
         # Verify-before-write below does NOT catch it: those four bytes
         # genuinely spell "sent". It is the wrong "sent", not a corrupted one.
         # The fix is to derive the offset from HEADER_RE's own `status` group;
-        # it is not applied here because this port is a copy of a proven
-        # implementation, and changing behaviour is a separate, reviewable
-        # decision rather than something to slip in during a port.
+        # it is not applied here because changing behaviour is a separate,
+        # reviewable decision.
         STATUS_SENT_RE = re.compile(r"status:\s*(sent)", re.IGNORECASE)
 
         byte_offsets = []
@@ -830,7 +823,7 @@ def maybe_push(me, correspondent, subject, body_text, allow_when_full=False):
             # message whose body just is that line, because notif_note falls back
             # to the first body line when there is no subject. So the recipient
             # could not tell "that is all they wrote" from "there is more", an
-            # ambiguity that silently cost one agent 2974 characters of a brief.
+            # ambiguity that can silently cost the recipient part of a long brief.
             #
             # Report the length of the STORED body, which is what `inbox read`
             # will show them, NOT the flattened/rewritten pane text: a count that
@@ -839,8 +832,7 @@ def maybe_push(me, correspondent, subject, body_text, allow_when_full=False):
             # body-carrying paths agree in substance and not merely in behaviour.
             #
             # EXACTLY WHICH CHARACTERS THE NUMBER COUNTS, because a precise
-            # number invites re-measurement and a mismatch reads as a bug (a
-            # reader recounted 3025 as 3024 and nearly filed one):
+            # number invites re-measurement and a mismatch reads as a bug:
             #   - len() of the stored body, so Unicode CODE POINTS.
             #   - INCLUDES a trailing newline if the stored body has one. That
             #     newline is invisible on screen, so counting the characters you
@@ -848,8 +840,8 @@ def maybe_push(me, correspondent, subject, body_text, allow_when_full=False):
             #     is stored" and "what a human counts"; this is the former.
             #   - EXCLUDES the subject, the "[inbox from x]" prefix and the hint.
             #
-            # The two implementations briefly reported DIFFERENT numbers for
-            # identical text, because python len() counts code points and JS
+            # The two implementations must report the SAME number for
+            # identical text; python len() counts code points and JS
             # String.length counts UTF-16 code units, so any emoji made them
             # disagree by one per character. The resolution: the CAP and the
             # REPORTED COUNT are two different numbers that only shared a unit

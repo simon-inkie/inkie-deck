@@ -1,5 +1,5 @@
 /**
- * test/tmux.test.ts - Unit tests for app/lib/tmux.server.ts (TASK-437).
+ * test/tmux.test.ts - Unit tests for app/lib/tmux.server.ts.
  *
  * Covers:
  *   - Window-name validation matrix (ROSTER names pass; injection shapes fail).
@@ -15,8 +15,8 @@
  * No tmux required: argv builders are pure; live calls use a session name
  * that cannot exist, and every send assertion exercises a REJECTION path that
  * short-circuits before the subprocess (no keys are ever really sent here).
- * VALID-03: no repo writes.
- * ASCII only - no em-dashes (FND-05).
+ * no repo writes.
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -684,8 +684,8 @@ describe("resolveAndRewriteAttachmentPaths - env-backed resolve with graceful fa
 
 describe("Codex runtime (U+203A glyph + ANSI dim-hint disambiguation)", () => {
   // Real captured Codex pane fixtures, ported byte-for-byte from
-  // packages/base/test/inbox-push.test.sh (proven accurate against a live pane capture,
-  // 2026-07-17/18). Bash $'...' octal/UTF-8 bytes converted to JS escapes:
+  // packages/base/test/inbox-push.test.sh (proven accurate against a live pane
+  // capture). Bash $'...' octal/UTF-8 bytes converted to JS escapes:
   //   \xe2\x80\xba -> › (Codex glyph), \xc2\xb7 -> · (middot),
   //   \xe2\x80\xa2 -> • (bullet), \xe2\x97\xa6 -> ◦ (working glyph),
   //   \033 -> \x1b (ESC). The dim marker \x1b[2m must survive verbatim in RAW.

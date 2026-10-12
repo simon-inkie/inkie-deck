@@ -1,20 +1,20 @@
 /**
- * e2e/flows/card-detail.test.ts - E2E tests for TASK-439 card detail + work strip.
+ * e2e/flows/card-detail.test.ts - E2E tests for card detail + work strip.
  *
  * Tests per plan section 4:
  *   - Board face: summary line visible under title.
  *   - Card click: detail renders body markdown + meta; URL carries ?card=;
  *     refresh keeps it; close clears.
  *   - .md link in detail body: review panel opens on /projects with ?doc= set
- *     and ?card= RETAINED; closing the panel restores the detail (Atlas fold).
+ *     and ?card= RETAINED; closing the panel restores the detail.
  *   - Thread strip: agent with cards shows the strip with column badges;
  *     click -> /projects?card=; agent without cards shows no strip.
  *   - Mobile viewport: detail is a sheet; strip scrolls.
  *
  * Workers stay 1 per playwright.config.ts.
- * Uses assertGitClean from helpers (VALID-03).
+ * Uses assertGitClean from helpers.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { assertGitClean } from "./helpers.js";
@@ -116,7 +116,7 @@ test("TASK-439 body .md link click opens review panel on /projects", async ({ pa
   await expect(panel).toBeVisible({ timeout: 10_000 });
   await expect(panel).toContainText("TASK-439 Test Plan", { timeout: 5_000 });
 
-  // RETAINED-PARAM rule (Atlas fold): ?doc= set AND ?card= retained -
+  // RETAINED-PARAM rule: ?doc= set AND ?card= retained -
   // the doc-wins precedence hides the detail while the panel is open.
   const url = new URL(page.url());
   expect(url.searchParams.has("doc")).toBe(true);
@@ -144,7 +144,7 @@ test("TASK-439 thread strip: summit has live cards -> strip visible with badge",
   await page.goto("/threads/summit");
   await expect(page.getByTestId("thread-header")).toContainText("summit");
 
-  // TASK-454: the strip lives in the slide-out work panel now - the top-bar
+  // The strip lives in the slide-out work panel now - the top-bar
   // trigger (badged with the live-card count) opens it.
   const trigger = page.getByTestId("work-strip-trigger");
   await expect(trigger).toBeVisible({ timeout: 5_000 });
@@ -166,7 +166,7 @@ test("TASK-439 thread strip: mini-card link navigates to /projects?card=", async
 }) => {
   await page.goto("/threads/summit");
 
-  // TASK-454: open the work panel first.
+  // Open the work panel first.
   await page.getByTestId("work-strip-trigger").click();
   const miniCard = page.getByTestId("work-strip-card-task-432-projects-kanban.md");
   await expect(miniCard).toBeVisible({ timeout: 5_000 });
@@ -187,7 +187,7 @@ test("TASK-439 thread strip: agent without live cards shows no strip", async ({ 
   await page.goto("/threads/scribe");
   await expect(page.getByTestId("thread-header")).toContainText("scribe");
 
-  // TASK-454: no live cards -> no panel trigger, and no strip anywhere.
+  // No live cards -> no panel trigger, and no strip anywhere.
   await expect(page.getByTestId("work-strip-trigger")).not.toBeVisible({ timeout: 5_000 });
   const strip = page.getByTestId("work-strip");
   await expect(strip).not.toBeVisible();

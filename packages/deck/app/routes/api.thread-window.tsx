@@ -1,6 +1,6 @@
 /**
  * api.thread-window.tsx - JSON endpoint for the thread view's load-older
- * pagination (TASK-469).
+ * pagination.
  *
  * GET ?agent=<name>&before=<absolute-index>[&limit=<n>]
  *
@@ -14,17 +14,17 @@
  * chunk query on every poll.
  *
  * No markRead here: pagination is a read, not a thread-open receipt. The
- * whole-file sent->read flip stays in the threads.$agent loader (TASK-443).
+ * whole-file sent->read flip stays in the threads.$agent loader.
  *
  * Security: `agent` arrives as a QUERY param (the path-param route shape
  * cannot carry separators; a query string can), so it is validated against
  * the ROSTER name convention before any read. The participant is ALWAYS
- * mcUser(env) - the client never picks whose file is read (TASK-462).
+ * mcUser(env) - the client never picks whose file is read.
  *
- * SEAM RULE (FND-02): imports makeStores + server modules only. No node:fs,
+ * SEAM RULE: imports makeStores + server modules only. No node:fs,
  * no literal inbox paths.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/api.thread-window";
 import { makeStores } from "~/lib/stores.server";
@@ -68,7 +68,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const window = await inbox.readBlocksWindow(agent, user, { before, limit });
 
-  // TASK-645: same render-time auto-linkify as the thread loader, applied to the
+  // Same render-time auto-linkify as the thread loader, applied to the
   // lazily loaded older chunk (this is what makes the fix retroactive for
   // history scrolled far back beyond the initial window). Never throws.
   const blocks = linkifyBlockBodies(window.blocks);

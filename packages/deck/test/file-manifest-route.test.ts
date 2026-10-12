@@ -14,7 +14,7 @@
  * The parse counter (__manifestParseCount) is the instrumentation the SPEC
  * acceptance criterion allows in place of spying on readBlocks.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

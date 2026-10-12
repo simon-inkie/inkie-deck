@@ -1,17 +1,17 @@
 /**
- * test/avatars.test.ts - Unit tests for app/lib/avatars.server.ts (TASK-457).
+ * test/avatars.test.ts - Unit tests for app/lib/avatars.server.ts.
  *
  * Covers:
  *   - avatarVersion/avatarUrl present vs absent file.
  *   - Traversal-shaped and convention-violating agent names rejected.
- *   - Symlinked INBOX_ROOT resolves (briefs catch #16 pinned here too).
+ *   - Symlinked INBOX_ROOT resolves (the same briefs fix is pinned here too).
  *   - avatar.png symlinked OUTSIDE the root -> undefined + console.warn
- *     (Atlas fold: present-but-rejected must leave an operator trail).
+ *     (present-but-rejected must leave an operator trail).
  *   - readAvatar returns the bytes only for the convention path.
  *
  * All tests use isolated tmpdir fixtures; INBOX_ROOT is set and restored
- * around each test. VALID-03: writes only to os.tmpdir().
- * ASCII only - no em-dashes (FND-05).
+ * around each test. Writes only to os.tmpdir().
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -88,7 +88,7 @@ describe("containment", () => {
     expect(readAvatar("quill")).toBeDefined();
   });
 
-  it("rejects an avatar.png symlinked outside the root AND warns (Atlas fold)", () => {
+  it("rejects an avatar.png symlinked outside the root AND warns", () => {
     const secret = path.join(outside, "secret.png");
     fs.writeFileSync(secret, PNG_BYTES);
     const dir = path.join(inboxRoot, "quill");

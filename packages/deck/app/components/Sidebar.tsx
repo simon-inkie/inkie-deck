@@ -3,13 +3,13 @@
  *
  * One row per agent: initials avatar + name (display font) + the two pulse
  * dots (magenta unread, burnt-orange "needs you") immediately beside the name
- * + last-message preview + (TASK-691 follow-up) the activity status pill, held
- * at the far right of the row with its full text label.
+ * + last-message preview + the activity status pill, held at the far right of
+ * the row with its full text label.
  * The active agent (from the URL param) is highlighted.
  *
- * Presentational: all data arrives via props from the shell layout loader
- * (FND-02). useParams is read-only routing state, not data access.
- * ASCII only - no em-dashes (FND-05).
+ * Presentational: all data arrives via props from the shell layout loader,
+ * with no env or fs access. useParams is read-only routing state, not data access.
+ * ASCII only - no em-dashes.
  */
 import { Link, useParams } from "react-router";
 import { Avatar } from "./ui/avatar";
@@ -23,21 +23,20 @@ export interface SidebarAgent {
   lastTimestamp: string;
   /**
    * A genuine open (un-swept) decision/action card from this agent. Drives
-   * the BURNT-ORANGE decision dot. (Sweep-aware as of 2026-06-12.)
+   * the BURNT-ORANGE decision dot.
    */
   hasUnhandled: boolean;
-  /** TASK-457: /avatars/<name>?v=<mtime> when the agent has an avatar.png. */
+  /** /avatars/<name>?v=<mtime> when the agent has an avatar.png. */
   avatarUrl?: string;
   /**
-   * TASK-437 amendment: any unread (status sent) message from this agent.
-   * Drives the MAGENTA new-message dot (2026-06-12). Both dots can show at
+   * Any unread (status sent) message from this agent.
+   * Drives the MAGENTA new-message dot. Both dots can show at
    * once - a decision and a new message are different things.
    */
   hasUnread?: boolean;
   /**
-   * TASK-691 follow-up (Alex, 2026-07-31: "can we add the status pills to the
-   * agent list in the left hand pane?"). The agent's activity status from the
-   * LAST LIVE sweep, or absent when this instance has no activity root, the
+   * The agent's activity status from the LAST LIVE
+   * sweep, or absent when this instance has no activity root, the
    * engine is offline, or the sweep did not cover this agent.
    *
    * ABSENT MEANS ABSENT, not a status of its own: the shell loader ships this
@@ -53,7 +52,7 @@ export function Sidebar({ agents }: { agents: SidebarAgent[] }) {
   const active = params.agent;
 
   return (
-    // TASK-456: the ResizablePanel owns the width now - w-72 would fight the drag.
+    // The ResizablePanel owns the width now - w-72 would fight the drag.
     <nav className="flex h-full w-full flex-col border-r border-border bg-card/40">
       <div className="px-4 py-3">
         <span className="label-mono text-muted-foreground">Agents</span>
@@ -80,9 +79,7 @@ export function Sidebar({ agents }: { agents: SidebarAgent[] }) {
               <Avatar name={a.name} src={a.avatarUrl} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  {/* Name + dots are ONE cluster (Alex, 2026-07-31: "add the
-                      decision card and message dots to the right of the name").
-                      The two dots (2026-06-12) are a magenta one for an unread
+                  {/* Name + dots are ONE cluster. The two dots are a magenta one for an unread
                       message and a burnt-orange one for an open decision; both
                       can show at once, and both belong to the agent's name
                       rather than to the status pill they used to sit beside.
@@ -109,8 +106,8 @@ export function Sidebar({ agents }: { agents: SidebarAgent[] }) {
                     ) : null}
                   </span>
                   {/* Far right of the row, with the full text label rather than
-                      the glyph alone (Alex, same ask): the status is a word,
-                      not a puzzle. StatusPill carries its own `shrink-0`, so a
+                      the glyph alone: the status is a word, not a puzzle.
+                      StatusPill carries its own `shrink-0`, so a
                       long label ("waiting on teammate") never gets crushed by a
                       long name. `unknown` renders NOTHING: the panel can afford
                       to say "no observation" beside the evidence for it, a bare

@@ -1,5 +1,5 @@
 /**
- * review-autolink.test.ts - TASK-645 auto-linkify of bare / backticked review
+ * review-autolink.test.ts - auto-linkify of bare / backticked review
  * paths at render time.
  *
  * Covers autoLinkifyReviewPaths + resolveReviewablePath (the pure functions)
@@ -16,7 +16,7 @@
  *   - Misconfigured / unset REVIEW_ROOTS degrades to unchanged text, no throw.
  *
  * Isolated mkdtemp dirs; MC_SANDBOX_ONLY is set globally by test/setup.ts.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -153,9 +153,9 @@ describe("autoLinkifyReviewPaths (TASK-645)", () => {
   });
 
   it("bare code extension (.ts, in REVIEW_DOC_EXTS) under a root IS linkified", () => {
-    // Widened 2026-07-20 per Alex: the panel already fully supports opening
-    // code files via real links, so code paths are now in scope too, only
-    // images stay excluded (no standalone open path exists for them).
+    // Widened scope: the panel already fully supports opening code files via
+    // real links, so code paths are now in scope too, and only images stay
+    // excluded (no standalone open path exists for them).
     const ts = writeFile(root, "module.ts");
     const body = `See code ${ts} here.`;
     expect(autoLinkifyReviewPaths(body)).toBe(`See code [module.ts](${ts}) here.`);

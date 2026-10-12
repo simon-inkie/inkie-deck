@@ -21,8 +21,8 @@
  * its own - the thread action already handles every intent. RR7 revalidates
  * this loader after each such fetcher submit, refreshing the list.
  *
- * SEAM RULE (FND-02): imports ONLY makeStores from ~/lib/stores.server.
- * ASCII only - no em-dashes (FND-05).
+ * SEAM RULE: imports ONLY makeStores from ~/lib/stores.server.
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/cards";
 import { useCallback } from "react";
@@ -179,7 +179,7 @@ export default function Cards({ loaderData }: Route.ComponentProps) {
 }
 
 /**
- * Scoped error boundary (lifeline hardening): a failure here renders inside the
+ * Scoped error boundary: a failure here renders inside the
  * shell so the sidebar and the rest of MC stay usable.
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

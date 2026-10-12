@@ -27,7 +27,7 @@
  *     for every state, and identical mapUpstreamMessage output for the shapes
  *     Deepgram actually sends. One known divergence is recorded as a todo.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";
@@ -208,7 +208,7 @@ describe("KEY-NEVER-DOWNSTREAM", () => {
   });
 });
 
-describe("isOriginAllowed (the keyhole fold, Atlas TASK-433)", () => {
+describe("isOriginAllowed (the keyhole fold)", () => {
   const allowed = ["http://localhost:5174"];
 
   it("allows an exact-match origin", () => {
@@ -230,7 +230,7 @@ describe("isOriginAllowed (the keyhole fold, Atlas TASK-433)", () => {
 
 // ---------------------------------------------------------------------------
 // Suite: makeFrameBuffer
-// TASK-433 fix: verifies the pure buffer helper preserves frame order and
+// Verifies the pure buffer helper preserves frame order and
 // enforces bounds without ever dropping the oldest frame.
 // ---------------------------------------------------------------------------
 
@@ -452,7 +452,7 @@ describe("cross-copy agreement: voice-relay.ts vs voice-relay.mjs", () => {
     expect(mapUpstreamMessageMjs("not json")).toEqual(mapUpstreamMessage("not json"));
   });
 
-  // Previously a KNOWN DIVERGENCE (CR finding, 2026-07-28): .mjs forwarded a
+  // Previously a KNOWN DIVERGENCE: .mjs forwarded a
   // non-string transcript (alternatives[0]?.transcript ?? "") where .ts
   // rejected it (typeof guard). Fixed by adding the same guard to .mjs; both
   // copies now agree on a malformed/adversarial upstream, not just a
@@ -470,7 +470,7 @@ describe("cross-copy agreement: voice-relay.ts vs voice-relay.mjs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildDeepgramUrlQuery - keyterm prompting (2026-07-28)
+// buildDeepgramUrlQuery - keyterm prompting
 // ---------------------------------------------------------------------------
 
 describe("buildDeepgramUrlQuery", () => {

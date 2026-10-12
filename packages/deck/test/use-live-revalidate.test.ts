@@ -1,10 +1,10 @@
 /**
- * use-live-revalidate.test.ts - TASK-455 poll-guard truth table.
+ * use-live-revalidate.test.ts - poll-guard truth table.
  *
  * The interval wiring is trivial-by-inspection (node test env, no jsdom);
  * the GUARD is the logic, extracted pure as shouldPoll.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import {

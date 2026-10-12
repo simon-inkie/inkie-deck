@@ -15,7 +15,7 @@
  *
  * The E2E_TEMP_ROOT path is printed to stdout so cleanup can find it.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -38,7 +38,7 @@ fs.cpSync(fixturesInbox, tmpInbox, { recursive: true });
 const tmpAttachments = path.join(tmpRoot, "attachments");
 fs.mkdirSync(tmpAttachments, { recursive: true });
 
-// Provision a temp review root for TASK-431 E2E tests.
+// Provision a temp review root for E2E tests.
 // Also seed a .env file inside it to test the denial case.
 const tmpReviewRoot = path.join(tmpRoot, "review-root");
 fs.mkdirSync(tmpReviewRoot, { recursive: true });
@@ -46,7 +46,7 @@ fs.mkdirSync(tmpReviewRoot, { recursive: true });
 const testNotesSrc = path.join(repoRoot, "e2e", "fixtures", "test-notes.md");
 const testNotesDst = path.join(tmpReviewRoot, "test-notes.md");
 fs.copyFileSync(testNotesSrc, testNotesDst);
-// Copy the TASK-439 test-plan.md fixture into the review root.
+// Copy the test-plan.md fixture into the review root.
 const testPlanSrc = path.join(repoRoot, "e2e", "fixtures", "test-plan.md");
 const testPlanDst = path.join(tmpReviewRoot, "test-plan.md");
 fs.copyFileSync(testPlanSrc, testPlanDst);
@@ -54,13 +54,13 @@ fs.copyFileSync(testPlanSrc, testPlanDst);
 const envFixturePath = path.join(tmpReviewRoot, ".env");
 fs.writeFileSync(envFixturePath, "SECRET=supersecret\n");
 
-// Provision a temp projects root for TASK-432 E2E tests.
+// Provision a temp projects root for E2E tests.
 // Seeded from committed fixtures/projects.
 const tmpProjects = path.join(tmpRoot, "projects");
 const fixturesProjects = path.join(repoRoot, "fixtures", "projects");
 fs.cpSync(fixturesProjects, tmpProjects, { recursive: true });
 
-// TASK-439: patch the seeded task-439-card-detail.md so its links: entry
+// Patch the seeded task-439-card-detail.md so its links: entry
 // points at the actual (dynamic) tmpReviewRoot. The committed fixture uses
 // the placeholder path /review-root-ref/test-plan.md; we rewrite it here.
 const task439CardPath = path.join(tmpProjects, "task-439-card-detail.md");
@@ -81,7 +81,7 @@ const fixturesAgents = path.join(repoRoot, "fixtures", "agents");
 fs.cpSync(fixturesAgents, tmpAgents, { recursive: true });
 
 // QUEUE_STATE_PATH is alongside the inbox (NOT inside INBOX_ROOT).
-// TASK-434: state writes are confined to DATA_ROOT, so the state file lives
+// State writes are confined to DATA_ROOT, so the state file lives
 // in a dedicated data dir under the temp root.
 const tmpData = path.join(tmpRoot, "data");
 fs.mkdirSync(tmpData, { recursive: true });
@@ -138,7 +138,7 @@ const envContent = [
   `AGENTS_ROOT=${tmpAgents}`,
   `QUEUE_STATE_PATH=${queueStatePath}`,
   `MC_SANDBOX_ONLY=1`,
-  // TASK-437: point the Team tab at a guaranteed-missing tmux session so
+  // Point the Team tab at a guaranteed-missing tmux session so
   // e2e asserts the deterministic empty-state paths (never live panes).
   `MC_TMUX_SESSION=mc-e2e-missing`,
   `MC_NOW=${mcNow}`,

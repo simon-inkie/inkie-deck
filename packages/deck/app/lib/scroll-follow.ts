@@ -1,13 +1,13 @@
 /**
- * scroll-follow.ts - scroll-to-latest decision logic (TASK-454).
+ * scroll-follow.ts - scroll-to-latest decision logic.
  *
- * Pure helpers behind the thread view's follow-bottom behaviour. The 455
- * review pin is load-bearing here: any follow-bottom feature must
+ * Pure helpers behind the thread view's follow-bottom behaviour. The review
+ * requirement is load-bearing here: any follow-bottom feature must
  * distinguish "user at bottom" from "user scrolled up" before it may move
  * the viewport. shouldFollow encodes that as a truth table; the route wires
  * it to a scroll-position ref and an effect keyed on real content change.
  *
- * Client-pure module, no env/fs (FND-02). ASCII only (FND-05).
+ * Client-pure module, no env/fs. ASCII only.
  */
 
 /**

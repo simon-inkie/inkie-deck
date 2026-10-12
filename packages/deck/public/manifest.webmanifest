@@ -1,7 +1,7 @@
 {
   "name": "Inkie Deck",
   "short_name": "MC",
-  "description": "Alex's agent team, in your pocket.",
+  "description": "Your agent team, in your pocket.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#fffdf5",

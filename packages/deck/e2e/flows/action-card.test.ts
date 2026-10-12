@@ -5,9 +5,9 @@
  * Asserts the ActionCard renders. Taps the done tick. Asserts done badge appears.
  * Reloads and asserts the done state persists (file was edited).
  *
- * VALID-03: writebacks go to INBOX_ROOT (temp dir), never the committed fixtures.
+ * Writebacks go to INBOX_ROOT (temp dir), never the committed fixtures.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";
@@ -44,11 +44,11 @@ test("action card tick -> done badge", async ({ page }) => {
   // Tap the done tick.
   await doneBtn.click();
 
-  // Done badge appears on the card - now in the HEADER strip (TASK-453).
+  // Done badge appears on the card - now in the HEADER strip.
   const doneBadge = card.getByTestId("action-done-badge");
   await expect(doneBadge).toBeVisible({ timeout: 10_000 });
 
-  // TASK-453 receipt: dead controls are REMOVED, not disabled.
+  // Receipt: dead controls are REMOVED, not disabled.
   await expect(doneBtn).not.toBeVisible({ timeout: 5_000 });
   await expect(card.getByTestId("action-dismiss-btn")).not.toBeVisible();
 
@@ -61,7 +61,7 @@ test("action card tick -> done badge", async ({ page }) => {
   await card.getByTestId("action-card-toggle").click();
   await expect(card.getByTestId("action-add-note-btn")).not.toBeVisible();
 
-  // Live tweak (TASK-453): clicking anywhere on the clamped body also expands.
+  // Live tweak: clicking anywhere on the clamped body also expands.
   await card.getByTestId("action-card-clamp").click();
   await expect(card.getByTestId("action-add-note-btn")).toBeVisible();
 });
@@ -85,7 +85,7 @@ test("action card done state persists after reload (file edited)", async ({ page
   await expect(cardAfterReload.getByTestId("action-done-badge")).toBeVisible({ timeout: 10_000 });
   await expect(cardAfterReload.getByTestId("action-done-btn")).not.toBeVisible();
 
-  // VALID-03: confirm the temp fixture was edited (not the committed one).
+  // Confirm the temp fixture was edited (not the committed one).
   const inboxRoot = process.env["INBOX_ROOT"];
   const inboxFile = path.join(inboxRoot!, "quill", "inbox", "alex.md");
   const content = fs.readFileSync(inboxFile, "utf8");

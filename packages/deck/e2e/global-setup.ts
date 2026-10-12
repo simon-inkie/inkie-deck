@@ -12,7 +12,7 @@
  * The webServer already has the correct env vars from start-server.sh sourcing
  * e2e/.e2e-env before exec pnpm start.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

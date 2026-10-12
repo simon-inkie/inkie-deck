@@ -23,7 +23,7 @@
  * KEY INVARIANT: this module never receives or handles the API key.
  * The proxy holds the key; this module handles only message shapes.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 export type ClientMessage =
@@ -99,7 +99,7 @@ export function noKeyHandshake(): StatusMessage {
 }
 
 /**
- * Origin allowlist check for the WS upgrade (peer-review fold, Atlas TASK-433).
+ * Origin allowlist check for the WS upgrade.
  * Browsers do not apply same-origin policy to WebSocket connects; absent or
  * non-matching Origin must reject the upgrade before any upstream connect.
  */
@@ -109,7 +109,7 @@ export function isOriginAllowed(origin: unknown, allowed: string[]): boolean {
 
 // ---------------------------------------------------------------------------
 // makeFrameBuffer - pure buffer helper for CONNECTING-phase audio frames.
-// TASK-433 reopened: frames arriving while upstream is CONNECTING are silently
+// Frames arriving while upstream is CONNECTING used to be silently
 // dropped, losing the webm EBML container header. Buffer and flush in order.
 // Bounds: 200 frames or 2MB. NEVER drop-oldest.
 // ---------------------------------------------------------------------------
@@ -185,14 +185,14 @@ export function statusFrame(state: UpstreamState, detail?: string): StatusMessag
 /**
  * The demo roster plus the product terms, as the default keyterm list.
  *
- * Keyterm prompting was measured 2026-07-28 against real dictation: a roster
+ * Keyterm prompting was measured against real dictation: a roster
  * name transcribed as a common English near-neighbour mid-sentence on the
  * untouched config, a keyterm entry for it fixed that directly, and
  * smart_format/language variants did not, ruling both out as the cause.
  *
  * Risk criterion (an entry is risky iff it has a plausible English neighbour
  * ordinary speech would produce): Quill, Sprout, Forge and Mux do; Atlas,
- * Scribe, Summit, Deepgram, Inkie, Linkie, Briar, Echo, Nova and Robin do
+ * Scribe, Summit, Deepgram, Inkie, Linkie, Briar, Echo and Nova do
  * not. The risky half is inference from that negative result (keyterm reranks
  * acoustically plausible candidates only), not separately proven per entry.
  *
@@ -203,7 +203,7 @@ export function statusFrame(state: UpstreamState, detail?: string): StatusMessag
 export const DEFAULT_KEYTERMS: readonly string[] = [
   "Quill", "Sprout", "Forge", "Mux",
   "Atlas", "Scribe", "Summit", "Deepgram", "Inkie", "Linkie",
-  "Briar", "Echo", "Nova", "Robin",
+  "Briar", "Echo", "Nova",
 ];
 
 export type DeepgramReplacement = { readonly find: string; readonly replace: string };
@@ -220,7 +220,7 @@ export type DeepgramReplacement = { readonly find: string; readonly replace: str
  * keyterm boost rather than a substitute for it.
  *
  * ASSUMPTION, NOT MEASURED: unlike the keyterm measurement above, this has not been
- * independently verified against a real sample of Alex's audio - there is
+ * independently verified against a recorded audio sample - there is
  * no confirmed transcript yet showing "inky" is the actual wrong output.
  * "inky" is simply the most probable candidate (a real, common word one
  * phoneme off from "Inkie"). Revisit if a real sample surfaces a different
