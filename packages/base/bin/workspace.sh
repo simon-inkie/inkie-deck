@@ -49,6 +49,7 @@ fi
 
 # Pinned claude session ids, shared with boot-agents.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
 
 get_runtime() {
   local agent="$1"
@@ -109,6 +110,9 @@ start_watcher() {
   # Slim side pane (15%) for the watcher; -d keeps focus on the agent pane.
   tmux split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
 }
+
+# Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
+warn_if_foreign_claude
 
 # Create the base session if it doesn't exist
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then

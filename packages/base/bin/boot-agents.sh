@@ -101,6 +101,7 @@ fi
 
 # Pinned claude session ids, shared with workspace.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
 
 # Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
 get_runtime() {
@@ -781,6 +782,8 @@ ALREADY_UP=0
 WAITING=0
 FAILED=0
 ARMED=0
+# Once for the whole boot, not per agent. Best-effort: see claude-binary-check.sh.
+warn_if_foreign_claude
 for a in "${AGENTS[@]}"; do
   if outcome=$(launch_agent "$a"); then
     readiness_check=wait_for_readiness
