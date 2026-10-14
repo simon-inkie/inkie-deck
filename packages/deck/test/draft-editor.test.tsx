@@ -149,6 +149,83 @@ describe("DraftEditor", () => {
     expect(container.querySelector('[data-testid="draft-status"]')!.textContent).toContain("the agent");
   });
 
+  it("the poll surfaces a draft removed outside, and recreate force-saves the person's text", async () => {
+    let removed = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          const form = init.body as FormData;
+          removed = false;
+          current = dto({ version: "v2", content: String(form.get("content")) });
+          return json({ ok: true, draft: current });
+        }
+        if (url === "/api/drafts") return json({ ok: true, drafts: [current] });
+        return removed ? json({ ok: false }, 404) : json({ ok: true, draft: current });
+      })
+    );
+    await openDraft();
+    await type("my edit");
+    removed = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    expect(container.querySelector('[data-testid="draft-gone"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="draft-conflict"]')).toBeNull();
+    expect(textarea().value).toBe("my edit");
+    await click("draft-recreate");
+    const [form] = postBodies();
+    expect(form!.get("force")).toBe("1");
+    expect(form!.get("content")).toBe("my edit");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("a save answered 409 without a current copy shows the removed alert", async () => {
+    stubSave(() => json({ ok: false, conflict: true }, 409));
+    await openDraft();
+    await type("my edit");
+    await click("draft-save");
+    expect(container.querySelector('[data-testid="draft-gone"]')).not.toBeNull();
+    expect(textarea().value).toBe("my edit");
+  });
+
+  it("a poll GET that finishes after the person's own save raises no false alert", async () => {
+    let releaseGet: (() => void) | null = null;
+    let heldGets = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          const form = init.body as FormData;
+          current = dto({ version: "v2", content: String(form.get("content")) });
+          return json({ ok: true, draft: current });
+        }
+        if (url === "/api/drafts") return json({ ok: true, drafts: [current] });
+        if (heldGets === 0 && releaseGet === null && url.startsWith("/api/drafts?name=") && saveStarted) {
+          heldGets++;
+          // Reads the post-save state, but resolves only when released.
+          await new Promise<void>((r) => (releaseGet = r));
+          return json({ ok: true, draft: dto({ version: "v2", content: "my edit" }) });
+        }
+        return json({ ok: true, draft: current });
+      })
+    );
+    let saveStarted = false;
+    await openDraft();
+    await type("my edit");
+    saveStarted = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10); // poll GET now in flight
+    });
+    expect(releaseGet).not.toBeNull();
+    await click("draft-save"); // save completes while the GET is pending
+    await act(async () => {
+      releaseGet!();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("Keep mine and overwrite posts force=1 against the newer version's content", async () => {
     stubSave((form) => {
       current = dto({ version: "v3", content: String(form.get("content")) });

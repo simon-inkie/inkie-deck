@@ -122,6 +122,21 @@ describe("line endings, odd paths and the sidecar", () => {
     expect(!res.ok && res.status).toBe(400);
   });
 
+  it("still reports success when the sidecar cannot be updated after the file is written", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fs.mkdirSync(draftFile(META_FILENAME), { recursive: true }); // makes the sidecar write fail
+    const res = await saveDraft({ name: "a", content: "kept", create: true });
+    expect(res.ok).toBe(true);
+    expect(fs.readFileSync(draftFile("a.md"), "utf8")).toBe("kept");
+    expect(res.ok && res.draft.content).toBe("kept");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    // A retry from the returned version is not a conflict.
+    if (!res.ok) throw new Error("unreachable");
+    const again = await saveDraft({ name: "a", content: "kept 2", baseVersion: res.draft.version });
+    expect(again.ok).toBe(true);
+  });
+
   it("keeps every person record when different drafts save concurrently", async () => {
     const names = Array.from({ length: 8 }, (_, i) => `d${i}`);
     const results = await Promise.all(

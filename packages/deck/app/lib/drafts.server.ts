@@ -285,12 +285,33 @@ export async function saveDraft(input: SaveInput): Promise<DraftResult> {
       // The sidecar is shared by every draft, so its read-modify-write takes
       // its own lock (always after the per-draft lock, so no ordering cycle).
       const version = sha256(content);
-      await withInboxLock(path.join(dirReal, META_FILENAME), async () => {
-        const fresh = readMeta(dirReal);
-        fresh[name] = version;
-        writeMeta(dirReal, fresh);
-      });
-      return { ok: true, draft: view(dirReal, name, readMeta(dirReal)) };
+      // The file is on disk now, so nothing below may turn this into a
+      // failure: a retry would 409 against the person's own text. A sidecar
+      // failure is logged (the draft then reads as "agent" until the next
+      // save), and the result falls back to the version just written.
+      try {
+        await withInboxLock(path.join(dirReal, META_FILENAME), async () => {
+          const fresh = readMeta(dirReal);
+          fresh[name] = version;
+          writeMeta(dirReal, fresh);
+        });
+      } catch (err) {
+        console.warn("[drafts] saved draft but could not update the sidecar:", err);
+      }
+      try {
+        return { ok: true, draft: view(dirReal, name, readMeta(dirReal)) };
+      } catch {
+        return {
+          ok: true,
+          draft: {
+            name,
+            content,
+            version,
+            savedAt: new Date().toISOString(),
+            writer: "person",
+          },
+        };
+      }
     });
   } catch {
     return { ok: false, error: "Could not save the draft.", status: 500 };

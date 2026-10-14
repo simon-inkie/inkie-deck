@@ -59,6 +59,8 @@ export function DraftEditor() {
   const [loaded, setLoaded] = useState<DraftDto | null>(null);
   const [text, setText] = useState("");
   const [remote, setRemote] = useState<DraftDto | null>(null);
+  // The open draft no longer exists on disk (removed or renamed outside).
+  const [gone, setGone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [newName, setNewName] = useState("");
@@ -81,6 +83,7 @@ export function DraftEditor() {
     setLoaded(d);
     setText(d.content);
     setRemote(null);
+    setGone(false);
     setError(null);
   }, []);
 
@@ -99,14 +102,20 @@ export function DraftEditor() {
   useEffect(() => {
     if (!loaded) return;
     const id = setInterval(async () => {
-      const cur = loadedRef.current;
-      if (!cur) return;
+      const asked = loadedRef.current;
+      if (!asked) return;
       try {
         const { status, body } = await api<{ ok: boolean; draft?: DraftDto }>(
-          `/api/drafts?name=${encodeURIComponent(cur.name)}`
+          `/api/drafts?name=${encodeURIComponent(asked.name)}`
         );
-        if (status === 200 && body.draft && body.draft.version !== cur.version) {
+        // Compare against what is loaded NOW: a save may have finished while
+        // this GET was in flight, and the GET then reflects that save.
+        const now = loadedRef.current;
+        if (!now || now.name !== asked.name) return;
+        if (status === 200 && body.draft && body.draft.version !== now.version) {
           setRemote(body.draft);
+        } else if (status === 404) {
+          setGone(true);
         }
       } catch {
         /* transient network error: try again next tick */
@@ -148,10 +157,12 @@ export function DraftEditor() {
         if (status === 200 && body.draft) {
           setLoaded(body.draft);
           setRemote(null);
+          setGone(false);
           setError(null);
           void refreshList();
         } else if (body.conflict) {
           if (body.current) setRemote(body.current);
+          else setGone(true);
           setError(null);
         } else {
           setError(body.error ?? "Save failed.");
@@ -208,6 +219,22 @@ export function DraftEditor() {
         <p role="status" data-testid="draft-error" className="text-sm text-destructive">
           {error}
         </p>
+      ) : null}
+
+      {gone && !remote ? (
+        <div
+          role="alert"
+          data-testid="draft-gone"
+          className="flex flex-col gap-2 rounded-md border-2 border-destructive/60 bg-destructive/10 p-3 text-sm"
+        >
+          <strong>This draft was removed outside the editor.</strong>
+          <span>Your text is still here. You can write it back as a new file.</span>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="destructive" data-testid="draft-recreate" onClick={() => void save(true)}>
+              Keep mine and recreate
+            </Button>
+          </div>
+        </div>
       ) : null}
 
       {remote ? (

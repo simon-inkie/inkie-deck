@@ -74,6 +74,19 @@ Out of scope (and where it goes instead):
 - Supersedes: nothing, additive
 - Commits: fb5663b fix(deck): normalise draft line endings, JSON errors in save lock, lock sidecar (#66)
 
+### 2026-10-14: second review round
+- What changed: a draft removed outside the editor now shows a visible alert
+  (from the poll's 404, or from a 409 save with no current copy) with "Keep mine
+  and recreate" (force save); the poll compares against the version loaded
+  after its GET returns, so a save finishing mid-poll raises no false alert;
+  failures after the file is written (sidecar update, final read) no longer
+  fail the save, the sidecar failure is logged and the result falls back to the
+  version just written.
+- Why: review findings 1 to 3 of the second review.
+- Supersedes: nothing, additive
+- Commits: see the entry added with the next commit if any; the sha of this
+  change is recorded in the PR description
+
 Known limitation added: `request.formData()` reads the whole request body
 before the 1 MB content cap is applied, so the cap bounds what is stored, not
 what is received. Fine for a loopback-only, unauthenticated Deck.
