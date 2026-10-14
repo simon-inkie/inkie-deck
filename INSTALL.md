@@ -1100,8 +1100,10 @@ Checked: the stylesheet is still linked from Google Fonts in
 
 **Optional subsystems are unverified here.** Voice dictation (Deepgram),
 image descriptions (Gemini) and web push all need keys, are off without them,
-and are not exercised by the rig. They degrade rather than fail: the voice
-proxy starts without a key and tells the client it has none.
+and are not exercised by the rig. As of 2026-10-12 no one has run them by hand
+for this list either; only the no-key path of the voice proxy was read, in
+`packages/deck/server/voice-proxy.mjs`. They degrade rather than fail: the
+voice proxy starts without a key and tells the client it has none.
 
 Voice is a SECOND listener, on its own port, and a few of its settings are not
 the app's. See [Voice dictation](#voice-dictation-optional) for the working
@@ -1141,7 +1143,8 @@ launch.
 
 **Starting Deck on boot has not been checked.** The systemd user service in
 Keep it running restarts Deck if it crashes and, once enabled, is meant to start
-it with your user manager, but no one has rebooted a machine to confirm that.
+it with your user manager, but as of 2026-10-12 neither the rig nor a person
+has rebooted a machine to confirm that.
 
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
 only a display name: it is a filename in your inbox root. Checked: `mcUser` in
