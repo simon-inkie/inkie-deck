@@ -12,15 +12,16 @@
  * exporting MC_NOW before running. Pass extra flags through to react-router
  * (e.g. `pnpm dev --port 5174`).
  *
- * TASK-433: also spawns server/voice-proxy.mjs as a child process. Forwards
+ * Also spawns server/voice-proxy.mjs as a child process. Forwards
  * DEEPGRAM_API_KEY when present. Sets VOICE_PROXY_URL for the RR server.
  * Kills the proxy on exit.
  *
- * ASCII only - no em-dashes (FND-05 / check:dashes gate).
+ * ASCII only - no em-dashes.
  */
 import { cpSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { withVoiceDisabledReason } from "./voice-env.mjs";
 
 const root = process.cwd();
 const demoInbox = path.join(root, "fixtures", "demo-inbox");
@@ -44,19 +45,19 @@ mkdirSync(runtimeAttachments, { recursive: true });
 const fixturesProjects = path.join(root, "fixtures", "projects");
 cpSync(fixturesProjects, runtimeProjects, { recursive: true });
 
-// TASK-434: DATA_ROOT for MC state files (queue state) - must exist at boot.
+// DATA_ROOT for MC state files (queue state) - must exist at boot.
 mkdirSync(runtimeData, { recursive: true });
 
-// REVIEW_ROOTS for dev: the repo root itself + .runtime so Alex can open
-// docs/plans/*.md directly in the review panel he is reviewing (intentional).
+// REVIEW_ROOTS for dev: the repo root itself + .runtime so docs/plans/*.md
+// can be opened directly in the review panel (intentional).
 // INBOX_ROOT is always appended implicitly by review.server.ts.
 const reviewRoots = process.env["REVIEW_ROOTS"] || `${root}:${runtimeDir}`;
 
-// Voice proxy settings (TASK-433).
+// Voice proxy settings.
 const voiceProxyPort = process.env["VOICE_PROXY_PORT"] || "5176";
 const voiceProxyUrl = `ws://localhost:${voiceProxyPort}/voice`;
 
-// Respect pre-set roots (mc-dev.sh exports, TASK-434 cutover overrides). The
+// Respect pre-set roots. The
 // internal .runtime sandbox is the FALLBACK, not a clobber - before this fix
 // every export was silently overridden and the server always ran on demo
 // fixtures regardless of the launcher's intent.
@@ -71,7 +72,7 @@ const env = {
   // Keep the queue-state file INSIDE the dev DATA_ROOT. Without this the
   // makeStores default (cwd/data/queue-state.json) sits outside .runtime/data
   // and every deadline-anchor write 500s the home loader on the confinement
-  // guard (found 2026-06-12 chasing a phantom 500 in a repro run).
+  // guard.
   QUEUE_STATE_PATH:
     process.env.QUEUE_STATE_PATH ||
     path.join(runtimeData, "queue-state.json"),
@@ -84,7 +85,7 @@ const env = {
   // this, MC_TMUX_ENABLED defaults on and MC_TMUX_SESSION defaults to
   // "agents" - the real fleet's actual session name, on any machine that has
   // one. A fixture agent whose name happens to collide with a real window
-  // (found 2026-08-14: the demo roster includes "quill") then shows that
+  // (the demo roster includes "quill") then shows that
   // window's real live pane content in what INSTALL.md documents as a
   // sandbox that "has no tmux, no agents". An explicit MC_TMUX_ENABLED export
   // still wins via the process.env spread above.
@@ -116,7 +117,7 @@ const appPort =
       ? passthrough[portFlagIdx].split("=")[1]
       : passthrough[portFlagIdx + 1] || "4242";
 
-// Spawn the voice proxy as a child process (TASK-433).
+// Spawn the voice proxy as a child process.
 // Forward DEEPGRAM_API_KEY when present; proxy starts regardless and sends
 // {type:"status",state:"no_key"} to clients when the key is absent.
 const proxyEnv = {
@@ -146,9 +147,11 @@ const args = [
   ...(portFlagIdx === -1 ? ["--port", appPort] : []),
   ...passthrough,
 ];
+// The app never reads the speech key; see scripts/voice-env.mjs.
+const appEnv = withVoiceDisabledReason(env);
 const child = spawn("react-router", args, {
   stdio: "inherit",
-  env,
+  env: appEnv,
   shell: true,
 });
 

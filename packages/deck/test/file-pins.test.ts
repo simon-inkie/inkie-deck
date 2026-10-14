@@ -11,7 +11,7 @@
  *
  * Writes are confined to DATA_ROOT (mirrors FileQueueStore tests).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

@@ -112,7 +112,7 @@ surprised.
 | --- | --- | --- | --- |
 | `VOICE_PROXY_PORT` | 5176 | yes | yes |
 | `VOICE_PROXY_HOST` | `127.0.0.1` | no | no |
-| `VOICE_ALLOWED_ORIGINS` | `http://localhost:5174` | yes, derived from the app port | no |
+| `VOICE_ALLOWED_ORIGINS` | `http://localhost:$PORT` (4242) and `http://localhost:5174` | yes, derived from the app port | no |
 | `VOICE_PROXY_URL` | client falls back to `ws://localhost:5176/voice` | yes | no |
 
 Read that table as a container question and three things fall out.
@@ -125,11 +125,12 @@ limitations now say and `.env.example` still does not.
 
 **The origin allowlist.** `dev.mjs` computes it from the app port and carries a
 comment about why: an upgrade rejected on origin fails silently, and the
-5174-to-4242 port move broke it once already. `start-production.mjs` does not
-compute it, so a production start keeps the proxy's own default of
-`http://localhost:5174`, which is the dev server's old port. A browser on the
-production app's own origin is refused. The proxy logs the rejected origin; the
-browser just gets a microphone that does nothing.
+5174-to-4242 port move broke it once already. The proxy's own default now does
+the same job (`defaultAllowedOrigins`, `server/voice-relay.mjs`): the app's own
+`http://localhost:$PORT` plus the dev port, so a production start works on
+localhost with no setting. It is still `localhost` only, so a container reached
+by any other name must set `VOICE_ALLOWED_ORIGINS`. The proxy logs a rejected
+origin; the browser just gets a microphone that does nothing.
 
 **The URL, which is resolved in the wrong machine.** `getVoiceProxyUrl`
 (`packages/deck/app/lib/voice.server.ts`) falls back to
@@ -139,10 +140,8 @@ exactly once: when you are sitting at the machine Deck runs on. Everywhere
 else, and that includes every container deployment worth building an image for,
 it points at nothing.
 
-None of the three is in `packages/deck/.env.example`. All three are now in
-INSTALL.md's limitations, written down in the same pass that produced this note,
-and the launcher's own header comment no longer points at `.env.example` for
-them, which it used to and which was never true here.
+All three are in `packages/deck/.env.example` and walked through in INSTALL.md
+"Voice dictation (optional)".
 
 ## 3. Volume UID and permissions: everything measured so far has been root
 

@@ -8,7 +8,7 @@
  *
  * Desktop suites are untouched; this file is additive.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import {
@@ -131,7 +131,7 @@ test("RESP-03: mobile home - queue cards render full-width", async ({ page }) =>
     expect(mainBox.x + mainBox.width).toBeLessThanOrEqual(MOBILE.width + 1);
   }
 
-  // TASK-435 mobile bug (Alex's phone 2026-06-08): the needs-you CARDS were
+  // Mobile bug: the needs-you CARDS were
   // overflowing past the viewport (clipped text) even though `main` itself
   // measured 390 - the content column inside main had no min-w-0, so the
   // max-w-2xl block forced it to 672px. Assert the actual card right edge,

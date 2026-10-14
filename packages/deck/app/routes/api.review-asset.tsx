@@ -1,6 +1,6 @@
 /**
  * api.review-asset.tsx - Binary image endpoint for relative images in reviewed
- * documents (TASK-431).
+ * documents.
  *
  * GET ?path=<absolute-path>
  *
@@ -10,10 +10,10 @@
  * Only images (png/jpg/jpeg/gif/webp) are served; .md/.txt files, SVG and
  * everything else are denied by the review.server asset gate.
  *
- * SEAM RULE (FND-02): imports ONLY from review.server. No node:fs, no env
+ * SEAM RULE: imports ONLY from review.server. No node:fs, no env
  * strings directly.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/api.review-asset";
 import { readReviewAsset, expandTilde } from "~/lib/review.server";

@@ -10,7 +10,9 @@
 # this is safe to run repeatedly and safe to fire on boot via a systemd --user
 # service or equivalent.
 #
-# RESUME-ON-RELAUNCH. A claude agent resumes with `claude --resume <name>`. A
+# RESUME-ON-RELAUNCH. A claude agent resumes the session pinned in
+# $AGENTS_HOME/<name>/.session-id, and a first boot pins a new, named one
+# (claude_session_args, in claude-session.sh beside this file). A
 # codex agent resumes the newest session belonging to its own workspace
 # (codex_latest_session_for_workspace, below) with `codex resume <id>`.
 # Without that, a codex agent starts genuinely fresh on every relaunch -- a
@@ -42,7 +44,7 @@
 # Usage:
 #   bin/boot-agents.sh                 # resume + arm all agents, stay headless
 #   bin/boot-agents.sh --attach        # same, then attach to the session
-#   bin/boot-agents.sh wren basalt     # only the named agents
+#   bin/boot-agents.sh inkie basalt     # only the named agents
 #
 # After a headless run, view the agents with: tmux attach -t agents
 #
@@ -97,6 +99,10 @@ else
   AGENTS=("${ALL_AGENTS[@]}")
 fi
 
+# Pinned claude session ids, shared with workspace.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
+
 # Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
 get_runtime() {
   local a="$1"
@@ -132,7 +138,7 @@ get_runtime() {
 #     session, which are not the conversation anyone wants resumed.
 #   - cwd == "$AGENTS_HOME/<agent>", matched THROUGH the closing quote, so a
 #     shorter agent name can never match a longer one that starts with it
-#     (agent "wren" must not resume a session belonging to "wren-scratch").
+#     (agent "inkie" must not resume a session belonging to "inkie-scratch").
 #
 # The id comes from the parsed payload, not from string-stripping the filename,
 # so a change to Codex's filename format cannot quietly start yielding wrong
@@ -547,6 +553,108 @@ codex_verify_resume_or_fallback() {
   return 1
 }
 
+# Readiness is positive evidence, not merely a live node process. Never answer
+# first-run permission prompts here; unknown screens remain waiting.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pane-idle"
+if [[ "${PANE_IDLE_LIB_VERSION:-0}" -lt 3 ]]; then
+  echo "boot-agents: pane-idle library version 3 required" >&2
+  exit 1
+fi
+
+pane_readiness() {
+  local target="$1" runtime="$2" pane cmd composer raw line previous="" anchored=0
+  pane=$(tmux capture-pane -t "$target" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
+  pane=$(printf '%s\n' "$pane" | tail -n 30)
+  if pane_has_codex_approval_dialog "$pane"; then echo "approval prompt: answer manually"; return 1; fi
+  cmd=$(tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null) || { echo "process unavailable"; return 1; }
+  case "$cmd" in
+    node|claude|codex|"${runtime##*/}") ;;
+    *) echo "runtime not running"; return 1 ;;
+  esac
+  # Claude and Gemini composers have rules. Codex identifies its composer
+  # through its banner and prompt glyph. Menu options are not ready evidence.
+  case "$runtime" in
+    codex) printf '%s\n' "$pane" | grep -qF 'OpenAI Codex' || { echo "unrecognised screen"; return 1; } ;;
+    *) printf '%s\n' "$pane" | grep -qF '────────' || { echo "unrecognised screen"; return 1; } ;;
+  esac
+  if check_idle "$pane"; then echo "runtime busy"; return 1; fi
+  composer=$(find_composer_line "$pane")
+  [[ -n "$composer" ]] || { echo "composer unavailable"; return 1; }
+  if [[ "$runtime" == codex ]]; then
+    printf '%s\n' "$composer" | grep -qE '^[[:space:]]*›' || { echo "composer unconfirmed"; return 1; }
+  else
+    while IFS= read -r line; do
+      if [[ "$line" == "$composer" && "$previous" == *────────* ]]; then anchored=1; fi
+      previous="$line"
+    done <<< "$pane"
+    [[ "$anchored" -eq 1 ]] || { echo "composer unconfirmed"; return 1; }
+  fi
+  if printf '%s\n' "$composer" | sed -E -e 's/^[[:space:]]*(❯|›|>)[[:space:]]*//' -e $'s/\xc2\xa0//g' | grep -q '[^[:space:]]'; then
+    raw=$(tmux capture-pane -t "$target" -p -e 2>/dev/null) || { echo "composer unconfirmed"; return 1; }
+    raw=$(raw_line_for "$raw" "$composer")
+    printf '%s' "$raw" | grep -qF "$(printf '\033[2m')" || { echo "composer contains text or menu selection"; return 1; }
+  fi
+  echo "ready"
+  return 0
+}
+
+# Match rendered setup dialogs, rather than phrases in conversation output.
+manual_prompt_reason() {
+  local pane="$1"
+  if pane_has_codex_approval_dialog "$pane"; then
+    echo "approval prompt: answer manually"
+    return 0
+  fi
+  printf '%s\n' "$pane" | grep -qE '^[[:space:]]*(❯|›)[[:space:]]*[^[:space:]]' || return 1
+  if printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Do you trust (the files|this folder|this workspace)|Trust (this folder|the files|this workspace))'; then
+    echo "folder trust: attach and choose Yes manually if you trust the folder; do not press Enter, No is preselected"
+  elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Resume a conversation|Select a conversation|Resume picker)([[:space:]?:]|$)'; then
+    echo "resume picker: choose a conversation manually"
+  elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Try|Use|Enable|Switch to) (the )?full.?screen (renderer|mode)'; then
+    echo "fullscreen offer: answer manually"
+  else
+    return 1
+  fi
+}
+
+existing_readiness() {
+  local pane reason
+  pane=$(tmux capture-pane -t "$1" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
+  pane=$(printf '%s\n' "$pane" | tail -n 30)
+  if reason=$(manual_prompt_reason "$pane"); then echo "$reason"; return 1; fi
+  # launch_agent already confirmed a running runtime. Busy output and a banner
+  # scrolled out of view are normal for an existing conversation.
+  return 0
+}
+
+# A first boot is launched with its first message, so a busy composer is the
+# expected state, not a fault. Anything else wait_for_readiness reports still is.
+first_boot_readiness() {
+  local reason
+  reason=$(wait_for_readiness "$@") && return 0
+  [[ "$reason" == "runtime busy" ]] && return 0
+  printf '%s\n' "$reason"
+  return 1
+}
+
+wait_for_readiness() {
+  local target="$1" runtime="$2" reason="unconfirmed" attempt pane prompt
+  local budget="${BOOT_READY_SECS:-45}"
+  case "$budget" in ''|*[!0-9]*|0) budget=45 ;; esac
+  for ((attempt=0; attempt<budget; attempt++)); do
+    if reason=$(pane_readiness "$target" "$runtime"); then return 0; fi
+    pane=$(tmux capture-pane -t "$target" -p 2>/dev/null | tail -n 30)
+    if prompt=$(manual_prompt_reason "$pane"); then
+      reason="$prompt"
+      break
+    fi
+    case "$reason" in *manually*) break ;; esac
+    sleep 1
+  done
+  printf '%s\n' "$reason"
+  return 1
+}
+
 # codex_home_for_agent <agent>
 # Provider state is written by bin/codex-provider-switch. A committed rollback
 # must survive the next boot even though the dormant Azure home remains on disk.
@@ -600,8 +708,12 @@ if [[ "${BOOT_AGENTS_LIB_ONLY:-0}" == "1" ]]; then
 fi
 
 tmux start-server 2>/dev/null || true
+# Turn on focus-events before any pane starts, so Claude Code does not show its
+# "tmux focus-events off" hint. tmux has no per-session form of this option
+# (it is a server option), so it applies to the tmux server these scripts use.
+tmux set -g focus-events on 2>/dev/null || true
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-  tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$AGENTS_HOME/${AGENTS[0]}"
+  tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$AGENTS_HOME/${AGENTS[0]}" || { echo "boot-agents: session creation failed" >&2; exit 1; }
 fi
 
 # Launch an agent if it is not already running. Echoes "launched" or "skipped".
@@ -615,10 +727,11 @@ launch_agent() {
   runtime=$(get_runtime "$a")
   # Per-agent model override (selector): $AGENTS_HOME/<a>/.model -> --model flag.
   # Absent = no flag = inherit the global default. Applies to all runtimes.
-  [[ -f "$AGENTS_HOME/$a/.model" ]] && model_flag="--model $(cat "$AGENTS_HOME/$a/.model")"
-  tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a" \
-    || tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a"
-  if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE 'claude|node'; then
+  model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
+  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
+    tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  fi
+  if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node)$'; then
     echo "skipped"; return
   fi
   if [[ "$runtime" == "claude" ]]; then
@@ -627,15 +740,22 @@ launch_agent() {
     # ${VAR} resolves. Secrets should come from a real secret store at boot,
     # never raw in git-tracked config.
     #
-    # `--resume <name>` resolves a session DISPLAY NAME, and a session only
-    # acquires one when someone runs `/rename <name>` inside it. A brand new
-    # agent has none, so its very first boot fails with "No conversations found
-    # to resume", leaving a pane with no agent in it, which the idempotency
-    # check above then re-attempts on every subsequent run. Hence the fallback
-    # to a plain launch: the first boot starts a fresh session, and once that
-    # session has been renamed, every later boot resumes it. Run
-    # `/rename <name>` in a new agent's first session.
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude --resume $a $model_flag || claude $model_flag" Enter
+    # The session is pinned by id, not resumed by name: `--resume <name>` on a
+    # brand new agent opens an interactive picker instead of failing, so a
+    # `|| claude` fallback never ran and the pane sat at the picker. See
+    # claude-session.sh for the pin, the missing-transcript case and the
+    # one-off migration of sessions named by hand. If no pin can be written,
+    # launch a fresh named session rather than nothing.
+    local session_args
+    session_args="$(claude_session_args "$a" "$AGENTS_HOME/$a")" || {
+      echo "boot-agents: could not pin a session id for $a; launching an unpinned session" >&2
+      session_args="-n $(printf '%q' "$a")"
+    }
+    local first_prompt
+    first_prompt="$(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$a")"
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $first_prompt" Enter || return 1
+    # The first message is already on its way, so the pane may be busy at once.
+    [[ -n "$first_prompt" ]] && { echo "launched:first-boot"; return; }
   elif [[ "$runtime" == "codex" ]]; then
     # codex (Codex CLI runtime). AGENT_NAME/AGENT_ROLE must
     # be REAL OS-level env vars set before the codex process starts.
@@ -651,19 +771,18 @@ launch_agent() {
     local sid; sid="$(codex_latest_session_for_workspace "$a")"
     local codex_cmd
     codex_cmd="$(codex_launch_command "$a" "$role" "$codex_home" "$sid" "$model_flag")"
-    tmux send-keys -t "$target" "$codex_cmd" Enter
+    tmux send-keys -t "$target" "$codex_cmd" Enter || return 1
     # A selected id is not a promise the resume succeeded, so verify the pane
     # and recover it if it did not come up (codex_verify_resume_or_fallback,
     # above). The same call dismisses Codex's update-available dialog, which
     # is deliberately not gated on $sid so a first boot gets it too.
-    codex_verify_resume_or_fallback "$target" "$a" "$sid" "$role" "$codex_home" "$model_flag"
-
+    codex_verify_resume_or_fallback "$target" "$a" "$sid" "$role" "$codex_home" "$model_flag" || return 1
   else
     # Any other runtime: launch it plainly. If it needs env vars set before
     # the process starts rather than after, set them here explicitly -- some
     # runtimes only apply hook-declared env to their own shell tool calls, not
     # to the process itself, so a hook-only approach can silently under-scope.
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a $runtime $model_flag" Enter
+    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a $runtime $model_flag" Enter || return 1
   fi
   echo "launched"
 }
@@ -676,10 +795,41 @@ launch_agent() {
 # BOOT_STAGGER_SECS=0 for a fast serial boot on a quiet box.
 STAGGER_SECS="${BOOT_STAGGER_SECS:-12}"
 declare -a FRESH=()
+LAUNCHED=0
+ALREADY_UP=0
+WAITING=0
+FAILED=0
+ARMED=0
+# Once for the whole boot, not per agent. Best-effort: see claude-binary-check.sh.
+warn_if_foreign_claude
 for a in "${AGENTS[@]}"; do
-  if [[ "$(launch_agent "$a")" == "launched" ]]; then
-    FRESH+=("$a")
-    [[ "$STAGGER_SECS" -gt 0 ]] && sleep "$STAGGER_SECS"
+  if outcome=$(launch_agent "$a"); then
+    readiness_check=wait_for_readiness
+    [[ "$outcome" == skipped ]] && readiness_check=existing_readiness
+    [[ "$outcome" == launched:first-boot ]] && readiness_check=first_boot_readiness
+    if reason=$("$readiness_check" "$SESSION:$a" "$(get_runtime "$a")"); then
+      if [[ "$outcome" == launched* ]]; then
+        if [[ "$outcome" == launched:first-boot ]]; then
+          # Typing "arm your monitor" into a pane busy with its first turn
+          # would queue it behind day-one setup, so leave it to the next boot.
+          [[ -f "$AGENTS_HOME/$a/.auto-arm-watcher" ]] && echo "boot-agents: $a monitor not armed on its first boot; after its first turn, exit its runtime and run boot-agents.sh again to arm it" >&2
+        else
+          FRESH+=("$a")
+        fi
+        LAUNCHED=$((LAUNCHED + 1))
+        echo "boot-agents: $a launched, ready"
+        [[ "$STAGGER_SECS" -gt 0 ]] && sleep "$STAGGER_SECS"
+      else
+        ALREADY_UP=$((ALREADY_UP + 1))
+        echo "boot-agents: $a already up, ready"
+      fi
+    else
+      WAITING=$((WAITING + 1))
+      echo "boot-agents: $a waiting: $reason" >&2
+    fi
+  else
+    FAILED=$((FAILED + 1))
+    echo "boot-agents: $a launch failed or verification unconfirmed" >&2
   fi
 done
 
@@ -694,39 +844,36 @@ should_auto_arm() {
   [[ -f "$AGENTS_HOME/$a/.auto-arm-watcher" ]]
 }
 
-# Auto-arm the watcher on freshly-launched, opt-in agents. Wait for the TUI to
-# be ready, then type the prompt. Adjust "arm your monitor" to whatever your
-# own watcher-arming instruction is.
+# Only ready, freshly launched, opted-in agents receive monitor instructions.
 for a in "${FRESH[@]}"; do
-  should_auto_arm "$a" || continue
+  if ! should_auto_arm "$a"; then
+    echo "boot-agents: $a monitor not requested"
+    continue
+  fi
   target="$SESSION:$a"
-  # wait up to ~45s for the runtime to be the running command in the pane
-  for _ in $(seq 1 45); do
-    tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE 'claude|node' && break
-    sleep 1
-  done
-  sleep 6  # extra settle so the input box is ready to accept keys
-  # text and Enter sent separately: one send-keys call carrying both text and
-  # Enter can race a TUI that hasn't finished drawing its composer yet.
-  tmux send-keys -t "$target" "arm your monitor"
-  sleep 0.7
-  tmux send-keys -t "$target" Enter
-done
-
-# Verify each fresh agent actually started its watcher, and re-send if it
-# missed (a resume can land mid-compaction, or a slow TUI can drop the keys).
-# Up to a few retries makes the arm self-healing.
-for a in "${FRESH[@]}"; do
-  should_auto_arm "$a" || continue
-  target="$SESSION:$a"
-  for _ in 1 2 3 4; do
-    sleep 8
-    tmux capture-pane -t "$target" -p 2>/dev/null \
-      | grep -qiE 'Monitor\(|inbox events|Monitor started' && break
-    tmux send-keys -t "$target" "arm your monitor"
-    sleep 0.7
-    tmux send-keys -t "$target" Enter
-  done
+  confirmed=0
+  monitor_pattern='^[^[:alnum:]]*(Monitor\(|Monitor started([[:space:]]|$))'
+  baseline=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
+  # Send once: repeated prompts can create duplicate watchers. Poll only.
+  if ! reason=$(wait_for_readiness "$target" "$(get_runtime "$a")"); then
+    echo "boot-agents: $a monitor waiting: $reason" >&2
+  elif tmux send-keys -t "$target" "arm your monitor" && sleep 0.7 && tmux send-keys -t "$target" Enter; then
+    for poll in 1 2 3 4; do
+      sleep 8
+      observed=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
+      if [[ "$observed" -gt "$baseline" ]]; then
+        confirmed=1
+        break
+      fi
+    done
+  fi
+  if [[ "$confirmed" -eq 1 ]]; then
+    ARMED=$((ARMED + 1))
+    echo "boot-agents: $a monitor armed (pane confirmation)"
+  else
+    WAITING=$((WAITING + 1))
+    echo "boot-agents: $a monitor unconfirmed" >&2
+  fi
 done
 
 # tmux quality-of-life (no-op if already set)
@@ -735,7 +882,10 @@ tmux set -g set-titles on 2>/dev/null || true
 tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
 tmux set -g allow-passthrough on 2>/dev/null || true
 
-echo "boot-agents: ${#FRESH[@]} launched + armed (${FRESH[*]:-none}), $(( ${#AGENTS[@]} - ${#FRESH[@]} )) already up"
+echo "boot-agents: $LAUNCHED launched and ready, $ARMED monitors armed, $ALREADY_UP already up and ready, $WAITING waiting, $FAILED failed"
 
-[[ $ATTACH -eq 1 ]] && exec tmux attach -t "$SESSION"
-exit 0
+BOOT_RC=0
+[[ "$WAITING" -eq 0 ]] || BOOT_RC=3
+[[ "$FAILED" -eq 0 ]] || BOOT_RC=1
+if [[ "$ATTACH" -eq 1 ]]; then tmux attach -t "$SESSION"; fi
+exit "$BOOT_RC"

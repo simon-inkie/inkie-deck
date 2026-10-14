@@ -1,5 +1,5 @@
 /**
- * test/cron.server.test.ts - Unit tests for app/lib/cron.server.ts (TASK-460).
+ * test/cron.server.test.ts - Unit tests for app/lib/cron.server.ts.
  *
  * ALL crontab interactions are STUBBED. The real user crontab is NEVER touched.
  * The CronDeps injection interface exists precisely for this suite.
@@ -15,7 +15,7 @@
  *   - deleteCron: cleans up both .sh and .prompt.md files.
  *   - Disable/enable round-trip: setEnabled toggles the comment prefix and tag.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, vi } from "vitest";

@@ -1,5 +1,5 @@
 /**
- * push-store.test.ts - VAPID self-provision + subscription store (TASK-470).
+ * push-store.test.ts - VAPID self-provision + subscription store.
  *
  * Proves:
  *   1. getVapidKeys generates + persists a keypair on first call.
@@ -9,7 +9,7 @@
  *   4. removeSubscription drops only the named endpoint.
  *   5. Corrupt store file degrades to empty (tolerate-on-read).
  *
- * VALID-03: all writes confined to a tmpdir DATA_ROOT.
+ * All writes are confined to a tmpdir DATA_ROOT.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";

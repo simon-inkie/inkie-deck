@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * activity-panel.test.tsx - what the Team tab actually SHOWS (TASK-691 step 1).
+ * activity-panel.test.tsx - what the Team tab actually SHOWS.
  *
  * A render test rather than a props-shape test, because every claim this panel
  * makes is a claim about the DOM: that a pill never appears without the
@@ -10,9 +10,9 @@
  * dropped. None of those are observable from the view-model alone.
  *
  * Weighted, like the seam suite, towards the offline branches: the sweep is not
- * on cron yet, so those are the states Alex will actually see first.
+ * on cron yet, so those are the states a user will actually see first.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";
@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 /**
- * The panel links to each agent's live pane (2026-07-31), so it needs a router
+ * The panel links to each agent's live pane, so it needs a router
  * around it. createRoutesStub is the react-router-supported harness for exactly
  * this: real Link behaviour (a real href, real navigation) without a route
  * module or a loader. Rendering the panel bare would now throw.
@@ -151,8 +151,8 @@ describe("ActivityPanel - live sweep", () => {
     expect(el("activity-status-quill")?.textContent).toContain("working");
   });
 
-  // Alex, 2026-07-31: "maybe a button on each card to jump to the agents
-  // thread window". The three claims worth pinning: it goes to the LIVE PANE
+  // Requirement: each card offers a button to jump to the agent's thread
+  // window. The three claims worth pinning: it goes to the LIVE PANE
   // (not the chat half), it is per-agent, and it sits in the header row where
   // a primary action belongs rather than behind the details toggle.
   it("jumps to that agent's live pane, from the card header, one per card", () => {
@@ -482,9 +482,8 @@ describe("ActivityPanel - offline", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Last-known cards under the banner (Alex, 2026-07-31, after seeing the
-  // blank version live). The rule being pinned: a dead engine costs you the
-  // CLAIM, not the DATA. What was true at 07:14 is still shown; what it is
+  // Last-known cards under the banner. The rule being pinned: a dead engine
+  // costs you the CLAIM, not the DATA. What was true at 07:14 is still shown; what it is
   // not allowed to do is look like a statement about 10:15.
   // -------------------------------------------------------------------------
   describe("stale, with the last document it wrote", () => {
@@ -554,8 +553,7 @@ describe("ActivityPanel - offline", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Filling the page (Alex, 2026-07-31: "activity window can be full height,
-// it's only 50% vertically atm")
+// Filling the page
 //
 // jsdom lays nothing out, so these assert the CONTRACT rather than the pixels:
 // the panel claims the route column's spare height exactly when it has a grid
@@ -622,7 +620,7 @@ describe("ActivityPanel - claiming the page height", () => {
 describe("ActivityPanel - hostile inputs", () => {
   it("an unparseable `now` degrades to the wall clock instead of throwing", () => {
     // date-fns raises "Invalid time value" on an Invalid Date, which would take
-    // the whole route down (the 2026-06-11 lifeline family of bug).
+    // the whole route down.
     expect(() => {
       renderInRouter(<ActivityPanel activity={live([agent()])} now="not-a-date" avatars={{}} />);
     }).not.toThrow();

@@ -16,7 +16,7 @@
  *
  * AGENTS_ROOT is a NEW env var (default ~/agents, tilde expanded) because the
  * existing INBOX_ROOT points at the silo tree, not the agent homes. Unlike the
- * FND-03 no-default roots, the contract names a default explicitly, so this
+ * no-default roots, the contract names a default explicitly, so this
  * one has one - validateConfiguredRoots does not gate it.
  *
  * v1 is PERSIST-ONLY: setAgentModel writes the file and the change applies on
@@ -25,12 +25,12 @@
  * command (plan review sharpening 4). The route reports liveSwitched: false
  * so the UI can say "applies on restart" honestly.
  *
- * SEAM RULE (FND-02): .server module - routes/loaders call these with
+ * SEAM RULE: .server module - routes/loaders call these with
  * process.env; no route touches fs or the agents path shape directly.
  * Reads degrade to null/empty (a broken root renders an absent control, never
- * a 500); writes go through confineToRoot + atomicWrite (TASK-434 discipline).
+ * a 500); writes go through confineToRoot + atomicWrite.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -172,7 +172,7 @@ export function getAgentModelInfo(
  *      every model is rejected.
  *
  * The write itself is confined to AGENTS_ROOT (realpath + prefix assert,
- * TASK-434 primitive) and atomic (temp file + same-dir rename), with a
+ * the shared confineToRoot primitive) and atomic (temp file + same-dir rename), with a
  * trailing newline so the boot scripts' $(cat .model) reads clean.
  *
  * PERSIST-ONLY (v1): never touches a tmux pane. Returns { ok: false } with a

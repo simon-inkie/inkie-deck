@@ -1,16 +1,16 @@
 /**
  * test/ticket-thread.test.ts - Unit tests for app/lib/ticket-thread.ts
- * and parse extensions for the ticket: meta field (TASK-445).
+ * and parse extensions for the ticket: meta field.
  *
  * Covers:
  *   - parseBlock: ticket: line on plain blocks -> normalised field.
  *   - parseBlock: ticket: line on action card blocks -> normalised field.
- *   - parseBlock: bad ticket value -> warns + field absent (CARD-05 tolerant).
+ *   - parseBlock: bad ticket value -> warns + field absent.
  *   - parseBlock: ticket: field round-trips byte-identical (rawMeta verbatim).
  *   - Fixture regression: quill fixture block parses with ticket field.
  *   - aggregateTicketThread: cross-agent merge, chronological, attribution, empty.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import fs from "node:fs";
@@ -125,7 +125,7 @@ describe("parseBlock - bad ticket value warns + field absent (CARD-05 tolerant)"
 });
 
 // ---------------------------------------------------------------------------
-// Fixture regression: quill fixture block has ticket: TASK-432
+// Fixture regression: the quill fixture block carries a ticket: field
 // ---------------------------------------------------------------------------
 
 describe("fixture regression: quill fixture block parses with ticket field", () => {

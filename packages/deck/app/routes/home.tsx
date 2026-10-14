@@ -16,20 +16,21 @@
  *   - markHandled (decisions/plain): marks item handled in queue store
  *   - done (actions): forwards to inbox.markActionDone
  *
- * SEAM RULE (FND-02, T-01-12): imports ONLY makeStores from ~/lib/stores.server.
+ * SEAM RULE: imports ONLY makeStores from ~/lib/stores.server.
  * No direct fs imports; no literal inbox path or env key references here.
  * Exception: listCards from projects.server (same seam discipline - env-backed).
  * Exception: getLatestBrief from briefs.server (same seam discipline - env-backed).
  *
- * THRD-01: one row per agent with preview, absolute + relative time, unhandled affordance.
- * THRD-06: no-agents empty state + queue panel (empty or ranked list).
+ * Thread list: one row per agent with preview, absolute + relative time,
+ * unhandled affordance. Empty state: no-agents message plus queue panel (empty
+ * or ranked list).
  *
  * The "Inkie Deck" string is preserved here (as h1 heading and meta title)
- * so test/skeleton.test.ts Leg 1 assertion stays green after this rework (VALID-01).
+ * so test/skeleton.test.ts Leg 1 assertion stays green after this rework.
  *
- * TASK-442: MorningBrief panel + ReviewPanel (same ?doc= wiring as projects.tsx).
+ * Includes the MorningBrief panel + ReviewPanel (same ?doc= wiring as projects.tsx).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { z } from "zod";
 import type { Route } from "./+types/home";
@@ -155,7 +156,7 @@ export async function loader() {
   const { inbox, queue } = makeStores(process.env);
   const agents = await inbox.listAgents();
   const now = resolveNow(process.env["MC_NOW"]);
-  // TASK-462: per-instance user.
+  // Per-instance user.
   const user = mcUser(process.env);
 
   // Collect all blocks across all agents for queue derivation.
@@ -172,7 +173,7 @@ export async function loader() {
   // listCards() may throw if projects root is unset; degrade gracefully.
   let allProjectCards: Awaited<ReturnType<typeof listCards>> = [];
   try {
-    // TASK-462: scoped to this instance's agents (no-op on Alex's).
+    // Scoped to this instance's agents.
     allProjectCards = filterCardsForInstance(listCards(), process.env);
   } catch {
     // Projects root not set or unreadable - blocked kind shows empty
@@ -192,12 +193,12 @@ export async function loader() {
     user
   );
 
-  // Persist first-seen deadline anchors so order is stable across reloads (QUEUE-08).
+  // Persist first-seen deadline anchors so order is stable across reloads.
   for (const [id, deadline] of newDeadlines) {
     await queue.setDeadline(id, deadline);
   }
 
-  // TASK-442: morning brief - degrade gracefully (same guard as listCards above).
+  // Morning brief - degrade gracefully (same guard as listCards above).
   let brief: Awaited<ReturnType<typeof getLatestBrief>> = null;
   try {
     brief = await getLatestBrief(process.env, now);
@@ -491,7 +492,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 
   const hasAny = needsYouItems.length > 0;
 
-  // TASK-442: open a doc in the ReviewPanel via ?doc= (same pattern as projects.tsx).
+  // Open a doc in the ReviewPanel via ?doc= (same pattern as projects.tsx).
   const handleOpenDoc = useCallback(
     (doc: string) => {
       setSearchParams((prev) => {
@@ -510,7 +511,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           below its content's intrinsic width - the max-w-2xl inner block then
           forces this column to 672px and overflows a narrow (mobile) viewport,
           clipping card text. min-w-0 lets w-full resolve to the real viewport
-          width. (TASK-435 mobile bug, Alex's phone 2026-06-08.) */}
+          width. */}
       <div className="flex min-h-full min-w-0 flex-1 flex-col">
         <div className="mx-auto w-full max-w-2xl px-6 py-8">
           <header className="mb-6">
@@ -522,7 +523,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             </p>
           </header>
 
-          {/* TASK-442: Morning brief - between header and needs-you sections. */}
+          {/* Morning brief - between header and needs-you sections. */}
           {brief !== null && brief !== undefined ? (
             <MorningBrief
               date={brief.date}
@@ -558,14 +559,14 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
-      {/* TASK-442: ReviewPanel for links inside the morning brief. */}
+      {/* ReviewPanel for links inside the morning brief. */}
       <ReviewPanel />
     </div>
   );
 }
 
 /**
- * Scoped error boundary (2026-06-11 lifeline hardening): a failure in this
+ * Scoped error boundary: a failure in this
  * route renders here, inside the shell - the sidebar and the rest of MC stay
  * usable. Real error text shown (tailnet-only internal tool).
  */

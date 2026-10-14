@@ -1,14 +1,13 @@
 /**
- * voice-insert.test.ts - Pins the additive-insert contract (TASK-446).
+ * voice-insert.test.ts - Pins the additive-insert contract.
  *
- * THE bug being pinned: Alex's live session 2026-06-07 - "text in the input
- * box should be additive, right now it overwrites when i start speaking after
- * a pause." Root cause was a stale closure rebuilding the textarea from text
+ * THE bug being pinned: in a live session, text already in the input box was
+ * overwritten rather than extended when speech resumed after a pause. Root cause was a stale closure rebuilding the textarea from text
  * frozen at voice-session start. These tests drive computeVoiceInsert with
  * final-sequences against EVOLVING text, exactly as the fixed handleFinalText
  * does via its synchronous currentTextRef mirror.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import {
@@ -46,7 +45,7 @@ describe("computeVoiceInsert - additive final sequences (the TASK-446 bug pin)",
     expect(value).toBe("one two three");
   });
 
-  it("no-rerender burst: two finals with only the synchronous mirror between them (Atlas fold pin)", () => {
+  it("no-rerender burst: two finals with only the synchronous mirror between them", () => {
     // Simulates handleFinalText running twice in ONE frame: no render, no
     // effect - the only state carried between calls is the synchronous
     // mirror (value) and the anchor ref. Both inserts must land.
@@ -91,7 +90,7 @@ describe("computeVoiceInsert - additive final sequences (the TASK-446 bug pin)",
 });
 
 // ---------------------------------------------------------------------------
-// Activation-edge anchor selection (the 2026-06-14 stale/unfocused-anchor fix)
+// Activation-edge anchor selection (the stale/unfocused-anchor fix)
 //
 // Pure mirror of the voice-session activation-edge logic in Compose.tsx: at the
 // isActive rising edge, pick the anchor from the CURRENT text mirror, honouring

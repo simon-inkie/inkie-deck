@@ -1,11 +1,10 @@
 /**
- * read-receipt.test.ts - the SYSTEM.md sent->read flip on Alex's render
- * (TASK-443 follow-on, e2e kink #3).
+ * read-receipt.test.ts - the SYSTEM.md sent->read flip on the operator's render.
  *
- * Scope fence (Quill, 2026-06-07): only the OTHER side's blocks flip when the
+ * Scope fence: only the OTHER side's blocks flip when the
  * thread participant renders. No symmetric flip - alex's own blocks are
- * never touched by markRead(agent, "alex"). "working" (TASK-444) and
- * already-"read" statuses untouched. Idempotent: nothing to flip = no write.
+ * never touched by markRead(agent, "alex"). "working" and already-"read"
+ * statuses are also untouched. Idempotent: nothing to flip = no write.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -20,7 +19,7 @@ First inbound message.
 ---
 ## 2026-06-07T18:05:00Z - from: alex - status: sent - subject: re: e2e probe one
 
-Alex's own sent block - must never flip here.
+The user's own sent block - must never flip here.
 
 ---
 ## 2026-06-07T18:10:00Z - from: quill - status: read - subject: already read
@@ -56,7 +55,7 @@ describe("markRead - the sent->read receipt flip", () => {
     sandbox = mkdtempSync();
     fs.mkdirSync(path.join(sandbox, "quill", "inbox"), { recursive: true });
     fs.writeFileSync(path.join(sandbox, "quill", "inbox", "alex.md"), THREAD, "utf8");
-    // The write guard resolves the root from env (FND-03) - point it at the
+    // The write guard resolves the root from env - point it at the
     // sandbox for the duration of each test.
     savedInboxRoot = process.env["INBOX_ROOT"];
     process.env["INBOX_ROOT"] = sandbox;

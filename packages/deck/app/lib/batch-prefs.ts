@@ -1,12 +1,12 @@
 /**
- * batch-prefs.ts - Per-browser preferences for the pending batch indicator (TASK-500.1).
+ * batch-prefs.ts - Per-browser preferences for the pending batch indicator.
  *
  * Client-only, SSR-safe. Persists to localStorage key mc.batchPrefs.v1.
  * Hydration-safe: starts from DEFAULT_BATCH_PREFS on both server and first
  * client render, then loads from localStorage in a useEffect after mount to
  * avoid SSR/client mismatch.
  *
- * No .server imports (FND-02). ASCII only (FND-05).
+ * No .server imports. ASCII only.
  */
 import { useState, useEffect } from "react";
 
@@ -15,7 +15,7 @@ export type HoldIndicator = "none" | "subtle" | "pill";
 export interface BatchPrefs {
   holdIndicator: HoldIndicator;
   holdSeconds: number;
-  /** TASK-500.4: show in-progress composer text live in the pending bubble. */
+  /** Show in-progress composer text live in the pending bubble. */
   livePreview: boolean;
 }
 

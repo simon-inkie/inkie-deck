@@ -1,5 +1,5 @@
 /**
- * inbox-task700.test.ts - the TASK-700 P1 fix (a 3.6MB / 4029-block thread
+ * inbox-task700.test.ts - the P1 fix (a 3.6MB / 4029-block thread
  * spun MC on open, paying a full parse of every block TWICE per 3s poll).
  *
  * Four pieces, all proved here:
@@ -13,7 +13,7 @@
  *      byte-identical to the old whole-file rewrite everywhere EXCEPT the
  *      flipped tokens (the format three other live consumers read directly).
  *
- * A fifth piece (2026-07-29, the sidebar/shell perf fix) rides the same seams:
+ * A fifth piece, the sidebar/shell perf fix, rides the same seams:
  *   5. readBlocks - the WHOLE-file read shell.tsx does for every agent on every
  *      nav and every 3s poll tick - is itself (mtimeMs, size)-cached, and
  *      markRead's byte-patch invalidates that cache alongside the window one.
@@ -235,7 +235,7 @@ describe("TASK-700 inbox thread-wedge fix", () => {
       expect(__windowReadCount()).toBe(2);
     });
 
-    it("evicts the oldest entry once past the cap, but a recently-used entry survives (CodeRabbit finding, MR !20)", async () => {
+    it("evicts the oldest entry once past the cap, but a recently-used entry survives (review finding)", async () => {
       // Distinct `limit` values are cheap, valid, distinct cache keys (no need
       // for a giant thread file to exercise the LRU bookkeeping itself).
       seed("quill", "alex", buildThread(20));
@@ -289,9 +289,9 @@ describe("TASK-700 inbox thread-wedge fix", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 2b. readBlocks whole-file cache stat-gate (sidebar/shell fix, 2026-07-29)
+  // 2b. readBlocks whole-file cache stat-gate
   //
-  // Same class of bug as TASK-700 on the OTHER call path: shell.tsx (the layout
+  // Same class of bug as the thread wedge, on the OTHER call path: shell.tsx (the layout
   // route wrapping every page) readBlocks EVERY agent on every nav + every 3s
   // poll tick. Unlike the thread view this genuinely needs the whole file
   // (hasUnhandled / hasUnread / the bell are all "any such block ANYWHERE"),
@@ -306,7 +306,7 @@ First inbound.
 ---
 ## 2026-06-07T18:05:00Z - from: alex - status: sent - subject: mine
 
-Alex's own - never flips.
+The user's own - never flips.
 
 ---
 ## 2026-06-07T18:10:00Z - from: quill - status: sent - subject: two
@@ -414,7 +414,7 @@ Second inbound.
     // file size never moves. If the mtime bump is also invisible (coarse-mtime
     // filesystem, or the bump landing in a tick already read), the (mtime,size)
     // guard CANNOT see the write, and the cache would keep serving "sent" -
-    // a magenta unread dot on a thread Alex has already read. The explicit
+    // a magenta unread dot on a thread the operator has already read. The explicit
     // invalidateParsedCaches() call inside markRead is the only thing standing
     // between the cache and that bug; these two tests are what pin it.
     // -----------------------------------------------------------------------
@@ -508,7 +508,7 @@ Second inbound.
     // -----------------------------------------------------------------------
     // The cached list is handed back BY REFERENCE, so a caller that mutated it
     // in place would corrupt every later reader of that thread. The contract
-    // was documented but unenforced (CodeRabbit finding, MR !33) - it is now
+    // was documented but unenforced, and it is now
     // frozen, and frozen on EVERY path so behaviour cannot depend on cache luck.
     // -----------------------------------------------------------------------
 
@@ -550,8 +550,8 @@ Second inbound.
     // -----------------------------------------------------------------------
     // The atomicWrite card mutators (answerCard, markActionDone, supersede*,
     // ...) rewrite the whole file. The cache originally leaned on the stat
-    // guard to notice them - an assumption, not a guarantee (CodeRabbit
-    // finding, MR !33): a card-state rewrite can be the same length, and
+    // guard to notice them - an assumption, not a guarantee:
+    // a card-state rewrite can be the same length, and
     // rename(2) lands an mtime that can fall inside the same coarse tick as a
     // concurrent reader's priming stat. They now invalidate explicitly, and
     // this pins that they do.
@@ -605,7 +605,7 @@ First inbound.
 ---
 ## 2026-06-07T18:05:00Z - from: alex - status: sent - subject: mine
 
-Alex's own - never flips.
+The user's own - never flips.
 
 ---
 ## 2026-06-07T18:10:00Z - from: quill - status: sent - subject: two
@@ -670,10 +670,10 @@ Second inbound.
   });
 
   // -------------------------------------------------------------------------
-  // 4. Byte-patch correctness (Quill's landing condition)
+  // 4. Byte-patch correctness
   // -------------------------------------------------------------------------
 
-  describe("markRead byte-patch (Quill's edge cases)", () => {
+  describe("markRead byte-patch (edge cases)", () => {
     /**
      * Canonical multi-block fixture that exercises every edge named:
      *  - block 0: quill sent            -> flips
@@ -740,7 +740,7 @@ Second inbound.
       expect(raw).toContain("status: read as well");
     });
 
-    it("does NOT false-positive on 'status: sent' inside the 'from' field (peer-review catch, Atlas MR !20)", async () => {
+    it("does NOT false-positive on 'status: sent' inside the 'from' field (peer-review catch)", async () => {
       // "from" comes BEFORE "status" in the header grammar, so an unanchored
       // /status:\s*sent/ search of the raw line would match INSIDE this from
       // value first - and verify-before-write would NOT catch it, because the

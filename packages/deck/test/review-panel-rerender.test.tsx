@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * review-panel-rerender.test.tsx - TASK-705 render-cascade regression test.
+ * review-panel-rerender.test.tsx - render-cascade regression test.
  *
  * The bug: severe composer typing lag when a large markdown doc is open in the
  * review panel. Root cause was a re-render cascade, NOT a missing memo. Chain:
@@ -12,7 +12,7 @@
  *                          was a brand-new inline closure on every ReviewPanel
  *                          render, so the whole doc was re-parsed per keystroke)
  *
- * The fix (TASK-705): memo(ReviewPanel) [zero props, always compares equal],
+ * The fix: memo(ReviewPanel) [zero props, always compares equal],
  * useCallback on the two handlers, and memo(PanelContent).
  *
  * This suite proves the fix at runtime with a render-count seam: Markdown is
@@ -30,7 +30,7 @@
  * the Markdown mock - renders twice for a single open doc. Every assertion is
  * therefore RELATIVE (before vs after), never an absolute count.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React, { act } from "react";

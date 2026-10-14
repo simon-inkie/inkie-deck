@@ -7,19 +7,17 @@
  * (no full-page navigation). After the action resolves, RR7 automatically
  * re-runs the loader so the answered badge appears without reload.
  *
- * RESOLVED card (answered or pushed back, TASK-453): receipt treatment -
- * title + resolution chip move INTO the header strip (chip prefers the
- * chosen option's LABEL over the bare letter when short - "Answered: Ship
- * it" beats "Answered: B" on a morning scan; Atlas fold), body collapses
+ * RESOLVED card: receipt treatment -
+ * title + resolution chip move INTO the header strip, body collapses
  * to a two-line clamp, header strip toggles expansion. Expanded shows the
  * full body + the chosen/dimmed option rows (the record). No interactive
  * elements inside the header button (a11y pin).
  *
- * CARD-04: button values carry the stable decision-id, NOT a positional index.
- * CARD-06: answered cards stay visible (historical record).
+ * Button values carry the stable decision-id, NOT a positional index.
+ * Answered cards stay visible (historical record).
  *
- * No .server imports - all data arrives via props (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props.
+ * ASCII only - no em-dashes.
  */
 import { useState } from "react";
 import { useFetcher } from "react-router";
@@ -91,7 +89,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
   const fetcher = useFetcher();
   const busy = fetcher.state !== "idle";
   const card = block.card;
-  // Resolved-card expansion (TASK-453): collapsed by default, throwaway UI state.
+  // Resolved-card expansion: collapsed by default, throwaway UI state.
   const [expanded, setExpanded] = useState(false);
   const [showDismissForm, setShowDismissForm] = useState(false);
   const [dismissReason, setDismissReason] = useState("");
@@ -113,10 +111,11 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
   const isResolved = isAnswered || isDismissed || isSuperseded;
 
   // -------------------------------------------------------------------------
-  // RESOLVED receipt (TASK-453; Thread C adds dismissed + superseded)
+  // RESOLVED receipt
   // -------------------------------------------------------------------------
   if (isResolved) {
-    // Chip text (Atlas fold): prefer the chosen option's label when short -
+    // Chip text: prefer the chosen option's label when short ("Answered: Ship
+    // it" beats "Answered: B" on a quick scan) -
     // the bare letter means nothing without expanding. Fall back to the
     // letter when the label is long (or for custom answers beyond a glance).
     const chosenOption = card.options.find((o) => o.key === card.answered);
@@ -152,7 +151,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
         >
           <span className="label-mono shrink-0 text-primary">Decision</span>
           {/* Truncate only when collapsed (title= is mouse-only; expansion
-              un-clamps for keyboard/touch readers - Atlas fold). */}
+              un-clamps for keyboard/touch readers). */}
           <span
             className={cn(
               "min-w-0 flex-1 font-display text-sm font-bold tracking-tight text-foreground",
@@ -190,8 +189,8 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
           />
         </button>
 
-        {/* Clamp region doubles as a pointer expand target (Alex live
-            feedback) - keyboard semantics stay on the strip button. */}
+        {/* Clamp region doubles as a pointer expand target - keyboard
+            semantics stay on the strip button. */}
         {!expanded ? (
           block.body ? (
             <div
@@ -232,7 +231,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
               </p>
             ) : null}
 
-            {/* The record: chosen option filled, others dimmed (CARD-06) */}
+            {/* The record: chosen option filled, others dimmed */}
             <div className="mt-2 flex flex-col gap-2">
               {card.options.map((opt) => {
                 const chosen = !isPushedBack && !isCustom && opt.key === card.answered;
@@ -364,7 +363,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
 
             {/* "OR write something..." replaces the plain "Push back" button.
                 Styled as a proper pressable row in the same button language as
-                the A/B options (Alex's MC run-through feedback, 2026-06-06) -
+                the A/B options:
                 dashed border + pencil glyph signal "free-form" vs a canned option. */}
             <Button
               type="button"

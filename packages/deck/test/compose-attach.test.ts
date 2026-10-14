@@ -1,5 +1,5 @@
 /**
- * test/compose-attach.test.ts - Unit tests for app/lib/compose-attach.ts (TASK-450).
+ * test/compose-attach.test.ts - Unit tests for app/lib/compose-attach.ts.
  *
  * Tests:
  *   buildOutgoingBody:
@@ -19,7 +19,7 @@
  *     - mixed kinds (only "file" kind extracted)
  *
  * Pure module: no DOM globals needed. ClipboardLike accepts plain objects.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

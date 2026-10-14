@@ -1,5 +1,5 @@
 /**
- * TmuxPane.tsx - the terminal surface (TASK-437 read, v2 adds write).
+ * TmuxPane.tsx - the terminal surface.
  *
  * One dark pane, two homes: the /tmux Team tab (window picker above it)
  * and the thread view in ?view=tmux mode (one agent's window). Renders
@@ -11,13 +11,22 @@
  * is ABSENT, no input renders at all - the read-only posture is one prop away,
  * so a caller that wants view-only just omits it (the fallback is structural).
  *
- * No .server imports - FND-02 (the useFetcher POST does the server work).
- * ASCII only - no em-dashes - FND-05.
+ * No .server imports (the useFetcher POST does the server work).
+ * ASCII only - no em-dashes.
  */
 import { useEffect, useRef, useState } from "react";
 import { useFetcher } from "react-router";
 import { EmptyState } from "./EmptyState";
 import { TerminalSquare, CornerDownLeft } from "lucide-react";
+
+const NAVIGATION_KEYS = [
+  "Up",
+  "Down",
+  "Enter",
+  "Escape",
+  "Tab",
+  "BTab",
+] as const;
 
 type SendData =
   | { ok: true }
@@ -26,12 +35,14 @@ type SendData =
 /**
  * The write affordance. A small textarea + Send that posts to the one send
  * seam. Enter submits, Shift+Enter is a newline. Clears only after a send
- * SETTLES ok, so a failed send keeps the typed text for a retry.
+ * SETTLES ok, so a failed send keeps the typed text for a retry. Navigation
+ * keys use the same seam and never clear a draft.
  */
 function TmuxCompose({ sendTarget }: { sendTarget: string }) {
   const fetcher = useFetcher<SendData>();
   const [text, setText] = useState("");
   const prevState = useRef(fetcher.state);
+  const sentText = useRef(false);
   const busy = fetcher.state !== "idle";
   const data = fetcher.data;
   const error =
@@ -44,24 +55,51 @@ function TmuxCompose({ sendTarget }: { sendTarget: string }) {
         : data.error
       : undefined;
 
-  // Clear the box only when a submission transitions back to idle with ok.
+  // Clear the box only when a text submission settles successfully.
   useEffect(() => {
     if (prevState.current !== "idle" && fetcher.state === "idle") {
-      if (fetcher.data?.ok) setText("");
+      if (fetcher.data?.ok && sentText.current) setText("");
     }
     prevState.current = fetcher.state;
   }, [fetcher.state, fetcher.data]);
 
   function send() {
     if (text.trim() === "" || busy) return;
+    sentText.current = true;
     fetcher.submit(
       { window: sendTarget, text },
       { method: "post", action: "/api/tmux-send" }
     );
   }
 
+  function sendKey(key: (typeof NAVIGATION_KEYS)[number]) {
+    if (busy) return;
+    sentText.current = false;
+    fetcher.submit(
+      { window: sendTarget, key },
+      { method: "post", action: "/api/tmux-send" }
+    );
+  }
+
   return (
     <div className="mt-2 shrink-0">
+      <div
+        className="mb-2 flex flex-wrap gap-2"
+        role="group"
+        aria-label="Pane navigation"
+      >
+        {NAVIGATION_KEYS.map((key) => (
+          <button
+            key={key}
+            type="button"
+            disabled={busy}
+            onClick={() => sendKey(key)}
+            className="min-h-11 rounded-lg border border-border px-3 font-mono text-xs text-foreground hover:bg-primary/10 disabled:opacity-40"
+          >
+            {key === "BTab" ? "Shift+Tab" : key}
+          </button>
+        ))}
+      </div>
       {error !== undefined ? (
         <p
           data-testid="tmux-compose-error"
@@ -118,8 +156,9 @@ export function TmuxPane({
   // Follow-bottom: the pane now carries scrollback history (server captures
   // -S -1000), so it lands on the LATEST line and follows new output - unless
   // the operator has scrolled up to read history, in which case their position
-  // is preserved across the 1s poll re-render (mirrors the TASK-454 chat
-  // scroll-follow). atBottomRef starts true so the first render lands at bottom.
+  // is preserved across the 1s poll re-render (mirrors the chat
+  // thread's scroll-follow). atBottomRef starts true so the first render lands
+  // at bottom.
   const preRef = useRef<HTMLPreElement>(null);
   const atBottomRef = useRef(true);
 

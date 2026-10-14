@@ -1,5 +1,5 @@
 /**
- * PushToggle.tsx - "enable notifications on this device" affordance (TASK-470).
+ * PushToggle.tsx - "enable notifications on this device" affordance.
  *
  * Lives in the bell dropdown (the notification surface). Four states:
  *   - unsupported: no serviceWorker/PushManager/Notification -> render nothing
@@ -9,12 +9,12 @@
  *
  * The VAPID public key is fetched from /api/push-subscribe on demand - no
  * loader plumbing, and the key is lazily self-provisioned server-side on
- * the first ask. FND-02: this component touches no env/fs.
+ * the first ask. This component touches no env/fs.
  *
  * iOS caveat (surfaced in the hint): web push only fires for sites added
  * to the Home Screen (16.4+), never from a plain Safari tab.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { useEffect, useState } from "react";
 import { Bell, BellOff, BellRing } from "lucide-react";

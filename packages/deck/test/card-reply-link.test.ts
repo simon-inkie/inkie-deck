@@ -16,7 +16,7 @@
  * / does not disturb the window cursor), not for the string it happens to
  * produce, so the assertions cannot be inverted without the name going wrong.
  *
- * ASCII only (FND-05).
+ * ASCII only.
  */
 import { describe, it, expect } from "vitest";
 import {
@@ -71,7 +71,7 @@ describe("buildCardReplyHref", () => {
 
   it("still extends the loader window and scrolls to the card", () => {
     const { params, hash } = parts(buildCardReplyHref("scribe", "TASK-413-q1"));
-    // anchor is a LOADER input (TASK-469 windowing). Losing it would shrink the
+    // anchor is a LOADER input (windowed thread loading). Losing it would shrink the
     // read window back to the tail and unmount the card being answered.
     expect(params.get(ANCHOR_PARAM)).toBe("TASK-413-q1");
     expect(hash).toBe("TASK-413-q1");

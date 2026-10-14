@@ -15,7 +15,7 @@
  * per the SPEC's cardinal constraint (the P1 disappearing-messages class of
  * bug lived exactly on that read path).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import type { InboxRepository } from "./inbox.server.js";

@@ -8,7 +8,7 @@
  * - Decoy: "done:" in body is NOT treated as done state (fence-bounded guard)
  * - Round-trip via serialize: body survives
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";

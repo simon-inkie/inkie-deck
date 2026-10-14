@@ -26,13 +26,18 @@ export const EXECUTABLE_LANGS = ["sh"];
  *
  * `text` is recorded output and `zsh` is the macOS path, which a Linux
  * container cannot run and which the document therefore marks as unverified.
+ * `sh-manual` is the "Keep it running" section: a container has no systemd
+ * user manager, and a detached second Deck would collide with the one the run
+ * already started. The document says those blocks are not executed.
+ * `powershell` is the Windows side of the WSL section: a Linux container
+ * cannot run it, and the document says so.
  * A language outside this list fails the shape stage: unhandled, it would be
  * neither executed nor accounted for.
  */
-export const KNOWN_LANGS = ["sh", "text", "zsh"];
+export const KNOWN_LANGS = ["sh", "text", "zsh", "sh-manual", "powershell"];
 
 const PREREQUISITES = ["1-prerequisites/sh#1", "1-prerequisites/sh#2", "1-prerequisites/sh#3"];
-const DEPENDENCIES = ["2-install-the-dependencies/sh#1"];
+const DEPENDENCIES = ["2-install-the-dependencies/sh#1", "2-install-the-dependencies/sh#2"];
 const TRY_IT = ["3-try-it/sh#1", "3-try-it/sh#2"];
 const CONFIGURE = [
   "4-run-it-for-real/sh#1",
@@ -85,6 +90,23 @@ export const RUNS = {
     ...BUILD_AND_START,
     ...AGENTS,
   ],
+};
+
+/**
+ * Executable blocks that are deliberately not run, each with the reason.
+ *
+ * A skip is declared rather than implied, so the coverage accounting still
+ * sees the block: it counts as claimed, and a skip naming a block that has left
+ * the document fails the rig as a stale claim.
+ *
+ * The clone step cannot run here. The rig copies the working tree into a
+ * container that has no network credentials, so `git clone` of the real URL
+ * would be testing the host's access rather than the document, and while the
+ * repository is private it cannot succeed at all. Every later block runs from
+ * the copied tree, which is what the clone would have produced.
+ */
+export const SKIPPED = {
+  "1-prerequisites/sh#4": "git clone of the real URL: no credentials in the container, and the rig copies the tree in instead",
 };
 
 /**

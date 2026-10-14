@@ -7,7 +7,7 @@
  * 3. Decision deep-link navigates to the correct thread.
  * 4. Mobile viewport: list usable, tick tappable (390px).
  *
- * TASK-440 additions (needs-you v1.1):
+ * Additions (needs-you v1.1):
  * 5. Wordmark is a link to home ("/").
  * 6. Three sections render in fixed order (Decisions / Todos / Blocked) with counts.
  * 7. Needs-you rows show a <time dateTime="..."> with the createdAt ISO in dateTime.
@@ -26,7 +26,7 @@
  * - Quill action card filed 2026-06-09T10:00:00Z -> ~34.5h old -> overdue
  * - Blocked card updated 2026-05-01 -> very old -> overdue (48h tier)
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";
@@ -139,7 +139,7 @@ test("NEEDS-04: mobile viewport - needs-you list renders and tick is tappable", 
 });
 
 // ---------------------------------------------------------------------------
-// TASK-440: Test 5 - Wordmark is a link to home
+// Test 5 - Wordmark is a link to home
 // ---------------------------------------------------------------------------
 
 test("NEEDS-440-05: Inkie Deck wordmark is a link that navigates to home", async ({
@@ -163,7 +163,7 @@ test("NEEDS-440-05: Inkie Deck wordmark is a link that navigates to home", async
 });
 
 // ---------------------------------------------------------------------------
-// TASK-440: Test 6 - Three sections render in fixed order with counts
+// Test 6 - Three sections render in fixed order with counts
 // ---------------------------------------------------------------------------
 
 test("NEEDS-440-06: home renders three sections in Decisions / Todos / Blocked order with counts", async ({
@@ -199,7 +199,7 @@ test("NEEDS-440-06: home renders three sections in Decisions / Todos / Blocked o
 });
 
 // ---------------------------------------------------------------------------
-// TASK-440: Test 7 - Rows show createdAt with ISO in dateTime attribute
+// Test 7 - Rows show createdAt with ISO in dateTime attribute
 // ---------------------------------------------------------------------------
 
 test("NEEDS-440-07: each needs-you row has a time element with ISO createdAt in dateTime", async ({
@@ -221,7 +221,7 @@ test("NEEDS-440-07: each needs-you row has a time element with ISO createdAt in 
 });
 
 // ---------------------------------------------------------------------------
-// TASK-440: Test 8 - Blocked row with blocked-on shows "Blocked on: <value>"
+// Test 8 - Blocked row with blocked-on shows "Blocked on: <value>"
 // ---------------------------------------------------------------------------
 
 test("NEEDS-440-08: blocked row shows blocked-on value", async ({ page }) => {
@@ -238,7 +238,7 @@ test("NEEDS-440-08: blocked row shows blocked-on value", async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-440: Test 9 - X dismiss flow: form appears, submit removes item
+// Test 9 - X dismiss flow: form appears, submit removes item
 // ---------------------------------------------------------------------------
 
 test("NEEDS-440-09: X dismiss button shows inline form and dismissing removes item from list", async ({
@@ -272,7 +272,7 @@ test("NEEDS-440-09: X dismiss button shows inline form and dismissing removes it
 });
 
 // ---------------------------------------------------------------------------
-// TASK-440: Test 10 - Bell dropdown groups items with section labels
+// Test 10 - Bell dropdown groups items with section labels
 // ---------------------------------------------------------------------------
 
 test("NEEDS-440-10: bell dropdown groups needs-you items with section labels", async ({

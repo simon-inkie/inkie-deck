@@ -1,20 +1,20 @@
 /**
- * ticket-lens.test.ts - TASK-445 ticket-thread lens E2E tests.
+ * ticket-lens.test.ts - ticket-thread lens E2E tests.
  *
- * Fixture ticket: TASK-432 is tagged on:
+ * The fixture ticket (the one behind the projects kanban card) is tagged on:
  *   - fixtures/inbox/scribe/inbox/alex.md block[1] (atlas "checking in")
  *   - fixtures/inbox/quill/inbox/alex.md block[0] (quill action card)
  * The fixture card fixtures/projects/task-432-projects-kanban.md is "in progress".
  *
  * Tests:
- *   LENS-01: ticket chip renders on tagged bubble; click navigates to /tickets/TASK-432.
+ *   LENS-01: ticket chip renders on tagged bubble; click navigates to the ticket lens at /tickets/<id>.
  *   LENS-02: lens shows both messages chronologically with origin tags.
  *   LENS-03: lens shows the pinned card with correct column and board link.
  *   LENS-04: lens header has the correct Linear href.
  *   LENS-05: /tickets/NOT-A-TICKET -> 404.
  *   LENS-06: synergy column badge appears on a tagged bubble in the thread view.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import path from "node:path";
 import { test, expect } from "@playwright/test";
@@ -31,7 +31,7 @@ test("LENS-01: ticket chip renders on a tagged bubble and navigates to the lens"
 }) => {
   await page.goto("/threads/scribe");
 
-  // The atlas "checking in" block is tagged with TASK-432.
+  // The atlas "checking in" block is tagged with a ticket reference.
   // It renders as an agent bubble (own=false) with a ticket chip.
   const chip = page.getByTestId("bubble-ticket-chip").first();
   await expect(chip).toBeVisible();
@@ -54,7 +54,7 @@ test("LENS-02: lens shows messages from both agents chronologically with origin 
   const originTags = page.getByTestId("ticket-lens-origin-tag");
   await expect(originTags).toHaveCount(2);
 
-  // The quill block has timestamp 10:00, the scribe block (tagged TASK-432) has 15:00 -> quill first.
+  // The quill block has timestamp 10:00, the scribe block has 15:00 -> quill first.
   // agentName is the inbox directory (the thread owner), not the block's from field.
   const tagTexts = await originTags.allTextContents();
   expect(tagTexts[0]).toBe("quill");
@@ -107,7 +107,7 @@ test("LENS-06: synergy column badge appears on a tagged bubble in the thread vie
 }) => {
   await page.goto("/threads/scribe");
 
-  // The TASK-432 card is "in progress", so the column badge should appear
+  // The card is "in progress", so the column badge should appear
   // beside the ticket chip on the tagged bubble.
   const colBadge = page.getByTestId("bubble-ticket-column-badge").first();
   await expect(colBadge).toBeVisible();

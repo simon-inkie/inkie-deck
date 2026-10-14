@@ -419,12 +419,12 @@ One from iota." > /dev/null
 Body for inplace test.")
 
   BEFORE=$(cat "$TPATH" | wc -c)
-  BEFORE_BYTES=$(cat "$TPATH" | xxd -p | tr -d '\n')
+  BEFORE_BYTES=$(cat "$TPATH" | od -An -v -tx1 | tr -d ' \n')
 
   run_inbox "$T" "alpha" read omega > /dev/null 2>&1
 
   AFTER=$(cat "$TPATH" | wc -c)
-  AFTER_BYTES=$(cat "$TPATH" | xxd -p | tr -d '\n')
+  AFTER_BYTES=$(cat "$TPATH" | od -An -v -tx1 | tr -d ' \n')
 
   # Verify length unchanged
   if [ "$BEFORE" -ne "$AFTER" ]; then
@@ -434,7 +434,13 @@ Body for inplace test.")
     # Both are 4 bytes so length stays equal; just check "read" now present and "sent" gone
     AFTER_CONTENT=$(cat "$TPATH")
     if echo "$AFTER_CONTENT" | grep -q "status: read"; then
-      if ! echo "$AFTER_CONTENT" | grep -q "status: sent"; then
+      # Byte-exact: flipping the first "sent" to "read" in
+      # the before-bytes must reproduce the after-bytes, so nothing else moved.
+      EXPECTED_BYTES="${BEFORE_BYTES/73656e74/72656164}"
+      if [ "$EXPECTED_BYTES" != "$AFTER_BYTES" ]; then
+        fail "Case 11: bytes other than sent->read changed" "expected: $EXPECTED_BYTES
+actual:   $AFTER_BYTES"
+      elif ! echo "$AFTER_CONTENT" | grep -q "status: sent"; then
         ok "Case 11: in-place patch -- file length unchanged, sent->read flipped, nothing else moved"
       else
         fail "Case 11: status: sent still present after flip" "content: $AFTER_CONTENT"
@@ -1589,7 +1595,7 @@ STUB
 # ---------------------------------------------------------------------------
 # Case 52: a markdown heading INSIDE a message body must not truncate it.
 #
-# Found live 2026-08-13: block boundaries came off every column-0
+# Found in live use: block boundaries came off every column-0
 # "## " line, not only lines that actually parse as a header. A message
 # containing a markdown heading -- ordinary content, we all write in markdown
 # -- ended its own block early and everything after the heading vanished from
@@ -1616,7 +1622,7 @@ Here is my message.
 This trailing paragraph is AFTER the heading and must survive." > /dev/null
 
   OUT=$(run_inbox "$T" "alpha" read beta 2>&1)
-  # Review, 2026-08-13: the previous negative assertion here checked for
+  # Review: the previous negative assertion here checked for
   # "from: alice", a string this fixture never contains regardless of the parser,
   # so it could not fail and was testing nothing. The real invariant is that a
   # malformed heading must not split the message into a second block at all --

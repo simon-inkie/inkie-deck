@@ -1,5 +1,5 @@
 /**
- * voice-insert.ts - Pure helpers for the voice transcript pipeline (TASK-446).
+ * voice-insert.ts - Pure helpers for the voice transcript pipeline.
  *
  * computeVoiceInsert: the insertion maths for FINAL transcript results,
  * extracted from Compose.tsx's handleFinalText so the additive-insert
@@ -12,13 +12,13 @@
  * SILENCE_AUTO_STOP_MS: the auto-stop window. Exported so tests pin the
  * value and a future tune is a one-line change.
  *
- * Pure module: no env, no fs, no DOM (FND-02 clean).
- * ASCII only - no em-dashes (FND-05).
+ * Pure module: no env, no fs, no DOM.
+ * ASCII only - no em-dashes.
  */
 
 /**
- * Auto-stop after this many ms without a speech signal (TASK-446 item 2).
- * TASK-464: bumped 10s -> 30s. The timer only re-arms on a speech signal
+ * Auto-stop after this many ms without a speech signal.
+ * Raised from 10s to 30s. The timer only re-arms on a speech signal
  * (interim/final), not on audio, so a thinking pause during dictation never
  * re-armed it and the mic cut off mid-thought at 10s. 30s of TOTAL silence is
  * genuinely "done/forgot" while a normal pause never trips it. Cost is
@@ -38,7 +38,7 @@ export interface VoiceInsertResult {
 /**
  * Compute the additive insertion of a FINAL transcript at the voice anchor.
  *
- * Contract (TASK-433 stable-anchor fold + TASK-446 additive guarantee):
+ * Contract:
  * - The anchor is clamped to the CURRENT value length - purely protective
  *   (user deleted text before the anchor); against fresh text it never
  *   shrinks a correctly-advanced anchor.

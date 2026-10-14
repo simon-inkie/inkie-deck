@@ -20,7 +20,7 @@
  *        - srcDoc attribute wired from textContent
  *        - prose-mc container retained on the markdown branch
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

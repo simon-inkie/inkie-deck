@@ -16,14 +16,14 @@
  * says so.
  *
  * OPERATOR GATE: server-side via modelSelectorEnabled, not just hidden UI -
- * a principal instance (Robin's, MC_USER=robin) refuses both verbs with a
+ * a principal instance refuses both verbs with a
  * 403 even when the endpoint is hit directly (same posture as api.tmux-send).
  *
- * SEAM RULE (FND-02): imports ONLY from agent-model.server / instance.server
+ * SEAM RULE: imports ONLY from agent-model.server / instance.server
  * / safe-fs.server - no fs, no env literals beyond process.env handoff.
  * Validates at the boundary (parse-don't-validate).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { z } from "zod";
 import { data } from "react-router";

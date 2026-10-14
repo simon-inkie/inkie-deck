@@ -78,12 +78,15 @@
 # --------------------------------------------------------------------------
 check_idle() {
   local pane="$1"
-  local spinner_re='^[·✻✶✢\*][[:space:]]*[A-Za-z]+\.\.\.'
+  # Alternation, not a [...] class: in a non-UTF-8 locale (LC_ALL=C, cron, a
+  # minimal WSL) a class of multibyte glyphs matches single bytes and the
+  # spinner is silently missed. Literal alternatives match byte-wise anywhere.
+  local spinner_re='^(·|✻|✶|✢|\*)[[:space:]]*[A-Za-z]+\.\.\.'
   # Claude-family busy markers
   if echo "$pane" | grep -qF 'esc to interrupt' 2>/dev/null; then return 0; fi
   if echo "$pane" | grep -qF 'Cerebrating' 2>/dev/null; then return 0; fi
   if echo "$pane" | grep -qF 'Compacting conversation' 2>/dev/null; then return 0; fi
-  if echo "$pane" | grep -qP "$spinner_re" 2>/dev/null; then return 0; fi
+  if echo "$pane" | grep -qE "$spinner_re" 2>/dev/null; then return 0; fi
   # LIVE ELAPSED COUNTER -- the general busy signal.
   #
   # Every marker above is an enumerated LITERAL, and the UI moved out from
@@ -337,7 +340,13 @@ pane_has_codex_approval_dialog() {
 # scrollback.
 pane_ctx_pct() {
   local pane="$1" line
-  line=$(printf '%s\n' "$pane" | grep -E 'ctx:[0-9]+%|(█|░)[^│]*[0-9]+%' | tail -1)
+  # awk, not `grep -E '(█|░)[^│]*[0-9]+%'`: a negated class of a multibyte glyph
+  # is byte-wise under LC_ALL=C, and grep's PCRE flag is absent from BSD/macOS.
+  # Splitting on │ makes each piece │-free, where `[^│]*` is just `.*`.
+  line=$(printf '%s\n' "$pane" | awk '
+    /ctx:[0-9]+%/ { print; next }
+    { n = split($0, piece, "│")
+      for (i = 1; i <= n; i++) if (piece[i] ~ /(█|░).*[0-9]+%/) { print; break } }' | tail -1)
   [ -z "$line" ] && return 1
   printf '%s\n' "$line" | grep -oE '[0-9]+%' | tail -1 | tr -d '%'
 }
@@ -346,7 +355,7 @@ pane_ctx_pct() {
 # find_composer_line <pane>  -- print the pane line carrying the REAL composer
 # prompt, or nothing if the pane has no prompt line at all.
 #
-# WHY NOT `grep '^[[:space:]]*(❯|›|>)' | tail -1` (the bug fixed 2026-07-29):
+# WHY NOT `grep '^[[:space:]]*(❯|›|>)' | tail -1`:
 # Claude Code renders its background-task list BELOW the composer and prefixes
 # the selected entry with the SAME ❯ glyph. Real capture off a live pane:
 #
@@ -358,10 +367,9 @@ pane_ctx_pct() {
 #   ❯ ◯ general-purpose  MR opener   32m 4s   <- LAST ❯ line in the capture
 #
 # so `tail -1` read the task entry, treated its text as staged, and the push was
-# skipped for as long as that subagent stayed visible -- confirmed live on one
-# agent's pane TWICE on 2026-07-29 (three human DMs persisted to that agent's
-# inbox but never pushed, unstuck by hand). The failure was silent and total,
-# not intermittent:
+# skipped for as long as that subagent stayed visible -- confirmed on live
+# panes (messages persisted to the inbox but never pushed). The failure was
+# silent and total, not intermittent:
 # any agent with a visible subagent was unreachable by live push.
 #
 # The composer sits directly under its own horizontal-rule border; nothing below

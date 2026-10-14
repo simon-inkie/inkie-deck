@@ -1,16 +1,15 @@
 /**
- * tmux.tsx - the Activity page (TASK-691), reachable from the "Activity" nav.
+ * tmux.tsx - the Activity page, reachable from the "Activity" nav.
  *
- * HISTORY, because the route name no longer matches the job. This was TASK-437's
+ * HISTORY, because the route name no longer matches the job. This was the
  * Team tab: a window picker plus a live TmuxPane readout of whichever agent you
- * clicked. TASK-691 added the agent-activity panel above it, and on first sight
- * of the result Alex cut the readout (2026-07-31: "I dont think we need the
- * constant tmux readout at the bottom of the window, it's taking quite a lot of
- * screen real estate"). What is left is the activity panel, full height, with a
+ * clicked. The agent-activity panel was then added above it, and the readout was
+ * cut because the constant tmux output at the bottom of the window took too
+ * much screen space. What is left is the activity panel, full height, with a
  * per-card jump to the agent's own live pane.
  *
- * TmuxPane is NOT dead: it is still the per-thread `?view=tmux` surface
- * (TASK-437 amendment), which stays the one place a pane is read and written.
+ * TmuxPane is NOT dead: it is still the per-thread `?view=tmux` surface,
+ * which stays the one place a pane is read and written.
  * That is where the jump buttons on the cards land. The route path stays
  * /tmux so old bookmarks and the nav link keep working.
  *
@@ -22,11 +21,11 @@
  * happened to see, and a missing row reads as "that agent does not exist".
  * Gated on tmuxEnabled so an instance with tmux off never forks it.
  *
- * SEAM RULE (FND-02): imports ONLY from .server modules - the subprocess and
+ * SEAM RULE: imports ONLY from .server modules - the subprocess and
  * the fs read never appear in route code. activity.shared is a pure
  * types/view-model module (no fs, no env), same as projects.shared.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { Link } from "react-router";
 import type { Route } from "./+types/tmux";
@@ -75,7 +74,7 @@ export async function loader() {
   // AND the relative stamps the panel renders, so the two can never disagree.
   const now = resolveNow(process.env["MC_NOW"]);
 
-  // TASK-462: a tmux-disabled instance (Robin's) lists no windows. Nothing
+  // A tmux-disabled instance lists no windows. Nothing
   // tmux-shaped renders on this page any more, so that is the whole difference
   // it makes here: the panel itself is gated INDEPENDENTLY (decision Q6, an
   // instance with tmux off but activity configured must get the panel).
@@ -83,10 +82,10 @@ export async function loader() {
 
   const activity = loadActivity(now, windows);
 
-  // TASK-457 faces: the cards are the only avatar consumer left, so build the
+  // Faces: the cards are the only avatar consumer left, so build the
   // map from the rows that will actually render rather than from the window
   // list (which is empty on a tmux-disabled instance, and would have left
-  // Robin's panel on initials for agents MC can name perfectly well).
+  // a second user's panel on initials for agents MC can name perfectly well).
   const avatars: Record<string, string> = {};
   if (activity !== null) {
     // Live and offline both carry rows now, so one loop covers both states.
@@ -130,10 +129,9 @@ export default function ActivityTab({ loaderData }: Route.ComponentProps) {
       </div>
 
       {/*
-        THE ONE GROWING CHILD of this column (2026-07-31, Alex: "activity
-        window can be full height, it's only 50% vertically atm"). The header
-        above and the caption below are shrink-0 and keep their natural size;
-        the panel takes everything else and scrolls its card grid internally,
+        THE ONE GROWING CHILD of this column, so the activity panel fills the full
+        window height rather than half of it. The header above and the caption
+        below are shrink-0 and keep their natural size; the panel takes everything else and scrolls its card grid internally,
         so this page never hands a scrollbar to the shell's <main>.
 
         The `flex-1` lives on the panel's own root rather than on a wrapper
@@ -154,7 +152,7 @@ export default function ActivityTab({ loaderData }: Route.ComponentProps) {
 }
 
 /**
- * Scoped error boundary (2026-06-11 lifeline hardening): a failure in this
+ * Scoped error boundary: a failure in this
  * route renders here, inside the shell - the sidebar and the rest of MC stay
  * usable. Real error text shown (tailnet-only internal tool).
  */

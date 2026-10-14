@@ -29,7 +29,7 @@ import { selectInDocumentOrder } from "../lib/fenced.mjs";
 import { execIn, fetchOutside, removeContainer, runBlocks, startContainer, waitForHttp } from "../lib/docrun.mjs";
 import { EXPECTED_EXITS, LONG_RUNNING, RUNS } from "../install-plan.mjs";
 
-const AGENT = "wren";
+const AGENT = "inkie";
 /** The reply the document's own block sends, which must survive the round trip. */
 const REPLY_MARKER = "the whole protocol";
 /** The block that stands in for the agent, and the one this tier's fresh-terminal control re-runs. */
@@ -249,7 +249,7 @@ export default {
         ok:
           section("THREAD").includes(REPLY_MARKER) &&
           /from: \S+ - status: read/.test(section("THREAD")) &&
-          /from: wren - status: \S+ - subject: re: welcome/.test(section("THREAD")),
+          /from: inkie - status: \S+ - subject: re: welcome/.test(section("THREAD")),
         detail: oneLine(section("THREAD")),
       }),
       probe({

@@ -1,6 +1,6 @@
 /**
  * RED tests for applyPushBack (app/lib/blocks/answer.ts)
- * Verifies: push-back flip, distinct reply block, idempotency (CARD-03/CARD-04 contract).
+ * Verifies: push-back flip, distinct reply block, idempotency.
  * Ref: T-02-01, T-02-02, T-02-04 (Tampering - push-back writeback + idempotency + round-trip).
  */
 import { describe, it, expect } from "vitest";

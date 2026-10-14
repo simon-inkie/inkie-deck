@@ -31,7 +31,7 @@ describe("FileQueueStore (integration)", () => {
     sandbox = mkdtempSync();
     storePath = path.join(sandbox, "queue-state.json");
     store = new FileQueueStore(storePath);
-    // TASK-434: state writes are confined to DATA_ROOT.
+    // State writes are confined to DATA_ROOT.
     savedDataRoot = process.env["DATA_ROOT"];
     process.env["DATA_ROOT"] = sandbox;
   });
@@ -181,7 +181,7 @@ describe("FileQueueStore (integration)", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // TASK-434: state writes are confined to DATA_ROOT (raw-atomicWrite bypass closed)
+  // State writes are confined to DATA_ROOT (raw-atomicWrite bypass closed)
   // ---------------------------------------------------------------------------
 
   it("REFUSES to write state outside DATA_ROOT", async () => {

@@ -57,7 +57,7 @@ It needs python3, and two environment variables, both required with no
 defaults:
 
 ```bash
-export AGENT_NAME=wren                  # who you are
+export AGENT_NAME=inkie                  # who you are
 export INBOX_ROOT=/path/to/inboxes      # absolute path, no tilde
 
 packages/base/bin/inbox unread
@@ -139,8 +139,8 @@ export ACTIVITY_ROOT=~/.the-vault/activity
 
 packages/base/bin/activity-sweep.sh      # produce (put this on a timer)
 packages/base/bin/activity status --all  # every agent, one line each
-packages/base/bin/activity status wren   # one agent, in detail
-packages/base/bin/activity pin wren ~/repos/site   # override the worktree guess
+packages/base/bin/activity status inkie   # one agent, in detail
+packages/base/bin/activity pin inkie ~/repos/site   # override the worktree guess
 ```
 
 Every output leads with how old the data is, and says so loudly past
@@ -239,7 +239,7 @@ git clone <this-repo-url>
 
 # Starting a new agent from scratch:
 AGENTS_HOME=/path/to/agents INBOX_ROOT=/path/to/inboxes \
-  packages/base/bin/create-agent.sh wren --role "keeps the notes"
+  packages/base/bin/create-agent.sh inkie --role "keeps the notes"
 ```
 
 That writes the persona files, the inbox, and the runtime settings (including
@@ -276,8 +276,11 @@ status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 There is nothing magic in it. If you would rather do it by hand, the templates
 are just files, and the two things easiest to miss doing it that way are the
 inbox directory (an agent your launcher can see but your control plane cannot)
-and the fact that `--resume`-style launching needs the first session named
-before it can resume:
+and nothing else: the launchers pin each claude agent's session by id in
+`<agent home>/.session-id` on its first boot, named after the agent, so there
+is no `/rename` step. Delete that file to start the agent on a fresh session.
+An agent named by hand before the pin existed is found by its name and pinned
+on its next boot:
 
 ```bash
 cp packages/base/templates/*.md /path/to/your/new/agent/
@@ -329,8 +332,9 @@ bash packages/base/test/stuck-pane-sweep.test.sh
 ```
 
 The `inbox` suite needs PyYAML for its card cases, for the same reason
-`inbox reply` does, plus `xxd` for the cases that compare a thread file's bytes
-before and after an in-place status patch. Both are installed explicitly in CI
+`inbox reply` does. Byte comparisons use `od`, which POSIX guarantees, and the
+suites carry no locale dependency (fixtures use byte escapes, and the pane
+glyph matches in `bin/pane-idle` are written to work under `LC_ALL=C`). PyYAML is installed explicitly in CI
 rather than assumed, because a suite that is green because of what an image
 happened to carry is measuring the image.
 

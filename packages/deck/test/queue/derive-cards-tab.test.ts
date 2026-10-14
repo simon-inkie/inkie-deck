@@ -11,7 +11,7 @@
  * decision. It now pins that the tab and the homepage AGREE on every terminal
  * state, which is the property actually worth guarding.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import {

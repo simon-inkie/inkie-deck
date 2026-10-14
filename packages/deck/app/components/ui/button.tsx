@@ -3,7 +3,7 @@
  *
  * cva variants map to theme tokens (primary teal, destructive magenta, etc).
  * No Radix Slot in this pass (no asChild) - added later if a phase needs it.
- * ASCII only - no em-dashes (FND-05 / check:dashes gate).
+ * ASCII only - no em-dashes.
  */
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";

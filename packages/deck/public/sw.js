@@ -1,14 +1,14 @@
 /**
- * sw.js - Inkie Deck service worker (TASK-470 web push).
+ * sw.js - Inkie Deck service worker.
  *
- * Static asset at root scope. FND-02: no fs/env access here - every push
+ * Static asset at root scope. No fs/env access here: every push
  * payload carries everything the notification needs (title, body, deepLink).
  *
  * push          -> show the notification verbatim from the payload.
  * notificationclick -> focus an existing MC window on the deep link, or
  *                      open a fresh one.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 self.addEventListener("install", () => {

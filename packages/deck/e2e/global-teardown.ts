@@ -7,7 +7,7 @@
  *
  * Safe to call if setup failed (existence checks + force flag).
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

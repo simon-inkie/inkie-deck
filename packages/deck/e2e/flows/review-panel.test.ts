@@ -1,5 +1,5 @@
 /**
- * review-panel.test.ts - E2E tests for the TASK-431 MD review side-panel.
+ * review-panel.test.ts - E2E tests for the MD review side-panel.
  *
  * Tests (per plan section 7):
  *   - chip click: upload .md via picker -> chip click opens panel + URL state
@@ -11,10 +11,10 @@
  *   - close: close button clears param, panel gone.
  *   - mobile viewport: panel presents as sheet.
  *
- * Uses resetFixtureInbox + baseline assertGitClean (VALID-03).
+ * Uses resetFixtureInbox + baseline assertGitClean.
  * Workers stay 1 per playwright.config.ts.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean, sendButton } from "./helpers.js";
@@ -39,7 +39,7 @@ test("TASK-431 chip click: upload .md, chip opens panel, URL carries ?doc=, refr
   const fileInput = page.getByTestId("attach-file-input");
   await fileInput.setInputFiles(path.join(FIXTURES_DIR, "test-notes.md"));
 
-  // TASK-450: wait for the pending chip to appear (replaces old markdown-in-textarea).
+  // Wait for the pending chip to appear (replaces old markdown-in-textarea).
   await expect(page.getByTestId("pending-attachment-chip")).toBeVisible({ timeout: 10_000 });
 
   // The textarea should NOT contain markdown syntax any more.

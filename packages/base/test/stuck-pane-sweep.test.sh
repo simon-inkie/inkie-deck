@@ -18,7 +18,7 @@
 #      the stub tmux log, which is the only place a keystroke could show up.
 #
 #   2. THE COMPOSER-PENDING TIER FAILS TOWARD SILENCE. It is calibrated against
-#      two runtimes as of 2026-08-20 and is not universal, so an unrecognised
+#      two runtimes at the time of writing and is not universal, so an unrecognised
 #      composer format must fall through and never produce a finding. Section 4
 #      walks the five ways a composer can be unreadable and proves each one is a
 #      non-finding rather than a false escalation.
@@ -360,7 +360,7 @@ drop_box
 # =================================================================================
 # 4. FAIL TOWARD SILENCE (safety-relevant)
 # =================================================================================
-# The tier is calibrated against Claude Code 2.1.236 and Codex as of 2026-08-20
+# The tier is calibrated against Claude Code 2.1.236 and Codex at the time of writing
 # and is explicitly not universal. Every way a composer can be unreadable must
 # produce a NON-FINDING, never a false escalation. The model stub answers "clear"
 # throughout, so a tier of "none" proves the composer tier declined rather than

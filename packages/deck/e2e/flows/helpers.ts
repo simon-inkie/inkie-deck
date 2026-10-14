@@ -5,7 +5,7 @@
  * so each test starts from a known clean state (per-test isolation, D-07).
  *
  * assertGitClean: asserts that no NEW tracked files were modified during the run
- * (VALID-03 backstop: proves the live inbox and committed fixtures are untouched).
+ * (backstop: proves the live inbox and committed fixtures are untouched).
  * Uses a baseline snapshot captured at module load time to filter pre-existing dirt.
  *
  * sendButton: the composer's submit button, disambiguated from the gear beside it.
@@ -13,7 +13,7 @@
  * expectDelivered / expectNotDelivered: the only honest proof that a composer
  * submit SENT anything. See the docstring on expectDelivered.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
@@ -159,13 +159,13 @@ function getGitDirtyLines(repoRoot: string): Set<string> {
 const BASELINE_DIRTY = getGitDirtyLines(path.resolve("."));
 
 /**
- * Assert that no NEW tracked files were modified by the E2E run (VALID-03).
+ * Assert that no NEW tracked files were modified by the E2E run.
  *
  * Compares against the baseline captured at module load time. Only new entries
  * (not present in the baseline) constitute a failure - pre-existing uncommitted
  * source changes are expected (e.g. package.json, pnpm-lock.yaml during dev).
  *
- * Throws with a VALID-03 FAIL message listing any newly-dirty files so the
+ * Throws with a FAIL message listing any newly-dirty files so the
  * failure is immediately actionable.
  *
  * Call in test.afterAll(() => assertGitClean(path.resolve("."))) on each test file.

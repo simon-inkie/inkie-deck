@@ -12,13 +12,13 @@
  * Mirrors the check-dashes.mjs convention: no interactive input, stdout report,
  * exit non-zero on findings so the future AUTO-02 cron is a config change only.
  *
- * DETECT-03: IO at the edge (D-04). The predicate (detectDupPlans) is pure;
+ * IO at the edge. The predicate (detectDupPlans) is pure;
  * all fixture reading lives here, not in the predicate.
  *
  * Pitfall 5: uses a RELATIVE import, not the ~/lib path alias.
  * tsx uses esbuild which does NOT resolve TypeScript path aliases at Node runtime.
  *
- * ASCII only - no em-dashes per FND-05 (check:dashes gate).
+ * ASCII only - no em-dashes (check:dashes gate).
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -57,7 +57,7 @@ try {
   process.exit(1);
 }
 
-// Defensive: must be an array (T-04-03: malformed must fail loudly)
+// Defensive: must be an array
 if (!Array.isArray(parsed)) {
   console.error(`ERROR: Fixture must be a JSON array of content plans, got: ${typeof parsed}`);
   process.exit(1);

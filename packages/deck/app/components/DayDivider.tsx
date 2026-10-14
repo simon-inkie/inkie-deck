@@ -7,8 +7,8 @@
  * (font-mono), uppercase, muted, tiny.
  *
  * Pure presentational - the label string is computed upstream (time.ts
- * formatDayDivider) and passed in. No .server imports (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * formatDayDivider) and passed in. No .server imports.
+ * ASCII only - no em-dashes.
  */
 interface DayDividerProps {
   /** Pre-formatted divider label (e.g. "Today", "Yesterday", "Thu 4 Jun"). */

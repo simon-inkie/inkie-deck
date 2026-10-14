@@ -6,7 +6,7 @@
  * button, matching the full-row-click spec from the file-pinner post-ship
  * bug-fix (commit 5).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

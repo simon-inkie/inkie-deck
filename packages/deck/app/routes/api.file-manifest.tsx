@@ -12,10 +12,10 @@
  *   file reference. One call per reference; cached + spend-logged in the server
  *   module. The client fires these one-per-uncached-row after the GET.
  *
- * SEAM RULE (FND-02): imports makeStores + the .server description/manifest
+ * SEAM RULE: imports makeStores + the .server description/manifest
  * modules only. No node:fs, no literal paths.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import type { Route } from "./+types/api.file-manifest";

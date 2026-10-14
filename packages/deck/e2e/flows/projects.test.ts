@@ -1,5 +1,5 @@
 /**
- * e2e/flows/projects.test.ts - E2E tests for the TASK-432 Projects kanban board.
+ * e2e/flows/projects.test.ts - E2E tests for the Projects kanban board.
  *
  * Tests per plan section 6:
  *   - Board renders seeded fixtures in correct columns with avatars + counts.
@@ -14,7 +14,7 @@
  * The projects root is a tmpdir copy of fixtures/projects (provisioned in
  * e2e/setup.mjs). We reset it per test that mutates it.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import { assertGitClean } from "./helpers.js";
@@ -52,7 +52,7 @@ test("TASK-432 board renders fixture cards in correct columns with counts and av
   }
 
   // Verify "in progress" column count (fixtures: task-432-projects-kanban.md + task-439 -> in progress).
-  // TASK-439 added task-439-card-detail.md to "in progress", so count is now 2.
+  // The fixtures also add task-439-card-detail.md to "in progress", so count is now 2.
   const inProgressCount = page.getByTestId("column-count-in-progress");
   await expect(inProgressCount).toHaveText("2");
 
@@ -60,7 +60,7 @@ test("TASK-432 board renders fixture cards in correct columns with counts and av
   const doneCount = page.getByTestId("column-count-done");
   await expect(doneCount).toHaveText("1");
 
-  // The stale card (task-398-portal-readonly.md, updated 2026-05-01) should be in "blocked".
+  // The stale card should be in "blocked".
   const blockedColumn = page.getByTestId("column-blocked");
   await expect(blockedColumn).toContainText("portal readonly");
 

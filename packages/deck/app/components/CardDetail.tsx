@@ -1,5 +1,5 @@
 /**
- * CardDetail.tsx - Card detail overlay for the Projects board (TASK-439).
+ * CardDetail.tsx - Card detail overlay for the Projects board.
  *
  * Triggered by ?card=<cardId> URL search param on /projects.
  *
@@ -19,7 +19,7 @@
  *   - links: asset-chip row (ReviewableChip per link)
  *   - Body rendered via Markdown + .prose-mc, onOpenDoc wired
  *
- * ?card= / ?doc= interaction rule (TASK-439, Atlas retained-param fold):
+ * ?card= / ?doc= interaction rule:
  *   Opening a doc from the detail SETS ?doc= and RETAINS ?card=. The
  *   doc-wins render precedence shows the panel and keeps the detail closed;
  *   closing the panel removes ?doc= and the retained ?card= RESTORES the
@@ -29,7 +29,7 @@
  *
  * Close: clears ?card= (back button on mobile, X on desktop).
  *
- * No .server imports - FND-02. ASCII only - no em-dashes - FND-05.
+ * No .server imports. ASCII only - no em-dashes.
  */
 import { useCallback } from "react";
 import { useSearchParams } from "react-router";
@@ -250,7 +250,7 @@ export function CardDetail({
     });
   }
 
-  // Opening a doc: set ?doc= and RETAIN ?card= (Atlas fold) - the doc-wins
+  // Opening a doc: set ?doc= and RETAIN ?card= - the doc-wins
   // precedence above hides the detail while the panel is open; closing the
   // panel restores it.
   function handleOpenDoc(doc: string) {

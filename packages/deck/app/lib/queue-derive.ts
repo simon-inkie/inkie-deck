@@ -7,7 +7,7 @@
  * Called from the home.tsx loader (server-side). No .server suffix because it
  * has no IO - the .server convention is reserved for filesystem-accessing modules.
  *
- * ASCII only - no em-dashes per FND-05 (check:dashes gate).
+ * ASCII only - no em-dashes (check:dashes gate).
  */
 import { addHours, formatDistance, isBefore } from "date-fns";
 import type { MessageBlock } from "./blocks/model.js";
@@ -25,7 +25,7 @@ const TIER_HOURS = {
  * when the value is missing or unparseable. Prevents a single malformed block
  * timestamp (e.g. an em-dash header that failed to parse and left an empty
  * timestamp) from throwing "Invalid time value" via toISOString/formatDistance
- * and 500-ing the entire queue loader. Ref: 2026-06-11 MC lifeline incident.
+ * and 500-ing the entire queue loader.
  */
 function safeDate(value: string | undefined, fallback: Date): Date {
   if (value) {
@@ -74,7 +74,7 @@ export interface InboxEntry {
  * Format: agentName/timestamp/discriminator
  * Discriminator is the card's decisionId for card blocks, or the from field
  * for plain blocks. Encoding the timestamp as the middle segment means that
- * a new block from the same agent always gets a distinct id (QUEUE-09).
+ * a new block from the same agent always gets a distinct id.
  */
 export function deriveItemId(agentName: string, block: MessageBlock): string {
   const discriminator = block.card?.decisionId ?? block.header.from;
@@ -88,7 +88,7 @@ export function deriveItemId(agentName: string, block: MessageBlock): string {
  * `now` parameter so tests can assert deterministic results.
  *
  * Filtering rules (items that are excluded from the output):
- * 1. Blocks from Alex (header.from === "alex")
+ * 1. Blocks from the instance user (header.from === user)
  * 2. Blocks whose id appears in handledIds
  * 3. Answered card blocks (card.answered !== undefined) - reconciliation rule
  *
@@ -97,7 +97,7 @@ export function deriveItemId(agentName: string, block: MessageBlock): string {
  * - Otherwise, deadline = addHours(new Date(timestamp), tierHours).toISOString()
  *   and the new anchor is added to the returned newDeadlines map.
  *
- * Sort order (QUEUE-03/04 deterministic tie-breaking):
+ * Sort order:
  * 1. Overdue items before non-overdue
  * 2. Soonest deadline first
  * 3. Older createdAt first
@@ -120,8 +120,8 @@ export function deriveQueueItems(
   const newDeadlines = new Map<string, string>();
 
   for (const { agentName, block } of entries) {
-    // Rule 1: Alex's own messages are not queued.
-    if (block.header.from === user) continue; // own messages are not queued (TASK-462: per-instance user)
+    // Rule 1: the instance user's own messages are not queued.
+    if (block.header.from === user) continue; // own messages are not queued (per-instance user)
 
     const id = deriveItemId(agentName, block);
     const isCard = block.card !== undefined;
@@ -146,8 +146,8 @@ export function deriveQueueItems(
 
     // ageDisplay: injected two-arg formatDistance (wall-clock reads forbidden).
     // Always formatDistance(deadline, now) so that:
-    //   future deadline -> "in X hours"  (QUEUE-05: "due in 4h" style)
-    //   past deadline   -> "X hours ago" (QUEUE-05: "overdue 3h" style)
+    //   future deadline -> "in X hours"  ("due in 4h" style)
+    //   past deadline   -> "X hours ago" ("overdue 3h" style)
     // NOTE: the argument ORDER matters. formatDistance(a, b, {addSuffix}) produces
     // "in X" when a > b (a is in the future relative to b) and "X ago" when a < b.
     // Swapping to formatDistance(now, deadline) would yield "X ago" for FUTURE items.
@@ -258,7 +258,7 @@ export function isActionResolved(actionCard: {
  * then card id, for full determinism.
  *
  * @param entries - All inbox blocks across agents.
- * @param user - The instance user whose own messages are excluded (TASK-462).
+ * @param user - The instance user whose own messages are excluded.
  */
 export function deriveCardsTab(
   entries: InboxEntry[],
@@ -345,12 +345,12 @@ export interface NeedsYouItem {
   /** Optional ticket URL from the action card. */
   ticket?: string;
   /**
-   * ADDITIVE (TASK-440): optional summary for blocked items (from card.summary).
+   * ADDITIVE: optional summary for blocked items (from card.summary).
    * Decisions and actions leave this unset.
    */
   summary?: string;
   /**
-   * ADDITIVE (TASK-440): optional blocked-on annotation for blocked items (from card.blockedOn).
+   * ADDITIVE: optional blocked-on annotation for blocked items (from card.blockedOn).
    * Decisions and actions leave this unset.
    */
   blockedOn?: string;
@@ -388,7 +388,7 @@ function priorityWeight(p?: string): number {
  * Cards tab agree on what is still open. See the deriveCardsTab docblock for
  * why the earlier Option-1 freeze on this function was lifted.
  *
- * Items from Alex (header.from === "alex") are excluded.
+ * Items from the instance user (header.from === user) are excluded.
  * Items whose id is in handledIds are excluded.
  *
  * Deadline logic:
@@ -423,7 +423,7 @@ export function deriveNeedsYou(
 
   // --- 1. Inbox entries: decisions + actions ---
   for (const { agentName, block } of entries) {
-    if (block.header.from === user) continue; // own messages are not queued (TASK-462: per-instance user)
+    if (block.header.from === user) continue; // own messages are not queued (per-instance user)
 
     // --- Decision card ---
     if (block.card !== undefined) {

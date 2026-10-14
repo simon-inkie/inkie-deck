@@ -1,6 +1,6 @@
 /**
  * tmux.server.ts - tmux pane capture (read) + send-keys (write) for the live
- * Team tab and per-thread terminal view (TASK-437 v1 read, v2 adds write).
+ * Team tab and per-thread terminal view.
  *
  * FIRST SUBPROCESS IN MC - the guard posture is the point of this module:
  *
@@ -17,10 +17,10 @@
  *      no machine-specific value hardcoded, and e2e points it at a
  *      guaranteed-missing session for deterministic empty states.
  *   4. WRITE POSTURE (v2): send-keys exists now, deliberately. v1 was
- *      readonly-by-construction; the remote-auth lockout of 2026-06-09
- *      (Alex could read but not authorise over MC mobile) earned the flip.
- *      It is acceptable because MC is tailnet-only + Alex's own devices -
- *      blast radius is just him. The write path carries the SAME gate as the
+ *      readonly-by-construction; being unable to authorise an agent from the
+ *      mobile view earned the flip. It is acceptable because the deck is
+ *      intended for a private network and the operator's own devices, so the
+ *      blast radius is one user. The write path carries the SAME gate as the
  *      read path, sends arbitrary prose LITERALLY (-l, never interpreted as
  *      key names) with a "--" flag-injection guard, and submits Enter as a
  *      SEPARATE call after a short delay (text+Enter in one call races the
@@ -30,7 +30,7 @@
  *      honest empty/error state, never a 500. The read path is never broken
  *      by a write failure, so the readonly fallback is always intact.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -46,8 +46,7 @@ import {
 export const WINDOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * Subprocess hard deadline (Atlas fold, 437 review). execFileSync BLOCKS
- * the event loop - a wedged tmux server (suspended laptop, dead socket)
+ * Subprocess hard deadline. execFileSync BLOCKS the event loop - a wedged tmux server (suspended laptop, dead socket)
  * would otherwise freeze every MC request, re-frozen each 1s poll tick.
  * capture-pane is ~ms when healthy; 500ms is generous, and a timeout
  * lands in the same degrade-to-empty path as every other failure.
@@ -79,7 +78,7 @@ export function buildListArgs(session: string): string[] {
 
 /**
  * How many lines of scrollback history to capture. The default capture is the
- * visible viewport only (~35 lines) - Alex could not scroll back past the last
+ * visible viewport only (~35 lines) - the viewer could not scroll back past the last
  * screenful. "-S -N" pulls N lines of scrollback so the browser pane (which is
  * overflow-auto) has real history to scroll. Verified live: these agent panes
  * run alternate_on=0, so scrollback holds linear chat history (not an
@@ -196,6 +195,30 @@ export function buildSendKeysTextArgs(
   return ["send-keys", "-t", `=${session}:=${window}`, "-l", "--", text];
 }
 
+/** Fixed navigation keys accepted by the pane send seam. */
+export const SEND_KEYS_ALLOWED_KEYS = [
+  "Up",
+  "Down",
+  "Enter",
+  "Escape",
+  "Tab",
+  "BTab",
+] as const;
+export type PaneKey = (typeof SEND_KEYS_ALLOWED_KEYS)[number];
+
+export function isValidPaneKey(key: string): key is PaneKey {
+  return SEND_KEYS_ALLOWED_KEYS.some((allowed) => allowed === key);
+}
+
+/** Named keys are single keystrokes, without literal mode or an extra Enter. */
+export function buildSendKeysNamedArgs(
+  session: string,
+  window: string,
+  key: PaneKey
+): string[] {
+  return ["send-keys", "-t", `=${session}:=${window}`, key];
+}
+
 /**
  * argv for pressing Enter in a window. Pure - unit-pinned. No "-l": "Enter" is
  * a key NAME here, not literal text - this is the keystroke that submits.
@@ -224,6 +247,41 @@ function runTmuxVoid(args: string[]): boolean {
 
 export type SendKeysResult = { ok: true } | { ok: false; error: string };
 
+/** Send one allowlisted navigation key to a live, exactly matched window. */
+export function sendNamedKeyToWindow(
+  env: NodeJS.ProcessEnv,
+  window: string,
+  key: string
+): SendKeysResult {
+  if (!isValidWindowName(window)) {
+    return { ok: false, error: "Unknown or invalid window." };
+  }
+  if (!isValidPaneKey(key)) {
+    return { ok: false, error: "Invalid navigation key." };
+  }
+  if (!listTmuxWindows(env).includes(window)) {
+    return { ok: false, error: "Window is not live in the session." };
+  }
+  return runTmuxVoid(buildSendKeysNamedArgs(resolveTmuxSession(env), window, key))
+    ? { ok: true }
+    : { ok: false, error: "Could not send key to the window." };
+}
+
+/** Refuse text when the current viewport cannot be checked or shows a shell. */
+function textSendRefusal(
+  session: string,
+  window: string
+): string | undefined {
+  const viewport = runTmux(buildCaptureViewportArgs(session, window));
+  if (viewport === undefined) {
+    return "Could not check the pane before sending text.";
+  }
+  if (viewport.split("\n").some((line) => SHELL_PROMPT_RE.test(line))) {
+    return "The pane is at a shell prompt. Text was not submitted.";
+  }
+  return undefined;
+}
+
 /**
  * tmux side effects the verified-send state machine needs, as a seam so the
  * policy module stays testable without a live server.
@@ -250,7 +308,12 @@ const LIVE_SEND_KEYS_DRIVER: SendKeysDriver = {
     ),
   sendText: (session, window, text) =>
     runTmuxVoid(buildSendKeysTextArgs(session, window, text)),
+  // Recheck immediately before every Enter. The verified state machine proves
+  // the composer safe before typing and verifies the result afterwards; this
+  // closes the remaining delay race where the agent could exit to a shell
+  // after the text send but before Enter.
   pressEnter: (session, window) =>
+    textSendRefusal(session, window) === undefined &&
     runTmuxVoid(buildSendKeysEnterArgs(session, window)),
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
@@ -486,8 +549,8 @@ export function lineHasPromptGlyph(line: string): boolean {
  * ("Implement {feature}", "Run /review on my current changes", ...) in this code;
  * real user-typed text never is. A raw (-e) capture therefore tells a hint apart
  * from genuinely-staged text for ANY hint string, without hardcoding a literal
- * (an exact-string allowlist already broke once when Codex rotated to a second
- * hint - CLI inbox-push, 2026-07-18). See composerIsClean.
+ * hint (an exact-string allowlist already broke once when Codex rotated to a
+ * second hint). See composerIsClean.
  */
 export const DIM_SGR = "\x1b[2m";
 
@@ -684,6 +747,15 @@ export function classifyPaneSnapshot(
   rawViewport?: string
 ): PaneSnapshot {
   const lines = viewport.split("\n");
+  // A shell frame anywhere in the live viewport is ambiguous and therefore
+  // unsafe. This preserves the original text-send guard while the positive
+  // composer classification below supplies the stronger verified-send gate.
+  if (lines.some((line) => SHELL_PROMPT_RE.test(line))) {
+    return {
+      activity: paneTextIsActive(viewport) ? "active" : "idle",
+      composer: "unknown",
+    };
+  }
   const promptIndex = findComposerOpenIndex(lines);
   if (promptIndex === -1) {
     return {
@@ -787,7 +859,7 @@ export function isAgentPaneIdle(env: NodeJS.ProcessEnv, window: string): boolean
  * turn is in flight. Differs from paneTextIsIdle in ONE way: an active working
  * spinner is NOT a skip condition. A busy pane with an EMPTY composer still
  * accepts the send: Claude Code queues the keystrokes and auto-submits them when
- * the current turn ends (verified live, TASK-537 / inbox-push parity).
+ * the current turn ends.
  *
  * The ONLY skip conditions are:
  *   - no composer glyph present (a shell or unknown pane) -> don't send,
@@ -809,7 +881,7 @@ export function isAgentPaneIdle(env: NodeJS.ProcessEnv, window: string): boolean
  * NOTE: Claude ghost / auto-suggest text still skips here (it fails the bare
  * check and, being un-dimmed today, is not treated as a hint). That is benign
  * (promptSuggestionEnabled=false team-wide, so ghosts never render). Ghost-aware
- * handling for Claude is deferred to TASK-535; do NOT add it here.
+ * handling for Claude is deferred to a separate change; do NOT add it here.
  */
 export function paneAcceptsSend(viewport: string, rawViewport?: string): boolean {
   return composerIsClean(viewport, rawViewport);
@@ -844,26 +916,20 @@ export type WakeResult = { woke: boolean; reason: "sent" | "active" | "send-fail
  * #78 Monitor-drop made hook-inject the sole DM surface, and hook-inject only
  * delivers on the agent's NEXT turn - an idle-but-alive agent takes no turn on
  * its own, so the DM would sit unseen. This fires a tmux send-keys poke,
- * prefixed [inbox from <user>], when the pane accepts a send (TASK-537).
+ * prefixed [inbox from <user>], when the pane accepts a send.
  *
  * Gate: paneAcceptsSendLive - sends in every pane state EXCEPT a real non-ghost
  * composer entry, a permission dialog, or a stale shell frame. A BUSY pane with
  * an empty composer still receives the send: CC queues the keystroke and
- * auto-submits it when the current turn ends (verified live, TASK-537).
+ * auto-submits it when the current turn ends.
  *
  * A reply-hint is appended to the pane text so the recipient knows how to
  * respond via their inbox rather than replying in the terminal.
  *
  * The hint format matches the agent-to-agent CLI push (packages/base/bin/inbox,
- * maybe_push) so both push paths look identical to the recipient. That claim was
- * false for a while and nothing noticed: this side emitted ONE leading space and
- * the CLI two, while this comment asserted they matched. This side moved, not
- * the CLI: that file is a copy of a proven implementation and is held
- * byte-identical to it except where a hardcoded path could not survive the move,
- * so when the two disagree cosmetically, the copy is the fixed point and this is
- * what changes. Both suites now assert the pane payload exactly, so a future
- * divergence fails a test rather than surviving as a comment that is quietly
- * wrong.
+ * maybe_push) so both push paths look identical to the recipient. Both test
+ * suites assert the pane payload exactly, so a divergence fails a test rather
+ * than surviving as a comment that is quietly wrong.
  *
  * The hint names a BARE `inbox` command, which is only true if the recipient can
  * resolve it on PATH. bin/create-agent.sh installs that symlink when it creates
@@ -959,7 +1025,7 @@ export function rewriteAttachmentPathsForAgentPane(
  * in some deployment), degrade gracefully: return the text UNCHANGED. A missing
  * env var must never crash a live wake push - leaving the web-relative path is
  * strictly no worse than the pre-fix behaviour. A one-time-per-call console.warn
- * surfaces a persistent misconfiguration (CodeRabbit nitpick, MR !18) rather
+ * surfaces a persistent misconfiguration rather
  * than silently degrading every push forever with no signal.
  */
 export function resolveAndRewriteAttachmentPaths(text: string): string {
@@ -983,7 +1049,7 @@ export function resolveAndRewriteAttachmentPaths(text: string): string {
 export type PushResult = PaneSendKeysResult;
 
 /**
- * Push the actual chat-box text to an agent's pane (TASK-524, extended TASK-537).
+ * Push the actual chat-box text to an agent's pane.
  *
  * This is the text-carry complement to wakeIdleAgent: instead of a generic
  * "check your inbox" nudge, it delivers the operator's own message text
@@ -993,16 +1059,16 @@ export type PushResult = PaneSendKeysResult;
  * GATE: calls paneAcceptsSendLive before sending. If the pane does NOT accept
  * a send, returns { pushed: false } without touching the pane (no-op). The
  * inbox file write upstream already happened, so this is purely additive and
- * never worse than the pre-TASK-524 behaviour - the agent picks the message up
+ * never worse than the behaviour before this push existed - the agent picks the message up
  * via hook-inject on its next turn exactly as before.
  *
  * paneAcceptsSendLive sends in every pane state EXCEPT a real non-ghost
  * composer entry, a permission dialog, or a stale shell frame. A BUSY pane
  * with an empty composer still receives the send: CC queues the keystroke and
- * auto-submits it when the current turn ends (TASK-537, verified live).
+ * auto-submits it when the current turn ends.
  *
  * A reply-hint is appended to the pane payload so the recipient knows how to
- * respond via their inbox rather than replying in the terminal (TASK-532).
+ * respond via their inbox rather than replying in the terminal.
  * The hint format matches the agent-to-agent CLI push in packages/base
  * for a consistent recipient experience.
  *
@@ -1012,15 +1078,15 @@ export type PushResult = PaneSendKeysResult;
  *
  * Callers should NOT await this (fire-and-forget): sendKeysToWindow sleeps
  * ~1s between text and Enter, and the operator's send must not block on it.
- * Never throws. ASCII only - no em-dashes (FND-05).
+ * Never throws. ASCII only - no em-dashes.
  */
 /**
  * Builds the exact pane payload for a pushed inbox message. Pure and exported
  * so the truncation behaviour is testable without a live pane.
  *
- * NUDGE, NEVER A SILENT PARTIAL (2026-07-26). This used to end in a bare
- * `head.slice(0, maxHead) + hint`, which cost 2974 characters of an Alex
- * brief with no way to notice. The hint was appended AFTER the cut, so a
+ * NUDGE, NEVER A SILENT PARTIAL. This used to end in a bare
+ * `head.slice(0, maxHead) + hint`, which silently dropped the tail of a long
+ * brief. The hint was appended AFTER the cut, so a
  * truncated message still terminated in a well-formed
  * "[reply via inbox: ...]" footer and read as a complete, finished thought.
  * The one artefact that could have signalled loss was the one thing engineered
@@ -1032,16 +1098,15 @@ export type PushResult = PaneSendKeysResult;
  * to a nudge rather than ever delivering a partial, and stating in its own
  * comment that a partial "could drop the important part". This path copied that
  * CLI's hint FORMAT for a consistent recipient experience and did not copy its
- * safety rule, which is why the principal's messages were the only ones being
- * cut.
+ * safety rule, which is why long messages through this path were cut.
  *
  * The two paths now agree on the BEHAVIOUR: nudge, never a partial. They do
  * NOT agree on the nudge CONTENT - this one reports a character count and the
  * read command, the CLI's is a subject nudge. That divergence is deliberate
  * and stated here rather than left for the next reader to discover, because
  * "consistent with the other path" is the exact claim that produced this bug.
- * The count is the better nudge and belongs in the CLI too; that is a change
- * to live fleet-wide comms and is proposed separately, not smuggled in here.
+ * The count is the better nudge; the CLI could adopt it too, as a separate
+ * change.
  *
  * sourceLength is what the RECIPIENT will find when they follow the nudge and
  * read the stored message. It is passed separately because `body` has already
@@ -1050,7 +1115,7 @@ export type PushResult = PaneSendKeysResult;
  * overstate the message on anything carrying an image, and a marker whose
  * number does not reconcile with the file is worth less than no marker.
  *
- * TWO DIFFERENT NUMBERS LIVE HERE AND THEY NEED DIFFERENT UNITS (2026-07-26).
+ * TWO DIFFERENT NUMBERS LIVE HERE AND THEY NEED DIFFERENT UNITS.
  * They shared a unit only because they happened to share a variable:
  *
  *   1. THE CAP (SEND_KEYS_MAX_LEN, measured with String.length, UTF-16 code
@@ -1061,7 +1126,7 @@ export type PushResult = PaneSendKeysResult;
  *   2. THE REPORTED COUNT (sourceLength, CODE POINTS via spread). Its only job
  *      is to reconcile against what the recipient finds when they go and read
  *      the file. That reader is either a human, to whom an emoji is one
- *      character, or the-vault tooling, which is Python and counts code points.
+ *      character, or Python tooling, which counts code points.
  *      An emoji is 2 to UTF-16 and 1 to everyone who will ever check this
  *      number, so UTF-16 was simply the wrong unit for reporting.
  *
@@ -1092,7 +1157,7 @@ export function buildPanePayload(
   // prevent. Truncating identifiers is not the same act as truncating content.
   const tag = rawTag.length > MAX_TAG_LEN ? rawTag.slice(0, MAX_TAG_LEN) : rawTag;
   const hint = `  [reply via inbox: inbox reply ${tag}]`;
-  // DICTATION PROVENANCE (2026-08-11). The stored block already carries
+  // DICTATION PROVENANCE. The stored block already carries
   // "dictated: true" via rawMeta; this is the pane-side half, which was missing.
   // Dictation mangles words, and knowing text is transcribed changes both how a
   // reader decodes it and how they should answer it (ask, do not guess).
@@ -1120,9 +1185,8 @@ export function buildPanePayload(
   // it. A partial invites the recipient to act on two thirds of a brief and
   // report the job done; a nudge cannot be mistaken for a whole message.
   //
-  // Deliberately carries NO body text and NO subject. Alex's subjects are
-  // dictated and routinely stale or unrelated to the body (Quill's standing
-  // calibration), so a subject-led nudge on his thread would be actively
+  // Deliberately carries NO body text and NO subject. Dictated subjects are
+  // routinely stale or unrelated to the body, so a subject-led nudge would be
   // misleading. The character count plus the read command is the whole payload:
   // it says only "there is more, here is how much, go and get it".
   return (

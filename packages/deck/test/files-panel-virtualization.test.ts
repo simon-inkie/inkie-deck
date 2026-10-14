@@ -10,7 +10,7 @@
  * bounded slice (not the full ordered list) and fetches descriptions for
  * mounted rows only.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";
@@ -105,8 +105,8 @@ describe("FilesPanel client-side search (static source check)", () => {
 
   it("also matches the visible fallback link text (null-description rows show linkText)", () => {
     // A null-description row displays `linkText ?? name`, so a query matching
-    // that on-screen fallback text must match the predicate (CR: search missed
-    // the fallback text actually shown to users).
+    // that on-screen fallback text must match the predicate (search used to
+    // miss the fallback text actually shown to users).
     expect(SRC).toContain("r.linkText.toLowerCase().includes(q)");
   });
 

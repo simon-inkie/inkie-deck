@@ -13,8 +13,8 @@
 # written. Session fixtures live under a scratch CODEX_SESSIONS_DIR; the pane
 # check and tmux itself are stubbed. boot-agents.sh is sourced with
 # BOOT_AGENTS_LIB_ONLY=1, which stops it at the library boundary before any
-# live tmux call, so this suite only ever gets the functions and never the boot
-# sequence.
+# live tmux call. Full boot fixtures below run separate subprocesses with
+# exported tmux and sleep stubs.
 #
 # AGENTS_HOME is pointed at a scratch tree holding two demo agents. That is not
 # decoration: the lookup filters on "cwd" == "$AGENTS_HOME/<agent>", so the
@@ -804,6 +804,391 @@ else
 fi
 rm -rf "$P3_DIR" "$TMUX_LOG_P3"
 unset CODEX_SESSIONS_DIR
+
+# ---------------------------------------------------------------------------
+# Claude pinned session ids (claude-session.sh, sourced by boot-agents.sh).
+# Issue #23: `--resume <name>` on a new agent opens a picker, so every claude
+# agent is pinned by id in $AGENTS_HOME/<name>/.session-id instead. These cases
+# never run claude; they point CLAUDE_CONFIG_DIR at a scratch tree and write
+# transcript files where Claude Code would, then read claude_session_args.
+# ---------------------------------------------------------------------------
+export CLAUDE_CONFIG_DIR="$BOX/claude-config"
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+if ! declare -F claude_session_args >/dev/null; then
+  fail "claude-session.sh is sourced by boot-agents.sh"
+else
+  pass "claude-session.sh is sourced by boot-agents.sh"
+fi
+
+# C1: a brand new agent gets a fresh, named, pinned session, never a resume.
+C_HOME="$AGENTS_HOME/wren"
+rm -f "$C_HOME/.session-id"
+c1_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c1_rc=$?
+c1_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c1_rc" -eq 0 ] \
+  && [[ "$c1_pin" =~ $UUID_RE ]] \
+  && [ "$c1_args" = "--session-id $c1_pin -n wren" ]; then
+  pass "C1 new agent: --session-id <fresh id> -n <name>, id pinned"
+else
+  fail "C1 new agent: --session-id <fresh id> -n <name>, id pinned" "rc=$c1_rc args=$c1_args pin=$c1_pin"
+fi
+
+# C2: once the session has a transcript, the next boot resumes that same id.
+C_PROJECT="$(claude_project_dir_for "$C_HOME")"
+mkdir -p "$C_PROJECT"
+c_convo() { printf '{"type":"user","message":{"role":"user","content":"hello"},"sessionId":"%s"}\n' "$1"; }
+printf '{"type":"custom-title","customTitle":"wren","sessionId":"%s"}\n' "$c1_pin" > "$C_PROJECT/$c1_pin.jsonl"
+c_convo "$c1_pin" >> "$C_PROJECT/$c1_pin.jsonl"
+c2_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c2_rc=$?
+c2b_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+c2_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c2_rc" -eq 0 ] \
+  && [ "$c2_args" = "--resume $c1_pin -n wren" ] \
+  && [ "$c2b_args" = "$c2_args" ] \
+  && [ "$c2_pin" = "$c1_pin" ]; then
+  pass "C2 relaunch: --resume <pinned id> -n <name>, same id every time"
+else
+  fail "C2 relaunch: --resume <pinned id> -n <name>, same id every time" "rc=$c2_rc args=$c2_args again=$c2b_args pin=$c2_pin"
+fi
+
+# C3: the pinned transcript is gone. Start a fresh named session under a new
+# pinned id; never a resume, which would exit "No conversation found".
+rm -f "$C_PROJECT/$c1_pin.jsonl"
+c3_args="$(claude_session_args wren "$C_HOME" 2>"$BOX/c3.err")"; c3_rc=$?
+c3_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c3_rc" -eq 0 ] \
+  && [[ "$c3_pin" =~ $UUID_RE ]] \
+  && [ "$c3_pin" != "$c1_pin" ] \
+  && [ "$c3_args" = "--session-id $c3_pin -n wren" ] \
+  && grep -q "has no conversation" "$BOX/c3.err"; then
+  pass "C3 missing transcript: fresh named session, new id pinned, reason on stderr"
+else
+  fail "C3 missing transcript: fresh named session, new id pinned, reason on stderr" "rc=$c3_rc args=$c3_args pin=$c3_pin"
+fi
+
+# C3b: the transcript exists but holds no message. Claude Code leaves exactly
+# this behind for a session opened and closed without anyone typing, and
+# `--resume <id>` on it exits "No conversation found". Fresh session instead.
+c3b_old="$c3_pin"
+printf '{"type":"custom-title","customTitle":"wren","sessionId":"%s"}\n{"type":"mode","mode":"normal","sessionId":"%s"}\n' "$c3b_old" "$c3b_old" > "$C_PROJECT/$c3b_old.jsonl"
+c3b_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c3b_rc=$?
+c3b_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c3b_rc" -eq 0 ] && [[ "$c3b_pin" =~ $UUID_RE ]] && [ "$c3b_pin" != "$c3b_old" ] \
+  && [ "$c3b_args" = "--session-id $c3b_pin -n wren" ]; then
+  pass "C3b metadata-only transcript: fresh named session, not a resume"
+else
+  fail "C3b metadata-only transcript: fresh named session, not a resume" "rc=$c3b_rc args=$c3b_args pin=$c3b_pin old=$c3b_old"
+fi
+
+# C4: a corrupt pin is treated like a missing transcript, not passed to claude.
+printf 'not-a-uuid\n' > "$C_HOME/.session-id"
+c4_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"; c4_rc=$?
+c4_pin="$(cat "$C_HOME/.session-id" 2>/dev/null)"
+if [ "$c4_rc" -eq 0 ] && [[ "$c4_pin" =~ $UUID_RE ]] \
+  && [ "$c4_args" = "--session-id $c4_pin -n wren" ]; then
+  pass "C4 corrupt pin: replaced with a fresh id"
+else
+  fail "C4 corrupt pin: replaced with a fresh id" "rc=$c4_rc args=$c4_args pin=$c4_pin"
+fi
+
+# C5: migration. An agent from before the pin has no .session-id but a session
+# named by hand. The newest transcript whose LATEST title is the agent's name
+# is pinned and resumed; one renamed away since, an older match, and a newer
+# one with no messages in it, are not.
+mkdir -p "$AGENTS_HOME/fern"; : > "$AGENTS_HOME/fern/SOUL.md"
+F_HOME="$AGENTS_HOME/fern"
+F_PROJECT="$(claude_project_dir_for "$F_HOME")"
+mkdir -p "$F_PROJECT"
+F_OLD=11111111-1111-4111-8111-111111111111
+F_NEW=22222222-2222-4222-8222-222222222222
+F_AWAY=33333333-3333-4333-8333-333333333333
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n' "$F_OLD" > "$F_PROJECT/$F_OLD.jsonl"
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n' "$F_NEW" > "$F_PROJECT/$F_NEW.jsonl"
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n{"type":"custom-title","customTitle":"other","sessionId":"%s"}\n' "$F_AWAY" "$F_AWAY" > "$F_PROJECT/$F_AWAY.jsonl"
+for f_id in "$F_OLD" "$F_NEW" "$F_AWAY"; do c_convo "$f_id" >> "$F_PROJECT/$f_id.jsonl"; done
+F_EMPTY=44444444-4444-4444-8444-444444444444
+printf '{"type":"custom-title","customTitle":"fern","sessionId":"%s"}\n' "$F_EMPTY" > "$F_PROJECT/$F_EMPTY.jsonl"
+touch -t 202601040000 "$F_PROJECT/$F_EMPTY.jsonl"
+touch -t 202601010000 "$F_PROJECT/$F_OLD.jsonl"
+touch -t 202601020000 "$F_PROJECT/$F_NEW.jsonl"
+touch -t 202601030000 "$F_PROJECT/$F_AWAY.jsonl"
+c5_args="$(claude_session_args fern "$F_HOME" 2>/dev/null)"; c5_rc=$?
+c5_pin="$(cat "$F_HOME/.session-id" 2>/dev/null)"
+if [ "$c5_rc" -eq 0 ] && [ "$c5_pin" = "$F_NEW" ] \
+  && [ "$c5_args" = "--resume $F_NEW -n fern" ]; then
+  pass "C5 migration: newest session still named after the agent is pinned and resumed"
+else
+  fail "C5 migration: newest session still named after the agent is pinned and resumed" "rc=$c5_rc args=$c5_args pin=$c5_pin"
+fi
+
+# C6: the transcript directory is derived from the PHYSICAL path, because that
+# is what the claude process records as its working directory.
+ln -s "$AGENTS_HOME" "$BOX/homes-link"
+c6_via_link="$(claude_project_dir_for "$BOX/homes-link/wren")"
+c6_direct="$(claude_project_dir_for "$(cd "$C_HOME" && pwd -P)")"
+c6_expect="$CLAUDE_CONFIG_DIR/projects/$(cd "$C_HOME" && pwd -P | sed 's/[^a-zA-Z0-9]/-/g')"
+if [ "$c6_via_link" = "$c6_direct" ] && [ "$c6_direct" = "$c6_expect" ]; then
+  pass "C6 project dir: symlinks resolved, non-alphanumerics become '-'"
+else
+  fail "C6 project dir: symlinks resolved, non-alphanumerics become '-'" "link=$c6_via_link direct=$c6_direct expect=$c6_expect"
+fi
+
+# C7: neither launcher still resumes by name.
+c7_bad=""
+for f in boot-agents.sh workspace.sh; do
+  grep -q 'claude --resume \$' "$(dirname "$BIN")/$f" && c7_bad="$c7_bad $f"
+done
+if [ -z "$c7_bad" ]; then
+  pass "C7 launchers no longer run claude --resume <name>"
+else
+  fail "C7 launchers no longer run claude --resume <name>" "still in:$c7_bad"
+fi
+
+# C8: the day-one message rides a new, never-launched agent only, exactly once.
+# Reuses C_HOME (wren); it has no IDENTITY.md, so day one has not happened.
+rm -f "$C_HOME/.session-id" "$C_HOME/.first-boot-done"
+c8_first="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+c8_prompt="$(eval "printf '%s' $(claude_first_boot_prompt "$c8_first" "$C_HOME")")"
+if [[ "$c8_prompt" == *"first session"* && "$c8_prompt" == *"day-one"* && -e "$C_HOME/.first-boot-done" ]]; then
+  pass "C8 new agent: carries the day-one first message and leaves a marker"
+else
+  fail "C8 new agent: carries the day-one first message and leaves a marker" "prompt=$c8_prompt"
+fi
+# Same pin, still no conversation (killed before the message was recorded): the
+# marker stops a repeat. This is the documented limit.
+c8_again="$(claude_first_boot_prompt "$(claude_session_args wren "$C_HOME" 2>/dev/null)" "$C_HOME")"
+[ -z "$c8_again" ] && pass "C8 marker: no repeat for the same agent" || fail "C8 marker: no repeat for the same agent" "prompt=$c8_again"
+# A resume never gets it, marker or not.
+c8_pin="$(cat "$C_HOME/.session-id")"
+printf '{"type":"custom-title","customTitle":"wren","sessionId":"%s"}\n' "$c8_pin" > "$C_PROJECT/$c8_pin.jsonl"
+c_convo "$c8_pin" >> "$C_PROJECT/$c8_pin.jsonl"
+rm -f "$C_HOME/.first-boot-done"
+c8_second="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+if [ "$c8_second" = "--resume $c8_pin -n wren" ] && [ -z "$(claude_first_boot_prompt "$c8_second" "$C_HOME")" ]; then
+  pass "C8 later launches: resume, no first message"
+else
+  fail "C8 later launches: resume, no first message" "second=$c8_second"
+fi
+# An established agent whose transcript was pruned takes the new-session branch
+# but already wrote its persona, so it is not told it is new.
+rm -f "$C_PROJECT/$c8_pin.jsonl" "$C_HOME/.first-boot-done"
+printf '# Wren\nName: Wren\n' > "$C_HOME/IDENTITY.md"
+c8_pruned="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+if [[ "$c8_pruned" == "--session-id "* ]] && [ -z "$(claude_first_boot_prompt "$c8_pruned" "$C_HOME")" ] && [ ! -e "$C_HOME/.first-boot-done" ]; then
+  pass "C8 pruned transcript, persona already written: no first message"
+else
+  fail "C8 pruned transcript, persona already written: no first message" "args=$c8_pruned"
+fi
+rm -f "$C_HOME/IDENTITY.md"
+
+# C9: .model is validated before it reaches a shell command line.
+printf 'claude-sonnet-5-5\n' > "$C_HOME/.model"
+[ "$(agent_model_flag "$C_HOME")" = "--model claude-sonnet-5-5" ] && pass "C9 .model: plain id becomes --model" || fail "C9 .model: plain id becomes --model"
+printf 'x; touch /tmp/pwned' > "$C_HOME/.model"
+c9_out="$(agent_model_flag "$C_HOME" 2>/dev/null)"
+[ -z "$c9_out" ] && pass "C9 .model: unsafe value is refused" || fail "C9 .model: unsafe value is refused" "out=$c9_out"
+printf '  claude-sonnet-5-5  \n' > "$C_HOME/.model"
+[ "$(agent_model_flag "$C_HOME")" = "--model claude-sonnet-5-5" ] && pass "C9 .model: surrounding whitespace is trimmed" || fail "C9 .model: surrounding whitespace is trimmed"
+printf 'claude sonnet\n' > "$C_HOME/.model"
+c9_ws="$(agent_model_flag "$C_HOME" 2>/dev/null)"
+[ -z "$c9_ws" ] && pass "C9 .model: interior space is refused, not squeezed" || fail "C9 .model: interior space is refused, not squeezed" "out=$c9_ws"
+rm -f "$C_HOME/.model"
+unset CLAUDE_CONFIG_DIR
+
+# Full boot fixtures use exported shell functions, so no call reaches tmux.
+# Each subprocess owns its scratch homes, logs and runtime state.
+BOOT_BOX="$BOX/boot"
+mkdir -p "$BOOT_BOX/homes/demo" "$BOOT_BOX/sessions"
+: > "$BOOT_BOX/homes/demo/SOUL.md"
+BOOT_SCRIPT="$BIN"
+export BOOT_BOX BOOT_SCRIPT
+boot_fixture() {
+  local scenario="$1" expected="$2" label="$3"
+  local output rc
+  rm -f "$BOOT_BOX/launched" "$BOOT_BOX/armed" "$BOOT_BOX/captures" "$BOOT_BOX/sessions/"*
+  rm -rf "$BOOT_BOX/homes/demo/.codex-home"
+  : > "$BOOT_BOX/log"
+  : > "$BOOT_BOX/homes/demo/.auto-arm-watcher"
+  printf 'claude\n' > "$BOOT_BOX/homes/demo/.runtime"
+  [[ "$scenario" == opt-out ]] && rm -f "$BOOT_BOX/homes/demo/.auto-arm-watcher"
+  [[ "$scenario" == codex || "$scenario" == codex-verify-fail || "$scenario" == existing-codex ]] && printf 'codex\n' > "$BOOT_BOX/homes/demo/.runtime"
+  if [[ "$scenario" == codex-verify-fail ]]; then
+    mkdir -p "$BOOT_BOX/homes/demo/.codex-home/sessions"
+    : > "$BOOT_BOX/homes/demo/.codex-home/config.toml"
+    printf '{"originator":"codex-tui","thread_source":"user","cwd":"%s","id":"boot-test-id"}\n' "$BOOT_BOX/homes/demo" > "$BOOT_BOX/homes/demo/.codex-home/sessions/rollout-fixture-boot-test-id.jsonl"
+  fi
+  [[ "$scenario" == first-boot-again ]] || rm -f "$BOOT_BOX/homes/demo/.model"
+  [[ "$scenario" == first-boot-busy ]] && printf 'claude-sonnet-5-5' > "$BOOT_BOX/homes/demo/.model"
+  export BOOT_SCENARIO="$scenario"
+  # Every scenario but first-boot* is an agent that already has a conversation,
+  # so it resumes and no first message is sent. See claude-session.sh.
+  export CLAUDE_CONFIG_DIR="$BOOT_BOX/claude"
+  local boot_proj="$CLAUDE_CONFIG_DIR/projects/$(cd "$BOOT_BOX/homes/demo" && pwd -P | sed 's/[^a-zA-Z0-9]/-/g')"
+  if [[ "$scenario" == first-boot-again ]]; then
+    # Second boot of the same agent: the first boot left its pin and marker, and
+    # by now the transcript holds the first message.
+    local again_id; again_id="$(cat "$BOOT_BOX/homes/demo/.session-id")"
+    mkdir -p "$boot_proj"
+    c_convo "$again_id" > "$boot_proj/$again_id.jsonl"
+  else
+    rm -rf "$CLAUDE_CONFIG_DIR" "$BOOT_BOX/homes/demo/.session-id" "$BOOT_BOX/homes/demo/.first-boot-done"
+  fi
+  if [[ "$scenario" != first-boot* ]]; then
+    mkdir -p "$boot_proj"
+    printf '%s\n' 55555555-5555-4555-8555-555555555555 > "$BOOT_BOX/homes/demo/.session-id"
+    c_convo 55555555-5555-4555-8555-555555555555 > "$boot_proj/55555555-5555-4555-8555-555555555555.jsonl"
+  fi
+  output=$(bash -c '
+    tmux() {
+      printf "%s\n" "$*" >> "$BOOT_BOX/log"
+      case "$1" in
+        start-server|set) return 0 ;;
+        has-session) [[ "$BOOT_SCENARIO" != session-fail ]] ;;
+        new-session) [[ "$BOOT_SCENARIO" != session-fail ]] ;;
+        list-windows) [[ "$BOOT_SCENARIO" != window-fail ]] && echo demo ;;
+        new-window) return 1 ;;
+        list-panes)
+          if [[ "$BOOT_SCENARIO" == existing* || -f "$BOOT_BOX/launched" ]]; then
+            [[ "$BOOT_SCENARIO" == missing-runtime || "$BOOT_SCENARIO" == codex-verify-fail ]] && echo bash || echo node
+          else echo bash; fi ;;
+        send-keys)
+          [[ "$BOOT_SCENARIO" == send-fail ]] && return 1
+          if [[ "$*" == *"arm your monitor"* ]]; then
+            [[ "$BOOT_SCENARIO" == monitor-send-fail ]] && return 1
+            touch "$BOOT_BOX/armed"
+          else touch "$BOOT_BOX/launched"; fi ;;
+        capture-pane)
+          local captures=0
+          [[ -f "$BOOT_BOX/captures" ]] && captures=$(cat "$BOOT_BOX/captures")
+          captures=$((captures + 1))
+          echo "$captures" > "$BOOT_BOX/captures"
+          if [[ "$BOOT_SCENARIO" == delayed && "$captures" -le 12 ]]; then
+            echo "Loading session"
+            return 0
+          fi
+          case "$BOOT_SCENARIO" in
+            existing-codex) printf "Earlier conversation\n› \n" ;;
+            existing-busy) printf "────────\nThinking (esc to interrupt)\n❯ \n" ;;
+            busy-history) printf "We discussed fullscreen and resume a conversation earlier\n────────\nThinking (esc to interrupt)\n❯ \n" ;;
+            scroll-monitor)
+              if [[ ! -f "$BOOT_BOX/armed" || "$*" == *"-S -2000"* ]]; then echo "Monitor started old"; fi
+              [[ -f "$BOOT_BOX/armed" ]] && echo "Monitor started new"
+              printf "────────\n❯ \n" ;;
+            nbsp)
+              [[ -f "$BOOT_BOX/armed" ]] && echo "Monitor started"
+              printf "────────\n❯ \302\240\n" ;;
+            existing-resume) printf "Resume a conversation\n❯ demo\n" ;;
+            existing-fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
+            existing-approval) printf "Would you like to run the following command?\n\n  $ ls\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n" ;;
+            trust|existing) printf "Do you trust the files in this folder?\n  1. Yes\n❯ 2. No (default)\nEnter to confirm\n" ;;
+            resume) printf "Resume a conversation\n❯ demo\n" ;;
+            fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
+            unknown) printf "An unfamiliar first-run prompt\n❯ Proceed\n" ;;
+            busy|first-boot-busy) printf "────────\nThinking (esc to interrupt)\n❯ \n" ;;
+            staged) printf "────────\n❯ draft\n" ;;
+            codex)
+              [[ -f "$BOOT_BOX/armed" ]] && echo "Monitor started"
+              printf "OpenAI Codex\n› \n" ;;
+            *)
+              [[ "$BOOT_SCENARIO" == history ]] && echo "Discussed folder trust, resume picker and fullscreen yesterday"
+              [[ "$BOOT_SCENARIO" == old-monitor ]] && echo "Monitor started"
+              [[ -f "$BOOT_BOX/armed" && "$BOOT_SCENARIO" == monitor-prose ]] && echo "I might use Monitor() later to watch inbox events"
+              [[ -f "$BOOT_BOX/armed" && "$BOOT_SCENARIO" != monitor-prose && "$BOOT_SCENARIO" != monitor-timeout && "$BOOT_SCENARIO" != old-monitor ]] && echo "Monitor started"
+              printf "────────\n❯ \n" ;;
+          esac ;;
+        *) return 1 ;;
+      esac
+    }
+    sleep() { :; }
+    # Emulate BSD sed treating backslash-x as x, rather than a hex escape.
+    sed() {
+      local arg
+      local -a args=()
+      for arg in "$@"; do
+        [[ "$BOOT_SCENARIO" == nbsp ]] && arg="${arg//\\x/x}"
+        args+=("$arg")
+      done
+      command sed "${args[@]}"
+    }
+    export -f tmux sleep sed
+    export BOOT_READY_SECS=2
+    [[ "$BOOT_SCENARIO" == delayed ]] && unset BOOT_READY_SECS
+    AGENTS_HOME="$BOOT_BOX/homes" BOOT_STAGGER_SECS=0 CODEX_RESUME_VERIFY_SECS=0 bash "$BOOT_SCRIPT" demo
+  ' 2>&1)
+  rc=$?
+  if [[ "$rc" -eq "$expected" ]] && printf '%s' "$output" | grep -qF "$label" && ! printf '%s' "$output" | grep -qF 'launched + armed'; then
+    pass "full boot: $scenario ($rc, $label)"
+  else
+    fail "full boot: $scenario" "rc=$rc expected=$expected output=$output"
+  fi
+  case "$scenario" in
+    trust|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
+      if grep -q 'arm your monitor' "$BOOT_BOX/log"; then fail "full boot: $scenario never arms"; else pass "full boot: $scenario never arms"; fi ;;
+  esac
+  if [[ "$scenario" == monitor-timeout || "$scenario" == scroll-monitor ]]; then
+    local sends
+    sends=$(grep -c 'arm your monitor' "$BOOT_BOX/log")
+    [[ "$sends" -eq 1 ]] && pass "full boot: $scenario sends once" || fail "full boot: $scenario sends once" "sends=$sends"
+  fi
+  if [[ "$scenario" == first-boot-busy ]]; then
+    # Exactly once: this first launch carries the first message. The
+    # first-boot-again case after it is the second boot.
+    local firsts
+    firsts=$(grep -c 'This\\ is\\ your\\ first\\ session' "$BOOT_BOX/log")
+    [[ "$firsts" -eq 1 ]] && pass "first boot sends the day-one message once" || fail "first boot sends the day-one message once" "sends=$firsts"
+    # #36: focus-events is on before the first pane starts, and the per-agent
+    # .model file reaches the launch command.
+    [[ "$(grep -n 'focus-events on' "$BOOT_BOX/log" | head -1 | cut -d: -f1)" -lt "$(grep -n 'send-keys' "$BOOT_BOX/log" | head -1 | cut -d: -f1)" ]] \
+      && pass "focus-events is set before the first pane launches" || fail "focus-events is set before the first pane launches"
+    grep -q -- '--model claude-sonnet-5-5' "$BOOT_BOX/log" \
+      && pass "the agent's .model file reaches the launch command" || fail "the agent's .model file reaches the launch command"
+    grep -q -- '--session-id' "$BOOT_BOX/log" && pass "first boot starts a pinned new session" || fail "first boot starts a pinned new session"
+    # An opted-in agent is not told to arm its monitor mid first turn.
+    grep -q 'arm your monitor' "$BOOT_BOX/log" && fail "first boot never types the arm prompt" || pass "first boot never types the arm prompt"
+  fi
+  if [[ "$scenario" == first-boot-again ]]; then
+    grep -q 'This\\ is\\ your\\ first\\ session' "$BOOT_BOX/log" && fail "second boot sends no first message" || pass "second boot sends no first message"
+    grep -q -- '--resume' "$BOOT_BOX/log" && pass "second boot resumes the session" || fail "second boot resumes the session"
+    grep -q 'arm your monitor' "$BOOT_BOX/log" && pass "second boot arms the opted-in monitor" || fail "second boot arms the opted-in monitor"
+  fi
+  if [[ "$scenario" == busy-history ]]; then
+    [[ $(cat "$BOOT_BOX/captures") -ge 4 ]] && pass "busy history uses readiness budget" || fail "busy history uses readiness budget"
+  fi
+  if [[ "$scenario" == trust ]] && ! printf '%s' "$output" | grep -q 'No is preselected'; then fail "folder trust names the default and manual action"; fi
+}
+boot_fixture first-boot-busy 0 '1 launched and ready, 0 monitors armed'
+boot_fixture first-boot-again 0 '1 launched and ready, 1 monitors armed'
+boot_fixture delayed 0 '1 launched and ready, 1 monitors armed'
+boot_fixture existing-resume 3 'demo waiting: resume picker'
+boot_fixture existing-fullscreen 3 'demo waiting: fullscreen offer'
+boot_fixture existing-approval 3 'demo waiting: approval prompt'
+boot_fixture existing-busy 0 '1 already up and ready'
+boot_fixture existing-codex 0 '1 already up and ready'
+boot_fixture busy-history 3 'demo waiting: runtime busy'
+boot_fixture scroll-monitor 0 '1 monitors armed'
+boot_fixture nbsp 0 '1 launched and ready, 1 monitors armed'
+boot_fixture trust 3 'demo waiting: folder trust'
+boot_fixture existing 3 'demo waiting: folder trust'
+boot_fixture resume 3 'demo waiting: resume picker'
+boot_fixture fullscreen 3 'demo waiting: fullscreen offer'
+boot_fixture unknown 3 'demo waiting: unrecognised screen'
+boot_fixture busy 3 'demo waiting: runtime busy'
+boot_fixture staged 3 'demo waiting: composer contains text or menu selection'
+boot_fixture missing-runtime 3 'demo waiting: runtime not running'
+boot_fixture session-fail 1 'session creation failed'
+boot_fixture window-fail 1 'demo launch failed'
+boot_fixture send-fail 1 'demo launch failed'
+boot_fixture opt-out 0 '1 launched and ready, 0 monitors armed'
+boot_fixture history 0 '1 launched and ready, 1 monitors armed'
+boot_fixture old-monitor 3 'demo monitor unconfirmed'
+boot_fixture ready 0 '1 launched and ready, 1 monitors armed'
+boot_fixture existing-ready 0 '0 launched and ready, 0 monitors armed, 1 already up and ready'
+boot_fixture codex-verify-fail 1 'demo launch failed or verification unconfirmed'
+boot_fixture codex 0 '1 launched and ready, 1 monitors armed'
+boot_fixture monitor-prose 3 'demo monitor unconfirmed'
+boot_fixture monitor-timeout 3 'demo monitor unconfirmed'
+boot_fixture monitor-send-fail 3 'demo monitor unconfirmed'
 
 echo
 echo "boot-agents: $PASS passed, $FAILS failed"

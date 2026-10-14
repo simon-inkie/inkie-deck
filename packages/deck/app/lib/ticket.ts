@@ -1,14 +1,14 @@
 /**
  * ticket.ts - Pure helpers for Linear ticket identifier normalisation.
  *
- * No IO, no fs, no env access, no .server imports (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No IO, no fs, no env access, no .server imports.
+ * ASCII only - no em-dashes.
  *
  * TICKET_BASE_URL: the Linear URL prefix for the example-org placeholder org.
  *   Change this single constant if the org slug ever moves.
  *
  * normaliseTicket(raw): accepts
- *   - bare identifier: "TASK-445" (case-insensitive) -> "TASK-445" (uppercased)
+ *   - bare identifier: "PROJ-123" (case-insensitive) -> "PROJ-123" (uppercased)
  *   - Linear URL: "https://linear.app/<org>/issue/<ID>[/slug][?query][#frag]"
  *     -> uppercased ID
  *   - anything else -> null (warn + absent; never throws)
@@ -37,8 +37,8 @@ const LINEAR_URL_RE =
  * Normalise a raw ticket value to an uppercase identifier string, or null.
  *
  * Accepts:
- *   - Bare id (case-insensitive, e.g. "task-445" -> "TASK-445")
- *   - Linear URL (e.g. "https://linear.app/example-org/issue/TASK-445/slug" -> "TASK-445")
+ *   - Bare id (case-insensitive, e.g. "proj-123" -> "PROJ-123")
+ *   - Linear URL (e.g. "https://linear.app/example-org/issue/PROJ-123/slug" -> "PROJ-123")
  *
  * Returns null for anything that does not match either form.
  * Warns to console.warn when the value is non-empty but unrecognised.
@@ -71,7 +71,7 @@ export function normaliseTicket(raw: string | null | undefined): string | null {
 /**
  * Build the canonical Linear URL for a normalised ticket identifier.
  *
- * @param id - An uppercase normalised ticket id (e.g. "TASK-445").
+ * @param id - An uppercase normalised ticket id.
  * @returns The Linear issue URL.
  */
 export function ticketUrl(id: string): string {

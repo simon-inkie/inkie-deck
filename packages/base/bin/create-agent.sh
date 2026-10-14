@@ -33,12 +33,17 @@
 #
 # Usage:
 #   bin/create-agent.sh <name> [--role "<tagline>"] [--runtime <runtime>]
-#                              [--verify | --no-verify] [--inbox-root <path>]
+#                              [--model <id>] [--verify | --no-verify]
+#                              [--inbox-root <path>]
 #                              [--agents-home <path>] [--no-install-path]
 #                              [--memory-root <path> | --no-memory]
 #   bin/create-agent.sh --verify-only <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
+#   --model <id>                 write <agent home>/.model, which boot-agents.sh
+#                                and workspace.sh pass as `--model <id>`. Without
+#                                it the agent uses the runtime's own default,
+#                                which may be a costlier model on a paid plan.
 #   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
 #                                makes `inbox` resolve as a bare command name.
 #   --memory-root <path>         checkout of the memory layer (default:
@@ -502,12 +507,14 @@ AGENTS_HOME_ARG=""
 INSTALL_PATH=1
 MEMORY_ROOT_ARG=""
 NO_MEMORY=0
+MODEL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)      usage; exit 0 ;;
     --role)         [[ $# -ge 2 ]] || die_scaffold "--role needs a value";        ROLE="$2";            shift 2 ;;
     --runtime)      [[ $# -ge 2 ]] || die_scaffold "--runtime needs a value";     RUNTIME="$2";         shift 2 ;;
+    --model)        [[ $# -ge 2 ]] || die_scaffold "--model needs a value";        MODEL="$2";           shift 2 ;;
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
@@ -564,7 +571,7 @@ else
   # This value is the silo layout this project ships, NOT a reading of the
   # deployment. It used to be announced as "the value from the application's
   # .env.example", which was never true - that file ships INBOX_ROOT empty,
-  # because there is no default (FND-03) - and it invited the reader to trust a
+  # because there is no default - and it invited the reader to trust a
   # guess as though something had confirmed it.
   INBOX_ROOT="$HOME/.the-vault/agents"
   INBOX_ROOT_SOURCE="default (INBOX_ROOT was unset)"
@@ -646,6 +653,15 @@ fi
 AGENT_HOME="$AGENTS_HOME/$NAME"
 AGENT_INBOX="$INBOX_ROOT/$NAME/inbox"
 
+# The launchers put .model on a shell command line unquoted, so only a plain
+# model id is accepted.
+if [[ -n "$MODEL" && ! "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
+  die_scaffold "--model '$MODEL' is not a plain model id" \
+    "use letters, digits, dots, colons and hyphens, for example claude-sonnet-5-5"
+fi
+MODEL_ARGS=()
+[[ -n "$MODEL" ]] && MODEL_ARGS=(--model "$MODEL")
+
 # ---------------------------------------------------------------------------
 # create
 # ---------------------------------------------------------------------------
@@ -719,6 +735,11 @@ else
   printf '%s' "$RUNTIME" > "$AGENT_HOME/.runtime" \
     || die_scaffold "could not write $AGENT_HOME/.runtime"
 
+  if [[ -n "$MODEL" ]]; then
+    printf '%s' "$MODEL" > "$AGENT_HOME/.model" \
+      || die_scaffold "could not write $AGENT_HOME/.model"
+  fi
+
   mkdir -p "$AGENT_HOME/.claude" || die_scaffold "could not create $AGENT_HOME/.claude"
   CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_NAME="$NAME" CA_ROLE="$ROLE" \
     CA_INBOX_ROOT="$INBOX_ROOT" merge_settings \
@@ -739,7 +760,14 @@ else
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
-  say "  memory         wired after verification (see the last line)"
+  if [[ $NO_MEMORY -eq 1 ]]; then
+    say "  memory         off (--no-memory)"
+  elif [[ -z "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}" ]]; then
+    say "  memory         off (MEMORY_LAYER_ROOT not set)"
+  else
+    say "  memory         to be wired after verification (see the last line)"
+  fi
+  say "  model          ${MODEL:-"(runtime default; see INSTALL.md)"}"
   say "  boot phrase    $NONCE"
   say
   say "  IDENTITY.md and SOUL.md are scaffolded, not written. The agent fills"
@@ -824,6 +852,11 @@ memory_on_exit() {
 MEMORY_PENDING=0
 [[ "$VERIFY_ONLY" -eq 1 ]] || MEMORY_PENDING=1
 trap memory_on_exit EXIT
+# A run that is interrupted or killed mid-probe never reached its verdict, so it
+# must not wire memory or claim it did. Exit with the conventional 128+signal.
+trap 'MEMORY_PENDING=0; exit 130' INT
+trap 'MEMORY_PENDING=0; exit 143' TERM
+trap 'MEMORY_PENDING=0; exit 129' HUP
 
 if [[ "$VERIFY" == "no" ]]; then
   report_cannot_verify "Verification was skipped (--no-verify)."
@@ -832,6 +865,9 @@ fi
 if ! command -v claude >/dev/null 2>&1; then
   report_cannot_verify "No \`claude\` on PATH, so there was nothing to ask."
 fi
+
+. "$SCRIPT_DIR/claude-binary-check.sh"
+warn_if_foreign_claude
 
 PROBE_PROMPT="Answer from your own context, not by reading any files, and reply with exactly two lines and nothing else:
 name: <your name>
@@ -850,10 +886,10 @@ say "  one non-interactive turn, from $AGENT_HOME"
 # slug of that directory. A probe run from anywhere else verifies a different
 # project and tells you nothing about this agent.
 if command -v timeout >/dev/null 2>&1; then
-  ( cd "$AGENT_HOME" && timeout "$PROBE_TIMEOUT" claude -p "$PROBE_PROMPT" ) \
+  ( cd "$AGENT_HOME" && timeout "$PROBE_TIMEOUT" claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) \
     >"$PROBE_OUT" 2>"$PROBE_ERR"
 else
-  ( cd "$AGENT_HOME" && claude -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
+  ( cd "$AGENT_HOME" && claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
 fi
 PROBE_STATUS=$?
 

@@ -1,5 +1,5 @@
 /**
- * MorningBrief.tsx - Daily morning brief panel on the home screen (TASK-442).
+ * MorningBrief.tsx - Daily morning brief panel on the home screen.
  *
  * Displays the most recent morning brief at the top of the home route,
  * between the header block and the needs-you sections.
@@ -15,7 +15,7 @@
  * ?doc= wiring: onOpenDoc is threaded in from home.tsx so links inside the
  * brief open in the ReviewPanel (same pattern as threads.$agent.tsx + projects).
  *
- * No .server imports - FND-02. ASCII only - no em-dashes - FND-05.
+ * No .server imports. ASCII only - no em-dashes.
  */
 import { useState, useEffect } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";

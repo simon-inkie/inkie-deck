@@ -2,8 +2,8 @@
 /**
  * pending-batch-mirror-render.test.tsx - the misdirected-message regression.
  *
- * THE INCIDENT (2026-07-29). Three of Alex's messages were written into the
- * wrong agent's inbox, 71 seconds to 45 minutes after he sent them, with a
+ * THE INCIDENT. Three of the operator's messages were written into the
+ * wrong agent's inbox, 71 seconds to 45 minutes after they were sent, with a
  * reboot in between. Single writes, correct-looking, wrong thread.
  *
  * Cause: switching threads with a pending batch. On the A -> B commit the hook's
@@ -29,7 +29,7 @@
  * threads.$agent.tsx's batch effects; the ORDER of the three effects below is
  * load-bearing and matches the route.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act, useEffect, useLayoutEffect, useRef } from "react";
@@ -88,7 +88,7 @@ function recordFlush(
 function BatchHost({ agent, flushOnSwitch = false }: { agent: string; flushOnSwitch?: boolean }) {
   // Declared above usePendingBatch, as in the route: onDeliver resets it, so a
   // forward reference would be a latent TDZ if the hook ever delivered
-  // synchronously during the hook call (CodeRabbit).
+  // synchronously during the hook call.
   const durabilityRef = useRef({
     ownerKey: null as string | null,
     paragraphs: [] as string[],
@@ -289,8 +289,7 @@ describe("thread switch with a pending batch", () => {
     // The base case only: agentA is on screen AND owns the batch, so this would
     // pass with the flush addressed either way. It is here to pin that the
     // beacon still flushes at all, with the right body - NOT the switch gap. The
-    // test below is the one with teeth on the addressing (CodeRabbit: the old
-    // comment here described a switch this body never crosses).
+    // test below is the one with teeth on the addressing.
     await render("agentA");
     await click("submit-dictated");
     await click("beacon");

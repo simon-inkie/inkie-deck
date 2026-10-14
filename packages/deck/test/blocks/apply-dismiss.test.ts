@@ -11,7 +11,7 @@
  *   dismiss-reason JSON round-trip.
  * - applyDoneNote: appends done-note: once; idempotent; requires done:.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";

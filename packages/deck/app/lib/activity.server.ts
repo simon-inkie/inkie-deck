@@ -1,6 +1,6 @@
 /**
  * activity.server.ts - read-only data-access seam for the agent-activity state
- * file (TASK-691 step 1, plan section 4).
+ * file.
  *
  * ONE file, written by ONE external producer (a 60s sweep script), read
  * by TWO independent consumers: this seam and the `activity` query CLI. MC only
@@ -10,30 +10,30 @@
  * every tick is how a pin silently disappears.
  *
  * ACTIVITY_ROOT is a NEW env var, a sibling of INBOX_ROOT / PROJECTS_ROOT /
- * ATTACHMENTS_ROOT (plan decision Q2). It is deliberately NOT in
+ * ATTACHMENTS_ROOT (a design decision). It is deliberately NOT in
  * validateConfiguredRoots' required table: those roots are load-bearing for
  * every instance and boot fails loudly without them, whereas an instance with
  * no ACTIVITY_ROOT is simply an instance without this panel. That is the whole
- * gate (see activityEnabled in instance.server.ts) - Robin's instance gets the
- * panel the day her .env gains the variable, which is a config change, not a
- * rewrite (decision Q6).
+ * gate (see activityEnabled in instance.server.ts) - any other instance gets the
+ * panel the day its .env gains the variable, which is a config change, not a
+ * rewrite.
  *
  * NO DEFAULT for the root, on purpose. The producer's own default is
  * ~/.the-vault/activity, and both daemons run as the same user on the same box,
- * so defaulting here would hand Robin's instance Alex's panel with no config
+ * so defaulting here would hand every instance the operator's panel with no config
  * anywhere saying so. Absence of the variable IS the off switch.
  *
  * DEGRADE, NEVER THROW. readActivity returns an explicit "offline" shape for
  * every failure - missing file, unreadable file, corrupt JSON, unknown schema,
- * stale sweep - and the route renders that honestly. The sweep is not on cron
- * yet, so at the time of writing the missing-file path is the ONLY path that
- * ever runs in production; it is the primary case, not an edge case.
+ * stale sweep - and the route renders that honestly. Until the sweep is scheduled,
+ * the missing-file path is the ONLY path that runs; it is the primary case, not
+ * an edge case.
  *
- * SEAM RULE (FND-02): the .server suffix strips this from the client bundle;
+ * SEAM RULE: the .server suffix strips this from the client bundle;
  * routes call it with process.env and never touch fs or the path shape. Types
  * and pure helpers live in activity.shared.ts so the component can import them.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -92,7 +92,7 @@ export function activityFilePath(env: NodeJS.ProcessEnv): string | undefined {
  *   - The producer's own SPEC recommends a first shadow window at a five-minute
  *     cron cadence, i.e. one write per 5 minutes. A threshold at or under 5
  *     minutes would flap
- *     between "live" and "offline" for the entire shadow period and teach Alex
+ *     between "live" and "offline" for the entire shadow period and teach the operator
  *     to ignore the banner before the feature is even proven.
  *   - It is short enough that a wrong pill is visibly wrong quickly. A status
  *     pill is a claim about NOW; the longer this window, the longer a dead
@@ -109,7 +109,7 @@ export const ACTIVITY_STALE_AFTER_MS = 10 * 60 * 1000;
  * Default duration (ms) an agent must sit `stuck`/`needs-you` before the
  * top-bar escalation alert fires (top-bar escalation SPEC).
  *
- * 30 minutes. NOT SPECIFIED by Alex ("a certain amount of time") - the
+ * 30 minutes. NOT SPECIFIED in the requirement - the
  * SPEC's own proposed default, flagged there as an assumption to correct
  * rather than a blocker: long enough that a normal working pause never
  * fires, short enough to have caught the incident that prompted the feature
@@ -218,7 +218,7 @@ export function readActivity(
   const age = now.getTime() - sweptMs;
   if (age > staleAfterMs) {
     // The data is intact; what has expired is our right to present it as the
-    // current state. The agents travel WITH the verdict (2026-07-31): the panel
+    // current state. The agents travel WITH the verdict: the panel
     // shows them dimmed under an offline banner, because "the engine died and
     // summit was last seen working on task-599" is a more useful truth than a
     // blank panel, and the timestamp beside it is what stops it reading as now.

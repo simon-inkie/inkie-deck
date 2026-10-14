@@ -105,7 +105,7 @@ export interface MessageBlock {
   /** Present if the block is a valid action card; absent for plain bubbles and decision cards. */
   actionCard?: ActionCard;
   /**
-   * Normalised Linear ticket identifier (e.g. "TASK-445"), if a valid ticket: meta line
+   * Normalised Linear ticket identifier, if a valid ticket: meta line
    * is present on this block. Absent when the line is missing or the value is unrecognised.
    * The raw verbatim line is preserved in rawMeta; this field is the normalised form only.
    */
@@ -195,8 +195,8 @@ export type DoneNoteResult =
  * - { pushedBackOriginal, pushBackBlock } when push-back is applied to an unresolved card.
  * - { alreadyResolved: true, existingState } when the card was already resolved (answered or pushed back).
  *
- * CARD-03: push-back flips the card to answered: pushback and emits a distinct push-back reply block.
- * CARD-04: idempotent no-op when the card is already resolved (mutual exclusion with answer).
+ * Push-back flips the card to answered: pushback and emits a distinct push-back reply block.
+ * Idempotent no-op when the card is already resolved (mutual exclusion with answer).
  *
  * The alreadyResolved variant also covers a card resolved by dismissal or
  * supersession: existingState carries the resolution ("dismissed" / "superseded")

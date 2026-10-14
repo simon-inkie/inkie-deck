@@ -23,7 +23,7 @@
  * real viewport widths. The alert's gate is read once at boot, so this could
  * not be a per-test toggle; see e2e/start-layout-server.sh.
  *
- * ASCII only - no em-dashes per FND-05 (check:dashes gate).
+ * ASCII only - no em-dashes (check:dashes gate).
  */
 import { defineConfig } from "@playwright/test";
 import { BASE_URL, batchPrefsStorageState } from "./e2e/batch-prefs-state";

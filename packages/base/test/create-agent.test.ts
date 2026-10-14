@@ -19,7 +19,7 @@
  * inherited, so a real runtime installed on the machine running the tests can
  * neither be reached by accident nor change the result.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -83,10 +83,18 @@ function stubRuntime(box: Sandbox, body: string): void {
  * PATH is built explicitly, never inherited. An inherited PATH would let a real
  * `claude` on the developer's machine answer the probe, which would make the
  * "no runtime available" case pass for the wrong reason on their box and fail
- * in CI. The node directory is included because the script shells out to node.
+ * in CI. Node is exposed through a directory holding only a node symlink, never
+ * its install directory, because that directory can also hold a global `claude`
+ * (npm -g puts runtimes beside node).
  */
 function testPath(box: Sandbox, withStub: boolean): string {
-  const entries = [path.dirname(process.execPath), "/usr/bin", "/bin"];
+  const nodeBin = path.join(path.dirname(box.stubBin), "node-only");
+  fs.mkdirSync(nodeBin, { recursive: true });
+  const link = path.join(nodeBin, "node");
+  if (!fs.existsSync(link)) fs.symlinkSync(process.execPath, link);
+  // /usr/bin and /bin stay: the script needs coreutils. A system-wide `claude`
+  // there would still answer the probe, so this case assumes none is installed.
+  const entries = [nodeBin, "/usr/bin", "/bin"];
   return (withStub ? [box.stubBin, ...entries] : entries).join(path.delimiter);
 }
 
@@ -177,6 +185,20 @@ describe("creation", () => {
     expect(fs.readFileSync(path.join(home, "IDENTITY.md"), "utf8")).toContain(
       "<self-author on day one>",
     );
+  });
+
+  it("writes .model only when --model is given, and rejects anything unsafe for a shell", () => {
+    const box = sandbox();
+    expect(run(box, ["wren", "--no-verify"]).status).toBe(EXIT.CANNOT_VERIFY);
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", ".model"))).toBe(false);
+
+    const withModel = run(box, ["fern", "--model", "claude-sonnet-5-5", "--no-verify"]);
+    expect(withModel.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(fs.readFileSync(path.join(box.agentsHome, "fern", ".model"), "utf8")).toBe("claude-sonnet-5-5");
+
+    const bad = run(box, ["moss", "--model", "x; rm -rf ~", "--no-verify"]);
+    expect(bad.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box.agentsHome, "moss"))).toBe(false);
   });
 
   it("writes .runtime explicitly, defaulting to claude and honouring --runtime", () => {
@@ -324,8 +346,8 @@ describe("creation", () => {
 
   it("calls the fallback a guess, and does not attribute it to a file that does not say it", () => {
     // The warning used to claim the value came from the application's
-    // .env.example. That file ships INBOX_ROOT empty (there is no default,
-    // FND-03), so the citation dressed a guess up as a lookup.
+    // .env.example. That file ships INBOX_ROOT empty (there is no default),
+    // so the citation dressed a guess up as a lookup.
     const box = sandbox();
     const result = run(box, ["wren", "--no-verify"], {
       env: { INBOX_ROOT: "" },
@@ -811,6 +833,44 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(result.output).toMatch(/memory off \(not built: missing node_modules\/\.bin\/tsx\)/);
     expect(settingsOf(box, "wren").hooks).toBeUndefined();
     expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("does not wire memory, or claim to, when the run is terminated during the probe", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const marker = path.join(box.home, "probe-started");
+    stubRuntime(box, `touch "${marker}"\nsleep 2\necho "boot phrase: none"`);
+
+    const child = spawn("bash", [SCRIPT, "wren"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, true),
+        MEMORY_LAYER_ROOT: root,
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+
+    for (let i = 0; i < 100 && !fs.existsSync(marker); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(fs.existsSync(marker)).toBe(true);
+    child.kill("SIGTERM");
+
+    expect(await exited).toBe(143);
+    expect(output).not.toMatch(/memory on /);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("states memory is off in the summary when there is nothing to wire", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"]);
+    expect(result.output).toMatch(/memory\s+off \(MEMORY_LAYER_ROOT not set\)/);
+    expect(result.output).not.toContain("to be wired");
   });
 
   it("wires the PreCompact auto and manual matchers", () => {

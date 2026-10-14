@@ -24,7 +24,7 @@
  * anything the pending bubble alone can satisfy stays green. That is how the
  * false greens in this suite were enumerated rather than guessed at.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import type { BatchPrefs } from "../app/lib/batch-prefs";
 

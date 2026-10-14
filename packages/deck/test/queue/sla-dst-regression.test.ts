@@ -1,5 +1,5 @@
 /**
- * Named regression test: SLA DST correctness (QUEUE-10)
+ * Named regression test: SLA DST correctness
  *
  * Proves that date-fns addHours measures real elapsed time across DST
  * boundaries, not wall-clock hours. US Eastern spring-forward:
@@ -10,7 +10,7 @@
  * addHours uses absolute ms arithmetic so the deadline lands at the correct
  * real instant regardless of DST transitions.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { addHours } from "date-fns";

@@ -1,8 +1,7 @@
 /**
  * briefs.server.ts
  *
- * Data-access seam for the coordinator agent's daily morning brief files
- * (TASK-442).
+ * Data-access seam for the coordinator agent's daily morning brief files.
  *
  * Exports:
  *   getLatestBrief(env, now) - reads <INBOX_ROOT>/<briefs agent>/briefs/ and
@@ -32,9 +31,9 @@
  *     any read - same idiom as review.server.ts / attachments.server.ts.
  *   - No user-controlled path component anywhere.
  *
- * SEAM RULE (FND-02): env access via resolveInboxRoot (same seam as inbox.server.ts).
+ * SEAM RULE: env access via resolveInboxRoot (same seam as inbox.server.ts).
  * The .server suffix strips this module from the client bundle.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import fs from "node:fs";
@@ -122,7 +121,7 @@ function compareDates(a: string, b: string): number {
  * of that instant in UTC, since the briefs are stamped UTC-midnight by the
  * job that writes them).
  *
- * We use UTC date extraction so that a brief dated 2026-06-10 (UTC) is
+ * We use UTC date extraction so that a brief dated for the current UTC day is
  * considered "today" when MC_NOW is 2026-06-10T20:30:00Z, regardless of the
  * server's local timezone. This is consistent with a brief cron that runs in
  * the early morning UTC, which is the case the freshness window is sized for.

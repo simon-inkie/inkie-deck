@@ -30,8 +30,8 @@
  * Named for the outcome rather than the scenario, so the assertions cannot be
  * inverted without the names going obviously wrong.
  *
- * VALID-03: writeback goes to INBOX_ROOT (temp dir), never committed fixtures.
- * ASCII only - no em-dashes (FND-05).
+ * Writeback goes to INBOX_ROOT (temp dir), never committed fixtures.
+ * ASCII only - no em-dashes.
  */
 import { test, expect, type Page } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

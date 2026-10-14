@@ -1,10 +1,10 @@
 /**
- * scroll-follow.test.ts - unit truth table for TASK-454's follow logic.
+ * scroll-follow.test.ts - unit truth table for the scroll follow logic.
  *
  * The 455 scroll pin as a test: follow-bottom must distinguish user-at-bottom
  * from user-scrolled-up before it may move the viewport.
  *
- * ASCII only (FND-05).
+ * ASCII only.
  */
 import { describe, expect, it } from "vitest";
 import {

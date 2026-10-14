@@ -4,8 +4,8 @@
  * Renders a ranked list of unhandled action-queue items (overdue first, then
  * soonest deadline). When no items remain, renders the positive empty state.
  *
- * No .server imports - all data arrives via props from loaderData (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props from loaderData.
+ * ASCII only - no em-dashes.
  */
 import { CheckCircle2 } from "lucide-react";
 import type { QueueViewItem } from "~/lib/queue-derive";
@@ -22,7 +22,7 @@ interface QueuePanelProps {
  *
  * When items is empty, renders the positive empty state.
  * Otherwise renders a keyed list of QueueItemRow components.
- * The item.id key is stable (QUEUE-09 guarantee from deriveItemId).
+ * The item.id key is stable (it comes from deriveItemId).
  */
 export function QueuePanel({ items }: QueuePanelProps) {
   if (items.length === 0) {

@@ -11,8 +11,8 @@ agent. Given a built memory-layer checkout (`MEMORY_LAYER_ROOT` or
 `--memory-root`), it runs the checkout's own non-interactive install command
 against that agent's own `.claude/settings.json` (hooks) and seeds the agent's
 silo, then records `USER_NAME` in the settings env. With no checkout, an
-unbuilt one, `--no-memory`, or a failing install command, the summary reports
-`memory  off (reason)`, a warning says why, and creation carries on with the
+unbuilt one, `--no-memory`, or a failing install command, the final line reports
+`create-agent: memory off (reason)`, a warning says why, and creation carries on with the
 same exit code as before. INSTALL.md tier 3 gains an optional memory step. This
 is the M1 slice only.
 
@@ -25,7 +25,9 @@ says so; the command is idempotent, so re-running it repairs it.
 
 In scope:
 - `create-agent.sh`: `--memory-root`, `--no-memory`, `MEMORY_LAYER_ROOT`,
-  `USER_NAME`, a `memory` line in the summary.
+  `USER_NAME`, a `memory` line in the summary (off with its reason when
+  nothing is to be wired, otherwise "to be wired after verification") and a
+  final line with the outcome.
 - Tests for present, absent, unbuilt, failing, `--no-memory` and unset
   `USER_NAME`, all in temporary directories.
 - INSTALL.md optional memory step.
@@ -115,3 +117,9 @@ Note for the maintainer: the leak gate's private-session-link rule flags the
 Claude-Session commit trailer, and the first two commits on this branch carry
 it. A squash merge should strip any Claude-Session lines from the message.
 Later commits omit it.
+
+### 2026-10-14: merge of main, signals, doc fence
+- What changed: merged main (the `--model` work) keeping both variable blocks and both summary lines. A SIGINT, SIGTERM or SIGHUP during the probe now clears the pending flag, so an interrupted run does not wire memory or claim it did (exit 130, 143 or 129). The summary memory line is conditional: `off (reason)` when nothing is to be wired, `to be wired after verification` otherwise. The INSTALL.md memory block is fenced `sh-manual`, because it needs a real checkout and the rig cannot run it.
+- Why: re-review findings.
+- Supersedes: the unconditional summary wording in the previous entry.
+- Commits: see branch

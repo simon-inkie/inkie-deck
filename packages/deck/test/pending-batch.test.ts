@@ -1,5 +1,5 @@
 /**
- * pending-batch.test.ts - Unit tests for the TASK-500 pending batch state machine.
+ * pending-batch.test.ts - Unit tests for the pending batch state machine.
  *
  * Tests the pure reducer (pendingBatchReducer) and the derived helpers
  * (buildBatchBody). The reducer is pure, so tests need no mocks at all.
@@ -15,7 +15,7 @@
  *   A4. Safety cap fires -> delivers sent portion after 5 min of no keystrokes
  *       while SUSPENDED.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
@@ -35,8 +35,8 @@ import {
 
 /**
  * The thread these batches belong to. SUBMIT carries it explicitly (it is a
- * required action field, 2026-07-29) so ownership travels with the paragraphs
- * instead of being read off whatever thread happens to be rendered.
+ * required action field) so ownership travels with the paragraphs instead of
+ * being read off whatever thread happens to be rendered.
  */
 const OWNER = "agentA";
 
@@ -453,7 +453,7 @@ describe("acceptance cases (TASK-500 SPEC)", () => {
     // Note what this case can and cannot see: it pins that the SWITCH delivers to
     // the old thread. It cannot see the localStorage mirror that the same commit
     // wrote under the NEW thread, because it is not a render - which is exactly
-    // why the 2026-07-29 misdirection survived a green suite containing this
+    // why the misdirection survived a green suite containing this
     // test. See test/pending-batch-mirror-render.test.tsx.
 
     const deliveries: BatchDelivery[] = [];
@@ -532,7 +532,7 @@ describe("acceptance cases (TASK-500 SPEC)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-500.3: CANCEL action
+// CANCEL action
 // ---------------------------------------------------------------------------
 
 describe("pendingBatchReducer - CANCEL", () => {
@@ -689,7 +689,7 @@ describe("cancel acceptance cases (TASK-500.3)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-500.1: settleMs option
+// settleMs option
 // ---------------------------------------------------------------------------
 
 describe("settleMs option (TASK-500.1)", () => {
@@ -774,7 +774,7 @@ describe("settleMs option (TASK-500.1)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Batch ownership and dictation provenance (2026-07-29)
+// Batch ownership and dictation provenance
 //
 // Both used to be route-level values describing a batch they did not belong to:
 // the mirror keyed by the currently-rendered agent, and dictation lived in a

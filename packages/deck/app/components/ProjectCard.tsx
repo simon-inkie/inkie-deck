@@ -15,10 +15,10 @@
  *
  * Optimistic UI is driven by the fetcher passed in from ProjectBoard.
  *
- * Board face (TASK-439): summary line shown under the title (1-2 line clamp, muted).
+ * Board face: summary line shown under the title (1-2 line clamp, muted).
  * Card is clickable to open the CardDetail via onCardOpen callback.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { ExternalLink } from "lucide-react";
 import { Avatar } from "./ui/avatar";
@@ -55,7 +55,7 @@ interface ProjectCardProps {
   onMove: (cardId: string, column: string) => void;
   /** Called when a drag starts (to record which card is being dragged). */
   onDragStart: (cardId: string) => void;
-  /** Called when the card face is clicked to open the detail overlay (TASK-439). */
+  /** Called when the card face is clicked to open the detail overlay. */
   onCardOpen?: (cardId: string) => void;
 }
 
@@ -82,7 +82,7 @@ export function ProjectCard({ card, now, onMove, onDragStart, onCardOpen }: Proj
         <p className="font-display line-clamp-2 text-sm font-semibold leading-snug text-foreground group-hover:text-primary transition-colors">
           {card.title}
         </p>
-        {/* Summary line (TASK-439): 1-2 line clamp, muted */}
+        {/* Summary line: 1-2 line clamp, muted */}
         {card.summary ? (
           <p
             className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-snug"

@@ -3,8 +3,8 @@
  *
  * Top bar carries the Inkie Deck wordmark, a reserved (stubbed) Projects
  * tab, and the needs-you bell - a notifications dropdown listing the open
- * decisions to action now, each deep-linking to its message (Alex's
- * brain-dump requirement). The body is transparent so the cream + halftone
+ * decisions to action now, each deep-linking to its message (a requirement
+ * from the operator). The body is transparent so the cream + halftone
  * paper texture from app.css whispers through the centre pane.
  *
  * Responsive layout (RESPONSIVE-RETROFIT-PLAN):
@@ -12,7 +12,7 @@
  *   - md+: sidebar visible as before; agent strip hidden.
  *
  * Presentational only - data arrives via props from the shell layout loader.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { useEffect, useState } from "react";
 import { Outlet, Link, NavLink, useLocation, useParams } from "react-router";
@@ -47,10 +47,9 @@ import {
 } from "./ui/dropdown-menu";
 
 /**
- * One needs-you item (drives the bell dropdown). COUNT SEMANTICS (peer
- * review, Atlas TASK-438): the bell badge and the home list consume the SAME
- * deriveNeedsYou output - the badge count IS the list length. One source of
- * truth; a badge of 2 over a list of 5 would read as the bug it would be.
+ * One needs-you item (drives the bell dropdown). COUNT SEMANTICS: the bell badge and the home list
+ * consume the SAME deriveNeedsYou output - the badge count IS the list length.
+ * One source of truth; a badge of 2 over a list of 5 would read as the bug it would be.
  */
 export interface NeedsItem {
   /** Stable id from deriveNeedsYou (React key). */
@@ -66,7 +65,7 @@ export interface NeedsItem {
 
 /**
  * Rebuild a search string with the view param set or removed, preserving
- * every other param (doc panel, debug, etc). TASK-437 amendment helper.
+ * every other param (doc panel, debug, etc).
  */
 function threadViewSearch(search: string, view: string | undefined): string {
   const params = new URLSearchParams(search);
@@ -81,39 +80,38 @@ interface AppShellProps {
   needsItems: NeedsItem[];
   needsCount: number;
   /**
-   * TASK-454: the active thread agent's live (non-done) cards. Empty on
+   * The active thread agent's live (non-done) cards. Empty on
    * non-thread routes. Drives the top-bar work-panel trigger + slide-out.
    */
   workCards: MiniCard[];
   /**
-   * TASK-462: whether this instance exposes the tmux surface (Team tab +
-   * thread terminal toggle). Robin's instance runs with this off - typing
-   * into agent sessions stays Alex's consent surface. Default true.
+   * Whether this instance exposes the tmux surface (Team tab +
+   * thread terminal toggle). A second user's instance runs with this off, because typing
+   * into agent sessions stays the operator's consent surface. Default true.
    */
   tmuxOn?: boolean;
   /**
-   * TASK-460: whether the cron admin page is accessible on this instance.
-   * Alex-instance-only for v1. Shows a nav link when true.
+   * Whether the cron admin page is accessible on this instance.
+   * Operator-instance-only for v1. Shows a nav link when true.
    */
   cronAdminOn?: boolean;
   /**
-   * TASK-462: workspace label chip next to the wordmark ("Robin's
+   * Workspace label chip next to the wordmark ("a second user's
    * workspace") so it is unmistakable whose instance this is. Absent on
-   * Alex's instance.
+   * the operator's instance.
    */
   instanceLabel?: string;
   /**
    * M5: the active thread agent's configured model + catalog options.
    * Present only on operator instances (modelSelectorEnabled) when a thread
    * is open and the agent's runtime has options - absence renders nothing,
-   * so Robin's instance never sees the control.
+   * so a second user's instance never sees the control.
    */
   modelSelector?: ModelSelectorData;
   /**
-   * TASK-691: whether this instance has an activity root configured. Gates a
+   * Whether this instance has an activity root configured. Gates a
    * nav link to /tmux (the activity-panel home, see tmux.tsx) - re-added
-   * 2026-07-31 after Alex found the page unreachable (the standalone Team
-   * nav link was removed 2026-06-11, before this feature existed).
+   * because the page had become unreachable without it.
    * Relabelled "Activity" since the page's job is now the overview panel,
    * not the old duplicate terminal-browsing surface that link used to open.
    */
@@ -149,28 +147,28 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
   const active = params.agent;
   const location = useLocation();
 
-  // TASK-437 amendment: per-thread terminal mode is URL state (?view=tmux).
+  // Per-thread terminal mode is URL state (?view=tmux).
   const threadTmuxView =
     active !== undefined &&
     new URLSearchParams(location.search).get("view") === "tmux";
 
-  // TASK-455: one polling mount makes every active loader live (shell, home,
+  // One polling mount makes every active loader live (shell, home,
   // thread, projects, lens). Paused on hidden tab; never overlaps itself.
-  // TASK-437: route-aware interval - terminal surfaces (Team tab or a thread
+  // Route-aware interval - terminal surfaces (Team tab or a thread
   // in tmux view) want a ~1s live feel; everything else stays at the 3s
   // default. Still exactly ONE timer.
   useLiveRevalidate(
     location.pathname.startsWith("/tmux") || threadTmuxView ? 1000 : undefined
   );
-  // TASK-470 follow-up: soft in-app ping when a new unread message lands
+  // Soft in-app ping when a new unread message lands
   // (covers the open-tab case push notifications do not need to).
   useMessageChime(agents);
-  // TASK-457: the active agent's avatar for the app-bar identity fold.
+  // The active agent's avatar for the app-bar identity fold.
   const activeAgent = active ? agents.find((a) => a.name === active) : undefined;
   const activeAvatarUrl = activeAgent?.avatarUrl;
   const activeHasUnread = activeAgent?.hasUnread === true;
 
-  // TASK-454: slide-out work panel ("properties" column). Ephemeral UI state -
+  // Slide-out work panel ("properties" column). Ephemeral UI state -
   // no URL param. Closes on any navigation (card rows navigate to /projects).
   const [workOpen, setWorkOpen] = useState(false);
   useEffect(() => {
@@ -181,7 +179,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
     <div className="flex h-screen flex-col">
       {/* Top bar.
 
-          WRAPPING, and why the header is not `h-14` any more (TASK-783).
+          WRAPPING, and why the header is not `h-14` any more.
           The escalation chip is ~176px of deliberately unshrinkable text
           (whitespace-nowrap, and truncating it would throw away the duration,
           which is the whole point of the chip). Added to the right-hand
@@ -231,7 +229,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
             aria-label="Inkie Deck home"
             className="font-display text-lg font-black uppercase tracking-tight text-foreground hover:opacity-80 transition-opacity"
           >
-            {/* Mobile UX (Alex 2026-06-11): the full wordmark squeezed the
+            {/* Mobile UX: the full wordmark squeezed the
                 thread identity + view toggle off-screen on phones. */}
             <span className="md:hidden">MC</span>
             <span className="hidden md:inline">Inkie Deck</span>
@@ -258,7 +256,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           >
             Cards
           </NavLink>
-          {/* Projects board NavLink - TASK-432. Mobile: lives in the agent
+          {/* Projects board NavLink. Mobile: lives in the agent
               strip instead (the top bar cannot fit nav + identity + toggle). */}
           <NavLink
             to="/projects"
@@ -270,7 +268,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           >
             Projects
           </NavLink>
-          {/* TASK-460: scheduler admin link - operator-only, shown only when cronAdminOn. */}
+          {/* Scheduler admin link - operator-only, shown only when cronAdminOn. */}
           {cronAdminOn ? (
             <NavLink
               to="/scheduler"
@@ -283,11 +281,10 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
               Nudges
             </NavLink>
           ) : null}
-          {/* TASK-437's Team tab removed (Alex 2026-06-11: "we can remove
-              team") - the per-thread chat/terminal toggle superseded it. The
-              /tmux route stayed functional for old bookmarks, just unlinked,
-              until TASK-691's activity panel landed there and had nothing
-              pointing to it. Re-added 2026-07-31, relabelled "Activity" -
+          {/* Team tab removed - the per-thread chat/terminal toggle superseded it.
+              The /tmux route stayed functional for old bookmarks, just unlinked,
+              until the activity panel landed there and had nothing
+              pointing to it. Re-added later, relabelled "Activity" -
               gated on activityNavOn (this instance has an activity root
               configured) so an instance without one shows no dead link. */}
           {activityNavOn ? (
@@ -302,7 +299,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
               Activity
             </NavLink>
           ) : null}
-          {/* TASK-454: active thread's identity folds into the app bar - the
+          {/* Active thread's identity folds into the app bar - the
               standalone thread header row is gone, messages start at the top.
               thread-header testid migrates WITH the element so the 12 e2e
               toContainText pins survive unedited. */}
@@ -316,10 +313,10 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
               >
                 {active}
               </h1>
-              {/* TASK-437 amendment: chat/terminal segmented toggle. The chat
+              {/* Chat/terminal segmented toggle. The chat
                   half carries an unread dot while terminal mode holds back
-                  read receipts (Atlas complement - the toggle carries the
-                  signal the honest receipt creates). */}
+                  read receipts, so the toggle carries the signal the honest
+                  receipt creates. */}
               {tmuxOn ? (
               <span
                 role="group"
@@ -424,7 +421,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
               manifest is built from chat messages, not the tmux pane). Pure
               URL-state (?files=1) - no shell prop needed. */}
           {active && !threadTmuxView ? <FilesPanelToggle /> : null}
-          {/* TASK-454: work-panel trigger - left of the bell, present only when
+          {/* Work-panel trigger - left of the bell, present only when
               the open thread's agent has live cards. Same badge grammar as
               the bell. */}
           {active && workCards.length > 0 ? (
@@ -455,7 +452,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
               mute in v1 (SPEC): it is a live-computed present/absent state
               off current data, not a fired-once event.
 
-              TASK-783: the single-agent branch spells the REASON out in
+              The single-agent branch spells the REASON out in
               visible text ("quill stuck for 45m") rather than leaving the
               glyph bare with the facts only in aria-label. That shape was hit
               live - red triangle, click, thread, no idea why it fired or
@@ -609,11 +606,11 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
                 });
               })()
             )}
-            {/* TASK-470: per-device push enrolment lives where notifications
+            {/* Per-device push enrolment lives where notifications
                 live. The toggle renders nothing on unsupported browsers. */}
             <DropdownMenuSeparator />
             <PushToggle />
-            {/* Build stamp (2026-06-12): proves which CLIENT bundle this
+            {/* Build stamp: proves which CLIENT bundle this
                 device is running - the no-404 deploy keeps old assets alive,
                 so a long-lived phone tab can hold yesterday's JS. Reachable
                 from any viewport via the bell. */}
@@ -651,7 +648,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           <SquareStack className="size-5" />
           <span className="text-[8px] font-bold uppercase tracking-wider">Cards</span>
         </Link>
-        {/* Mobile UX (Alex 2026-06-11): Projects + Team moved here from the
+        {/* Mobile UX: Projects + Team moved here from the
             top bar so the bar fits the thread identity + view toggle. */}
         <Link
           to="/projects"
@@ -693,7 +690,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
             style={{ scrollSnapAlign: "start" }}
           >
             <Avatar name={a.name} src={a.avatarUrl} className="h-8 w-8 text-xs" />
-            {/* Two dots (2026-06-12): magenta = unread message, burnt-orange =
+            {/* Two dots: magenta = unread message, burnt-orange =
                 open decision. Stacked top-right; both can show. */}
             <span className="absolute right-0.5 top-0.5 flex items-center gap-0.5">
               {a.hasUnread ? (
@@ -716,7 +713,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
       </div>
 
       {/* Two-pane body: sidebar hidden under md, visible md+.
-          TASK-456: resizable split. The sidebar panel + handle are display:none
+          Resizable split. The sidebar panel + handle are display:none
           under md, so they leave flex layout entirely and the main panel
           fills 100% - desktop-only by construction, no conditional render,
           no double Outlet. autoSaveId persists the split (localStorage). */}
@@ -738,7 +735,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           </ResizablePanel>
         </ResizablePanelGroup>
 
-        {/* TASK-454: slide-out work panel - properties-style right column.
+        {/* Slide-out work panel - properties-style right column.
             Overlays below the top bar; closes on X or any navigation. */}
         {workOpen && active ? (
           <aside

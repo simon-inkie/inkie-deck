@@ -1,8 +1,6 @@
 // @vitest-environment jsdom
 /**
  * sidebar-activity.test.tsx - the activity status pill in the agent list
- * (TASK-691 follow-up 3, Alex 2026-07-31: "can we add the status pills to the
- * agent list in the left hand pane?").
  *
  * A render test, because every claim here is a claim about the DOM and about
  * ABSENCE in particular: no pill for an agent the sweep never saw, no pill on
@@ -14,9 +12,9 @@
  *
  * The unconfigured/offline instances arrive here as agents with no `status`
  * key at all (routes/shell.tsx refuses to ship one unless the read was live),
- * so the "Robin renders exactly as before" case is the no-status fixture.
+ * so the "a second user renders exactly as before" case is the no-status fixture.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";
@@ -76,8 +74,7 @@ describe("Sidebar activity pill - present when there is something to say", () =>
     const pill = el("sidebar-status-summit");
     expect(pill).not.toBeNull();
     expect(pill!.getAttribute("data-status")).toBe("working");
-    // Full text, not the glyph alone (Alex, 2026-07-31: "have the full text
-    // instead of just the icon"). The label IS the accessible name now, so the
+    // Full text, not the glyph alone. The label IS the accessible name now, so the
     // role="img" + aria-label pair the compact pill needed is gone with it -
     // an img role over real text would hide that text from a screen reader.
     expect(pill!.textContent).toBe("working");
@@ -102,8 +99,8 @@ describe("Sidebar activity pill - present when there is something to say", () =>
   });
 
   it("keeps the dots beside the name and the pill at the end of the row", () => {
-    // Alex, 2026-07-31: "add the decision card and message dots to the right
-    // of the name of the agent, keep the status pill on the right". Three
+    // The requirement: the decision card and message dots sit to the right of
+    // the agent's name, and the status pill stays on the right. Three
     // things render, and WHERE each one renders is the whole ask, so this
     // pins the arrangement and not just the presence.
     render([sidebarAgent({ status: "needs-you", hasUnread: true, hasUnhandled: true })]);
@@ -116,8 +113,7 @@ describe("Sidebar activity pill - present when there is something to say", () =>
 
     // The dots belong to the NAME's cluster, not to the pill's end of the row -
     // and specifically AFTER the name, not just somewhere in the same cluster
-    // (CodeRabbit: a dot rendered before the name would still pass a bare
-    // textContent/contains check).
+    // (a dot rendered before the name would still pass a bare contains check).
     const cluster = messageDot!.parentElement!;
     const clusterChildren = Array.from(cluster.children);
     expect(clusterChildren[0]?.textContent).toBe("summit");
@@ -149,7 +145,7 @@ describe("Sidebar activity pill - absent when there is not", () => {
   });
 
   it("renders the sidebar EXACTLY as before on an instance with no activity", () => {
-    // Robin's instance and every offline read: shell.tsx ships no status key,
+    // A second user's instance and every offline read: shell.tsx ships no status key,
     // so this fixture is that instance. Nothing about the row may change.
     render([sidebarAgent({ hasUnread: true, hasUnhandled: true })]);
     expect(container.querySelector('[data-testid^="sidebar-status-"]')).toBeNull();

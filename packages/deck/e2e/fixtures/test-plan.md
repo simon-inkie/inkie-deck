@@ -1,4 +1,4 @@
-# TASK-439 Test Plan
+# Card detail test plan
 
 This fixture is used by the card-detail e2e tests to verify that clicking a
 links: chip in the detail overlay opens the review panel.

@@ -1,8 +1,8 @@
 /**
- * working.ts - Pure helpers for the "working" receipt state (TASK-444).
+ * working.ts - Pure helpers for the "working" receipt state.
  *
  * These functions derive display-state from the ordered block list.
- * They are pure: no IO, no fs, no env access, no .server imports (FND-02).
+ * They are pure: no IO, no fs, no env access, no .server imports.
  *
  * The "working" status means an agent has picked up a message and is
  * actively processing it. The indicator clears once the agent replies:
@@ -11,7 +11,7 @@
  *
  * Status precedence: working (live) > read > sent. Unknown -> sent.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { formatDistance } from "date-fns";
 import type { MessageBlock } from "./model.js";
@@ -22,7 +22,7 @@ import type { MessageBlock } from "./model.js";
  *
  * @param blocks - The full ordered block list for the thread.
  * @param index  - The index of the block to test.
- * @param user   - The instance user whose own messages are excluded (TASK-462).
+ * @param user   - The instance user whose own messages are excluded.
  * @returns true if any later block is from a non-user sender.
  */
 export function isSuperseded(blocks: MessageBlock[], index: number, user: string = "alex"): boolean {
@@ -64,7 +64,7 @@ export function bubbleReceiptState(
 }
 
 /**
- * Age suffix for the working indicator label (Atlas fold, TASK-444 plan s6).
+ * Age suffix for the working indicator label.
  *
  * A crashed agent never writes a later block, so a bare live indicator
  * would lie by omission indefinitely. When the working MESSAGE is older

@@ -1,5 +1,5 @@
 /**
- * compose-attach.ts - Pure helpers for the Compose attachment chip flow (TASK-450).
+ * compose-attach.ts - Pure helpers for the Compose attachment chip flow.
  *
  * buildOutgoingBody: merges typed text + attachment markdowns into a single
  * message body, blank-line separated. Attachments-only messages (empty text)
@@ -10,9 +10,9 @@
  * entries of kind "file" (bitmap pastes from Snipping Tool family). Returns
  * an empty array when neither path finds anything.
  *
- * Pure module: no env, no fs, no DOM globals (FND-02 clean).
+ * Pure module: no env, no fs, no DOM globals.
  * The ClipboardLike interface accepts plain objects so unit tests need no JSDOM.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 // ---------------------------------------------------------------------------

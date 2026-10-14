@@ -7,7 +7,7 @@
  * sentinel used to be the letter "C", and the renderer suppressed the chosen
  * highlight whenever it saw that letter. On a three-option card that made a
  * genuine tap on C render with NO option highlighted at all: the receipt for a
- * decision Alex had actually made showed him nothing. Neither the parse suite
+ * decision the operator had actually made showed nothing. Neither the parse suite
  * nor the writeback suite can see that, because both halves were individually
  * doing what they said.
  *
@@ -17,7 +17,7 @@
  * Legacy records (written as "answered: C" plus a custom-answer: value, and
  * never rewritten) must render like the second, not the first.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";
