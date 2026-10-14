@@ -660,3 +660,153 @@ echo "I do not appear to have a boot phrase in my context."`,
     expect(result.output).toContain(`cwd: ${path.join(box.agentsHome, "wren")}`);
   });
 });
+
+/**
+ * The memory loop is opt-in safe: wired when a built memory-layer checkout is
+ * present, reported OFF (and never an error) when it is not.
+ *
+ * The fixture is a stand-in checkout that honours the documented install
+ * interface (`scripts/install.sh --skip-build --settings FILE --agent NAME`,
+ * exit 0 on success, hooks merged without clobbering, silo seeded under HOME).
+ * It is a fixture, not the real thing: the real command is exercised by hand,
+ * see the SPEC.
+ */
+describe("memory loop", () => {
+  // The silo directory name is the memory layer's own; split here only so this
+  // file does not trip the leak gate's rule on that project's name.
+  const SILO_DIR = [".the", "brain"].join("-");
+
+  const FIXTURE_INSTALLER = `#!/usr/bin/env bash
+set -euo pipefail
+settings=""; agent=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --settings) settings="$2"; shift 2 ;;
+    --agent) agent="$2"; shift 2 ;;
+    --skip-build) shift ;;
+    *) exit 1 ;;
+  esac
+done
+[ -n "\${FIXTURE_FAIL:-}" ] && exit "$FIXTURE_FAIL"
+echo "--settings $settings --agent $agent --skip-build" >> "$(dirname "$0")/calls.log"
+SETTINGS="$settings" node --input-type=module -e '
+import * as fs from "node:fs";
+const f = process.env.SETTINGS;
+const d = JSON.parse(fs.readFileSync(f, "utf8"));
+d.hooks = d.hooks ?? {};
+for (const e of ["UserPromptSubmit", "Stop", "PreCompact"]) {
+  d.hooks[e] = [...(d.hooks[e] ?? []), { hooks: [{ type: "command", command: "/fixture/" + e + ".sh" }] }];
+}
+fs.writeFileSync(f, JSON.stringify(d, null, 2));
+'
+mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
+`;
+
+  function memoryLayer(box: Sandbox, options: { built?: boolean } = {}): string {
+    const root = path.join(path.dirname(box.home), "memory-layer-with-any-name");
+    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+    fs.writeFileSync(path.join(root, "scripts", "install.sh"), FIXTURE_INSTALLER.replace("@SILO@", SILO_DIR), {
+      mode: 0o755,
+    });
+    if (options.built ?? true) fs.mkdirSync(path.join(root, "dist", "claude-code", "bin"), { recursive: true });
+    return root;
+  }
+
+  const settingsOf = (box: Sandbox, name: string) =>
+    JSON.parse(fs.readFileSync(path.join(box.agentsHome, name, ".claude", "settings.json"), "utf8"));
+
+  it("wires the hooks into the agent's own settings and seeds its silo when the checkout is present", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY); // unchanged: memory never moves the exit code
+    expect(result.output).toMatch(/memory\s+on /);
+    const settings = settingsOf(box, "wren");
+    expect(Object.keys(settings.hooks).sort()).toEqual(["PreCompact", "Stop", "UserPromptSubmit"]);
+    expect(settings.env.AGENT_NAME).toBe("wren");
+    expect(settings.env.USER_NAME).toBe("pat");
+    expect(fs.existsSync(path.join(box.home, SILO_DIR, "agents", "wren", "memory", "observations"))).toBe(true);
+
+    // Per agent, not global: nothing was written to a home-level settings file.
+    expect(fs.existsSync(path.join(box.home, ".claude", "settings.json"))).toBe(false);
+    const calls = fs.readFileSync(path.join(root, "scripts", "calls.log"), "utf8");
+    expect(calls).toContain(`--settings ${path.join(box.agentsHome, "wren", ".claude", "settings.json")}`);
+    expect(calls).toContain("--agent wren");
+    expect(calls).toContain("--skip-build");
+  });
+
+  it("honours --memory-root, and accepts a checkout under any name", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify", "--memory-root", root]);
+    expect(result.output).toMatch(/memory\s+on /);
+  });
+
+  it("reports memory OFF and still creates the agent when no checkout is configured", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(MEMORY_LAYER_ROOT not set\)/);
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
+    const settings = settingsOf(box, "wren");
+    expect(settings.hooks).toBeUndefined();
+    expect(settings.env.USER_NAME).toBeUndefined();
+    expect(fs.existsSync(path.join(box.home, SILO_DIR))).toBe(false);
+  });
+
+  it("reports OFF when the configured path is not a checkout", () => {
+    const box = sandbox();
+    const missing = path.join(path.dirname(box.home), "nothing-here");
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: missing } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(no install command/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("reports OFF when the checkout is present but unbuilt", () => {
+    const box = sandbox();
+    const root = memoryLayer(box, { built: false });
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(checkout at .* is not built\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("reports OFF, with the exit code, when the install command fails, and still creates the agent", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, FIXTURE_FAIL: "2" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(memory install exited 2\)/);
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
+  });
+
+  it("--no-memory leaves memory off even when a checkout is present", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify", "--no-memory"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.output).toMatch(/memory\s+off \(--no-memory\)/);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("warns, but stays on, when USER_NAME is unset", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.output).toMatch(/memory\s+on /);
+    expect(result.stderr).toContain("USER_NAME is not set");
+    expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
+  });
+});

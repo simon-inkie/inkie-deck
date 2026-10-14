@@ -35,11 +35,23 @@
 #   bin/create-agent.sh <name> [--role "<tagline>"] [--runtime <runtime>]
 #                              [--verify | --no-verify] [--inbox-root <path>]
 #                              [--agents-home <path>] [--no-install-path]
+#                              [--memory-root <path> | --no-memory]
 #   bin/create-agent.sh --verify-only <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
 #   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
 #                                makes `inbox` resolve as a bare command name.
+#   --memory-root <path>         checkout of the memory layer (default:
+#                                $MEMORY_LAYER_ROOT). When it holds a built
+#                                install, this agent's own .claude/settings.json
+#                                gets the memory hooks and its memory silo is
+#                                seeded. Absent, unbuilt or failing: memory is
+#                                reported OFF and creation carries on. It never
+#                                changes the exit code.
+#   --no-memory                  leave memory off even if a checkout is present.
+#
+# USER_NAME (environment, optional) is written into the agent's settings env
+# block when memory is on, so the memory prompts can name the person.
 #
 # Exit codes. Four terminal states, never collapsed into one another:
 #
@@ -397,6 +409,78 @@ install_inbox_on_path() {
 }
 
 # ---------------------------------------------------------------------------
+# the memory loop (opt-in safe)
+#
+# Wires the memory layer's hooks into THIS agent's own settings.json (never a
+# global one) and seeds the agent's memory silo, by running the layer's own
+# non-interactive install command against a checkout it was already given.
+# Deck imports nothing from it; the integration is files on disk.
+#
+# Memory is optional, so nothing in here may fail the creation. Every outcome
+# lands in MEMORY_REPORT as "on" or "off (reason)" and the run carries on. The
+# silo is routed by AGENT_NAME, which merge_settings already stamped, so no
+# --link pointer is written into the agent home.
+# ---------------------------------------------------------------------------
+
+MEMORY_REPORT="off (MEMORY_LAYER_ROOT not set)"
+
+# Add USER_NAME to the settings env block unless one is already there.
+stamp_user_name() {
+  node_run <<'JS'
+import * as fs from "node:fs";
+const file = process.env.CA_SETTINGS;
+const user = process.env.CA_USER_NAME;
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+data.env = data.env && typeof data.env === "object" ? data.env : {};
+if (!("USER_NAME" in data.env)) data.env.USER_NAME = user;
+fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+JS
+}
+
+wire_memory() {
+  local root="$1" installer status
+  installer="$root/scripts/install.sh"
+
+  if [[ $NO_MEMORY -eq 1 ]]; then
+    MEMORY_REPORT="off (--no-memory)"; return
+  fi
+  if [[ -z "$root" ]]; then
+    MEMORY_REPORT="off (MEMORY_LAYER_ROOT not set)"; return
+  fi
+  if [[ ! -f "$installer" ]]; then
+    MEMORY_REPORT="off (no install command at $installer)"
+    warn "memory is off: $root is not a memory layer checkout. Deck carries on without it."
+    return
+  fi
+  if [[ ! -d "$root/dist/claude-code/bin" ]]; then
+    MEMORY_REPORT="off (checkout at $root is not built)"
+    warn "memory is off: build the memory layer checkout first, then wire this agent by hand"
+    warn "  or re-create it. Deck carries on without it."
+    return
+  fi
+
+  # --skip-build: building is a one-off for the checkout, not a per-agent step.
+  bash "$installer" --skip-build --settings "$AGENT_HOME/.claude/settings.json" \
+    --agent "$NAME" </dev/null >/dev/null
+  status=$?
+  if [[ $status -ne 0 ]]; then
+    MEMORY_REPORT="off (memory install exited $status)"
+    warn "memory is off: the memory layer's install command exited $status."
+    warn "  The hooks may be partly wired and the silo may be missing; the install command is"
+    warn "  idempotent, so fix the cause and run it again with --agent $NAME. Deck carries on."
+    return
+  fi
+
+  if [[ -n "${USER_NAME:-}" ]]; then
+    CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_USER_NAME="$USER_NAME" stamp_user_name \
+      || warn "could not write USER_NAME into the agent's settings; memory prompts will not name you."
+  else
+    warn "USER_NAME is not set, so the memory prompts will not name the person. Set it and re-run, or edit the agent's settings env."
+  fi
+  MEMORY_REPORT="on (hooks wired in $AGENT_HOME/.claude/settings.json, silo seeded)"
+}
+
+# ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
 
@@ -408,6 +492,8 @@ VERIFY_ONLY=0
 INBOX_ROOT_ARG=""
 AGENTS_HOME_ARG=""
 INSTALL_PATH=1
+MEMORY_ROOT_ARG=""
+NO_MEMORY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -417,6 +503,8 @@ while [[ $# -gt 0 ]]; do
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
+    --memory-root)  [[ $# -ge 2 ]] || die_scaffold "--memory-root needs a value"; MEMORY_ROOT_ARG="$2";  shift 2 ;;
+    --no-memory)    NO_MEMORY=1; shift ;;
     --verify)       VERIFY="yes"; shift ;;
     --no-verify)    VERIFY="no"; shift ;;
     --verify-only)  VERIFY_ONLY=1; VERIFY="yes"; shift ;;
@@ -636,6 +724,8 @@ else
     PATH_INSTALL_REPORT="skipped (--no-install-path)"
   fi
 
+  wire_memory "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}"
+
   say
   say "create-agent: CREATED $NAME"
   say "  persona files  $AGENT_HOME"
@@ -643,6 +733,7 @@ else
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
+  say "  memory         $MEMORY_REPORT"
   say "  boot phrase    $NONCE"
   say
   say "  IDENTITY.md and SOUL.md are scaffolded, not written. The agent fills"
