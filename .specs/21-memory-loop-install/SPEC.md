@@ -35,7 +35,7 @@ systemd, leak-gate relaxation and linking the project from docs, the
 `TOOLS.md` and recall-instruction work, the `CORE.md` persona question, path
 convention docs, and any cross-repository rollout.
 
-## Verified memory-layer interface (v0.3.0, commit 05c47be, after its #11)
+## Verified memory-layer interface (v0.3.0, after its #11 landed)
 
 - `scripts/install.sh [--settings FILE] [--agent NAME [--link DIR]]
   [--skip-build] [--dry-run]`. Non-interactive and idempotent, any checkout
