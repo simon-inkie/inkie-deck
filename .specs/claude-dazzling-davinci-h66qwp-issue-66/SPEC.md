@@ -72,7 +72,7 @@ Out of scope (and where it goes instead):
   editor tests for save, "Load the newer copy" and "Keep mine and overwrite".
 - Why: review findings on the PR, all fixed in the commit after 40f5943.
 - Supersedes: nothing, additive
-- Commits: see the review-fix commit on the branch
+- Commits: fb5663b fix(deck): normalise draft line endings, JSON errors in save lock, lock sidecar (#66)
 
 Known limitation added: `request.formData()` reads the whole request body
 before the 1 MB content cap is applied, so the cap bounds what is stored, not
