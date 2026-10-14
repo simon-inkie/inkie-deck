@@ -373,14 +373,14 @@ For each agent that wires the memory hooks into that agent's own
 `.claude/settings.json` (never a global one), records `USER_NAME` there, and
 seeds the agent's memory silo, by running the checkout's own non-interactive
 install command. The silo is picked by the `AGENT_NAME` Deck already writes
-into that file. The summary says which way it went:
+into that file. The last line of the output (printed after any verification) says which way it went:
 
 ```text
-  memory         on (hooks wired in /home/you/agents/wren/.claude/settings.json, silo seeded)
+create-agent: memory on (hooks wired in /home/you/agents/wren/.claude/settings.json, silo seeded)
 ```
 
 With no checkout, an unbuilt one, `--no-memory`, or an install command that
-fails, the line reads `memory         off (reason)`, a warning explains why, and
+fails, the last line reads `create-agent: memory off (reason)`, a warning explains why, and
 the agent is created exactly as before. Memory never changes the exit code.
 
 Not covered here: semantic search (it needs a vector database and a paid

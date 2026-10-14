@@ -452,10 +452,18 @@ wire_memory() {
     warn "memory is off: $root is not a memory layer checkout. Deck carries on without it."
     return
   fi
-  if [[ ! -d "$root/dist/claude-code/bin" ]]; then
-    MEMORY_REPORT="off (checkout at $root is not built)"
-    warn "memory is off: build the memory layer checkout first, then wire this agent by hand"
-    warn "  or re-create it. Deck carries on without it."
+  # Everything the installer needs is checked BEFORE it runs. The real one
+  # merges the hooks first and only then looks for tsx, so a missing tsx would
+  # leave hooks written while memory was reported off.
+  local missing="" script
+  for script in user-prompt-submit on-stop on-pre-compact; do
+    [[ -f "$root/dist/claude-code/bin/$script.sh" ]] || missing="$missing dist/claude-code/bin/$script.sh"
+  done
+  [[ -x "$root/node_modules/.bin/tsx" ]] || missing="$missing node_modules/.bin/tsx"
+  if [[ -n "$missing" ]]; then
+    MEMORY_REPORT="off (not built: missing${missing})"
+    warn "memory is off: the memory layer checkout at $root is not built and installed."
+    warn "  Build it, then re-run its install command with --agent $NAME. Settings were not touched."
     return
   fi
 
@@ -724,8 +732,6 @@ else
     PATH_INSTALL_REPORT="skipped (--no-install-path)"
   fi
 
-  wire_memory "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}"
-
   say
   say "create-agent: CREATED $NAME"
   say "  persona files  $AGENT_HOME"
@@ -733,7 +739,7 @@ else
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
-  say "  memory         $MEMORY_REPORT"
+  say "  memory         wired after verification (see the last line)"
   say "  boot phrase    $NONCE"
   say
   say "  IDENTITY.md and SOUL.md are scaffolded, not written. The agent fills"
@@ -800,6 +806,25 @@ report_cannot_verify() {
   exit "$EXIT_CANNOT_VERIFY"
 }
 
+# Memory is wired on the way out, AFTER the probe below. The probe runs the
+# agent's real `claude -p` from its home, which would fire any memory hooks
+# already in its settings and seed a probe turn as the agent's first memory.
+# Every exit from here on, whatever the verdict, goes through the trap.
+memory_on_exit() {
+  local rc=$?
+  rm -f "${PROBE_OUT:-}" "${PROBE_ERR:-}"
+  if [[ $MEMORY_PENDING -eq 1 ]]; then
+    MEMORY_PENDING=0
+    wire_memory "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}"
+    say
+    say "create-agent: memory $MEMORY_REPORT"
+  fi
+  exit "$rc"
+}
+MEMORY_PENDING=0
+[[ "$VERIFY_ONLY" -eq 1 ]] || MEMORY_PENDING=1
+trap memory_on_exit EXIT
+
 if [[ "$VERIFY" == "no" ]]; then
   report_cannot_verify "Verification was skipped (--no-verify)."
 fi
@@ -815,7 +840,6 @@ If there is no boot phrase in your context, write: boot phrase: NONE"
 
 PROBE_TIMEOUT="${CREATE_AGENT_VERIFY_TIMEOUT:-180}"
 PROBE_OUT="$(mktemp)"; PROBE_ERR="$(mktemp)"
-trap 'rm -f "$PROBE_OUT" "$PROBE_ERR"' EXIT
 
 say
 say "create-agent: verifying $NAME ..."

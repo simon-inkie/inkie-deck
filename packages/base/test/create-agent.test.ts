@@ -672,9 +672,8 @@ echo "I do not appear to have a boot phrase in my context."`,
  * see the SPEC.
  */
 describe("memory loop", () => {
-  // The silo directory name is the memory layer's own; split here only so this
-  // file does not trip the leak gate's rule on that project's name.
-  const SILO_DIR = [".the", "brain"].join("-");
+  // Neutral name: where the fixture seeds a silo is the fixture's business.
+  const SILO_DIR = ".memory-fixture";
 
   const FIXTURE_INSTALLER = `#!/usr/bin/env bash
 set -euo pipefail
@@ -687,28 +686,53 @@ while [ $# -gt 0 ]; do
     *) exit 1 ;;
   esac
 done
+root="$(cd -P "$(dirname "$0")/.." && pwd)"
 [ -n "\${FIXTURE_FAIL:-}" ] && exit "$FIXTURE_FAIL"
-echo "--settings $settings --agent $agent --skip-build" >> "$(dirname "$0")/calls.log"
+# Like the real installer: the built hook scripts are required up front (exit 2)...
+for s in user-prompt-submit on-stop on-pre-compact; do
+  [ -f "$root/dist/claude-code/bin/$s.sh" ] || exit 2
+done
+echo "--settings $settings --agent $agent --skip-build" >> "$root/scripts/calls.log"
+# ...the hooks are merged BEFORE tsx is looked for...
 SETTINGS="$settings" node --input-type=module -e '
 import * as fs from "node:fs";
 const f = process.env.SETTINGS;
 const d = JSON.parse(fs.readFileSync(f, "utf8"));
 d.hooks = d.hooks ?? {};
-for (const e of ["UserPromptSubmit", "Stop", "PreCompact"]) {
-  d.hooks[e] = [...(d.hooks[e] ?? []), { hooks: [{ type: "command", command: "/fixture/" + e + ".sh" }] }];
-}
+const add = (event, matcher, script) => {
+  const entry = { hooks: [{ type: "command", command: "/fixture/" + script + ".sh" }] };
+  if (matcher) entry.matcher = matcher;
+  d.hooks[event] = [...(d.hooks[event] ?? []), entry];
+};
+add("UserPromptSubmit", null, "user-prompt-submit");
+add("Stop", null, "on-stop");
+add("PreCompact", "auto", "on-pre-compact");
+add("PreCompact", "manual", "on-pre-compact");
 fs.writeFileSync(f, JSON.stringify(d, null, 2));
 '
+# ...and only then is a missing tsx fatal, which is why Deck checks it first.
+[ -x "$root/node_modules/.bin/tsx" ] || exit 2
 mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
 `;
 
-  function memoryLayer(box: Sandbox, options: { built?: boolean } = {}): string {
+  function memoryLayer(box: Sandbox, options: { built?: boolean; tsx?: boolean } = {}): string {
     const root = path.join(path.dirname(box.home), "memory-layer-with-any-name");
     fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
     fs.writeFileSync(path.join(root, "scripts", "install.sh"), FIXTURE_INSTALLER.replace("@SILO@", SILO_DIR), {
       mode: 0o755,
     });
-    if (options.built ?? true) fs.mkdirSync(path.join(root, "dist", "claude-code", "bin"), { recursive: true });
+    if (options.built ?? true) {
+      const bin = path.join(root, "dist", "claude-code", "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      for (const s of ["user-prompt-submit", "on-stop", "on-pre-compact"]) {
+        fs.writeFileSync(path.join(bin, `${s}.sh`), "#!/bin/sh\n", { mode: 0o755 });
+      }
+    }
+    if (options.tsx ?? true) {
+      const nb = path.join(root, "node_modules", ".bin");
+      fs.mkdirSync(nb, { recursive: true });
+      fs.writeFileSync(path.join(nb, "tsx"), "#!/bin/sh\n", { mode: 0o755 });
+    }
     return root;
   }
 
@@ -774,8 +798,45 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
 
     expect(result.status).toBe(EXIT.CANNOT_VERIFY);
-    expect(result.output).toMatch(/memory\s+off \(checkout at .* is not built\)/);
+    expect(result.output).toMatch(/memory off \(not built: missing/);
     expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("reports OFF and writes NO hooks when the build is present but tsx is missing", () => {
+    const box = sandbox();
+    const root = memoryLayer(box, { tsx: false });
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(not built: missing node_modules\/\.bin\/tsx\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("wires the PreCompact auto and manual matchers", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+    const matchers = settingsOf(box, "wren").hooks.PreCompact.map((e: { matcher: string }) => e.matcher);
+    expect(matchers).toEqual(["auto", "manual"]);
+  });
+
+  it("wires memory only AFTER the verification probe, so the probe is not a first memory", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    // The runtime records whether hooks were already in the agent's settings
+    // at the moment it was asked, then answers with the boot phrase.
+    stubRuntime(
+      box,
+      `grep -q '"hooks"' .claude/settings.json && echo hooks-present > "${path.join(box.home, "probe-saw")}" || echo hooks-absent > "${path.join(box.home, "probe-saw")}"
+echo "boot phrase: $(grep -oE 'boot-[0-9a-f]{16}' IDENTITY.md | head -n1)"`,
+    );
+    const result = run(box, ["wren"], { stub: true, env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.VERIFIED);
+    expect(fs.readFileSync(path.join(box.home, "probe-saw"), "utf8").trim()).toBe("hooks-absent");
+    expect(result.output).toMatch(/memory on /);
+    expect(settingsOf(box, "wren").hooks).toBeDefined();
   });
 
   it("reports OFF, with the exit code, when the install command fails, and still creates the agent", () => {

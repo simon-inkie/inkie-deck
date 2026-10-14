@@ -60,12 +60,12 @@ Incompatibilities with the issue text and with assumptions in it:
   templates do not ship, and that hook is not part of the three installed
   hooks. Left alone.
 - The leak gate rejects the memory layer's name, so this change refers to it
-  generically (and the test file splits the silo directory name). Relaxing
+  generically. Relaxing
   the gate is a follow-up.
 
 ## Test plan
 
-- `pnpm -C packages/base exec vitest run test/create-agent.test.ts`: 8 new
+- `pnpm -C packages/base exec vitest run test/create-agent.test.ts`: 11 new
   memory cases using a fixture checkout that honours the interface above.
 - Manual: the real `scripts/install.sh` hook merge run against a copy of the
   checkout in a temporary HOME. `agent init` through the real `tsx` was not
@@ -90,3 +90,28 @@ Incompatibilities with the issue text and with assumptions in it:
 - Why: issue #21 M1, restricted to the opt-in-safe path.
 - Supersedes: nothing, additive
 - Commits: see branch
+
+### 2026-10-14: review fixes
+- What changed: (1) the "built" check now looks for the three
+  `dist/claude-code/bin/*.sh` hook scripts and `node_modules/.bin/tsx` before
+  the installer runs, because the real installer merges hooks first and exits 2
+  afterwards when tsx is missing; a missing one reports
+  `off (not built: missing ...)` and leaves settings untouched. (2) The test
+  fixture uses a neutral silo directory name. (3) Memory is now wired on exit,
+  after the verification probe, via an EXIT trap; the result is the last line of
+  output. Choice: the probe runs the agent's real `claude -p` from its home, so
+  wiring first would fire the memory hooks and could record the probe turn as
+  the agent's first memory; keeping the probe out of memory was preferred over
+  trying to disable hooks for one call. (4) Fixture installer is stricter
+  (PreCompact auto and manual, tsx and built-script checks, hooks before the
+  tsx check, as the real one); new tests for tsx missing, matchers and probe
+  ordering.
+- Why: review findings.
+- Supersedes: the earlier "memory line in the summary" placement, and the
+  directory-only built check.
+- Commits: see branch
+
+Note for the maintainer: the leak gate's private-session-link rule flags the
+Claude-Session commit trailer, and the first two commits on this branch carry
+it. A squash merge should strip any Claude-Session lines from the message.
+Later commits omit it.
