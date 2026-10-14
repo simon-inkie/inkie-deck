@@ -64,3 +64,9 @@ Opus round 1: clean, no blockers. Optional nits taken: rewrapped two
 over-long paragraphs, softened the Windows entry heading to "has run by hand
 under WSL 2", added a Check results section here, cited
 `boot-agents.sh:631`.
+
+Human review of head 3423dee (two reviews). No Critical or Major. Two Minor,
+both fixed: the "nothing else depends on egress" sentence now names the
+optional integrations that do (Google API, Deepgram, web push), and the
+Windows-limitation entry now counts the Windows section's `sh-manual` blocks
+among the unexecuted ones.

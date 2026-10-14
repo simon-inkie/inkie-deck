@@ -1057,9 +1057,12 @@ three fonts from Google Fonts, so a browser with no route to it renders in
 fallback fonts with no explanation. That is the browser's connection, not the
 server's. Until #32 was fixed the fonts never loaded even when online, because
 the `@import` that was meant to fetch them was dropped; if you see fallback
-fonts on a connected browser now, that is a regression worth reporting. Nothing
-else about the application depends on egress. Checked: the stylesheet is still
-linked from Google Fonts in `packages/deck/app/root.tsx`.
+fonts on a connected browser now, that is a regression worth reporting. With the
+optional subsystems below switched off, nothing else in the core application
+depends on egress; with them on, image descriptions call Google's API, voice
+connects to Deepgram and web push sends to the subscribers' push services.
+Checked: the stylesheet is still linked from Google Fonts in
+`packages/deck/app/root.tsx`.
 
 **Optional subsystems are unverified here.** Voice dictation (Deepgram),
 image descriptions (Gemini) and web push all need keys, are off without them,
@@ -1086,9 +1089,10 @@ state directory handing you back files you do not own, and that is worked
 through in `rig/container-image-note.md`.
 
 **Only Linux is measured by the rig; Windows has run by hand under WSL 2 and
-macOS is unverified.** The rig runs Linux containers. The Ubuntu path in this document is
-executed on every run, apart from the `sh-manual` blocks in Keep it running. By
-hand, WSL 2 with Ubuntu 24.04 was run end to end on 2026-09-27, before the
+macOS is unverified.** The rig runs Linux containers. The Ubuntu path in this
+document is executed on every run, apart from the `sh-manual` blocks in Keep it
+running and in the Windows section (user creation, the CLI path check, the
+`/etc/wsl.conf` edits), which no rig run executes. By hand, WSL 2 with Ubuntu 24.04 was run end to end on 2026-09-27, before the
 Windows section existed; nobody has followed that section as written from start
 to finish. Native Windows (outside WSL) is not supported, because tier 3 needs
 tmux. The macOS block is not run by anyone.
