@@ -30,6 +30,7 @@ const runtimeInbox = path.join(runtimeDir, "inbox");
 const runtimeAttachments = path.join(runtimeDir, "attachments");
 const runtimeProjects = path.join(runtimeDir, "projects");
 const runtimeData = path.join(runtimeDir, "data");
+const runtimeWorkspace = path.join(runtimeDir, "workspace");
 
 // Fall back to the minimal fixture set if the demo inbox is absent.
 const source = existsSync(demoInbox)
@@ -47,6 +48,7 @@ cpSync(fixturesProjects, runtimeProjects, { recursive: true });
 
 // DATA_ROOT for MC state files (queue state) - must exist at boot.
 mkdirSync(runtimeData, { recursive: true });
+mkdirSync(runtimeWorkspace, { recursive: true });
 
 // REVIEW_ROOTS for dev: the repo root itself + .runtime so docs/plans/*.md
 // can be opened directly in the review panel (intentional).
@@ -69,6 +71,8 @@ const env = {
   REVIEW_ROOTS: reviewRoots,
   PROJECTS_ROOT: process.env.PROJECTS_ROOT || runtimeProjects,
   DATA_ROOT: process.env.DATA_ROOT || runtimeData,
+  // #66: workspace for Markdown drafts (<WORKSPACE_ROOT>/drafts/*.md).
+  WORKSPACE_ROOT: process.env.WORKSPACE_ROOT || runtimeWorkspace,
   // Keep the queue-state file INSIDE the dev DATA_ROOT. Without this the
   // makeStores default (cwd/data/queue-state.json) sits outside .runtime/data
   // and every deadline-anchor write 500s the home loader on the confinement
@@ -100,6 +104,7 @@ console.log(`[dev] ATTACHMENTS_ROOT=${env.ATTACHMENTS_ROOT}`);
 console.log(`[dev] REVIEW_ROOTS=${reviewRoots}`);
 console.log(`[dev] PROJECTS_ROOT=${env.PROJECTS_ROOT}`);
 console.log(`[dev] DATA_ROOT=${env.DATA_ROOT}`);
+console.log(`[dev] WORKSPACE_ROOT=${env.WORKSPACE_ROOT}`);
 console.log(`[dev] MC_NOW=${env.MC_NOW || "(unset - real clock)"}`);
 console.log(`[dev] VOICE_PROXY_URL=${voiceProxyUrl}`);
 

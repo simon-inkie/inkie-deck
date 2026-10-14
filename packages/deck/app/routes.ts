@@ -26,7 +26,10 @@ export default [
   // File pinner / manifest: per-thread Files panel data + descriptions + pins.
   route("api/file-manifest", "routes/api.file-manifest.tsx"),
   route("api/file-pins", "routes/api.file-pins.tsx"),
+  // #66: workspace Markdown drafts (read, create, save with conflict check).
+  route("api/drafts", "routes/api.drafts.tsx"),
   layout("routes/shell.tsx", [
+    route("drafts", "routes/drafts.tsx"),
     index("routes/home.tsx"),
     route("threads/:agent", "routes/threads.$agent.tsx"),
     // Thread C: dedicated Decisions + Actions tab (additive second surface).

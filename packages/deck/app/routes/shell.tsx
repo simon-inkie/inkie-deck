@@ -21,6 +21,7 @@ import { toMiniCards, type MiniCard } from "~/lib/projects.shared";
 import { avatarUrl } from "~/lib/avatars.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled, instanceLabel, filterCardsForInstance, modelSelectorEnabled, cronAdminEnabled, activityEnabled } from "~/lib/instance.server";
+import { draftsEnabled } from "~/lib/drafts.server";
 import { getAgentModelInfo } from "~/lib/agent-model.server";
 import { readActivity, resolveEscalationThresholdMs } from "~/lib/activity.server";
 import { escalatedAgents, type ActivityStatus, type EscalatedAgent } from "~/lib/activity.shared";
@@ -241,11 +242,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     agentNames
   );
 
-  return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env), escalated, codexQuota };
+  return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env), draftsNavOn: draftsEnabled(process.env), escalated, codexQuota };
 }
 
 export default function Shell({ loaderData }: Route.ComponentProps) {
-  const { agents, needsItems, needsCount, workCards, tmuxOn, instanceLabel, modelSelector, cronAdminOn, activityNavOn, escalated, codexQuota } = loaderData;
+  const { agents, needsItems, needsCount, workCards, tmuxOn, instanceLabel, modelSelector, cronAdminOn, activityNavOn, draftsNavOn, escalated, codexQuota } = loaderData;
   return (
     <AppShell
       agents={agents}
@@ -257,6 +258,7 @@ export default function Shell({ loaderData }: Route.ComponentProps) {
       modelSelector={modelSelector}
       cronAdminOn={cronAdminOn}
       activityNavOn={activityNavOn}
+      draftsNavOn={draftsNavOn}
       escalated={escalated}
       codexQuota={codexQuota}
     />

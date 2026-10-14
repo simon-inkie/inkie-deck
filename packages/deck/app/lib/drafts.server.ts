@@ -1,0 +1,269 @@
+/**
+ * drafts.server.ts - Markdown drafts as ordinary files under a workspace
+ * `drafts/` folder (#66, first slice).
+ *
+ * A draft is a plain `<workspace>/drafts/<name>.md` file. The agent reads and
+ * writes it with its normal file tools; the Deck editor reads and writes it
+ * through this module. Nothing here is a new service: it is one directory, one
+ * hidden sidecar file and the shared safe-fs primitives.
+ *
+ * WORKSPACE_ROOT (absolute, must exist) names the workspace. Every path is
+ * confined to the realpath of `<WORKSPACE_ROOT>/drafts` (confineToRootReal),
+ * and draft names are a single flat `*.md` component, so there is no
+ * subfolder, traversal or dotfile surface.
+ *
+ * Version and conflicts. A draft's `version` is the sha256 of its bytes. The
+ * editor sends the version it loaded as `baseVersion`; a save whose base no
+ * longer matches the file on disk is refused with `conflict: true` and the
+ * current copy, unless `force` is set. The check and the write run under the
+ * shared advisory lock, so two saves through this module cannot interleave.
+ * An external writer that does not take that lock can still land between the
+ * check and the rename; atomicWrite keeps the file whole, but that one write
+ * would be lost. The editor also polls, which narrows the window in practice.
+ *
+ * Who wrote the current version. Files carry no author. The sidecar
+ * `drafts/.deck-drafts.json` records, per draft, the version hash the Deck
+ * last saved for the person. If the file's current hash equals the recorded
+ * one the writer is "person"; any other content is reported as "agent",
+ * meaning "changed outside this editor". That is an inference, not an
+ * identity: a person editing the file in another tool also reads as "agent".
+ * The time shown is the file's mtime.
+ *
+ * ASCII only - no em-dashes.
+ */
+
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import {
+  atomicWrite,
+  assertNoLiveSiloRoot,
+  confineToRootReal,
+  withInboxLock,
+} from "./safe-fs.server.js";
+
+export const DRAFTS_DIRNAME = "drafts";
+export const META_FILENAME = ".deck-drafts.json";
+export const MAX_DRAFT_BYTES = 1024 * 1024;
+
+/** Flat file name: letters, digits, dot, dash, underscore, ending in .md. */
+const DRAFT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
+
+export type DraftWriter = "person" | "agent";
+
+export interface DraftSummary {
+  name: string;
+  savedAt: string;
+  writer: DraftWriter;
+}
+
+export interface DraftView extends DraftSummary {
+  content: string;
+  version: string;
+}
+
+export type DraftResult =
+  | { ok: true; draft: DraftView }
+  | { ok: false; error: string; status: number; conflict?: boolean; current?: DraftView };
+
+export function resolveWorkspaceRoot(
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  const v = env["WORKSPACE_ROOT"]?.trim();
+  if (!v) return undefined;
+  if (!path.isAbsolute(v)) {
+    throw new Error(`WORKSPACE_ROOT must be an absolute path, got: "${v}".`);
+  }
+  return v;
+}
+
+/** Whether this instance has a workspace configured (never throws). */
+export function draftsEnabled(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  try {
+    return resolveWorkspaceRoot(env) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/** Normalise a user-typed name to `<name>.md`, or null when it is not a safe flat name. */
+export function normaliseDraftName(raw: string): string | null {
+  let n = raw.trim();
+  if (!n) return null;
+  if (!n.toLowerCase().endsWith(".md")) n += ".md";
+  return DRAFT_NAME_RE.test(n) && !n.includes("..") ? n : null;
+}
+
+function sha256(content: string): string {
+  return crypto.createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+/**
+ * Realpath of the drafts dir, created on demand. Throws when WORKSPACE_ROOT is
+ * unset or missing, or when `drafts` resolves outside the workspace.
+ */
+function draftsDirReal(create: boolean): string {
+  const ws = resolveWorkspaceRoot();
+  if (!ws) throw new Error("WORKSPACE_ROOT is not set.");
+  const wsReal = fs.realpathSync(ws);
+  assertNoLiveSiloRoot(wsReal, "workspace");
+  const dir = path.join(wsReal, DRAFTS_DIRNAME);
+  if (create) fs.mkdirSync(dir, { recursive: true });
+  const real = fs.realpathSync(dir);
+  if (!real.startsWith(wsReal + path.sep)) {
+    throw new Error("drafts folder resolves outside the workspace.");
+  }
+  return real;
+}
+
+function draftPath(dirReal: string, name: string, forWrite: boolean): string {
+  return confineToRootReal(path.join(dirReal, name), dirReal, {
+    forWrite,
+    label: "drafts",
+    notFound: "Draft not found.",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Sidecar
+// ---------------------------------------------------------------------------
+
+type Meta = Record<string, string>; // name -> version hash last saved by the person
+
+function readMeta(dirReal: string): Meta {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(dirReal, META_FILENAME), "utf8"));
+    const files = parsed?.files;
+    if (!files || typeof files !== "object") return {};
+    const out: Meta = {};
+    for (const [k, v] of Object.entries(files)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeMeta(dirReal: string, meta: Meta): void {
+  atomicWrite(
+    path.join(dirReal, META_FILENAME),
+    JSON.stringify({ version: 1, files: meta }, null, 2) + "\n"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reads
+// ---------------------------------------------------------------------------
+
+function view(dirReal: string, name: string, meta: Meta): DraftView {
+  const p = draftPath(dirReal, name, false);
+  const st = fs.statSync(p);
+  if (!st.isFile()) throw new Error("Draft not found.");
+  const content = fs.readFileSync(p, "utf8");
+  const version = sha256(content);
+  return {
+    name,
+    content,
+    version,
+    savedAt: st.mtime.toISOString(),
+    writer: meta[name] === version ? "person" : "agent",
+  };
+}
+
+export function listDrafts(): DraftSummary[] {
+  const dirReal = draftsDirReal(false);
+  const meta = readMeta(dirReal);
+  const out: DraftSummary[] = [];
+  for (const entry of fs.readdirSync(dirReal, { withFileTypes: true })) {
+    if (!(entry.isFile() || entry.isSymbolicLink()) || !DRAFT_NAME_RE.test(entry.name)) continue;
+    try {
+      const { name, savedAt, writer } = view(dirReal, entry.name, meta);
+      out.push({ name, savedAt, writer });
+    } catch {
+      /* unreadable or escaping entry: not listed */
+    }
+  }
+  return out.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+}
+
+export function readDraft(rawName: string): DraftResult {
+  const name = normaliseDraftName(rawName);
+  if (!name) return { ok: false, error: "Invalid draft name.", status: 400 };
+  try {
+    const dirReal = draftsDirReal(false);
+    return { ok: true, draft: view(dirReal, name, readMeta(dirReal)) };
+  } catch {
+    return { ok: false, error: "Draft not found.", status: 404 };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Writes
+// ---------------------------------------------------------------------------
+
+export interface SaveInput {
+  name: string;
+  content: string;
+  /** Version the editor loaded. null/undefined = the editor believes the file is new. */
+  baseVersion?: string | null;
+  /** Overwrite whatever is on disk (the person chose "keep mine"). */
+  force?: boolean;
+  /** true = create only; refuse when the file already exists. */
+  create?: boolean;
+}
+
+export async function saveDraft(input: SaveInput): Promise<DraftResult> {
+  const name = normaliseDraftName(input.name);
+  if (!name) return { ok: false, error: "Invalid draft name.", status: 400 };
+  if (typeof input.content !== "string") {
+    return { ok: false, error: "Content must be text.", status: 400 };
+  }
+  if (Buffer.byteLength(input.content, "utf8") > MAX_DRAFT_BYTES) {
+    return { ok: false, error: "Draft is larger than 1 MB.", status: 413 };
+  }
+
+  let dirReal: string;
+  let target: string;
+  try {
+    dirReal = draftsDirReal(true);
+    target = draftPath(dirReal, name, true);
+    // A dangling symlink passes confinement (nothing to resolve) and would be
+    // silently replaced by the rename; refuse any symlinked draft on write.
+    if (fs.lstatSync(path.join(dirReal, name), { throwIfNoEntry: false })?.isSymbolicLink()) {
+      return { ok: false, error: "Draft is a symbolic link.", status: 400 };
+    }
+  } catch {
+    return { ok: false, error: "Drafts folder is not available.", status: 500 };
+  }
+
+  return withInboxLock(target, async (): Promise<DraftResult> => {
+    const meta = readMeta(dirReal);
+    let current: DraftView | null = null;
+    if (fs.existsSync(target)) current = view(dirReal, name, meta);
+
+    if (input.create && current) {
+      return { ok: false, error: "A draft with that name already exists.", status: 409 };
+    }
+    if (!input.force && !input.create) {
+      const base = input.baseVersion ?? null;
+      const currentVersion = current ? current.version : null;
+      if (base !== currentVersion) {
+        return {
+          ok: false,
+          error: "This draft changed outside the editor.",
+          status: 409,
+          conflict: true,
+          ...(current ? { current } : {}),
+        };
+      }
+    }
+
+    atomicWrite(target, input.content);
+    meta[name] = sha256(input.content);
+    writeMeta(dirReal, meta);
+    return { ok: true, draft: view(dirReal, name, meta) };
+  });
+}
