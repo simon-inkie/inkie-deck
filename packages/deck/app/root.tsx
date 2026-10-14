@@ -13,12 +13,12 @@ import { validateReviewRoots } from "~/lib/review.server";
 import "./app.css";
 
 /**
- * TASK-434: fail-fast root validation. Memoised inside
+ * Fail-fast root validation. Memoised inside
  * validateConfiguredRoots, so this is a no-op after the first request;
  * a misconfigured deployment dies loudly on request one with a
  * named-root error instead of a lazy per-surface 500 later.
  * (Server-only: RR7 strips loader-only imports from the client bundle,
- * the FND-02 mechanism.)
+ * the server/client seam.)
  *
  * The review panel's roots are a second, list-valued configuration that does
  * not fit safe-fs's required-single-path table, so they are vetted by their own
@@ -50,11 +50,11 @@ export const links: Route.LinksFunction = () => [
     href:
       "https://fonts.googleapis.com/css2?family=League+Spartan:wght@500;700;900&family=Work+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Space+Grotesk:wght@400;500;700&display=swap",
   },
-  // TASK-470 PWA shell: manifest + home-screen icon. iOS only fires web push
+  // PWA shell: manifest + home-screen icon. iOS only fires web push
   // for sites added to the Home Screen (16.4+), and that requires both.
   { rel: "manifest", href: "/manifest.webmanifest" },
   { rel: "apple-touch-icon", href: "/icons/apple-touch-icon.png" },
-  // TASK-472 browser-tab favicon. SVG first (crisp, modern browsers), PNGs as the
+  // Browser-tab favicon. SVG first (crisp, modern browsers), PNGs as the
   // universal fallback. Same teal-square MC mark as the home-screen icon.
   { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
   { rel: "icon", href: "/favicon-32.png", sizes: "32x32", type: "image/png" },
@@ -85,12 +85,12 @@ export default function App() {
 }
 
 /**
- * Last-resort full-page boundary (2026-06-11 lifeline hardening). Content
+ * Last-resort full-page boundary. Content
  * routes carry their own scoped boundaries (RouteErrorPanel inside the shell),
  * so reaching THIS one means the shell/root itself failed. Show the real
  * error message even in production - MC is a tailnet-only internal tool and
- * Alex needs the actual failure text to relay, not "Oops". Always offer a
- * way out (reload / home).
+ * the operator needs the actual failure text to relay, not "Oops". Always offer
+ * a way out (reload / home).
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let message = "Inkie Deck hit an error";
@@ -118,7 +118,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
         {details}
       </p>
       <p className="text-sm text-gray-500">
-        If this persists after a reload, tell Summit or Quill - quote the message
+        If this persists after a reload, tell your operator and quote the message
         above.
       </p>
       <div className="flex gap-3">

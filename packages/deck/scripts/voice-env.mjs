@@ -1,5 +1,5 @@
 /**
- * scripts/voice-env.mjs - the app-server environment for voice (issue #27).
+ * scripts/voice-env.mjs - the app-server environment for voice.
  *
  * Shared by dev.mjs and start-production.mjs so the text and the rule cannot
  * drift between them. The app never reads the speech key itself (its name is
@@ -7,7 +7,7 @@
  * its key, say why the mic is off instead. See getVoiceDisabledReason in
  * app/lib/voice.server.ts.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 export const VOICE_DISABLED_NO_KEY = "voice disabled: no DEEPGRAM_API_KEY";

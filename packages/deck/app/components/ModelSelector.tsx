@@ -16,8 +16,8 @@
  * runtime has catalog options - absence is structural, like TmuxPane's
  * read-only fallback. The api route re-checks the gate server-side.
  *
- * No .server imports - FND-02 (the useFetcher POST does the server work).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports (the useFetcher POST does the server work).
+ * ASCII only - no em-dashes.
  */
 import { useFetcher } from "react-router";
 import { Check, Cpu } from "lucide-react";
@@ -80,9 +80,7 @@ export function ModelSelector({ data }: { data: ModelSelectorData }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        {/* Configured-model chip - desktop only (the mobile top bar is full;
-            Alex's 2026-06-11 mobile pass moved nav OUT of it, so this
-            operator control stays md+). */}
+        {/* Configured-model chip - desktop only. */}
         <button
           type="button"
           data-testid="model-selector-chip"

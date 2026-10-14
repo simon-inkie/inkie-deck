@@ -7,7 +7,7 @@
  * Mirrors the queue-derive.ts pure-core pattern: called from loaders or CLI scripts;
  * never touches the filesystem directly.
  *
- * Satisfies DETECT-01 and DETECT-02 (TASK-413 dup-plan detector):
+ * Satisfies the duplicate-plan detector requirements:
  *   D-01 Self-contained schema (no external Inkie schema imports)
  *   D-02 Normalise to date intervals, not month/year
  *   D-03 Inclusive-boundary overlap, non-scheduled excluded, no self-overlap
@@ -15,10 +15,10 @@
  *
  * Pitfall avoided: NEVER use date-fns startOfMonth/endOfMonth for month boundaries.
  * Those helpers use local time and produce wrong UTC boundaries on BST machines
- * (e.g. endOfMay becomes 2026-05-31T22:59:59.999Z instead of T23:59:59.999Z).
- * Use Date.UTC() arithmetic exclusively.
+ * (e.g. the end of May lands at 22:59:59.999Z on the 31st instead of
+ * 23:59:59.999Z). Use Date.UTC() arithmetic exclusively.
  *
- * ASCII only - no em-dashes per FND-05 (check:dashes gate).
+ * ASCII only - no em-dashes (check:dashes gate).
  */
 import { areIntervalsOverlapping } from "date-fns";
 
@@ -31,7 +31,7 @@ export type PlanType = "month" | "date-range";
 
 /** A single scheduled item within a content plan. */
 export interface ScheduledItem {
-  /** ISO date string for the item's scheduled date (e.g. "2026-05-28"). */
+  /** ISO date string for the item's scheduled date. */
   date: string;
 }
 
@@ -81,7 +81,7 @@ export interface OverlapResult {
  *
  * For BOTH month-type and date-range-type plans, returns item-level intervals
  * as the primary source (day start 00:00:00Z to day end 23:59:59.999Z). This
- * is the key to DETECT-02: a May plan whose items spill into June will produce
+ * is the key to catching overlaps: a May plan whose items spill into June will produce
  * intervals that intersect a June plan's item intervals.
  *
  * Fallback (empty items): uses plan-level bounds.
@@ -94,8 +94,8 @@ function normalisePlanToIntervals(plan: ContentPlan): DateInterval[] {
   // Primary: item-level intervals capture any cross-month spill (D-02).
   // Use start-of-day to start-of-NEXT-day so that adjacent calendar days share
   // a boundary millisecond. This makes inclusive:true correctly flag a May plan
-  // item on June-01 as overlapping with a June plan item on June-02
-  // (their intervals share the midnight point 2026-06-02T00:00:00Z).
+  // item on June-01 as overlapping with a June plan item on June-02, because their intervals share the midnight
+  // point between the two days.
   if (plan.items.length > 0) {
     return plan.items.map((item) => {
       const start = new Date(item.date + "T00:00:00Z");

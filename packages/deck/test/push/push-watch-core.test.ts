@@ -1,9 +1,9 @@
 /**
- * push-watch-core.test.ts - the watcher's pure logic (TASK-470).
+ * push-watch-core.test.ts - the watcher's pure logic.
  *
  * Proves:
  *   1. parseBlocks counts blocks and reads from/subject across hyphen AND
- *      em-dash header variants (the 2026-06-11 lifeline lesson).
+ *      em-dash header variants.
  *   2. Malformed headers keep their slot (index stability) as "(unknown)".
  *   3. newBlockPayloads: pushes only NEW blocks from non-user senders;
  *      user's own replies and unknown blocks never push.

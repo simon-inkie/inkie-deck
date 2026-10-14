@@ -1,9 +1,9 @@
 /**
- * PendingStatusLine.tsx - Subtle pending batch indicator (TASK-500.2).
+ * PendingStatusLine.tsx - Subtle pending batch indicator.
  *
  * Renders the held message as a teal-ringed bubble -- visually the same as a
  * delivered own-message but distinguished by a teal ring so it reads as
- * "pending, not yet sent". Replaces the plain grey status line from TASK-500.1.
+ * "pending, not yet sent". Replaces the plain grey status line that preceded it.
  *
  * Render rules:
  *   IDLE                     -> nothing (null)
@@ -11,7 +11,7 @@
  *   PENDING                  -> teal bubble + pulsing "sending..." send-now button below
  *   SUSPENDED                -> teal bubble + "waiting for you to send" label below
  *
- * No .server imports (FND-02). ASCII only (FND-05).
+ * No .server imports. ASCII only.
  */
 import type { PendingBatchState } from "~/lib/pending-batch";
 
@@ -22,7 +22,7 @@ interface PendingStatusLineProps {
   /** Called when the user cancels the held batch (discards without sending). */
   onCancel: () => void;
   /**
-   * TASK-500.4: Live draft text from the composer. When non-empty, rendered as
+   * Live draft text from the composer. When non-empty, rendered as
    * an additional in-progress paragraph after the held text (SUSPENDED only).
    */
   liveDraft?: string;
@@ -58,7 +58,7 @@ export function PendingStatusLine({ state, onSendNow, onCancel, liveDraft }: Pen
             {para}
           </p>
         ))}
-        {/* TASK-500.4: live draft -- shown while the user is typing a follow-up
+        {/* Live draft -- shown while the user is typing a follow-up
             (SUSPENDED phase). Quieter opacity distinguishes in-progress text
             from the already-held paragraphs above. */}
         {liveDraft ? (

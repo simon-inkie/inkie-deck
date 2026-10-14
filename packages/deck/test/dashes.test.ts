@@ -1,5 +1,5 @@
 /**
- * Tests for the em-dash / en-dash CI guard (FND-05).
+ * Tests for the em-dash / en-dash CI guard.
  * All references to banned codepoints use String.fromCharCode() or numeric escapes -
  * never literal glyphs - so this test file does not trip the guard itself.
  */

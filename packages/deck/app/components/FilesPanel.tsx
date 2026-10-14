@@ -18,7 +18,7 @@
  * Opening a file in the review side-panel = set ?doc=<path> (reuses ReviewPanel,
  * so path-safety is the existing review.server root confinement - no new parse).
  *
- * No .server imports (FND-02). ASCII only - no em-dashes (FND-05).
+ * No .server imports. ASCII only - no em-dashes.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";

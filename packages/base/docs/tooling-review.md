@@ -27,12 +27,11 @@ runtime-specific extension, not core.
 
 ## Written here, not ported: `bin/create-agent.sh`
 
-The only new code in this package rather than cleaned-up code from the internal
-platform, because there was nothing to port. Internally, creating an agent is a
-recipe a person follows by hand, and the recipe is mostly platform specifics:
-a permission-classifier config, a shared-memory CLI, a roster of real people, a
-placeholder-session migration for a naming ritual that is folklore rather than
-mechanism. None of that crosses.
+The only new code in this package rather than cleaned-up code from the original
+platform, because there was nothing to port. There, creating an agent was a
+recipe a person followed by hand, and the recipe was mostly platform specifics:
+a permission-classifier config, a shared-memory CLI, a roster of named people,
+a placeholder-session migration for a naming ritual. None of that crosses.
 
 What crosses is the mechanism underneath it, which is small:
 
@@ -110,16 +109,16 @@ remains reports on the sweep's own merge, which is the half that ships.
 ## Ported reshaped: `bin/stuck-pane-sweep.sh`
 
 The detection logic came across unchanged; the ROUTING did not, because routing
-is the part that was entirely about one deployment's org chart. Internally it
-named two specific agents in the source: one that decides, and one that
-deputises when the first one is itself the wedged pane.
+is the part that was entirely about one deployment's org chart. The original
+named two specific agents: one that decides, and one that deputises when the
+first one is itself the wedged pane.
 
 Here both are required configuration with no default recipient, and the second
 is derived from the first rather than configured independently. Unconfigured, it
 runs report-only: it detects, it records every finding in its state file and its
 append-only history log, and it types into nobody's pane. That is not a degraded
-mode. It is how the source deployment ran this system for weeks before live
-escalation was turned on deliberately, and defaulting a stranger's install to
+mode. It is a sensible way to run this system for a while before live
+escalation is turned on deliberately, and defaulting a stranger's install to
 silently typing into panes they never asked it to touch is not a decision this
 package gets to make for them.
 
@@ -132,7 +131,7 @@ composer format falls through and can never produce an escalation.
 
 ## Not ported at all: the context sweep
 
-The internal platform has a third sibling sweep that watches how full each
+The original platform has a third sibling sweep that watches how full each
 agent's context window is and acts on the answer. It fails the bar the other two
 pass: it is not an observer, and what it does about what it finds is specific to
 one deployment's runtime, thresholds and escalation conventions. There was no
@@ -244,10 +243,9 @@ reason: what they catch is invisible to the sender afterwards.
   colon MUST be quoted; nothing here enforced it. An unquoted colon in a
   `label:` or `detail:` value is read as a nested mapping, the parse breaks,
   and a renderer shows the block as plain prose with no error, which its
-  re-serialiser then makes permanent. The sender sees `replied to ...`. This
-  cost a real user two messages in one morning upstream before the check
-  landed there. The port brings the optional PyYAML dependency described in
-  the package README: present, cards are checked; absent, cards are refused
+  re-serialiser then makes permanent. The sender sees `replied to ...`. A
+  message degraded this way is easy to lose. The port brings the optional
+  PyYAML dependency described in the package README: present, cards are checked; absent, cards are refused
   and say why, and everything else runs on a stock python3.
 
   What was already here and is NOT the same thing: a heuristic that inserts a

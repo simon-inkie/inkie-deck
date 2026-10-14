@@ -151,7 +151,7 @@ describe("formatDayDivider", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-435.1: malformed-timestamp guard (hotfix, folded + pinned)
+// Malformed-timestamp guard (hotfix, folded + pinned)
 // ---------------------------------------------------------------------------
 // blocks/parse.ts falls back to timestamp:"" on any header it cannot parse
 // (e.g. a headerless first line). The formatters MUST tolerate that or a
@@ -159,7 +159,7 @@ describe("formatDayDivider", () => {
 // value). These pin the guard; the e2e in tmux-tab/thread tests the actual
 // render path, which is the level the unit could not reach.
 describe("malformed-timestamp tolerance (no throw, empty out)", () => {
-  const bad = ["", "   ", "not-a-date", "14 open questions for Alex", "2026-13-45"];
+  const bad = ["", "   ", "not-a-date", "14 open questions for the owner", "2026-13-45"];
   for (const value of bad) {
     it(`formatters return "" and never throw for ${JSON.stringify(value)}`, () => {
       expect(() => formatAbsolute(value)).not.toThrow();
@@ -177,7 +177,7 @@ describe("malformed-timestamp tolerance (no throw, empty out)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-719: dated card stamp (Cards tab has no day dividers to carry the date)
+// dated card stamp (Cards tab has no day dividers to carry the date)
 // ---------------------------------------------------------------------------
 describe("formatCardStamp", () => {
   // A Friday lunchtime, BST. Every case injects this - never the wall clock.
@@ -242,8 +242,8 @@ describe("formatCardStamp", () => {
   // rather than throwing, which is why it gets its own pinned test: unguarded,
   // age is NaN, `NaN < CARD_STAMP_ABSOLUTE_AFTER_MS` is false, and the absolute
   // branch (which never reads now) wins by accident. A five-minute-old card
-  // would render "25 Jul, 19:40" and look stale - the exact confusion TASK-719
-  // exists to kill, with no error anywhere to catch it.
+  // would render "25 Jul, 19:40" and look stale - the exact confusion
+  // this formatter exists to kill, with no error anywhere to catch it.
   it("coalesces an Invalid Date now to the wall clock (relative branch, no throw)", () => {
     // Wall-clock relative for the same reason as the test below (the invalid
     // now is discarded, so the real clock is the reference). 5s back is
@@ -300,8 +300,7 @@ describe("formatCardTooltip", () => {
   });
 
   // The crash shape: an Invalid Date reference reaching date-fns raises
-  // "RangeError: Invalid time value" and kills the whole page render (the exact
-  // family the 2026-06-11 lifeline hardening exists to prevent).
+  // "RangeError: Invalid time value" and kills the whole page render.
   it("does not throw when now is an Invalid Date, and still renders the absolute half", () => {
     expect(() => formatCardTooltip("2026-07-19T09:40:00Z", new Date("nonsense"))).not.toThrow();
     const out = formatCardTooltip("2026-07-19T09:40:00Z", new Date("nonsense"));

@@ -18,7 +18,7 @@
 # than sleeping, or testing build/ for a file that a previous run may have
 # left behind).
 #
-# ASCII only - no em-dashes (FND-05).
+# ASCII only - no em-dashes.
 
 set -e
 

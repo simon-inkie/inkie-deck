@@ -1,5 +1,5 @@
 /**
- * scroll-follow.test.ts - TASK-454: vertical real-estate + scroll-to-latest.
+ * scroll-follow.test.ts - vertical real-estate + scroll-to-latest.
  *
  * Covers the four behaviours of the pass:
  *   1. App-bar identity fold: thread-header testid lives in the top bar on
@@ -7,11 +7,11 @@
  *   2. Scroll-to-latest on load: last message in viewport without scrolling.
  *   3. Follow-bottom on out-of-band arrival while at the bottom.
  *   4. NEVER-yank: scrolled-up + out-of-band arrival leaves the viewport
- *      alone (Atlas's TASK-455 scroll pin as a test).
+ *      alone.
  *   5. Param-change initial jump: navigating thread A -> thread B still
  *      lands B on its latest message (route component stays mounted).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -117,7 +117,7 @@ test("TASK-454: scrolled up, an out-of-band arrival NEVER moves the viewport (45
   await expect(page.getByRole("main").getByText(marker)).toBeAttached();
 });
 
-test("TASK-454: navigating thread A -> thread B lands B on its latest message (Atlas fold)", async ({
+test("TASK-454: navigating thread A -> thread B lands B on its latest message", async ({
   page,
 }) => {
   await page.goto("/threads/quill");

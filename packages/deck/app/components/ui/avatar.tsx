@@ -1,7 +1,7 @@
 /**
  * ui/avatar.tsx - agent avatar: real image when one exists, initials fallback.
  *
- * TASK-457: optional src renders the agent's avatar.png (served by
+ * Optional src renders the agent's avatar.png (served by
  * /avatars/:agent with an mtime cache-bust). No src - or an image that
  * fails to load - falls back to the v1 initials disc, so the worst avatar
  * outcome is exactly the original render.
@@ -9,7 +9,7 @@
  * The initials tint is picked deterministically from the name so each agent
  * keeps a stable colour across the sidebar, app bar and bubbles
  * (teal / burnt-orange / magenta / gold - the Inkie accent set).
- * No Radix needed. ASCII only - no em-dashes (FND-05).
+ * No Radix needed. ASCII only - no em-dashes.
  */
 import { useState } from "react";
 import { cn } from "~/lib/utils";
@@ -44,7 +44,7 @@ export function Avatar({
   className,
 }: {
   name: string;
-  /** Avatar image URL (TASK-457). Absent or broken -> initials fallback. */
+  /** Avatar image URL. Absent or broken -> initials fallback. */
   src?: string;
   className?: string;
 }) {

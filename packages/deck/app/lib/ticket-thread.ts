@@ -5,8 +5,8 @@
  * id from a multi-agent entry list, sorted chronologically. Each result entry
  * carries the originating agent name so the lens can render origin tags.
  *
- * No IO, no fs, no env access, no .server imports (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No IO, no fs, no env access, no .server imports.
+ * ASCII only - no em-dashes.
  */
 
 import type { MessageBlock } from "./blocks/model.js";
@@ -31,7 +31,7 @@ export interface TicketThreadMessage {
  * timestamp (ascending). Returns an empty array when nothing matches.
  *
  * @param entries   - All agent block entries (agentName + parsed block).
- * @param ticketId  - The normalised ticket id to match (e.g. "TASK-445").
+ * @param ticketId  - The normalised ticket id to match.
  * @returns Chronologically sorted array of ticket thread messages.
  */
 export function aggregateTicketThread(

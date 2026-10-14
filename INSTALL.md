@@ -748,6 +748,15 @@ packages/base/bin/create-agent.sh inkie --role "keeps the notes"
 `inkie` is only an example: any lowercase name works (letters, digits and
 hyphens).
 
+**Choose a model, because it is a cost decision.** Without `--model <id>` the
+agent uses your model CLI's own default, which on a paid plan can be a more
+expensive model, and several always-on agents add up. Pass
+`--model <id>` (for example `--model claude-sonnet-5-5`) to write the agent's
+`.model` file; `boot-agents.sh` and `workspace.sh` launch the runtime with
+`--model <id>` from it. You can also edit `$AGENTS_HOME/<name>/.model` by
+hand at any time. It must be a plain id (letters, digits, dots, colons and
+hyphens); the launchers ignore anything else and say so.
+
 That writes both, links the `inbox` CLI onto your `PATH`, and then tries to
 prove the persona actually reached the model by asking the agent, in one
 non-interactive turn, for a boot phrase that exists nowhere but its own
@@ -785,6 +794,24 @@ named after the agent, and launches each agent's runtime in its window. Run it
 again and an agent whose pane already has its runtime running in it is left
 alone; one whose runtime has exited is relaunched, which is what makes this
 safe to fire on boot.
+
+On an agent's first launch, `boot-agents.sh` starts a new session and gives it
+a first message: do your day-one steps from your persona files, then say hello.
+Expect it to fill in `IDENTITY.md` and `SOUL.md`, and it may ask you questions
+about itself. The message is sent once per agent: the launcher leaves a
+`.first-boot-done` file in the agent's home, and an agent whose `IDENTITY.md`
+is already written never gets it. If a launch dies before the agent has
+recorded the message, delete `.first-boot-done` to send it again. An agent
+armed with `.auto-arm-watcher` is not told to arm its monitor on that first
+boot, because it is busy with day one. Once its first turn is done, exit the
+agent's runtime and run `boot-agents.sh` again to relaunch and arm it. (Running
+it while the runtime is still up leaves the agent alone and arms nothing.)
+
+`boot-agents.sh` and `workspace.sh` also run `tmux set -g focus-events on`
+before starting any pane, which stops Claude Code showing its focus-events
+hint. It is a tmux server option with no per-session form, so it applies to
+the whole tmux server, including any other sessions on it. Add
+`tmux set -g focus-events off` after a boot if you want it off.
 
 On first boot, attach to the session and answer any runtime setup prompts
 manually. Folder trust defaults to No: do not press Enter while No is
@@ -955,6 +982,13 @@ or ran the command by hand on 2026-10-12, not that the rig covers it.
 **No authentication.** Repeated here because it belongs on any list of this
 kind. See the top of this document. Checked: the application has no login or
 session routes (`packages/deck/app/routes`).
+
+**On WSL, `claude` can resolve to a Windows binary.** PATH often includes
+Windows directories, so `command -v claude` may return a path under `/mnt/c/`
+or ending in `.exe` or `.cmd`. The boot, workspace and create-agent scripts
+print a warning naming that path and carry on; they do not stop, because a
+Windows binary can still work through WSL interop. If agents fail to start,
+install the Linux build inside WSL or put its directory earlier in `PATH`.
 
 **A complete, valid header quoted inside a message body splits that message
 in two.** Fixed on 2026-08-14, and this is what is left of it. Both readers,

@@ -136,3 +136,58 @@ claude_session_args() {
   printf '%s\n' "$id" > "$pin" || return 1
   printf -- '--session-id %s -n %q\n' "$id" "$a"
 }
+
+# claude_first_boot_prompt <session_args> <agent_home> -- print the first message
+# to launch the agent with, shell-quoted and ready to append to the claude
+# command line, when day one has plausibly not happened. Prints nothing
+# otherwise.
+#
+# WHY. Whether a new agent did its day-one persona work used to depend on what
+# the user's first message said: "hello" got it, a test ping did not. Passing
+# the message as claude's initial prompt makes the first launch do it, with no
+# typing into the pane.
+#
+# WHEN. All three must hold:
+#   1. <session_args> (from claude_session_args) start a new session
+#      (`--session-id`), so a resume never gets it.
+#   2. <agent_home>/.first-boot-done does not exist. It is written here, as the
+#      message is handed to the launcher, so the message goes out once per
+#      agent. A pinned transcript that was later pruned (Claude Code expires old
+#      ones) or a moved CLAUDE_CONFIG_DIR takes the `--session-id` branch again,
+#      and the marker is what stops an established agent being told it is new.
+#   3. IDENTITY.md is still the scaffold (it still carries the "self-author on
+#      day one" placeholder) or is missing. An agent created before this marker
+#      existed, whose persona is already written, is therefore left alone too.
+#
+# LIMIT. The marker is written at launch, not when the message is recorded. If
+# the launch dies before claude records the message, day one is not retried
+# automatically: delete .first-boot-done to send it again.
+claude_first_boot_prompt() {
+  local args="$1" home="$2"
+  [[ "$args" == "--session-id "* ]] || return 0
+  [[ -e "$home/.first-boot-done" ]] && return 0
+  if [[ -f "$home/IDENTITY.md" ]] && ! grep -qi 'self-author on day one' "$home/IDENTITY.md" 2>/dev/null; then
+    return 0
+  fi
+  : > "$home/.first-boot-done" 2>/dev/null || return 0
+  printf '%q\n' "This is your first session. Do your day-one steps from your persona files (IDENTITY.md and SOUL.md), then say hello."
+}
+
+# agent_model_flag <agent_home> -- print `--model <id>` from <agent_home>/.model,
+# or nothing when there is no file. The launchers put the flag on a shell
+# command line unquoted, and .model is a plain file people edit by hand, so an
+# id with anything but letters, digits, dots, colons and hyphens is refused with
+# a warning instead of being run.
+agent_model_flag() {
+  local file="$1/.model" id
+  [[ -f "$file" ]] || return 0
+  # First line only, ends trimmed: an interior space must stay in the id so the
+  # check below rejects it, rather than being squeezed into a different id.
+  id="$(head -n 1 "$file" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  [[ -n "$id" ]] || return 0
+  if [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
+    printf -- '--model %s\n' "$id"
+  else
+    echo "claude-session: ignoring $file: '$id' is not a plain model id" >&2
+  fi
+}

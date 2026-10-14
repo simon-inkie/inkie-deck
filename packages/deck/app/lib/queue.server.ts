@@ -15,7 +15,7 @@
  * empty queue instead of crashing.
  *
  * T-03-02 (Tampering): Writes target statePath under DATA_ROOT via the shared
- * confinement primitive + atomicWrite (TASK-434: this closed the one raw
+ * confinement primitive + atomicWrite (this closed the one raw
  * atomicWrite bypass - every MC write is now confined to a declared root).
  * assertSafeWritePath is NOT called - queue state is not inbox-shaped; it has
  * its own root (DATA_ROOT) in the root table.
@@ -41,8 +41,7 @@ import {
  * Read process.env.DATA_ROOT and return it as an absolute path string.
  *
  * DATA_ROOT is the declared root for MC's own state files (queue state).
- * Explicit env, no derivation (FND-03 consistency - Quill's call on the
- * TASK-434 plan): throws if unset/empty/relative.
+ * Explicit env, no derivation: throws if unset/empty/relative.
  */
 export function resolveDataRoot(): string {
   const root = process.env["DATA_ROOT"];
@@ -50,13 +49,13 @@ export function resolveDataRoot(): string {
     throw new Error(
       "DATA_ROOT is required but not set. " +
         "Set DATA_ROOT to an absolute path to MC's state directory " +
-        "(e.g. <repo>/data). There is no default (FND-03)."
+        "(e.g. <repo>/data). There is no default."
     );
   }
   if (!path.isAbsolute(root)) {
     throw new Error(
       `DATA_ROOT must be an absolute path, got: "${root}". ` +
-        "Relative paths are rejected (FND-03)."
+        "Relative paths are rejected."
     );
   }
   return root;
@@ -143,7 +142,7 @@ export class FileQueueStore implements QueueStore {
       }
       return { version: 1, deadlines: {}, handled: [] };
     } catch {
-      // ENOENT, bad JSON, or schema mismatch - degrade to an empty queue (T-03-01).
+      // ENOENT, bad JSON, or schema mismatch - degrade to an empty queue.
       return { version: 1, deadlines: {}, handled: [] };
     }
   }
@@ -152,7 +151,7 @@ export class FileQueueStore implements QueueStore {
     // statePath is constructor-pinned configuration (never request-derived),
     // so creating its parent before confinement is acceptable; the confine
     // then verifies the resolved location sits inside DATA_ROOT before any
-    // bytes are written (TASK-434).
+    // bytes are written.
     fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
     const rootReal = fs.realpathSync(resolveDataRoot());
     assertNoLiveSiloRoot(rootReal, "data");

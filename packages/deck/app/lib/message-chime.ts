@@ -1,6 +1,6 @@
 /**
- * message-chime.ts - in-app sound on incoming messages (TASK-470 follow-up,
- * Alex: "lets add a small sound on desktop").
+ * message-chime.ts - in-app sound on incoming messages (a small desktop
+ * chime, added as a follow-up to web push).
  *
  * Pure detection + a WebAudio chime, split so the detection is unit-testable:
  *   - detectNewArrivals(prev, next): which agents have a NEW unread message
@@ -17,7 +17,7 @@
  * The useMessageChime hook wires both into the AppShell's existing polling
  * loader data. First render is baseline only - no chime for history.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { useEffect, useRef } from "react";
 

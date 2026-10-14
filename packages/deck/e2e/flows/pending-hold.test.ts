@@ -1,5 +1,5 @@
 /**
- * pending-hold.test.ts - the hold itself (TASK-500), which the rest of the
+ * pending-hold.test.ts - the hold itself, which the rest of the
  * suite deliberately turns down to its floor.
  *
  * WHY THIS FILE EXISTS. Submitting in MC does not send: usePendingBatch holds
@@ -29,7 +29,7 @@
  *     it means driving localStorage mirrors and page lifecycle events. It wants
  *     its own spec rather than a corner of this one.
  *
- * VALID-03: writes only under INBOX_ROOT (temp). ASCII only - no em-dashes.
+ * Writes only under INBOX_ROOT (temp). ASCII only - no em-dashes.
  */
 import { test, expect } from "@playwright/test";
 import path from "node:path";

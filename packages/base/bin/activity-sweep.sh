@@ -157,7 +157,7 @@
 #   ACTIVITY_SIGNALS_DIR=<dir>   persisted signals digests (0700, files 0600)
 #   ACTIVITY_SIGNAL_PERSIST=1    ENABLE digest persistence. DEFAULT IS 0 HERE,
 #                                and that is the one behavioural difference from
-#                                the deployment this was extracted from. Nothing
+#                                the original deployment of this package. Nothing
 #                                in this package reads a digest: the model layer
 #                                that consumes them is not part of it. Writing
 #                                bounded excerpts of every message an agent has
@@ -1724,12 +1724,12 @@ while IFS= read -r w <&3; do
             if is_human "$corr"; then continue; fi
             [ "$b" = "$w" ] || continue
             [ "$c" = "sent" ] || continue
-            # A COMPLETION REPORT IS NOT A WAIT. Measured against a live fleet: of
-            # four agents this pill fired on, three had signed off with "Both
-            # done", "Done. Merged origin/main into..." and "Closed from my side"
-            # -- unread, but nobody was blocked on anything. Filtering a class the
-            # sweep has ALREADY classified for the completions log costs nothing
-            # and removes a plainly wrong answer.
+            # A COMPLETION REPORT IS NOT A WAIT. Observed on live agents: the pill
+            # fired on agents that had signed off with a plain completion note
+            # ("Done", "Merged", "Closed") -- unread, but nobody was blocked on
+            # anything. Filtering a class the sweep has ALREADY classified for
+            # the completions log costs nothing and removes a plainly wrong
+            # answer.
             [ "${d:-0}" = "1" ] && continue
             # Decays after WAIT_MAX_MIN: a teammate who never read a message from
             # three days ago would otherwise pin this pill on indefinitely.

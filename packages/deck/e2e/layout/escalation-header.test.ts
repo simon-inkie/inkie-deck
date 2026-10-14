@@ -1,6 +1,6 @@
 /**
  * escalation-header.test.ts - the top bar survives a visible escalation reason
- * on a phone (TASK-783).
+ * on a phone.
  *
  * WHAT WENT WRONG, measured rather than reasoned about. Replacing the bare
  * TriangleAlert with an icon-plus-text chip ("quill stuck for 45m") took the
@@ -28,7 +28,7 @@
  * with an ACTIVITY_ROOT, whose committed fixture pins quill as stuck since
  * 45 minutes before MC_NOW.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

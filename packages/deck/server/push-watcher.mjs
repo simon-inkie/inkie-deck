@@ -1,13 +1,12 @@
 /**
- * push-watcher.mjs - the TASK-470 trigger seam. Spawned by
+ * push-watcher.mjs - the trigger seam. Spawned by
  * start-production.mjs as a sibling of the voice proxy.
  *
  * POLLS the instance user's thread files (INBOX_ROOT/<agent>/inbox/<user>.md)
  * every PUSH_POLL_MS (default 4000ms) - polling, not fs.watch, because WSL
- * inotify is degraded (Quill, TASK-470 brief). On new blocks from a non-user
+ * inotify is degraded. On new blocks from a non-user
  * sender it web-pushes every stored subscription. That is the WHOLE rule:
- * push every inbound message; curation lives upstream in team discipline
- * (Alex's decided trigger, 2026-06-11).
+ * push every inbound message; curation lives upstream in team discipline.
  *
  * Reads (no TS imports - this is a plain node process):
  *   - DATA_ROOT/vapid-keys.json        (self-provisioned by the app on the
@@ -24,7 +23,7 @@
  *     This process must never take anything else down; if it dies, the
  *     launcher logs the exit and the daemon lives on (degrade, not drag).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

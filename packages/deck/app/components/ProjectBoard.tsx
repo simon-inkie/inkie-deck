@@ -15,7 +15,7 @@
  * Mobile (<md): horizontally scrollable snap columns.
  *
  * No new dependencies - uses existing useFetcher from react-router.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { useState } from "react";
 import { useFetcher } from "react-router";
@@ -37,7 +37,7 @@ interface ProjectBoardProps {
   cards: ProjectCardType[];
   /** ISO-8601 string from loader (MC_NOW-aware). */
   now: string;
-  /** Called when a card face is clicked to open the detail overlay (TASK-439). */
+  /** Called when a card face is clicked to open the detail overlay. */
   onCardOpen?: (cardId: string) => void;
 }
 

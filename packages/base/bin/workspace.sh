@@ -49,6 +49,7 @@ fi
 
 # Pinned claude session ids, shared with boot-agents.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
 
 get_runtime() {
   local agent="$1"
@@ -68,7 +69,7 @@ start_agent() {
   runtime=$(get_runtime "$agent")
   # Per-agent model override (selector): $AGENTS_HOME/<agent>/.model -> --model.
   # Absent = no flag = inherit the global default.
-  [[ -f "$AGENTS_HOME/$agent/.model" ]] && model_flag="--model $(cat "$AGENTS_HOME/$agent/.model")"
+  model_flag="$(agent_model_flag "$AGENTS_HOME/$agent")"
   if [[ "$runtime" == "claude" ]]; then
     # Source the agent's gitignored .env.secrets (if any) before claude, so
     # anything referencing a live secret via ${VAR} resolves in that shell.
@@ -85,7 +86,7 @@ start_agent() {
       echo "workspace: could not pin a session id for $agent; launching an unpinned session" >&2
       session_args="-n $(printf '%q' "$agent")"
     }
-    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag" Enter
+    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$agent")" Enter
   else
     # Any other runtime: launch it plainly and let its own config (hooks,
     # AGENT_NAME wiring) do the rest. Add a branch here if a given runtime
@@ -110,7 +111,13 @@ start_watcher() {
   tmux split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
 }
 
+# Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
+warn_if_foreign_claude
+
 # Create the base session if it doesn't exist
+# Before any pane starts, so Claude Code shows no "focus-events off" hint.
+tmux start-server 2>/dev/null || true
+tmux set -g focus-events on 2>/dev/null || true
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   FIRST="${AGENTS[0]}"
   tmux new-session -d -s "$SESSION" -n "$FIRST" -c "$AGENTS_HOME/$FIRST"

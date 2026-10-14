@@ -8,7 +8,7 @@
  * inbox-targeting.test.ts), then re-reads to confirm the on-disk state and the
  * appended reply block round-trip.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";

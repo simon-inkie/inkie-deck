@@ -1,7 +1,7 @@
 /**
  * batch-durability.ts - stop losing composed messages that never left the browser.
  *
- * WHY THIS EXISTS (2026-07-26)
+ * WHY THIS EXISTS
  * Submitting in MC does not send anything. usePendingBatch holds the text in a
  * CLIENT-SIDE batch and starts a settle timer (SETTLE_MS, 18s by default;
  * SAFETY_CAP_MS stretches it to 5 minutes while SUSPENDED). Only when that
@@ -9,14 +9,14 @@
  *
  * So there is a window in which the message exists in exactly ONE place: this
  * tab's memory. Close the tab, switch apps, or let the phone sleep, and it is
- * gone with no trace on any server. Alex lost a link that way; the URL appears
- * exactly once on the machine, in the message where he asks whether we saw it.
+ * gone with no trace on any server. That has lost real messages, including pasted
+ * links that existed nowhere else on the machine.
  *
- * pending-batch.ts:225 described this precisely and deferred it to a "Phase 2"
- * that never came. A TODO that names a defect is worse than silence in one
+ * An earlier comment in pending-batch.ts described this precisely and deferred
+ * the fix, and it was never picked up. A TODO that names a defect is worse than silence in one
  * specific way: it converts an unknown risk into a known-and-accepted one
- * without anyone deciding to accept it. Nobody weighed "Alex loses a message
- * from his phone" against the cost of a sendBeacon call.
+ * without anyone deciding to accept it. Nobody weighed "a user loses a message
+ * from their phone" against the cost of a sendBeacon call.
  *
  * TWO HALVES, DELIBERATELY, because they cover different failures:
  *   1. sendBeacon on pagehide - covers the tidy cases: tab close, navigation,
@@ -33,21 +33,21 @@
  */
 
 /**
- * v2 as of 2026-07-29, and the bump is the FIX, not bookkeeping.
+ * The storage prefix is v2, and the bump is the FIX, not bookkeeping.
  *
- * Until that day the route mirrored under the currently-rendered agent instead
+ * Until that fix the route mirrored under the currently-rendered agent instead
  * of the batch's owner, so switching threads mid-batch wrote thread A's text
  * into thread B's slot stamped `agentKey: "B"` (see pending-batch.ts's docblock
  * for the commit-timing mechanism). Such a record is indistinguishable from a
  * genuine one - self-consistent, correctly aged - and recovery delivers it as a
- * real compose POST into the WRONG inbox, up to 24h later. Three of Alex's
- * messages landed on the wrong agent that night.
+ * real compose POST into the WRONG inbox, up to 24h later. Several messages landed on the
+ * wrong agent that way.
  *
- * Alex's and Robin's browsers still hold v1 records written by the broken
+ * Existing browsers may still hold v1 records written by the broken
  * code. Fixing the writer cannot unwrite them, and there is no way to tell a
  * poisoned v1 record from a good one after the fact. Reading under a new prefix
  * makes every one of them permanently inert - live mines defused by never being
- * looked at again, instead of by asking two humans to clear devtools correctly.
+ * looked at again, instead of by asking users to clear devtools correctly.
  * The dead keys can stay; a handful of stray localStorage entries cost nothing.
  *
  * Bump BOTH prefixes together on any future change to the record's meaning.
@@ -141,7 +141,7 @@ export interface MirrorableBatch {
 /**
  * Should the route's per-render mirror effect call saveBatch this time?
  *
- * Remote CodeRabbit review: this effect used to call saveBatch (and so,
+ * Review finding: this effect used to call saveBatch (and so,
  * on an empty batch, clearBatch) unconditionally once recovery had run. A
  * second tab mounting on the SAME agent thread starts with paragraphCount 0
  * (per-tab state) and would clear the FIRST tab's live, not-yet-delivered
@@ -149,7 +149,7 @@ export interface MirrorableBatch {
  * had correctly just left alone. Callers that legitimately empty a batch
  * (delivery, cancel) must clear explicitly instead of relying on this.
  *
- * The owner check (2026-07-29) is the second guard, for a different failure.
+ * The owner check is the second guard, for a different failure.
  * On the deliver-on-switch commit the mirror effect re-runs because `agent`
  * changed, while the reducer state it reads is still the OLD thread's - the
  * DELIVERED dispatch cannot re-render until the whole passive-effect flush
@@ -214,7 +214,7 @@ export function clearBatch(agentKey: string): void {
 /**
  * Recover the batch for ONE agent thread, claiming it before deleting.
  *
- * PER-AGENT (CodeRabbit Critical 2). The first version drained every agent's
+ * PER-AGENT. The first version drained every agent's
  * record, so a route for agent A had to either deliver agent B's content or
  * delete it without recovering it. A thread may only ever touch its own batch.
  *

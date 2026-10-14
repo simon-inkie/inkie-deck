@@ -6,7 +6,7 @@
  *
  * Frequency cap: minimum interval is every MIN_INTERVAL_MIN minutes.
  * Expression format: 5-field standard cron (minute hour dom month dow).
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { z } from "zod";
@@ -18,7 +18,7 @@ import { z } from "zod";
 /**
  * Minimum cron interval in minutes. Exposed as a constant so a future
  * one-line change can lower/raise the floor without hunting across the file.
- * Floor is 1 minute (standard cron minimum). Alex gates any change.
+ * Floor is 1 minute (standard cron minimum). The operator gates any change.
  */
 export const MIN_INTERVAL_MIN = 1;
 
@@ -34,14 +34,14 @@ export const MIN_INTERVAL_MIN = 1;
  *
  * Rejected (legacy): double-quote ("), backtick (`), dollar ($), backslash (\),
  * semicolon (;), pipe (|), ampersand (&), angle brackets (< >),
- * and any control characters (including newline, CR, tab).
+ * and any control characters (\x00-\x1F, including newline, CR and tab).
  */
 export const SHELL_UNSAFE_RE = /["`$\\;|&<>\x00-\x1F]/;
 
 /**
  * Control characters that break tmux buffers.
  * Allows tab (\x09) and newline/LF (\x0A) since markdown content legitimately
- * contains both. Rejects NUL and the remaining C0 control chars (incl. CR).
+ * contains both. Rejects NUL and the remaining C0 control chars (including CR).
  */
 const TMUX_UNSAFE_CTRL_RE = /[\x00-\x08\x0B-\x1F]/;
 

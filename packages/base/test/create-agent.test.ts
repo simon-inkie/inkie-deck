@@ -187,6 +187,20 @@ describe("creation", () => {
     );
   });
 
+  it("writes .model only when --model is given, and rejects anything unsafe for a shell", () => {
+    const box = sandbox();
+    expect(run(box, ["wren", "--no-verify"]).status).toBe(EXIT.CANNOT_VERIFY);
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", ".model"))).toBe(false);
+
+    const withModel = run(box, ["fern", "--model", "claude-sonnet-5-5", "--no-verify"]);
+    expect(withModel.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(fs.readFileSync(path.join(box.agentsHome, "fern", ".model"), "utf8")).toBe("claude-sonnet-5-5");
+
+    const bad = run(box, ["moss", "--model", "x; rm -rf ~", "--no-verify"]);
+    expect(bad.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box.agentsHome, "moss"))).toBe(false);
+  });
+
   it("writes .runtime explicitly, defaulting to claude and honouring --runtime", () => {
     const box = sandbox();
     run(box, ["wren", "--no-verify"]);
@@ -332,8 +346,8 @@ describe("creation", () => {
 
   it("calls the fallback a guess, and does not attribute it to a file that does not say it", () => {
     // The warning used to claim the value came from the application's
-    // .env.example. That file ships INBOX_ROOT empty (there is no default,
-    // FND-03), so the citation dressed a guess up as a lookup.
+    // .env.example. That file ships INBOX_ROOT empty (there is no default),
+    // so the citation dressed a guess up as a lookup.
     const box = sandbox();
     const result = run(box, ["wren", "--no-verify"], {
       env: { INBOX_ROOT: "" },

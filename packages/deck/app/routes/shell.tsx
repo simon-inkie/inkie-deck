@@ -5,13 +5,13 @@
  * needs-you flag) plus a total needs-you count for the top-bar bell. Reads
  * through the seam (makeStores -> inbox.listAgents + readBlocks).
  *
- * SEAM RULE (FND-02): every read goes through a .server module (makeStores,
+ * SEAM RULE: every read goes through a .server module (makeStores,
  * listCards, avatarUrl, readActivity). No direct fs imports here, no literal
  * inbox or activity path - the Sidebar and AppShell get a finished view-model.
  *
  * The nested index (home) and thread routes render into AppShell's <Outlet/>;
  * they keep their own loaders/actions untouched.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/shell";
 import { makeStores } from "~/lib/stores.server";
@@ -31,11 +31,11 @@ import type { NeedsItem } from "~/components/AppShell";
 import type { ModelSelectorData } from "~/components/ModelSelector";
 
 /**
- * Per-agent activity status for the sidebar pills (TASK-691 follow-up 3).
+ * Per-agent activity status for the sidebar pills.
  *
  * GATED, and LIVE-ONLY. Two separate refusals, both deliberate:
  *   - `activityEnabled` first, so an instance that was never given an activity
- *     root to read (Robin's) does no fs work at all here and renders a sidebar
+ *     root to read does no fs work at all here and renders a sidebar
  *     identical to the one it rendered before this feature existed. The route
  *     never learns the path shape - seam rule, same as every other root.
  *   - a non-live read returns nothing rather than a stale pill. The Activity
@@ -71,18 +71,18 @@ function sidebarStatuses(now: Date): {
 export async function loader({ params, request }: Route.LoaderArgs) {
   const { inbox, queue } = makeStores(process.env);
   // resolveNow: a garbage MC_NOW degrades to wall clock instead of an Invalid
-  // Date that throws downstream (2026-06-11 lifeline hardening).
+  // Date that throws downstream.
   const now = resolveNow(process.env["MC_NOW"]);
-  // TASK-462: per-instance user - which participant files this world reads.
+  // Per-instance user - which participant files this world reads.
   const user = mcUser(process.env);
 
   const agentNames = await inbox.listAgents();
 
-  // COUNT SEMANTICS (peer review, Atlas TASK-438): the bell consumes the SAME
+  // COUNT SEMANTICS: the bell consumes the SAME
   // deriveNeedsYou output as the home list - the badge count IS the list
   // length. No independent counting path lives here any more.
   // Load the queue-store handled set BEFORE building the sidebar so the
-  // per-agent unhandled-card dot can respect it (2026-06-12 stuck-dot fix):
+  // per-agent unhandled-card dot can respect it:
   // a card swept via the bell's "handled" set must clear the sidebar dot
   // too, or the two surfaces disagree and the dot looks stuck.
   const [handledIds, deadlineMap] = await Promise.all([
@@ -121,8 +121,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       // An unhandled card is an unanswered decision OR an un-done,
       // un-dismissed action that has NOT been swept into the queue-store
       // handled set. The id format mirrors deriveItemId so the sweep and
-      // the dot agree (2026-06-12: previously the dot ignored handledIds,
-      // so cards cleared from the bell kept the sidebar dot lit forever).
+      // the dot agree (previously the dot ignored handledIds, so cards cleared
+      // from the bell kept the sidebar dot lit forever).
       const hasUnhandled = blocks.some((b) => {
         if (b.card !== undefined && b.card.answered === undefined) {
           return !handledIds.has(`${name}/${b.header.timestamp}/${b.card.decisionId}`);
@@ -137,17 +137,16 @@ export async function loader({ params, request }: Route.LoaderArgs) {
         return false;
       });
 
-      // TASK-437 amendment (Atlas complement): unread MESSAGES - drives the
-      // dot on the chat half of the thread view toggle. The tmux-view
+      // Unread MESSAGES - drives the dot on the chat half of the thread view toggle. The tmux-view
       // markRead skip keeps these honest, so the toggle carries the signal
       // the held-back receipt creates.
       // The active thread suppresses its unread dot ONLY in CHAT view: there
       // the thread loader's markRead is flipping its blocks to read in
       // parallel, so forcing it false kills the ~3s lag where the magenta dot
-      // lingered after opening a thread (2026-06-12 Alex report).
+      // lingered after opening a thread.
       // In TMUX view markRead is deliberately held back (receipt honesty), so
       // the active thread MUST keep signalling unread - the chat-toggle dot is
-      // exactly that signal (regression caught 2026-06-12).
+      // exactly that signal.
       const isActiveChatThread =
         name === params.agent && activeView !== "tmux";
       const hasUnread =
@@ -156,9 +155,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
           (b) => b.header.from !== user && b.header.status === "sent"
         );
 
-      // TASK-457: real avatar when the agent has one; initials fallback.
+      // Real avatar when the agent has one; initials fallback.
       // hasUnread -> magenta message dot; hasUnhandled -> burnt-orange
-      // decision dot. Both can show at once (2026-06-12).
+      // decision dot. Both can show at once.
       // status -> the activity pill at the end of the row; undefined for an
       // agent the sweep
       // did not cover, and for every agent when the gate is off or the engine
@@ -179,7 +178,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // root may be unset - degrade gracefully (same guard as home.tsx).
   let blockedCards: Awaited<ReturnType<typeof listCards>> = [];
   try {
-    // TASK-462: scoped to this instance's agents (no-op on Alex's).
+    // Scoped to this instance's agents.
     blockedCards = filterCardsForInstance(listCards(), process.env);
   } catch {
     // Projects root not configured - blocked kind contributes nothing.
@@ -206,7 +205,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     deepLink: item.deepLink,
   }));
 
-  // TASK-454: the active thread agent's live cards feed the top-bar work-panel
+  // The active thread agent's live cards feed the top-bar work-panel
   // trigger + slide-out. As a layout route this loader receives child params,
   // so params.agent is set exactly when a thread is open. Reuses the SAME
   // guarded listCards() result the bell already consumes.
@@ -217,8 +216,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   // M5: the active thread agent's configured model + catalog options for the
   // top-bar selector. OPERATOR-ONLY (modelSelectorEnabled - absent on
-  // Robin's instance by construction) and only for agents whose runtime has
-  // catalog options (codex/agy v1 have none, so no control renders). Reads
+  // a second user's instance by construction) and only for agents whose
+  // runtime has catalog options (codex/agy v1 have none, so no control renders). Reads
   // degrade to an empty option list - a broken AGENTS_ROOT means no chip,
   // never a 500.
   let modelSelector: ModelSelectorData | undefined;

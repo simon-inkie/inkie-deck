@@ -5,8 +5,8 @@
  * Overdue items carry a distinct red border and background.
  * A fetcher.Form posts the markHandled intent to the home route action (/).
  *
- * No .server imports - all data arrives via props (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props.
+ * ASCII only - no em-dashes.
  */
 import { useFetcher, Link } from "react-router";
 import type { QueueViewItem } from "~/lib/queue-derive";
@@ -24,7 +24,7 @@ interface QueueItemProps {
  * When overdue, applies a red border and background so the item stands out.
  * The Handled button posts intent=markHandled + itemId to the home action.
  * After the action resolves, RR7 auto-revalidates the home loader so the
- * item leaves the panel without a full page reload (QUEUE-07).
+ * item leaves the panel without a full page reload.
  *
  * Preview text is rendered as a plain JSX text node (auto-escaped by React).
  * No dangerouslySetInnerHTML is used.

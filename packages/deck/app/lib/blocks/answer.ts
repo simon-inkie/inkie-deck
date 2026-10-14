@@ -2,8 +2,8 @@
  * applyAnswer: Flip a decision card to its answered state and emit a structured reply block.
  * applyPushBack: Flip a decision card to pushed-back state and emit a distinct push-back reply block.
  *
- * CARD-03 contract: applyPushBack emits a distinct push-back block, not a non-answer.
- * CARD-04 contract: Both functions are idempotent no-ops when the card is already resolved.
+ * Push-back contract: applyPushBack emits a distinct push-back block, not a non-answer.
+ * Idempotency contract: both functions are idempotent no-ops when the card is already resolved.
  *   answered-then-pushback and pushback-then-answer are both no-ops (mutual exclusion).
  *   Never produces two conflicting blocks.
  *
@@ -33,7 +33,7 @@ import type {
 } from "./model.js";
 
 // ---------------------------------------------------------------------------
-// Push-back token constants (single source of truth, CARD-03)
+// Push-back token constants
 // ---------------------------------------------------------------------------
 
 /**
@@ -118,7 +118,7 @@ export function isCustomAnswer(card: {
 }
 
 // ---------------------------------------------------------------------------
-// Meta-line helpers (2026-06-11 "clicking doesn't work" fix)
+// Meta-line helpers
 // ---------------------------------------------------------------------------
 
 /**
@@ -170,7 +170,7 @@ function setMetaLine(rawMeta: string, key: string, value: string): string {
  * Apply an answer key to a decision card block.
  *
  * If the block's rawMeta already has an "answered:" line, returns the existing answer
- * without modification (CARD-04 idempotency).
+ * without modification.
  *
  * Otherwise, returns:
  * - answeredOriginal: the original block with "answered: <key>" appended to rawMeta
@@ -179,7 +179,7 @@ function setMetaLine(rawMeta: string, key: string, value: string): string {
 export function applyAnswer(originalBlock: MessageBlock, key: string, from: string = "alex"): AnswerResult {
   const rawMeta = originalBlock.rawMeta;
 
-  // CARD-04: Check for existing answered: line (non-empty value only - an
+  // Check for existing answered: line (non-empty value only - an
   // empty placeholder from a card template is unanswered, see helpers above)
   const lines = rawMeta.split("\n");
   const existingAnsweredLine = findMetaValueLine(lines, "answered");
@@ -248,7 +248,7 @@ export function applyAnswer(originalBlock: MessageBlock, key: string, from: stri
  * Apply a push-back to a decision card block.
  *
  * If the block's rawMeta already has an "answered:" line (including "answered: pushback"),
- * returns the existing resolution without modification (CARD-04 idempotency).
+ * returns the existing resolution without modification.
  * This gives mutual exclusion: an answered card cannot be pushed back and vice versa.
  *
  * Otherwise, returns:
@@ -256,12 +256,12 @@ export function applyAnswer(originalBlock: MessageBlock, key: string, from: stri
  * - pushBackBlock: a new MessageBlock with "push-back: true" in its metadata region
  *
  * The optional note parameter provides the body for the push-back reply block.
- * If absent, a plain ASCII default is used (no em-dashes per FND-05).
+ * If absent, a plain ASCII default is used.
  */
 export function applyPushBack(originalBlock: MessageBlock, note?: string, from: string = "alex"): PushBackResult {
   const rawMeta = originalBlock.rawMeta;
 
-  // CARD-04: Check for existing answered: line (catches both answered:B and
+  // Check for existing answered: line (catches both answered:B and
   // answered:pushback; empty placeholders do not count - see helpers above)
   const lines = rawMeta.split("\n");
   const existingAnsweredLine = findMetaValueLine(lines, "answered");
@@ -327,7 +327,7 @@ export function applyPushBack(originalBlock: MessageBlock, note?: string, from: 
  * Apply a user-authored custom answer to a decision card block.
  *
  * If the block's rawMeta already has an "answered:" line, returns the existing answer
- * without modification (CARD-04 idempotency). This gives symmetric mutual-exclusion
+ * without modification. This gives symmetric mutual-exclusion
  * with applyAnswer and applyPushBack: an already-resolved card is a no-op.
  *
  * Otherwise, returns:
@@ -340,7 +340,7 @@ export function applyPushBack(originalBlock: MessageBlock, note?: string, from: 
 export function applyCustomAnswer(originalBlock: MessageBlock, text: string, from: string = "alex"): CustomAnswerResult {
   const rawMeta = originalBlock.rawMeta;
 
-  // CARD-04: Check for existing answered: line (mutual exclusion with answer
+  // Check for existing answered: line (mutual exclusion with answer
   // + push-back; empty placeholders do not count - see helpers above)
   const lines = rawMeta.split("\n");
   const existingAnsweredLine = findMetaValueLine(lines, "answered");

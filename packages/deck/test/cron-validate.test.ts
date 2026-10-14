@@ -1,5 +1,5 @@
 /**
- * test/cron-validate.test.ts - Unit tests for app/lib/cron-validate.ts (TASK-460).
+ * test/cron-validate.test.ts - Unit tests for app/lib/cron-validate.ts.
  *
  * Covers:
  *   - Malformed expression rejection (wrong field count, non-numeric fields).
@@ -21,7 +21,7 @@
  *   - humanizeSchedule's fallbacks, including dow=7 (legal to the validator,
  *     off the end of the day-name table).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect } from "vitest";

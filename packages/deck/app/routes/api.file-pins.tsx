@@ -7,9 +7,9 @@
  *   via the FilePinsStore seam, author-agnostic (each instance has its own
  *   user + its own state directory).
  *
- * SEAM RULE (FND-02): imports the .server pins store + instance only.
+ * SEAM RULE: imports the .server pins store + instance only.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import type { Route } from "./+types/api.file-pins";

@@ -1,20 +1,20 @@
 /**
- * card-placeholder-buried.test.ts - regression suite for the 2026-06-11
+ * card-placeholder-buried.test.ts - regression suite for the
  * "clicking doesn't work" bug (two stacked causes):
  *
  *   1. Cards authored with EMPTY answered:/custom-answer: template
  *      placeholders made every tap a silent alreadyAnswered no-op (the
- *      apply* guards matched the placeholder; parse did not). Alex's 5
+ *      apply* guards matched the placeholder; parse did not). The operator's 5
  *      stuck decisions were exactly this shape.
  *   2. A card BELOW the live window renders from the client's retained map,
  *      which loader revalidation never refreshed - so even a landed answer
  *      left the stale unanswered copy on screen (tap looked dead).
  *
- * These are INTERACTION tests by design: the 2026-06-10 memo saga proved a
- * render-only e2e passes while taps are broken (Quill's gate: tap + assert
- * the submitted state, always).
+ * These are INTERACTION tests by design: the earlier memoisation saga proved a
+ * render-only e2e passes while taps are broken, so always tap and assert the
+ * submitted state.
  *
- * VALID-03: writes only under INBOX_ROOT (temp). ASCII only (FND-05).
+ * Writes only under INBOX_ROOT (temp). ASCII only.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

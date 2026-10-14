@@ -1,9 +1,9 @@
 /**
- * card-timestamp.test.ts - TASK-719 dated card stamp, at the component level.
+ * card-timestamp.test.ts - dated card stamp, at the component level.
  *
  * The Cards tab is a flat list with no day dividers, so a bare clock time gives
- * no age signal: two of Alex's pending cards were already dead (their MRs had
- * merged days earlier) and nothing on screen said so. Timestamp therefore gains
+ * no age signal: two of the operator's pending cards were already dead (their merge requests
+ * had merged days earlier) and nothing on screen said so. Timestamp therefore gains
  * an opt-in `withDate`, gated on the Cards-tab `postAction` seam.
  *
  * The load-bearing half of this file is the NON-REGRESSION suite: without the
@@ -19,7 +19,7 @@
  * No JSX here: the file is a .test.ts, so the element is built with
  * React.createElement.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import React from "react";
@@ -117,8 +117,7 @@ describe("Timestamp with withDate (Cards tab)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Card-level wiring (Atlas peer review): the tests above prove Timestamp CAN
-// date, never that the cards ASK it to. Without these, deleting all four
+// Card-level wiring: the tests above prove Timestamp CAN date, never that the cards ASK it to. Without these, deleting all four
 // withDate={Boolean(postAction)} call sites leaves the suite green.
 //
 // Both cards call useFetcher, so they need a data-router context: createRoutesStub

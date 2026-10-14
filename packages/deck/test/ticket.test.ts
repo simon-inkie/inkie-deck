@@ -1,5 +1,5 @@
 /**
- * test/ticket.test.ts - Unit tests for app/lib/ticket.ts (TASK-445).
+ * test/ticket.test.ts - Unit tests for app/lib/ticket.ts.
  *
  * Covers normaliseTicket:
  *   - Bare ids (case-insensitive), uppercase, lowercase, mixed.
@@ -8,7 +8,7 @@
  *   - Garbage values (no match -> null).
  *   - ticketUrl: builds expected canonical URL.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { normaliseTicket, ticketUrl, TICKET_BASE_URL } from "~/lib/ticket";

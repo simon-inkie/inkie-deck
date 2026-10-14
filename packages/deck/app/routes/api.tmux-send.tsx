@@ -9,13 +9,13 @@
  * logic lives in exactly one place - mirrors the api.review resource-route
  * precedent.
  *
- * SEAM RULE (FND-02): imports ONLY from tmux.server - the subprocess never
+ * SEAM RULE: imports ONLY from tmux.server - the subprocess never
  * appears in route code. Validates at the boundary (parse-don't-validate).
  *
  * READONLY FALLBACK: this route is purely additive. If it fails, the capture
- * loaders still render the pane - Alex is never worse off than read-only.
+ * loaders still render the pane - the operator is never worse off than read-only.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { z } from "zod";
 import { data } from "react-router";
@@ -44,8 +44,8 @@ const sendSchema = z.union([
 ]);
 
 export async function action({ request }: Route.ActionArgs) {
-  // TASK-462: server-side gate, not just hidden UI - a tmux-disabled instance
-  // (Robin's) refuses sends even if the endpoint is POSTed directly.
+  // Server-side gate, not just hidden UI - a tmux-disabled instance (such as a
+  // second user's) refuses sends even if the endpoint is POSTed directly.
   if (!tmuxEnabled(process.env)) {
     return {
       ok: false as const,

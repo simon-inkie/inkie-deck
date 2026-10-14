@@ -3,7 +3,7 @@
  *
  * success/warning/destructive use tinted theme accents (teal / burnt-orange /
  * magenta) for status pills - answered, pushed back, overdue.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";

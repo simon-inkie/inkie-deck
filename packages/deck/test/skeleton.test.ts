@@ -92,7 +92,7 @@ describe("Leg 2: PARSER round-trips a real fixture block byte-for-byte", () => {
   });
 
   it("fixture has exactly 8 blocks", () => {
-    // TASK-444: fixture gained 3 blocks (working-superseded, agent-reply, live-working).
+    // The fixture gained 3 blocks (working-superseded, agent-reply, live-working).
     expect(blocks).toHaveLength(8);
   });
 
@@ -191,7 +191,7 @@ describe("Leg 3: GUARD rejects bad paths and accepts in-sandbox write", () => {
   });
 
   it("accepts a legit in-sandbox path and writes the content atomically", () => {
-    // TASK-434: writes must be inbox-shaped (<agent>/inbox/<file>.md).
+    // Writes must be inbox-shaped (<agent>/inbox/<file>.md).
     const inboxDir = path.join(sandbox, "quill", "inbox");
     fs.mkdirSync(inboxDir, { recursive: true });
     const targetPath = path.join(inboxDir, "message.md");

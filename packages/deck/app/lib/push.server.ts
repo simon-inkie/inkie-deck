@@ -1,5 +1,5 @@
 /**
- * push.server.ts - web-push plumbing: VAPID keys + subscription store (TASK-470).
+ * push.server.ts - web-push plumbing: VAPID keys + subscription store.
  *
  * VAPID keys SELF-PROVISION on first use into DATA_ROOT/vapid-keys.json
  * (deliberate deviation from the plan's .mc-secrets.age idea: no secrets
@@ -15,7 +15,7 @@
  * discipline as queue.server.ts. Any read failure returns the empty state
  * (tolerate-on-read).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import path from "node:path";

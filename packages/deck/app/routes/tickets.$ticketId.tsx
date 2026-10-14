@@ -1,5 +1,5 @@
 /**
- * tickets.$ticketId.tsx - Ticket-thread lens route (TASK-445).
+ * tickets.$ticketId.tsx - Ticket-thread lens route.
  *
  * Aggregates all message blocks tagged with a given ticket id from all
  * agent threads. Read-only by construction: this route exports a loader
@@ -20,11 +20,11 @@
  *   - MessageBubble stream with "in <agent>" origin tags linking to /threads/<agent>.
  *   - EmptyState when valid id but nothing tagged and no card.
  *
- * SEAM RULE (FND-02): imports ONLY makeStores from ~/lib/stores.server.
+ * SEAM RULE: imports ONLY makeStores from ~/lib/stores.server.
  * No node:fs, no literal inbox path or env key references here.
  * Exception: listCards from projects.server (env-backed seam, same discipline).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/tickets.$ticketId";
 import { RouteErrorPanel } from "~/components/RouteErrorPanel";
@@ -68,7 +68,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 
   // Read all agents' blocks through the seam.
   const { inbox } = makeStores(process.env);
-  // TASK-462: per-instance user.
+  // Per-instance user.
   const user = mcUser(process.env);
   const agentNames = await inbox.listAgents();
 
@@ -92,7 +92,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   // Degrade to null when projects root is unset or on any error.
   let matchedCard: ProjectCard | null = null;
   try {
-    // TASK-462: scoped to this instance's agents (no-op on Alex's).
+    // Scoped to this instance's agents.
     const allCards = filterCardsForInstance(listCards(), process.env);
     // allCards is sorted updated-desc; first match is newest-updated.
     for (const c of allCards) {
@@ -138,8 +138,8 @@ export default function TicketLens({ loaderData }: Route.ComponentProps) {
       <div className="flex-1 overflow-y-auto px-6 pt-6 pb-10">
         <div className="mx-auto max-w-2xl">
           {/* Linear link-out: the MOST prominent affordance, first row,
-              full-width (Atlas fold, TASK-445 plan s5b). The user whose
-              intent was straight-to-Linear pays one hop either way;
+              full-width. A user whose intent was
+              straight-to-Linear pays one hop either way;
               first-position makes it a glance, not a toll. */}
           <a
             href={linearUrl}
@@ -252,15 +252,15 @@ function PinnedCardHeader({ card }: { card: ProjectCard }) {
           Open on board
         </Link>
         {/* No card-level Linear link: the full-width first-row link-out
-            directly above this card is the single Linear affordance
-            (Atlas fold - one clear destination, no duplicate chrome). */}
+            directly above this card is the single Linear affordance (one clear destination, no duplicate
+            chrome). */}
       </div>
     </div>
   );
 }
 
 /**
- * Scoped error boundary (2026-06-11 lifeline hardening): a failure in this
+ * Scoped error boundary: a failure in this
  * route renders here, inside the shell - the sidebar and the rest of MC stay
  * usable. Real error text shown (tailnet-only internal tool).
  */

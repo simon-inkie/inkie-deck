@@ -1,5 +1,5 @@
 /**
- * api.review.tsx - JSON endpoint for the review side-panel (TASK-431, TASK-562).
+ * api.review.tsx - JSON endpoint for the review side-panel.
  *
  * GET ?path=<absolute-or-tilde-path>
  *
@@ -8,10 +8,10 @@
  * use. lang is a highlight.js language id (code files only; "plaintext" fallback).
  * The server-side review.server module owns tilde-expansion and all security gates.
  *
- * SEAM RULE (FND-02): imports ONLY from review.server. No node:fs, no env
+ * SEAM RULE: imports ONLY from review.server. No node:fs, no env
  * strings directly in the route (all env handling is inside the server module).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/api.review";
 import { readReviewFile, expandTilde } from "~/lib/review.server";

@@ -29,7 +29,7 @@
  *   - setEnabled / delete: id and boolean reach the seam intact.
  *   - unknown and missing intent.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";

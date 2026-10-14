@@ -1,5 +1,5 @@
 /**
- * RED tests for CARD-05: malformed or partial card frontmatter falls back to plain bubble.
+ * RED tests: malformed or partial card frontmatter falls back to a plain bubble.
  * parseBlock NEVER throws on any input.
  * Ref: T-01-03 (DoS - parseBlock on malformed card)
  */
@@ -83,7 +83,7 @@ describe("CARD-05: malformed card always falls back to bubble, never throws", ()
 });
 
 describe("phantom-dot regression: unparseable headers default to status read", () => {
-  // 2026-06-12 Alex report: quill/atlas showed a magenta unread dot that opening
+  // Operator report: quill/atlas showed a magenta unread dot that opening
   // the thread hid but leaving re-showed. Root cause: a header with a blanked
   // timestamp fails parseHeader (Date.parse("") is NaN), so parseBlock fell back
   // to status "sent" - which the sidebar reads as unread, forever (markRead
@@ -138,7 +138,7 @@ describe("parseBlock - header parsing", () => {
 describe("parseBlock - body-internal --- is preserved (truncation regression)", () => {
   // A "---" that is NOT the last non-blank line of the block is body content
   // (a visual divider), not the trailing separator. Scanning for the FIRST
-  // "---" truncated such bodies in MC's render (Alex, 1 + 15 Jul).
+  // "---" truncated such bodies in the MC render.
 
   it("keeps a mid-body --- line when a genuine trailing separator follows", () => {
     const block = [

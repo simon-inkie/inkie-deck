@@ -26,7 +26,7 @@ beforeAll(() => {
 
 describe("splitBlocks", () => {
   it("returns one entry per block (eight blocks in the fixture)", () => {
-    // TASK-444: fixture gained 3 blocks (working-superseded, agent-reply, live-working).
+    // The fixture gained 3 blocks (working-superseded, agent-reply, live-working).
     expect(blocks).toHaveLength(8);
   });
 
@@ -56,7 +56,7 @@ describe("parseBlock", () => {
   });
 
   it("parses the malformed block (missing decision-id) as a bubble (CARD-05)", () => {
-    // TASK-444 fixture grew: the malformed block is now index 6.
+    // The fixture grew: the malformed block is now index 6.
     const parsed = parseBlock(blocks[6]!);
     expect(parsed.card).toBeUndefined();
     expect(parsed.body).toBeTruthy();
@@ -79,7 +79,7 @@ describe("round-trip fidelity (serializeBlock(parseBlock(x)) === x)", () => {
   });
 
   it("malformed block round-trips byte-for-byte", () => {
-    // TASK-444 fixture grew: the malformed block is now index 6.
+    // The fixture grew: the malformed block is now index 6.
     const original = blocks[6]!;
     const parsed = parseBlock(original);
     const serialized = serializeBlock(parsed);

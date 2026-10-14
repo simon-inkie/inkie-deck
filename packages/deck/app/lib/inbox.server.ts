@@ -1,7 +1,7 @@
 /**
  * inbox.server.ts
  *
- * Data-access seam for the inbox (FND-02).
+ * Data-access seam for the inbox.
  *
  * Exports:
  *   InboxRepository - the interface all routes/loaders consume
@@ -14,8 +14,8 @@
  *
  * Security: every write goes through assertSafeWritePath - see safe-fs.server.ts.
  *
- * See MR !20 for the TASK-700 wedge-fix history (parse-window-only, stat-gated
- * caches, byte-patch flip). Also see test/inbox-task700.test.ts for the full
+ * The wedge fix (parse-window-only, stat-gated
+ * caches, byte-patch flip) is described below. Also see test/inbox-task700.test.ts for the full
  * edge-case coverage (byte-patch offsets, LRU eviction, fast-skip behaviour).
  */
 
@@ -73,14 +73,14 @@ export type {
 };
 
 // ---------------------------------------------------------------------------
-// Windowed-read types (TASK-469)
+// Windowed-read types
 // ---------------------------------------------------------------------------
 
 /** Default window size for the thread view's chunked lazy-load. */
 export const DEFAULT_WINDOW_LIMIT = 30;
 
 /**
- * Options for readBlocksWindow (TASK-469).
+ * Options for readBlocksWindow.
  *
  * The cursor is the ABSOLUTE block index in the full thread. Inbox files are
  * append-only at block granularity (answers/receipts rewrite blocks in place;
@@ -104,7 +104,7 @@ export interface BlockWindowOptions {
   anchorId?: string;
 }
 
-/** Result of a windowed read (TASK-469). */
+/** Result of a windowed read. */
 export interface BlockWindow {
   /** The blocks in the window, in file order. */
   blocks: MessageBlock[];
@@ -115,14 +115,14 @@ export interface BlockWindow {
 }
 
 // ---------------------------------------------------------------------------
-// TASK-700: module-level caches, cheap header scan, byte-patch flip.
+// Module-level caches, cheap header scan, byte-patch flip.
 //
 // makeStores() builds a FRESH FileInboxRepository per request, so any cache
 // that must survive across the 3s poll has to live at MODULE scope, not on the
 // instance. Mirrors the mtime/size-guarded Map pattern shipped in
 // file-description.server.ts (loadCache) - same shape, same test seams.
 //
-// The P1 (TASK-700): opening a 3.6MB / 4029-block thread paid a full parse of
+// The main problem: opening a 3.6MB / 4029-block thread paid a full parse of
 // EVERY block TWICE per poll (readBlocksWindow's readBlocks + markRead's own
 // splitBlocks+parseBlock), synchronously blocking Node's event loop every 3s.
 // These caches + the parse-window-only read + the markRead fast-skip collapse
@@ -139,7 +139,7 @@ interface WindowCacheEntry {
 /**
  * (resolved file path + serialized options) -> last parsed window.
  *
- * Bounded LRU (CodeRabbit finding, TASK-700 MR !20): each distinct `before`
+ * Bounded LRU: each distinct `before`
  * scroll-cursor is its own cache key, so unbounded scroll-back on a large
  * thread would otherwise grow this Map for the life of the process. Capped at
  * WINDOW_MEMO_MAX_ENTRIES; a `get` bumps the entry to most-recently-used (Map
@@ -181,16 +181,16 @@ function windowMemoSet(key: string, entry: WindowCacheEntry): void {
 const markReadMemo = new Map<string, { mtimeMs: number; size: number }>();
 
 // ---------------------------------------------------------------------------
-// readBlocks whole-file cache (sidebar/shell fix, 2026-07-29)
+// readBlocks whole-file cache
 //
-// The sibling problem to TASK-700, on the OTHER call path. shell.tsx is the
-// LAYOUT route wrapping every page; its loader calls readBlocks for EVERY agent
-// on EVERY navigation and every 3s live-poll tick, so an ~11MB corpus was fully
-// read and fully parsed each time. Measured on Alex's instance: 420ms
+// The sibling problem to the windowed thread read, on the OTHER call path.
+// shell.tsx is the LAYOUT route wrapping every page; its loader calls
+// readBlocks for EVERY agent on EVERY navigation and every 3s live-poll tick,
+// so an ~11MB corpus was fully read and fully parsed each time. Measured on the operator's instance: 420ms
 // click-to-content even for an 18KB thread, because the cost is the fixed
 // whole-corpus scan, not the target agent's own file.
 //
-// This is NOT windowable the TASK-700 way: hasUnhandled / hasUnread / the bell's
+// This is NOT windowable the same way: hasUnhandled / hasUnread / the bell's
 // allEntries are all "is there ANY such block ANYWHERE in the full history",
 // which genuinely needs the whole file. So the fix is not "read less of the
 // file", it is "do not re-read and re-parse the WHOLE file when it has not
@@ -226,7 +226,7 @@ const EMPTY_BLOCKS: readonly MessageBlock[] = Object.freeze([]);
  * resolved file path -> last fully-parsed block list.
  *
  * DELIBERATELY UNBOUNDED (no LRU), unlike windowMemo. windowMemo needed a cap
- * (CodeRabbit finding, TASK-700 MR !20) because its key embeds the `before`
+ * because its key embeds the `before`
  * scroll cursor, so scroll-back mints unbounded distinct keys. readBlocks takes
  * NO options, so the key space here is exactly (agents x participant files) -
  * a few dozen entries on any real instance, fixed for the life of the process.
@@ -236,8 +236,8 @@ const EMPTY_BLOCKS: readonly MessageBlock[] = Object.freeze([]);
  *
  * ALIASING: the cached array is returned BY REFERENCE (same as windowMemo's
  * BlockWindow), so a mutating caller would corrupt every subsequent cache hit
- * for that file. That is ENFORCED, not just documented (CodeRabbit finding,
- * MR !33): readBlocks Object.freeze()s the parsed list before it is memoised
+ * for that file. That is ENFORCED, not just documented: readBlocks
+ * Object.freeze()s the parsed list before it is memoised
  * and returns that same frozen reference, so an in-place .sort()/.reverse()/
  * .push() throws at the call site instead of silently poisoning the cache. The
  * declared return type is `readonly MessageBlock[]` so the same mistake is a
@@ -338,11 +338,11 @@ const HEADER_RE_INDEXED = new RegExp(HEADER_RE.source, HEADER_RE.flags + "d");
  * patch, so the file size never changes and (on a coarse-mtime filesystem) the
  * mtime bump can land within the same tick a cache last read - a stat-guarded
  * cache would then wrongly keep serving the pre-flip content, i.e. a magenta
- * unread dot on a thread Alex has already read. markRead ties the caches to
+ * unread dot on a thread the operator has already read. markRead ties the caches to
  * its write: after it patches a file, it explicitly invalidates that file here.
  *
- * EVERY writer in this module calls this, not just markRead (CodeRabbit finding,
- * MR !33). The earlier version of this comment claimed the atomicWrite mutators
+ * EVERY writer in this module calls this, not just markRead.
+ * The earlier version of this comment claimed the atomicWrite mutators
  * "change the size and/or land a fresh inode mtime, so the stat guard
  * invalidates those without help" - that was an assumption, not a guarantee. A
  * card-state rewrite can be exactly the same length (a status token swapped for
@@ -388,8 +388,8 @@ interface BlockHeaderRef {
  *
  * Boundary detection calls the SAME predicate splitBlocks does, rather than
  * restating it, so the block SET is identical to what splitBlocks/parseBlock
- * would produce and cannot drift from it. It was a restatement until
- * 2026-08-14, and the boundary rule then changed underneath it (only a line
+ * would produce and cannot drift from it. It was a restatement once, and the
+ * boundary rule then changed underneath it (only a line
  * that PARSES as a header may bound a block); the flip set here was unaffected
  * because every caller below already discards a header parseHeader rejects, but
  * a copy of a rule is a copy that goes stale. A block's header line is its first
@@ -416,7 +416,7 @@ function scanBlockHeaders(raw: string): BlockHeaderRef[] {
 
 /**
  * Compute a render window from raw file content, parsing ONLY the blocks the
- * window actually needs (TASK-700 parse-window-only).
+ * window actually needs.
  *
  * splitBlocks is a cheap line-scan (block boundary detection, no YAML/zod), so
  * getting totalCount + the raw slice for the window is O(file) but avoids the
@@ -502,7 +502,7 @@ export interface InboxRepository {
   ): Promise<readonly MessageBlock[]>;
 
   /**
-   * Read a WINDOW of message blocks from an inbox file (TASK-469).
+   * Read a WINDOW of message blocks from an inbox file.
    *
    * Used by the thread view's chunked lazy-load. The full readBlocks stays
    * the contract for whole-thread consumers (home/shell queue derivation -
@@ -514,7 +514,7 @@ export interface InboxRepository {
    * - anchorId: the tail window, extended back to include the block whose
    *   card/action id matches (deep-link focus).
    *
-   * Implementation note (TASK-700): only the blocks in the window are parsed.
+   * Implementation note: only the blocks in the window are parsed.
    * splitBlocks is a cheap line-scan for boundaries + totalCount; parseBlock
    * runs on the window slice ONLY. The result is served from a module-level
    * (mtimeMs, size)-guarded cache, so a steady 3s poll on a large thread pays
@@ -568,12 +568,12 @@ export interface InboxRepository {
   ): Promise<void>;
 
   /**
-   * The SYSTEM.md read receipt (TASK-443 follow-on): flip status:sent ->
+   * The SYSTEM.md read receipt: flip status:sent ->
    * status:read on blocks NOT authored by the thread's participant. The
-   * participant rendering the thread IS the read - MC renders for Alex, so
-   * the loader calls this with participantName "alex" before reading.
+   * participant rendering the thread IS the read - MC renders for the operator, so
+   * the loader calls this with the operator's participant name before reading.
    *
-   * Scope (Quill's fence, 2026-06-07): no symmetric flip - the participant's own
+   * Scope: no symmetric flip - the participant's own
    * blocks are never touched here. "working" and "read" statuses untouched.
    * Idempotent: when nothing needs flipping, no disk write happens at all.
    *
@@ -587,12 +587,12 @@ export interface InboxRepository {
    * Idempotent: if the card is already answered, returns the existing answer without
    * writing anything.
    *
-   * CARD-04: targets the card by stable decision-id, not by positional block index,
+   * Targets the card by stable decision-id, not by positional block index,
    * so a stale or double-tap view stays an idempotent no-op on the SAME card.
    *
    * @param agentName - The agent whose inbox file to update
    * @param participantName - The participant file to update
-   * @param decisionId - The stable decision-id of the target card (e.g. "TASK-413-q1")
+   * @param decisionId - The stable decision-id of the target card (e.g. "PROJ-123-q1")
    * @param answerKey - The answer key (e.g. "A" or "B")
    * @returns The AnswerResult from applyAnswer
    */
@@ -611,7 +611,7 @@ export interface InboxRepository {
    *
    * @param agentName - The agent whose inbox file to update
    * @param participantName - The participant file to update
-   * @param decisionId - The stable decision-id of the target card
+   * @param decisionId - The stable decision-id of the target card (e.g. "PROJ-123-q1")
    * @param text - The user-authored answer text
    * @returns The CustomAnswerResult from applyCustomAnswer
    */
@@ -628,12 +628,12 @@ export interface InboxRepository {
    * push-back reply block. Idempotent: if the card is already resolved (answered or
    * pushed back), returns the existing state without writing anything.
    *
-   * CARD-03: push-back is a distinct third outcome from answer options.
-   * CARD-04: targets by stable decision-id; idempotent no-op on a resolved card.
+   * Push-back is a distinct third outcome from answer options.
+   * Targets by stable decision-id; idempotent no-op on a resolved card.
    *
    * @param agentName - The agent whose inbox file to update
    * @param participantName - The participant file to update
-   * @param decisionId - The stable decision-id of the target card (e.g. "TASK-413-q1")
+   * @param decisionId - The stable decision-id of the target card (e.g. "PROJ-123-q1")
    * @param note - Optional push-back note to include as the reply body
    * @returns The PushBackResult from applyPushBack
    */
@@ -650,7 +650,7 @@ export interface InboxRepository {
    * Idempotent: if the action is already marked done, returns the existing
    * done timestamp without writing anything.
    *
-   * CARD-04: targets the action by stable action-id, not positional block index.
+   * Targets the action by stable action-id, not positional block index.
    *
    * @param agentName - The agent whose inbox file to update
    * @param participantName - The participant file to update
@@ -709,7 +709,7 @@ export interface InboxRepository {
    * Idempotent: already-dismissed returns alreadyDismissed.
    * Mutual exclusion: answered -> alreadyAnswered; superseded -> alreadySuperseded.
    *
-   * @param decisionId - The stable decision-id of the target card
+   * @param decisionId - The stable decision-id of the target card (e.g. "PROJ-123-q1")
    * @param reason - Optional dismiss reason (plain string)
    * @returns The DismissDecisionResult from applyDismissDecision
    */
@@ -745,7 +745,7 @@ export interface InboxRepository {
    * Idempotent: already-superseded returns alreadySuperseded.
    * Mutual exclusion: answered -> alreadyAnswered; dismissed -> alreadyDismissed.
    *
-   * @param decisionId - The stable decision-id of the target card
+   * @param decisionId - The stable decision-id of the target card (e.g. "PROJ-123-q1")
    * @param note - Optional supersede note (plain string)
    * @returns The SupersedeDecisionResult from applySupersedeDecision
    */
@@ -771,12 +771,12 @@ export interface InboxRepository {
  * safeWrite (assertSafeWritePath + atomicWrite) - NEVER a raw fs write.
  *
  * The inbox root is resolved from INBOX_ROOT env (via resolveInboxRoot),
- * which throws if unset/empty/relative (FND-03 - no default).
+ * which throws if unset/empty/relative.
  */
 export class FileInboxRepository implements InboxRepository {
   /**
    * @param inboxRoot - Absolute path to the inbox root. If omitted, resolved
-   *   from INBOX_ROOT env at construction time. Must be absolute (FND-03).
+   *   from INBOX_ROOT env at construction time. Must be absolute.
    *   Pass explicitly in tests to avoid relying on process.env at import time.
    */
   constructor(private readonly inboxRoot?: string) {}
@@ -798,7 +798,7 @@ export class FileInboxRepository implements InboxRepository {
     if (!AGENT_NAME_RE.test(agentName)) {
       throw new Error(
         `Refusing to access inbox: agent name "${agentName}" does not match ` +
-          `the agent-name shape (FND-04 parity with the write-path guard).`
+          `the agent-name shape.`
       );
     }
     const allowed = getInboxAgentAllowlist();
@@ -1109,7 +1109,7 @@ export class FileInboxRepository implements InboxRepository {
       throw err;
     }
 
-    // TASK-700 fast-skip: if (mtimeMs, size) matches the value this process last
+    // Fast-skip: if (mtimeMs, size) matches the value this process last
     // settled for the file, there is provably no new content to receipt - return
     // 0 without the lock, without a read, without a parse.
     //
@@ -1147,12 +1147,12 @@ export class FileInboxRepository implements InboxRepository {
       // This run did NOT fast-skip - it paid the full read + scan (test seam).
       markReadScanCount += 1;
 
-      // Cheap scan (TASK-700): header lines only via parseHeader - no full
+      // Cheap scan: header lines only via parseHeader - no full
       // parseBlock (no YAML, no zod, no body work) over all 4029 blocks just to
       // find the ones with status: sent. from/status depend solely on
       // parseHeader, so this yields the SAME flip set the full parse would.
       // Flip sent -> read on the OTHER side's blocks only (no symmetric flip);
-      // "working" (TASK-444) and already-"read" blocks are untouched.
+      // "working" and already-"read" blocks are untouched.
       //
       // Locating the "sent" TOKEN's char offset re-execs the SAME anchored
       // HEADER_RE (with match indices) rather than a second, looser pattern.
@@ -1166,8 +1166,7 @@ export class FileInboxRepository implements InboxRepository {
       // wrong "sent", not a corrupted one). Re-using HEADER_RE's own status
       // CAPTURE GROUP position makes this structurally impossible rather than
       // argued away: the offset can only ever be where the anchored grammar's
-      // own status field matched, never inside from/subject. (Peer-review
-      // catch, Atlas, MR !20.)
+      // own status field matched, never inside from/subject.
       const sentCharIdxs: number[] = [];
       for (const h of scanBlockHeaders(raw)) {
         const parsed = parseHeader(h.headerLine);
@@ -1220,7 +1219,7 @@ export class FileInboxRepository implements InboxRepository {
           // the PREVIOUS loop iteration (Buffer.alloc(4) only zero-fills once,
           // it is reused across iterations), which could spuriously pass or
           // fail the equals check below - skip rather than trust a partial
-          // read (CodeRabbit finding, MR !20).
+          // read.
           if (bytesRead !== 4) continue;
           // Safety: if the bytes are not what we computed from `raw`, the file
           // moved under us - skip rather than corrupt (mirrors the CLI).
@@ -1260,7 +1259,7 @@ export class FileInboxRepository implements InboxRepository {
       const rawBlocks = splitBlocks(raw);
       const blocks = rawBlocks.map((rb) => parseBlock(rb));
 
-      // CARD-04: resolve target by stable decision-id, not positional index
+      // Resolve target by stable decision-id, not positional index
       const targetBlock = blocks.find((b) => b.card?.decisionId === decisionId);
       if (!targetBlock) {
         throw new Error(
@@ -1315,7 +1314,7 @@ export class FileInboxRepository implements InboxRepository {
       const rawBlocks = splitBlocks(raw);
       const blocks = rawBlocks.map((rb) => parseBlock(rb));
 
-      // CARD-04: resolve target by stable decision-id, not positional index
+      // Resolve target by stable decision-id, not positional index
       const targetBlock = blocks.find((b) => b.card?.decisionId === decisionId);
       if (!targetBlock) {
         throw new Error(
@@ -1369,7 +1368,7 @@ export class FileInboxRepository implements InboxRepository {
       const rawBlocks = splitBlocks(raw);
       const blocks = rawBlocks.map((rb) => parseBlock(rb));
 
-      // CARD-04: resolve target by stable decision-id, not positional index
+      // Resolve target by stable decision-id, not positional index
       const targetBlock = blocks.find((b) => b.card?.decisionId === decisionId);
       if (!targetBlock) {
         throw new Error(
@@ -1422,7 +1421,7 @@ export class FileInboxRepository implements InboxRepository {
       const rawBlocks = splitBlocks(raw);
       const blocks = rawBlocks.map((rb) => parseBlock(rb));
 
-      // CARD-04: resolve target by stable action-id, not positional index
+      // Resolve target by stable action-id, not positional index
       const targetBlock = blocks.find(
         (b) => b.actionCard?.actionId === actionId,
       );
@@ -1591,7 +1590,7 @@ export class FileInboxRepository implements InboxRepository {
       const rawBlocks = splitBlocks(raw);
       const blocks = rawBlocks.map((rb) => parseBlock(rb));
 
-      // CARD-04: resolve target by stable decision-id, not positional index.
+      // Resolve target by stable decision-id, not positional index.
       const targetBlock = blocks.find((b) => b.card?.decisionId === decisionId);
       if (!targetBlock) {
         throw new Error(

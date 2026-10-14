@@ -8,7 +8,7 @@
  * it needs a real router around it, same reasoning as the panel and the
  * Sidebar).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React, { act } from "react";
@@ -131,7 +131,7 @@ describe("AppShell - top-bar escalation alert", () => {
     expect(scribeItem!.textContent).toContain("wedged 30m");
   });
 
-  // TASK-783: the single-agent fast path used to render a bare TriangleAlert
+  // The single-agent fast path used to render a bare TriangleAlert
   // plus a "1" badge, with the agent/status/duration only in the aria-label.
   // A sighted user got a red triangle and no reason, before OR after the
   // click. textContent is the right assertion surface precisely because it

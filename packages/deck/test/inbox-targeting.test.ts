@@ -1,7 +1,7 @@
 /**
  * inbox-targeting.test.ts
  *
- * Tests decision-id targeting (CARD-04 Gap 2) and pushBackCard (CARD-03 Gap 1)
+ * Tests decision-id targeting and pushBackCard
  * on the FileInboxRepository seam.
  *
  * Uses the mkdtempSync sandbox pattern from seam.test.ts:
@@ -68,7 +68,7 @@ function readInbox(sandboxRoot: string, agentName: string, participantName: stri
 }
 
 // ---------------------------------------------------------------------------
-// Suite 1: answerCard targets by decision-id (CARD-04 Gap 2)
+// Suite 1: answerCard targets by decision-id
 // ---------------------------------------------------------------------------
 
 describe("answerCard decision-id targeting (CARD-04)", () => {
@@ -139,7 +139,7 @@ describe("answerCard decision-id targeting (CARD-04)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite 2: pushBackCard (CARD-03)
+// Suite 2: pushBackCard
 // ---------------------------------------------------------------------------
 
 describe("pushBackCard by decision-id (CARD-03)", () => {
@@ -279,7 +279,7 @@ describe("writeReply traversal guard (mkdir-before-guard regression)", () => {
     // We construct a traversal that escapes the sandbox and lands inside the
     // 'outside' temp dir. Since task #77 added the shape guard at the shared
     // agentInboxDir sink, a "../" agentName is now rejected by that shape
-    // check (FND-04) BEFORE it ever reaches assertSafeWritePath's prefix
+    // check BEFORE it ever reaches assertSafeWritePath's prefix
     // assert. Either way the write is refused and nothing escapes the sandbox.
     //
     // sandbox = /tmp/mc-test-XXXX
@@ -327,9 +327,9 @@ describe("writeReply traversal guard (mkdir-before-guard regression)", () => {
     expect(wouldLandAt.startsWith(outside)).toBe(true);
 
     // The call must throw before any directory is created. The traversal is
-    // now rejected by the agentInboxDir shape guard (FND-04) first; if the
+    // now rejected by the agentInboxDir shape guard first; if the
     // input ever had a valid shape, assertSafeWritePath's prefix assert
-    // (FND-03) is the backstop.
+    // is the backstop.
     await expect(
       repo.writeReply(traversalAgentName, "alex", replyBlock)
     ).rejects.toThrow(/agent-name shape|FND-04|outside the sandbox root|FND-03/);

@@ -7,7 +7,7 @@
  * - done-note: present string / malformed JSON warns + plain-string fallback
  * - existing fixture round-trip is unaffected (regression check)
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect, vi } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";

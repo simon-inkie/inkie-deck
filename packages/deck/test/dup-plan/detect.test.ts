@@ -2,16 +2,16 @@
  * Unit tests for app/lib/dup-plan-detect.ts
  *
  * Tests cover:
- * - DETECT-02 named regression: May plan with June-spill items overlaps June plan
+ * - Named regression: May plan with June-spill items overlaps June plan
  * - Two scheduled date-range plans with intersecting item dates overlap
- * - Mixed-type overlap: date-range vs month (DETECT-02 robustness)
+ * - Mixed-type overlap: date-range vs month
  * - Inclusive boundary: plans sharing a single item day overlap
  * - Non-scheduled plans (draft/archived) excluded from check
  * - Same content_plan_id never self-overlaps
  * - A single scheduled plan produces no overlaps
  * - A clean set (distinct clients, non-overlapping intervals) yields empty
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { detectDupPlans } from "~/lib/dup-plan-detect.js";
@@ -58,7 +58,7 @@ function scheduledRange(
 }
 
 // ---------------------------------------------------------------------------
-// DETECT-02 named regression
+// Named regression: May plan with June-spill items overlaps June plan
 // ---------------------------------------------------------------------------
 
 describe("DETECT-02 regression: May plan with June-spill items overlaps June plan", () => {
@@ -128,7 +128,7 @@ describe("date-range plans: intersecting item dates produce an overlap result", 
 });
 
 // ---------------------------------------------------------------------------
-// Mixed-type overlap: date-range vs month (DETECT-02 robustness)
+// Mixed-type overlap: date-range vs month
 // ---------------------------------------------------------------------------
 
 describe("mixed-type overlap (date-range vs month)", () => {

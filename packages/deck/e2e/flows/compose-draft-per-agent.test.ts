@@ -1,6 +1,5 @@
 /**
  * compose-draft-per-agent.test.ts - per-agent compose draft persistence
- * (2026-06-12 Alex report).
  *
  * The Compose box is reused across thread navigation, so a single draft state
  * leaked across agents: text typed for one agent showed up in another, and was
@@ -9,7 +8,7 @@
  * This test navigates CLIENT-SIDE (sidebar link clicks, not page.goto) to
  * exercise the exact reuse path the bug lived in.
  *
- * VALID-03: read-only on fixtures (no compose submit). ASCII only (FND-05).
+ * Read-only on fixtures (no compose submit). ASCII only.
  */
 import { test, expect } from "@playwright/test";
 import { resetFixtureInbox, assertGitClean } from "./helpers.js";

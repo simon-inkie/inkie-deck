@@ -6,14 +6,14 @@
  * rehype-highlight) and remark-gfm for GitHub-flavored markdown support.
  * rehype-highlight runs after sanitize so syntax-highlighting classes survive.
  *
- * Component overrides (TASK-430):
+ * Component overrides:
  *   img: capped height (max-h-72), lazy-loaded, wrapped in an anchor to the
  *        same URL so clicking opens the full image in a new tab. Only applies
  *        to /attachments/ src URLs; external images keep default rendering.
  *        In panel context, relative image srcs are rewritten to /api/review-asset.
  *   a:   /attachments/ hrefs with a text-class extension (.md/.txt) render as a
  *        clickable chip that opens the review panel (via onOpenDoc callback).
- *        /attachments/ image chips keep new-tab behaviour (TASK-430 unchanged).
+ *        /attachments/ image chips keep new-tab behaviour.
  *        Path-shaped hrefs ending in .md/.txt/.markdown (starts with "/" or "~/")
  *        become panel-open clicks via onOpenDoc if provided.
  *        Other links open in a new tab (default).
@@ -28,8 +28,8 @@
  * All rendering is via react-markdown component output (sanitized).
  * No raw HTML injection is used anywhere in this component.
  *
- * No .server imports - components receive plain string props only (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - components receive plain string props only.
+ * ASCII only - no em-dashes.
  */
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
@@ -42,8 +42,8 @@ import { isReviewablePath, isPathShapedImage, reviewAssetUrl } from "~/lib/revie
 
 // ---------------------------------------------------------------------------
 // Sanitize schema: extend default to allow className on code/span/pre (for
-// rehype-highlight) and the inert checkbox attributes on input (for GFM
-// task lists - 2026-06-12). No new tags, no handlers, no style attrs; the
+// rehype-highlight) and the inert checkbox attributes on input (for GFM task
+// lists). No new tags, no handlers, no style attrs; the
 // task-list inputs are always rendered disabled by remark-gfm.
 // ---------------------------------------------------------------------------
 
@@ -100,7 +100,7 @@ function isAttachmentTextChip(href: string): boolean {
 /**
  * Returns true when an href is a path-shaped link to a doc the panel can open.
  * Delegates to isReviewablePath from review-exts so the allowlist (markdown +
- * code extensions from TASK-562) is always in sync with the server gate.
+ * code extensions from review-exts) is always in sync with the server gate.
  */
 function isPathShapedDocLink(href: string): boolean {
   return isReviewablePath(href);
@@ -209,7 +209,7 @@ function MarkdownImpl({ children, onOpenDoc, reviewDocBasePath }: MarkdownProps)
       //      /attachments/ guard keeps real attachment URLs on their own route
       //      (they also start with "/" and match isPathShapedImage).
       //   2. Otherwise, a relative src inside a reviewed doc: combine with the
-      //      doc base path (unchanged TASK-431 behaviour).
+      //      doc base path.
       let resolvedSrc = src;
       if (!src.startsWith("/attachments/") && isPathShapedImage(src)) {
         // Strip query/fragment and normalise percent-encoding so the path param
@@ -261,7 +261,7 @@ function MarkdownImpl({ children, onOpenDoc, reviewDocBasePath }: MarkdownProps)
         return <AttachmentChip href={href}>{linkChildren}</AttachmentChip>;
       }
 
-      // /attachments/ image chip: always opens new tab (TASK-430 unchanged).
+      // /attachments/ image chip: always opens new tab.
       if (href.startsWith("/attachments/")) {
         return <AttachmentChip href={href}>{linkChildren}</AttachmentChip>;
       }
@@ -289,7 +289,7 @@ function MarkdownImpl({ children, onOpenDoc, reviewDocBasePath }: MarkdownProps)
       // the review-asset endpoint so it opens the actual image bytes in a new
       // tab, instead of the raw path (which the browser resolves as a broken
       // relative URL against the current page). Images never open the review
-      // panel (TASK-431 decision), new tab only - so this deliberately does NOT
+      // panel (they open in a new tab only), so this deliberately does NOT
       // route through onOpenDoc.
       if (isPathShapedImage(href)) {
         // Strip query/fragment and normalise percent-encoding so the path param
@@ -322,7 +322,7 @@ function MarkdownImpl({ children, onOpenDoc, reviewDocBasePath }: MarkdownProps)
   );
 }
 
-// TASK-466 (safe memo re-do): memoise ONLY Markdown - the expensive render
+// Safe memo re-do: memoise ONLY Markdown - the expensive render
 // (parse + sanitize + highlight). The interactive cards are deliberately NOT
 // memoised, so they always re-render correctly on state change (no skipped-
 // render misselect - that was the bug the full-feed memo caused, twice). Here

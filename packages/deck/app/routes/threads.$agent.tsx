@@ -7,17 +7,17 @@
  * card blocks, and a Compose box at the bottom.
  *
  * Action dispatches compose/answer/pushback/custom intents to the seam:
- * - compose: inbox.writeReply (THRD-04), or inbox.customAnswerCard when the
- *   thread has an open decision card (TASK-475: free text resolves it)
- * - answer: inbox.answerCard (CARD-02, CARD-04)
- * - pushback: inbox.pushBackCard (CARD-03, CARD-04)
- * - custom: inbox.customAnswerCard (MC-02, user-authored answer)
+ * - compose: inbox.writeReply, or inbox.customAnswerCard when the
+ *   thread has an open decision card
+ * - answer: inbox.answerCard
+ * - pushback: inbox.pushBackCard
+ * - custom: inbox.customAnswerCard (user-authored answer)
  *
- * SEAM RULE (FND-02, T-01-12): this file imports ONLY makeStores from
+ * SEAM RULE: this file imports ONLY makeStores from
  * ~/lib/stores.server. It does NOT import node:fs, fs, or any direct
  * filesystem path. The static seam.test.ts enforces this at test time.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import {
   Fragment,
@@ -41,7 +41,7 @@ import { linkifyBlockBodies } from "~/lib/review.server";
 import { listCards } from "~/lib/projects.server";
 import type { MessageBlock } from "~/lib/blocks/model";
 import { isSuperseded } from "~/lib/blocks/working";
-// TASK-475: the shared "is this decision card still open" predicate. queue-derive
+// The shared "is this decision card still open" predicate. queue-derive
 // is a pure module (no fs, no .server suffix), so importing it here does not
 // breach the seam rule above.
 import { isDecisionResolved } from "~/lib/queue-derive";
@@ -80,7 +80,7 @@ import { MessageSquare } from "lucide-react";
 import { formatDayDivider, londonDayKey } from "~/lib/time";
 
 /**
- * TASK-465: cheap djb2 fingerprint of the captured agent pane. Only the hash is
+ * Cheap djb2 fingerprint of the captured agent pane. Only the hash is
  * sent to the client - the pane text never crosses into the chat payload.
  * Returns null when there is no pane (tmux unavailable / window gone), which the
  * client reads as "no activity signal".
@@ -100,7 +100,7 @@ function hashPane(pane: string | undefined): string | null {
 
 /**
  * Zod schema for the thread action's discriminated intent field.
- * Validates all four intents at the action boundary (T-02-09).
+ * Validates all four intents at the action boundary.
  * Exported as a named symbol so unit tests import the schema without
  * importing the full route module (which has server-side side-effects).
  */
@@ -108,10 +108,10 @@ export const intentSchema = z.discriminatedUnion("intent", [
   z.object({
     intent: z.literal("compose"),
     body: z.string().trim().min(1, "Reply body must not be empty"),
-    // Dictation provenance (2026-06-11): "1" when any of the body came from
+    // Dictation provenance: "1" when any of the body came from
     // voice transcription. Optional - absent on typed messages.
     dictated: z.string().optional(),
-    // Explicit write target for the deliver-on-switch path (TASK-500 #2a): when
+    // Explicit write target for the deliver-on-switch path: when
     // the user switches threads with a pending batch, the hook delivers to the OLD
     // agent by setting this field. Validated against the roster naming convention;
     // the underlying writeReply + assertSafeWritePath provides the confinement
@@ -177,29 +177,29 @@ export type IntentPayload = z.infer<typeof intentSchema>;
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
-// TASK-454: mini-card derivation moved to projects.shared.ts (toMiniCards) -
+// Mini-card derivation moved to projects.shared.ts (toMiniCards) -
 // the work panel is fed by the SHELL loader now. This loader keeps listCards
-// only for the ticketColumns synergy-badge map (TASK-445).
+// only for the ticketColumns synergy-badge map.
 
 export async function loader({ params, request }: Route.LoaderArgs) {
   const { inbox } = makeStores(process.env);
   const agent = params.agent;
 
-  // TASK-437 amendment: ?view=tmux flips the thread to the agent's live
+  // ?view=tmux flips the thread to the agent's live
   // pane. Unknown values fall back to chat.
-  // TASK-462: per-instance user + tmux gating (a disabled instance ignores
+  // Per-instance user + tmux gating (a disabled instance ignores
   // ?view=tmux entirely - server-side, not just hidden UI).
   const user = mcUser(process.env);
   const tmuxOn = tmuxEnabled(process.env);
   const requestUrl = new URL(request.url);
   const tmuxView = tmuxOn && requestUrl.searchParams.get("view") === "tmux";
 
-  // TASK-443 follow-on: Alex rendering the thread IS the read - flip the
+  // The operator rendering the thread IS the read - flip the
   // agent's sent blocks to read on disk BEFORE reading, so the receipt is
   // durable and this render already shows the flipped state. A receipt
   // failure (e.g. allowlist refusal on a direct URL) must never break the
   // render - log and serve the thread read-only.
-  // TASK-437 amendment: SKIPPED in tmux view - terminal mode renders no
+  // SKIPPED in tmux view - terminal mode renders no
   // messages, and the 1s poll would otherwise mark unseen messages read.
   // Render-is-the-receipt only counts when the messages actually render.
   if (!tmuxView) {
@@ -213,7 +213,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       );
     }
   }
-  // TASK-469: windowed read - the loader returns the last ~30 blocks (or, on a
+  // Windowed read - the loader returns the last ~30 blocks (or, on a
   // deep-link ?anchor=<card-id>, the window extended back to that card). The
   // client lazy-loads older chunks via api/thread-window on scroll-up. The
   // markRead flip above is deliberately UNTOUCHED: it operates whole-file, so
@@ -226,7 +226,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   } = await inbox.readBlocksWindow(agent, user, {
     anchorId: anchorParam ?? undefined,
   });
-  // TASK-645: rewrite bare / backticked review-root doc paths in each block body
+  // Rewrite bare / backticked review-root doc paths in each block body
   // into real clickable markdown links, at render time (retroactive - fixes
   // already-sent messages too). Reuses the review-panel containment validation;
   // paths outside a review root are left as plain text. Never throws.
@@ -235,13 +235,13 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // Pitfall 5: pass strings, not Date objects, across the serialization boundary.
   const now = resolveNow(process.env["MC_NOW"]);
   const nowIso = now.toISOString();
-  // Voice config: proxyUrl arrives via loader data so components never read env (FND-02).
+  // Voice config: proxyUrl arrives via loader data so components never read env.
   const voice = {
     proxyUrl: getVoiceProxyUrl(process.env),
     disabledReason: getVoiceDisabledReason(process.env),
   };
 
-  // TASK-445: build a ticketId -> {column, cardId} map for the synergy badge.
+  // Build a ticketId -> {column, cardId} map for the synergy badge.
   // Guarded listCards() (try/catch -> {} exactly like home.tsx).
   const ticketColumns: Record<string, { column: string; cardId: string }> = {};
   try {
@@ -257,7 +257,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     // Projects root not set or unreadable - badge map absent.
   }
 
-  // TASK-457: avatar URLs for every distinct sending agent in this thread
+  // Avatar URLs for every distinct sending agent in this thread
   // (cross-posts exist - blocks are not all from the thread agent).
   const avatarUrls: Record<string, string> = {};
   for (const b of blocks) {
@@ -267,12 +267,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     if (url !== undefined) avatarUrls[from] = url;
   }
 
-  // TASK-437 amendment: capture the agent's live pane only in tmux view.
+  // Capture the agent's live pane only in tmux view.
   const tmux = tmuxView
     ? { pane: captureTmuxPane(process.env, agent) }
     : undefined;
 
-  // TASK-465 (working indicator, option A): when Alex's last message is
+  // Working indicator (option A): when the operator's last message is
   // unanswered, fingerprint the agent's live tmux pane so the client can show a
   // "working" indicator while the pane keeps stirring. Guarded to the pending
   // case so we never spawn a tmux subprocess per poll on an already-answered
@@ -287,7 +287,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   return {
     agent,
     blocks,
-    // TASK-469: absolute index of blocks[0] in the full thread + total block
+    // Absolute index of blocks[0] in the full thread + total block
     // count - the client's pagination cursor and ordering base.
     startIndex,
     totalCount,
@@ -308,7 +308,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 /**
  * Intent-dispatch action for the thread view.
  *
- * Reads formData, validates against intentSchema (T-02-09), then routes to
+ * Reads formData, validates against intentSchema, then routes to
  * the appropriate seam method. Unknown intents and malformed payloads return
  * { ok: false, error } rather than throwing (fail-safe).
  *
@@ -354,44 +354,44 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   const raw = Object.fromEntries(formData);
 
-  // Validate at the boundary (T-02-09: parse-don't-validate)
+  // Validate at the boundary
   const parsed = intentSchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.flatten() };
   }
 
   const { inbox } = makeStores(process.env);
-  // TASK-462: per-instance user - replies and card answers carry this identity.
+  // Per-instance user - replies and card answers carry this identity.
   const user = mcUser(process.env);
 
   const payload = parsed.data;
 
-  // #91: when an idle agent receives a human message, poke its tmux pane so it
+  // When an idle agent receives a human message, poke its tmux pane so it
   // picks the message up now (hook-inject only delivers on the agent's next
   // turn; an idle agent takes no turn on its own). Fire-and-forget - NOT
   // awaited - because the send-keys path sleeps ~1s before Enter and the
   // operator's send must stay instant. Gated to tmux-enabled instances
-  // (Robin's is off). wakeIdleAgent is a no-op on an active pane.
+  // (tmux is off on some instances). wakeIdleAgent is a no-op on an active pane.
   const wakeTarget = (target: string) => {
     if (tmuxEnabled(process.env)) {
       void wakeIdleAgent(process.env, target, user).catch(() => {});
     }
   };
 
-  // TASK-524: text-carry push for the compose (chat-box) path. Supersedes the
-  // generic #91 wake nudge on this path - the message text IS the wake, so we
+  // Text-carry push for the compose (chat-box) path. Supersedes the
+  // generic wake nudge on this path - the message text IS the wake, so we
   // push it directly rather than also firing a "check your inbox" nudge (avoids
   // a double-fire). Card paths (answer/custom/pushback) carry no free text, so
   // they keep the generic wakeTarget call unchanged.
   // `dictated` rides along rather than being inferred at the seam: the flag is a
   // property of how the message was COMPOSED, and only this action knows it. It is
-  // written into the stored block a few lines below (rawMeta) and was, until
-  // 2026-08-11, dropped here, so the pane got transcription with no sign it was
-  // transcription. Both call sites pass it; the compose path is the reported case
-  // and the custom-answer-card path drops it identically if you only fix the one.
-  // `dictated` is REQUIRED here, deliberately, while the two exported functions it
-  // calls keep their defaults (peer review of !42). Those have one caller each
-  // and stable signatures; this closure is the seam the bug actually lived at. A
+  // written into the stored block a few lines below (rawMeta) and was dropped
+  // here, so the pane got transcription with no sign it was transcription.
+  // Both call sites pass it; the compose path is the reported case and the
+  // custom-answer-card path drops it identically if you only fix the one.
+  // `dictated` is REQUIRED here, deliberately, while the two exported functions
+  // it calls keep their defaults. Those have one caller each and stable
+  // signatures; this closure is the seam the bug actually lived at. A
   // default here means a third push path added in six months silently reintroduces
   // the drop with no error, no failing test and no reviewer prompt. Given the family
   // of MC defects around this one is fields going missing at seams where nobody was
@@ -405,13 +405,13 @@ export async function action({ request, params }: Route.ActionArgs) {
   };
 
   if (payload.intent === "compose") {
-    // Derived ONCE for this branch (peer review of !42). It was computed
+    // Derived ONCE for this branch. It was computed
     // separately at each of the three sites below; if those ever diverged, the
     // stored block and the pane would disagree about what the message is, which
     // is precisely the defect this change exists to fix.
     const isDictated = payload.dictated === "1";
-    // THRD-04: build a reply MessageBlock and write it through the seam
-    // TASK-500 #2a: deliver-on-switch path sets targetAgent to the OLD thread's
+    // Build a reply MessageBlock and write it through the seam.
+    // The deliver-on-switch path sets targetAgent to the OLD thread's
     // agent. Normal same-thread delivery omits it (falls back to params.agent).
     // writeTarget is the single correct identifier for "which thread this reply
     // is actually going into" - derive it FIRST so the subject read below keys
@@ -431,7 +431,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       .find((b) => b.header.from !== user);
     const lastAgentSubject = lastAgentBlock?.header.subject;
 
-    // TASK-475: a free-text reply into a thread that still has an open decision
+    // A free-text reply into a thread that still has an open decision
     // card resolves that card as its custom (option C) answer, instead of
     // landing as a plain message and leaving the card awaiting a tap forever.
     // Stale-open cards bury the live ask (an old poke-nova card sat open behind
@@ -444,11 +444,11 @@ export async function action({ request, params }: Route.ActionArgs) {
     //   so action cards are excluded by construction.
     // - Tangential free text auto-resolves the card too. Accepted: a wrong
     //   auto-resolve is re-cardable, a stale-open card is not visible at all.
-    // EMERGENCY DISABLE (2026-07-29, Alex): the "most-recent open card" scan
-    // has no age bound, so it walked back WEEKS of history and silently
-    // auto-resolved long-abandoned cards with unrelated free text (confirmed:
-    // a June 11 decision card on Summit's thread got overwritten by a July 29
-    // message about an unrelated topic). Disabled pending a proper age-bounded
+    // EMERGENCY DISABLE: the "most-recent open card" scan has no age bound, so
+    // it walked back WEEKS of history and silently auto-resolved long-abandoned
+    // cards with unrelated free text (confirmed: a weeks-old decision card on
+    // one agent's thread got overwritten by a later message about an unrelated
+    // topic). Disabled pending a proper age-bounded
     // fix - falls through to the plain writeReply path below unconditionally.
     const INK_475_DISABLED = true;
     const openCard = INK_475_DISABLED
@@ -470,15 +470,14 @@ export async function action({ request, params }: Route.ActionArgs) {
         payload.body,
       );
       const alreadyAnswered = "alreadyAnswered" in result;
-      // TASK-524 applies identically here: the text IS the wake, whichever seam
+      // The text-carry push applies identically here: the text IS the wake, whichever seam
       // wrote it. Mirrors the intent === "custom" return shape so the client
       // needs no new branching.
       // Dictation rides this path too, BUT NOTE THIS BRANCH IS CURRENTLY DEAD:
-      // INK_475_DISABLED above is hard-true (Alex's emergency disable,
-      // 2026-07-29), so openCard is always undefined and this never runs. The
-      // flag is threaded anyway so re-enabling TASK-475 does not silently
-      // reintroduce the drop, but it buys nothing today and must not be counted
-      // as covering the live custom-answer path.
+      // INK_475_DISABLED above is hard-true, so openCard is always undefined and
+      // this never runs. The flag is threaded anyway so re-enabling the
+      // auto-resolve does not silently reintroduce the drop, but it buys nothing
+      // today and must not be counted as covering the live custom-answer path.
       //
       // The LIVE voice-answers-a-card case is `intent === "custom"` further
       // down, which calls wakeTarget (a generic nudge, no text) and stores only
@@ -508,7 +507,7 @@ export async function action({ request, params }: Route.ActionArgs) {
     };
 
     await inbox.writeReply(writeTarget, user, replyBlock);
-    // TASK-524: push the actual message text to the pane (supersedes #91 generic
+    // Push the actual message text to the pane (supersedes the generic
     // wake on this path - the text IS the wake, no double-fire needed).
     // Same dictated flag that went into rawMeta above, so the pane and the stored
     // block now agree about what this message is.
@@ -517,7 +516,7 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 
   if (payload.intent === "answer") {
-    // CARD-02, CARD-04: answer the card by stable decision-id
+    // Answer the card by stable decision-id
     const result = await inbox.answerCard(
       agent,
       user,
@@ -594,7 +593,7 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 
   // payload.intent === "pushback"
-  // CARD-03, CARD-04: push back by stable decision-id
+  // Push back by stable decision-id
   const result = await inbox.pushBackCard(
     agent,
     user,
@@ -611,7 +610,7 @@ export async function action({ request, params }: Route.ActionArgs) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// TASK-469: chunked lazy-load plumbing (client-side)
+// Chunked lazy-load plumbing (client-side)
 // ---------------------------------------------------------------------------
 
 /** Window block typed as the loader serialises it (plain JSON shape). */
@@ -643,11 +642,10 @@ interface RetainedBlocks {
 /**
  * Form intents that ALWAYS mutate an EXISTING block in place (card answers,
  * action done/dismiss). Completion of one of these must refresh the retained
- * below-window copies, or the stale unanswered card keeps rendering
- * (2026-06-11 "clicking doesn't work" fix). Plain reply/compose appends a
- * NEW tail block instead - the live window covers those.
+ * below-window copies, or the stale unanswered card keeps rendering.
+ * Plain reply/compose appends a NEW tail block instead - the live window covers those.
  *
- * "compose" is deliberately NOT in this set even though TASK-475 gave it a
+ * "compose" is deliberately NOT in this set even though the free-text auto-resolve gave it a
  * card-flipping path: see refreshesRetainedBlocks below.
  */
 const CARD_ACTION_INTENTS = new Set([
@@ -678,8 +676,8 @@ export interface RefreshGateFetcher {
  * live window, so its completion has to re-fetch the retained range?
  *
  * True for every CARD_ACTION_INTENTS intent, plus the one compose case that
- * also flips a card in place: TASK-475's free-text auto-resolve (a reply typed
- * into a thread with an open decision card resolves it as the custom answer).
+ * also flips a card in place: the free-text auto-resolve (a reply typed into a
+ * thread with an open decision card resolves it as the custom answer).
  *
  * The compose test is deliberately NOT `intent === "compose"`. Compose is
  * overwhelmingly a PLAIN reply, which appends a tail block the live window
@@ -734,7 +732,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   const docParam = searchParams.get(DOC_PARAM);
 
   // ?debug=1 enables the voice debug panel (pure client-side UI state, not a loader value).
-  // Read via useSearchParams so it is never in the server loader (FND-02).
+  // Read via useSearchParams so it is never in the server loader.
   const debugParam = searchParams.get("debug");
   const debugEnabled = debugParam === "1";
 
@@ -748,14 +746,14 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   const composeRef = useRef<HTMLDivElement>(null);
 
   // ---------------------------------------------------------------------------
-  // TASK-500: typing-aware message batching. The batch fetcher fires the real
+  // Typing-aware message batching. The batch fetcher fires the real
   // intent=compose POST once the pending batch settles (or on send-now). The
   // pending batch state lives HERE (not in Compose) so the PendingBubble can
   // render in the message list above the composer.
   // ---------------------------------------------------------------------------
 
   const batchFetcher = useFetcher();
-  // A separate fetcher for recovery submits (2026-07-28). This route already
+  // A separate fetcher for recovery submits. This route already
   // learned once, the hard way, that consecutive submits on ONE fetcher
   // abort each other in React Router 7.16. That fix scoped recovery to exactly
   // one submit per mount, but batchFetcher is also used for onDeliver (normal
@@ -766,7 +764,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   // would abort the first. Separate fetcher instances can never contend.
   const recoveryFetcher = useFetcher();
 
-  // TASK-500.1: per-browser batch display preferences (indicator mode + hold time).
+  // Per-browser batch display preferences (indicator mode + hold time).
   // Single source of truth: useBatchPrefs called once here, passed down to Compose.
   const [batchPrefs, setBatchPrefs] = useBatchPrefs();
 
@@ -779,8 +777,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   // Safe today either way - onDeliver only runs from timers and effects, long
   // after this line - but a `const` read from a callback declared above it is a
   // latent TDZ the moment the hook grows any synchronous delivery path, and this
-  // is a file where "reachable at the wrong point in the commit" was the bug
-  // (CodeRabbit). Its refresh layout effect stays below, where pendingBatch is
+  // is a file where "reachable at the wrong point in the commit" was the bug.
+  // Its refresh layout effect stays below, where pendingBatch is
   // in scope. See the block there for what it holds and why.
   const durabilityRef = useRef({
     ownerKey: null as string | null,
@@ -799,7 +797,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         fd.set("intent", "compose");
         fd.set("body", body);
         if (dictated) fd.set("dictated", "1");
-        // TASK-500 #2a: the action reads targetAgent and writes to that inbox
+        // The action reads targetAgent and writes to that inbox
         // instead of params.agent. Now set on EVERY delivery, not just
         // deliver-on-switch: the two agree in the normal case, and where they
         // disagree the owner is right and the mounted route is wrong.
@@ -815,8 +813,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
       },
     });
 
-  // --- Durability for the pre-delivery window (2026-07-26) -------------------
-  // Between submit and settle the batch lives ONLY in this tab. Alex lost a
+  // --- Durability for the pre-delivery window -------------------
+  // Between submit and settle the batch lives ONLY in this tab. The operator lost a
   // link that way: it was never written anywhere, so unlike the other two
   // delivery defects it left no artefact to find. See app/lib/batch-durability.
   // Carries ownerKey so the beacon addresses the batch it is actually holding.
@@ -832,7 +830,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   // Updated in a LAYOUT EFFECT, never during render. React can replay or
   // discard a render, and a ref written in the render body can therefore hold
   // a snapshot that was never committed - which pagehide would then send as if
-  // it were the real batch (CodeRabbit).
+  // it were the real batch.
   useLayoutEffect(() => {
     durabilityRef.current = {
       ownerKey: pendingBatch.ownerKey,
@@ -843,7 +841,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
 
   // Recovery runs FIRST, and the mirror is gated behind it.
   //
-  // CodeRabbit Critical 1: the mirror effect used to be declared above the
+  // Review finding: the mirror effect used to be declared above the
   // recovery effect. React runs mount effects in declaration order, and on
   // mount pendingBatch.paragraphs is [] (the hook knows nothing about a prior
   // session), so saveBatch fired with an empty array and cleared the very
@@ -923,7 +921,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
       if (flushViaBeacon(window.location.pathname, body, dictated, owner)) {
         clearBatch(owner);
         durabilityRef.current = { ownerKey: null, paragraphs: [], dictated: false };
-        // CodeRabbit Major 2: visibilitychange fires on an app switch WITHOUT
+        // Review finding: visibilitychange fires on an app switch WITHOUT
         // unloading, so the tab often survives. Left alone, the settle timer
         // keeps running in memory and onDeliver sends the same body a second
         // time. Cancelling the batch is what makes the beacon a handover
@@ -943,7 +941,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   }, [agent]);
 
 
-  // TASK-500.5: when the user cancels a pending batch, capture the held text
+  // When the user cancels a pending batch, capture the held text
   // BEFORE calling batchCancel (which resets paragraphs to []), then hand it
   // back to Compose via restoreDraft so the user can edit and resend rather
   // than having to retype.
@@ -980,7 +978,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
     [batchOnSubmit]
   );
 
-  // TASK-500.4: live draft preview. Tracks the in-progress composer text so the
+  // Live draft preview. Tracks the in-progress composer text so the
   // pending bubble can show it while the user is typing a follow-up (SUSPENDED).
   // Only passed to the bubble components when livePreview pref is on AND the
   // batch is in SUSPENDED phase -- the gate is computed at render time below.
@@ -988,11 +986,11 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   const livePreviewText =
     batchPrefs.livePreview && pendingBatch.phase === "SUSPENDED" ? liveDraft : "";
 
-  // TASK-465 (working indicator, option A): the loader fingerprints the agent's
-  // tmux pane while Alex's last message is unanswered. When that fingerprint
-  // CHANGES between polls, the agent is stirring - show "working" on Alex's
-  // last bubble for a short grace window, re-extended each poll the pane keeps
-  // moving. Clears when the agent replies (the bubble is no longer the latest)
+  // Working indicator (option A): the loader fingerprints the agent's tmux
+  // pane while the operator's last message is unanswered. When that fingerprint
+  // CHANGES between polls, the agent is stirring - show "working" on the
+  // operator's last bubble for a short grace window, re-extended each poll the
+  // pane keeps moving. Clears when the agent replies (the bubble is no longer the latest)
   // or the pane goes quiet for the grace window. Heuristic by design.
   const AGENT_WORKING_GRACE_MS = 6000;
   const prevPaneHashRef = useRef<string | null>(null);
@@ -1046,7 +1044,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   // Deep-link from the needs-you bell: /threads/<agent>#<decisionId> scrolls
   // the target decision card into view inside the conversation pane.
   //
-  // TASK-469: with the windowed loader the target can sit OUTSIDE the loaded
+  // With the windowed loader the target can sit OUTSIDE the loaded
   // window (the hash never reaches the server). On a miss, set ?anchor=<id>
   // (replace - no history spam, hash preserved) so the loader extends the
   // window back to the card; this effect re-runs when the extended window
@@ -1076,16 +1074,16 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   }, [location.hash, agent, startIndex, searchParams, navigate]);
 
   // ---------------------------------------------------------------------------
-  // TASK-454: scroll-to-latest + conditional follow-bottom
+  // Scroll-to-latest + conditional follow-bottom
   // ---------------------------------------------------------------------------
   // nearBottomRef tracks live scroll position; the effect below may only move
-  // the viewport per shouldFollow's truth table (455 pin: NEVER yank the user
-  // out of history). Keyed on a stable scalar so the 3s polls (TASK-455) only
+  // the viewport per shouldFollow's truth table (pinned by tests: NEVER yank the
+  // user out of history). Keyed on a stable scalar so the 3s polls only
   // re-fire it when content actually changes - the blocks array gets a new
   // identity every revalidation.
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
-  // Atlas fold: the route component stays MOUNTED across /threads/a ->
+  // The route component stays MOUNTED across /threads/a ->
   // /threads/b (param change). "Initial" is per-AGENT, not per-mount, or
   // thread B silently loses its scroll-to-latest jump.
   const seenAgentRef = useRef<string | undefined>(undefined);
@@ -1099,7 +1097,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
     );
   }
 
-  // TASK-469: keyed on totalCount (not the window length, which is capped at
+  // Keyed on totalCount (not the window length, which is capped at
   // the window limit) + the tail timestamp. Prepending older chunks changes
   // neither, so lazy-loading history NEVER fires the follow effect.
   const lastBlockTimestamp = blocks[blocks.length - 1]?.header.timestamp ?? "";
@@ -1126,7 +1124,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
   }, [agent, contentKey]);
 
   // ---------------------------------------------------------------------------
-  // TASK-469: chunked lazy-load - retained blocks, load-older, scroll anchoring
+  // Chunked lazy-load - retained blocks, load-older, scroll anchoring
   // ---------------------------------------------------------------------------
 
   // Retained blocks (older chunks + blocks that slid out of the live window).
@@ -1244,14 +1242,14 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
     })();
   };
 
-  // Card-action staleness fix (2026-06-11 "clicking doesn't work" round two):
+  // Card-action staleness fix:
   // blocks BELOW the live window render from the retained map, which loader
   // revalidation never refreshes - so answering/doing/dismissing a card down
   // there left the stale unanswered copy on screen and the tap looked dead.
   // Watch the page's fetchers; when a card action completes, re-fetch the
   // below-window range and OVERWRITE the retained copies (unlike the
   // lazy-load merge, which deliberately skips existing keys).
-  // TASK-475 (CodeRabbit, MR !32): an TASK-475 compose auto-resolve flips a card
+  // A compose auto-resolve flips a card
   // in place too, so it joins this rising edge - but only that one, gated on
   // the action's return shape rather than the intent. See
   // refreshesRetainedBlocks.
@@ -1431,11 +1429,11 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
             : "flex h-full w-full flex-col"
         }
       >
-        {/* TASK-454: header row + work-strip row removed - identity lives in
+        {/* Header row + work-strip row removed - identity lives in
             the app bar (AppShell), the strip lives in the compose footer.
             Messages start at the top of the viewport. */}
 
-        {/* TASK-437 amendment: terminal mode - the agent's live pane replaces
+        {/* Terminal mode - the agent's live pane replaces
             the message history. v2: the pane is read/write - sendTarget wires
             the compose row to send-keys into this agent's live session. */}
         {tmux !== undefined ? (
@@ -1464,7 +1462,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
               />
             ) : (
               <div className="flex flex-col">
-                {/* TASK-469: top sentinel - scrolling it into view lazy-loads
+                {/* Top sentinel - scrolling it into view lazy-loads
                     the previous chunk of history. Doubles as the affordance. */}
                 {hasOlder ? (
                   <div
@@ -1476,19 +1474,19 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                   </div>
                 ) : null}
                 {rendered.map(({ absIndex, block }, index) => {
-                  // THRD-02: the instance user's own blocks are visually distinguished.
+                  // The instance user's own blocks are visually distinguished.
                   const own = block.header.from === user;
 
                   // Day-divider before the first block, and whenever the
                   // London-local calendar day changes from the previous block.
-                  // TASK-469: computed over the LOADED list - when an older
+                  // Computed over the LOADED list - when an older
                   // chunk prepends, the old boundary recomputes naturally.
                   const prev = index > 0 ? rendered[index - 1]!.block : undefined;
                   const showDivider =
                     !prev ||
                     londonDayKey(prev.header.timestamp) !==
                       londonDayKey(block.header.timestamp);
-                  // TASK-435.1: a malformed-timestamp block formats to "" -
+                  // A malformed-timestamp block formats to "" -
                   // suppress the empty divider so a bad block does not leave a
                   // blank rule (the block itself still renders; cosmetic).
                   const dividerLabel = showDivider
@@ -1499,10 +1497,10 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                       <DayDivider label={dividerLabel} />
                     ) : null;
 
-                  // CARD-01: card blocks render as interactive DecisionCard;
+                  // Card blocks render as interactive DecisionCard;
                   // action card blocks render as ActionCard;
                   // malformed cards fall back to plain bubble (card undefined
-                  // after parser normalisation). THRD-03: plain blocks render
+                  // after parser normalisation). Plain blocks render
                   // as MessageBubble.
                   const isRespondingToThis =
                     block.card !== undefined &&
@@ -1562,7 +1560,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                       />
                     );
 
-                  // TASK-469: stable key - the absolute index prefix is stable
+                  // Stable key - the absolute index prefix is stable
                   // (append-only file) and keeps the spec'd timestamp/from/id
                   // key unique when two plain messages share a second. A
                   // positional key would remount every card on each prepend.
@@ -1581,11 +1579,11 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
           </div>
         </div>
 
-        {/* TASK-500: pending outbound batch indicator. Renders OUTSIDE the
+        {/* Pending outbound batch indicator. Renders OUTSIDE the
             scroll area -- pinned between the end of the message list and the
-            composer. TASK-500.1: display mode driven by batchPrefs.holdIndicator.
-            Placement is the principal's design call; do not move without an
-            explicit design decision. */}
+            composer. Display mode driven by batchPrefs.holdIndicator.
+            Placement is deliberate; do not move without an explicit design
+            decision. */}
         <div className="px-6">
           <div className="mx-auto max-w-2xl">
             {batchPrefs.holdIndicator === "pill" ? (
@@ -1625,7 +1623,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
           </div>
         ) : null}
 
-        {/* THRD-04: compose box pinned at the bottom of the thread */}
+        {/* Compose box pinned at the bottom of the thread */}
         <div ref={composeRef}>
           <Compose
             draftKey={agent}
@@ -1651,7 +1649,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         )}
       </div>
 
-      {/* TASK-431: Review panel (split on desktop, full-screen sheet on mobile) */}
+      {/* Review panel (split on desktop, full-screen sheet on mobile) */}
       <ReviewPanel />
 
       {/* File pinner: per-thread Files panel (slide-out on desktop, sheet on
@@ -1662,7 +1660,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
 }
 
 /**
- * Scoped error boundary (2026-06-11 lifeline hardening): a failure in this
+ * Scoped error boundary: a failure in this
  * route renders here, inside the shell - the sidebar and the rest of MC stay
  * usable. Real error text shown (tailnet-only internal tool).
  */

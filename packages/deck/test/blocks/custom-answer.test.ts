@@ -8,9 +8,9 @@
  * - Idempotency: already-answered card is a no-op
  * - Mutual exclusion with applyAnswer (answered-then-custom is a no-op)
  * - Reply block shape (from: alex, status: sent, answer: custom in rawMeta)
- * - No em-dashes anywhere (FND-05)
+ * - No em-dashes anywhere
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";
@@ -211,7 +211,7 @@ describe("applyCustomAnswer - round-trip (apply, serialize, re-parse)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Idempotency (CARD-04)
+// Idempotency
 // ---------------------------------------------------------------------------
 
 describe("applyCustomAnswer - idempotency (CARD-04)", () => {
@@ -309,7 +309,7 @@ describe("applyCustomAnswer - mutual exclusion with existing answered: line", ()
 });
 
 // ---------------------------------------------------------------------------
-// No em-dashes (FND-05)
+// No em-dashes
 // ---------------------------------------------------------------------------
 
 describe("applyCustomAnswer - no em-dashes (FND-05)", () => {

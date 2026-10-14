@@ -2,11 +2,11 @@
  * voice.server.ts - Seam module for voice proxy configuration.
  *
  * Reads VOICE_PROXY_URL from the server environment and provides it to
- * loaders. Components never read env directly (FND-02); they receive
+ * loaders. Components never read env directly; they receive
  * voiceProxyUrl via loader data.
  *
  * The .server suffix keeps this module out of the client bundle.
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 /**
@@ -18,7 +18,7 @@ export function getVoiceProxyUrl(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * Why the mic is disabled, or null when voice is on (issue #27).
+ * Why the mic is disabled, or null when voice is on.
  *
  * This module is under app/, where the speech key's name is banned
  * (test/seam.test.ts), so the app never looks at the key. The launchers, which

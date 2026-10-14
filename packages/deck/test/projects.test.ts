@@ -1,5 +1,5 @@
 /**
- * test/projects.test.ts - Unit tests for app/lib/projects.server.ts (TASK-432).
+ * test/projects.test.ts - Unit tests for app/lib/projects.server.ts.
  *
  * Covers per the plan section 6:
  *   - Frontmatter parse matrix:
@@ -15,9 +15,9 @@
  *   - seam: resolveProjectsRoot throws on unset/relative.
  *   - applyTargetedEdits: targeted line edit correctness.
  *
- * Writes only to os.tmpdir() (VALID-03). assertGitClean is called in afterEach.
+ * Writes only to os.tmpdir(). assertGitClean is called in afterEach.
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -115,23 +115,23 @@ function assertGitClean(): void {
       file.startsWith("scripts/detect-dup-plans.ts") ||
       file.startsWith("e2e/flows/responsive.test.ts") ||
       file.startsWith("app/root.tsx") ||
-      // TASK-433: voice proxy files (new server/ directory shown as "?? server/")
+      // voice proxy files (new server/ directory shown as "?? server/")
       file.startsWith("server/") ||
       file.startsWith("app/lib/voice.server.ts") ||
       file.startsWith("test/voice-relay.test.ts") ||
       file.startsWith("test/voice-compose.test.ts") ||
-      // TASK-446: additive voice inserts + silence auto-stop
+      // additive voice inserts + silence auto-stop
       file.startsWith("app/lib/voice-insert.ts") ||
       file.startsWith("test/voice-insert.test.ts") ||
-      // TASK-435 (platform work in flight): daemon + Tailscale dev allowance
+      // daemon + Tailscale dev allowance
       file.startsWith("vite.config.ts") ||
       file.startsWith(".gitignore") ||
       file.startsWith("scripts/start-production.mjs") ||
-      // TASK-435.1: time.ts crash guard + regression
+      // time.ts crash guard + regression
       file.startsWith("app/lib/time.ts") ||
       file.startsWith("test/time.test.ts") ||
       file.startsWith("e2e/flows/malformed-block.test.ts") ||
-      // TASK-437: tmux Team tab + per-thread toggle amendment
+      // tmux Team tab + per-thread toggle
       file.startsWith("app/lib/tmux.server.ts") ||
       file.startsWith("app/components/TmuxPane.tsx") ||
       file.startsWith("app/routes/tmux.tsx") ||
@@ -139,13 +139,13 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/tmux-tab.test.ts") ||
       file.startsWith("e2e/setup.mjs") ||
       file.startsWith("docs/plans/TASK-437-tmux-tab-PLAN.md") ||
-      // TASK-456: resizable panels
+      // resizable panels
       file.startsWith("app/components/ui/resizable.tsx") ||
       file.startsWith("e2e/flows/resizable.test.ts") ||
       file.startsWith("docs/plans/TASK-456-resizable-panels-PLAN.md") ||
       file.startsWith("package.json") ||
       file.startsWith("pnpm-lock.yaml") ||
-      // TASK-457: avatar render side
+      // avatar render side
       file.startsWith("app/lib/avatars.server.ts") ||
       file.startsWith("app/routes/avatars.$agent.tsx") ||
       file.startsWith("app/routes.ts") ||
@@ -154,24 +154,24 @@ function assertGitClean(): void {
       file.startsWith("test/avatars.test.ts") ||
       file.startsWith("e2e/flows/avatars.test.ts") ||
       file.startsWith("docs/plans/TASK-457-avatar-render-PLAN.md") ||
-      // TASK-454: vertical real-estate + scroll-to-latest
+      // vertical real-estate + scroll-to-latest
       file.startsWith("app/lib/scroll-follow.ts") ||
       file.startsWith("test/scroll-follow.test.ts") ||
       file.startsWith("e2e/flows/scroll-follow.test.ts") ||
       file.startsWith("docs/plans/TASK-454-vertical-real-estate-PLAN.md") ||
-      // TASK-455: live updates v1
+      // live updates v1
       file.startsWith("app/lib/use-live-revalidate.ts") ||
       file.startsWith("test/use-live-revalidate.test.ts") ||
       file.startsWith("e2e/flows/live-updates.test.ts") ||
       file.startsWith("app/components/AppShell.tsx") ||
       file.startsWith("docs/plans/TASK-455-live-updates-v1-PLAN.md") ||
-      // TASK-453: done-card polish
+      // done-card polish
       file.startsWith("app/components/ActionCard.tsx") ||
       file.startsWith("app/components/DecisionCard.tsx") ||
       file.startsWith("e2e/flows/tap-to-answer.test.ts") ||
       file.startsWith("e2e/flows/action-card.test.ts") ||
       file.startsWith("docs/plans/TASK-453-done-card-polish-PLAN.md") ||
-      // TASK-443: read ticks
+      // read ticks
       file.startsWith("test/skeleton.test.ts") ||
       file.startsWith("test/blocks/roundtrip.test.ts") ||
       file.startsWith("app/components/MessageBubble.tsx") ||
@@ -183,7 +183,7 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/voice.test.ts") ||
       file.startsWith("docs/plans/TASK-433-voice-bug-debug-panel-PLAN.md") ||
       file.startsWith("tsconfig.json") ||
-      // TASK-438: action cards + needs-you queue
+      // action cards + needs-you queue
       file.startsWith("app/lib/blocks/answer.ts") ||
       file.startsWith("app/lib/blocks/index.ts") ||
       file.startsWith("app/lib/blocks/model.ts") ||
@@ -196,25 +196,25 @@ function assertGitClean(): void {
       file.startsWith("e2e/flows/action-card.test.ts") ||
       file.startsWith("e2e/flows/needs-you.test.ts") ||
       file.startsWith("docs/plans/TASK-438-needs-you-PLAN.md") ||
-      // TASK-439: card detail + work strip
+      // card detail + work strip
       file.startsWith("app/components/CardDetail.tsx") ||
       file.startsWith("app/components/WorkStrip.tsx") ||
       file.startsWith("fixtures/projects/task-439-card-detail.md") ||
       file.startsWith("e2e/fixtures/test-plan.md") ||
       file.startsWith("e2e/flows/card-detail.test.ts") ||
       file.startsWith("docs/plans/TASK-439-card-detail-work-strip-PLAN.md") ||
-      // TASK-440: needs-you v1.1 (dismiss, done-note, blocked-on, sections, timestamps)
+      // needs-you v1.1 (dismiss, done-note, blocked-on, sections, timestamps)
       file.startsWith("fixtures/projects/task-398-portal-readonly.md") ||
       file.startsWith("docs/plans/TASK-440-needs-you-v1.1-PLAN.md") ||
       file.startsWith("e2e/flows/needs-you.test.ts") ||
-      // TASK-442: morning brief panel
+      // morning brief panel
       file.startsWith("app/lib/briefs.server.ts") ||
       file.startsWith("app/components/MorningBrief.tsx") ||
       file.startsWith("test/briefs.test.ts") ||
       file.startsWith("fixtures/inbox/quill/briefs/") ||
       file.startsWith("e2e/flows/morning-brief.test.ts") ||
       file.startsWith("docs/plans/TASK-442-morning-brief-PLAN.md") ||
-      // TASK-444: working state indicator
+      // working state indicator
       file.startsWith("app/lib/blocks/working.ts") ||
       file.startsWith("app/lib/blocks/model.ts") ||
       file.startsWith("app/lib/blocks/header.ts") ||
@@ -226,7 +226,7 @@ function assertGitClean(): void {
       file.startsWith("fixtures/inbox/scribe/inbox/alex.md") ||
       file.startsWith("e2e/flows/read-ticks.test.ts") ||
       file.startsWith("docs/plans/TASK-444-working-state-PLAN.md") ||
-      // TASK-445: ticket field + ticket-thread lens
+      // ticket field + ticket-thread lens
       file.startsWith("app/lib/ticket.ts") ||
       file.startsWith("app/lib/ticket-thread.ts") ||
       file.startsWith("app/lib/blocks/model.ts") ||
@@ -243,16 +243,16 @@ function assertGitClean(): void {
       file.startsWith("test/ticket-thread.test.ts") ||
       file.startsWith("e2e/flows/ticket-lens.test.ts") ||
       file.startsWith("docs/plans/TASK-445-ticket-field-lens-PLAN.md") ||
-      // TASK-450: attachment chips + clipboard paste
+      // attachment chips + clipboard paste
       file.startsWith("app/lib/compose-attach.ts") ||
       file.startsWith("test/compose-attach.test.ts") ||
       file.startsWith("docs/plans/TASK-450-attachment-chips-paste-PLAN.md") ||
-      // 2026-06-11 lifeline hardening: error boundaries + crash guards
+      // error boundaries + crash guards
       file.startsWith("app/components/RouteErrorPanel.tsx") ||
-      // TASK-462: per-instance user (multi-user fork prep)
+      // per-instance user (multi-user fork prep)
       file.startsWith("app/lib/instance.server.ts") ||
       file.startsWith("test/instance.test.ts") ||
-      // TASK-460: cron admin page
+      // cron admin page
       file.startsWith("app/lib/cron.server.ts") ||
       file.startsWith("app/lib/cron-validate.ts") ||
       file.startsWith("app/routes/api.cron.tsx") ||
@@ -270,7 +270,7 @@ function assertGitClean(): void {
       file.startsWith("test/safe-fs.test.ts") ||
       file.startsWith("test/projects.test.ts") ||
       file.startsWith(".notes/") ||
-      // TASK-500: typing-aware message batching
+      // typing-aware message batching
       file.startsWith("app/lib/pending-batch.ts") ||
       file.startsWith("app/components/PendingBubble.tsx") ||
       file.startsWith("test/pending-batch.test.ts")
@@ -398,7 +398,7 @@ describe("listCards - frontmatter parse matrix", () => {
     });
   });
 
-  it("defaults-over-skip: a card missing title stays visible, titled by filename (Atlas amendment)", () => {
+  it("defaults-over-skip: a card missing title stays visible, titled by filename", () => {
     withProjectsRoot(sandbox, () => {
       writeCard(sandbox, "missing-title.md", [
         "---",
@@ -447,7 +447,7 @@ describe("listCards - frontmatter parse matrix", () => {
     });
   });
 
-  it("fence-bounded edits: decoy column:/updated: lines in the BODY survive a move byte-identical (Atlas amendment)", () => {
+  it("fence-bounded edits: decoy column:/updated: lines in the BODY survive a move byte-identical", () => {
     withProjectsRoot(sandbox, () => {
       const body = [
         "Documentation of the card format itself:",
@@ -983,7 +983,7 @@ describe("VALID_COLUMNS", () => {
     ]);
   });
 
-  it("applyTargetedEdits refuses a file that does not open with the frontmatter fence (Atlas fold)", () => {
+  it("applyTargetedEdits refuses a file that does not open with the frontmatter fence", () => {
     const nonCard = [
       "Just some notes, no frontmatter.",
       "",
@@ -997,7 +997,7 @@ describe("VALID_COLUMNS", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-439: summary extraction (ADDITIVE)
+// summary extraction (ADDITIVE)
 // ---------------------------------------------------------------------------
 
 describe("TASK-439 listCards - summary extraction", () => {
@@ -1136,7 +1136,7 @@ describe("TASK-439 listCards - summary extraction", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-439: links: tolerant parse matrix
+// links: tolerant parse matrix
 // ---------------------------------------------------------------------------
 
 describe("TASK-439 listCards - links: tolerant parse matrix", () => {
@@ -1274,7 +1274,7 @@ describe("TASK-439 listCards - links: tolerant parse matrix", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-462 Phase 1: assignee parse + createCard
+// Assignee parse + createCard
 // ---------------------------------------------------------------------------
 describe("assignee + createCard (TASK-462 Phase 1)", () => {
   let tmpRoot: string;
@@ -1290,7 +1290,7 @@ describe("assignee + createCard (TASK-462 Phase 1)", () => {
     withProjectsRoot(tmpRoot, () => {
       fs.writeFileSync(
         path.join(tmpRoot, "with-assignee.md"),
-        "---\ntitle: T\nagent: sprout\ncolumn: todo\nassignee: Robin\nupdated: 2026-06-11T10:00:00Z\n---\nBody.\n",
+        "---\ntitle: T\nagent: sprout\ncolumn: todo\nassignee: sam\nupdated: 2026-06-11T10:00:00Z\n---\nBody.\n",
         "utf8"
       );
       fs.writeFileSync(
@@ -1301,7 +1301,7 @@ describe("assignee + createCard (TASK-462 Phase 1)", () => {
       const cards = listCards();
       const withA = cards.find((c) => c.id === "with-assignee.md");
       const withoutA = cards.find((c) => c.id === "without.md");
-      expect(withA?.assignee).toBe("robin");
+      expect(withA?.assignee).toBe("sam");
       expect(withoutA?.assignee).toBeUndefined();
     });
   });
@@ -1309,17 +1309,17 @@ describe("assignee + createCard (TASK-462 Phase 1)", () => {
   it("createCard writes a todo card that round-trips through listCards", () => {
     withProjectsRoot(tmpRoot, () => {
       const id = createCard({
-        title: "Send Robin the tour deck",
+        title: "Send sam the tour deck",
         agent: "Sprout",
-        assignee: "robin",
+        assignee: "sam",
         ticket: "TASK-500",
       });
-      expect(id).toBe("send-robin-the-tour-deck.md");
+      expect(id).toBe("send-sam-the-tour-deck.md");
       const card = listCards().find((c) => c.id === id);
-      expect(card?.title).toBe("Send Robin the tour deck");
+      expect(card?.title).toBe("Send sam the tour deck");
       expect(card?.agent).toBe("sprout");
       expect(card?.column).toBe("todo");
-      expect(card?.assignee).toBe("robin");
+      expect(card?.assignee).toBe("sam");
       expect(card?.ticketId).toBe("TASK-500");
     });
   });

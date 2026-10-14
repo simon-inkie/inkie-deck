@@ -8,7 +8,7 @@
  * (403 on a principal instance, 400 on invalid agent/model, the
  * persisted/liveSwitched response).
  *
- * ASCII only - no em-dashes (FND-05).
+ * ASCII only - no em-dashes.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -203,7 +203,7 @@ describe("modelSelectorEnabled", () => {
     expect(modelSelectorEnabled({})).toBe(true);
     expect(modelSelectorEnabled({ MC_USER: "alex" })).toBe(true);
   });
-  it("disabled on a principal instance (Robin's)", () => {
+  it("disabled on a principal instance (a second user's)", () => {
     expect(modelSelectorEnabled({ MC_USER: "robin" })).toBe(false);
   });
 });

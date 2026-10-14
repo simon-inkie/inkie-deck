@@ -11,7 +11,7 @@
  * context label, and on submit posts intent=custom with decisionId + text.
  * The parent clears the responding state after submit (via onSent callback).
  *
- * TASK-500: typing-aware message batching. In standard (non-custom) mode,
+ * Typing-aware message batching. In standard (non-custom) mode,
  * submits no longer POST immediately. Instead, they call onBatchSubmit which
  * buffers the message in the parent's pending batch (usePendingBatch). The
  * actual POST fires when the settle timer elapses or the user triggers send-now.
@@ -19,7 +19,7 @@
  * not the rapid-fire-burst case; they post directly as today).
  * The postBatchedBody prop is called by the parent to fire the real POST.
  *
- * Attachment support (TASK-430 + TASK-450):
+ * Attachment support:
  *   - Paperclip button opens a hidden file input (multiple files, capped at 5).
  *   - Paste handler extracts files via extractPasteFiles (files-then-items order)
  *     and works in both standard and custom-answer mode.
@@ -27,7 +27,7 @@
  *     to avoid flicker on nested elements).
  *   - All three paths feed one uploadFiles() function that posts intent=attach
  *     via a separate fetcher, then pushes returned markdown into pendingAttachments
- *     chips (TASK-450: chips replace the old inline-markdown-in-textarea approach).
+ *     chips.
  *   - Chip row above the textarea: per chip an icon (image vs file) + truncated
  *     filename + 44px X to remove. Removing drops it from the outgoing body;
  *     the uploaded file stays on disk (orphan cleanup is a v2 concern).
@@ -36,8 +36,8 @@
  *   - Textarea required flips off when pendingAttachments is non-empty.
  *   - Send disabled when draft AND pending both empty.
  *
- * Voice input (TASK-433):
- *   - voiceProxyUrl prop arrives from the loader (FND-02: no env reads here).
+ * Voice input:
+ *   - voiceProxyUrl prop arrives from the loader.
  *   - Mic toggle: getUserMedia -> MediaRecorder (audio/webm;codecs=opus, 250ms
  *     timeslice) -> binary chunks over native WebSocket to the local voice proxy.
  *   - Pulse indicator (accent dot animate-pulse) while live.
@@ -51,18 +51,18 @@
  *     upstream_closed, overflow) are logged to debug and otherwise ignored -
  *     no behaviour change in production; visible in the debug panel when debug=true.
  *
- * Debug panel (TASK-433 reopened):
+ * Debug panel:
  *   - debug=true prop (from ?debug=1 search param in the thread route)
  *     mounts a VoiceDebugPanel above the compose box inside the sticky footer.
  *   - useVoice gains optional onDebugEvent callback for all observable events.
  *   - Client sends {type:"debug_on"} text frame on WS open when debug=true,
  *     opting in to server-side dg_raw mirroring of raw Deepgram frames.
  *
- * THRD-04: compose writes a new block to the fixture inbox and the reply
+ * Compose writes a new block to the fixture inbox and the reply
  * appears in the thread after revalidation.
  *
- * No .server imports - all data arrives via props (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props.
+ * ASCII only - no em-dashes.
  */
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useFetcher } from "react-router";
@@ -83,10 +83,8 @@ interface ComposeProps {
   /**
    * The thread's agent name. Namespaces the per-agent draft so typed text is
    * retained per thread: navigating to another agent shows that agent's own
-   * draft (or empty), and coming back restores this one (2026-06-12 Alex
-   * report - one shared draft leaked across threads because React reuses the
-   * Compose instance on navigation). Standard mode only; custom-answer mode is
-   * parent-controlled. Omitted -> no persistence (in-memory draft as before).
+   * draft (or empty), and coming back restores this one. Standard mode only; custom-answer
+   * mode is parent-controlled. Omitted -> no persistence (in-memory draft as before).
    */
   draftKey?: string;
   /**
@@ -105,8 +103,8 @@ interface ComposeProps {
   /** Called when the user clicks the X to cancel responding. */
   onCancel?: () => void;
   /**
-   * WebSocket URL for the local voice proxy (TASK-433).
-   * Provided by the thread loader - never read from env in this component (FND-02).
+   * WebSocket URL for the local voice proxy.
+   * Provided by the thread loader - never read from env in this component.
    * When omitted the mic renders in the unavailable state.
    */
   voiceProxyUrl?: string;
@@ -118,42 +116,42 @@ interface ComposeProps {
   voiceDisabledReason?: string | null;
   /**
    * When true, mount the voice debug panel and emit debug events.
-   * Driven by ?debug=1 search param in the thread route (FND-02: pure UI state,
+   * Driven by ?debug=1 search param in the thread route (pure UI state,
    * not a loader value). Zero cost when absent.
    */
   debug?: boolean;
 
   // ---------------------------------------------------------------------------
-  // TASK-500: batch hooks (standard mode only; custom/card-answer is exempt).
+  // Batch hooks (standard mode only; custom/card-answer is exempt).
   // ---------------------------------------------------------------------------
 
   /**
-   * TASK-500: Called on standard submit INSTEAD of POSTing directly. The parent
+   * Called on standard submit INSTEAD of POSTing directly. The parent
    * accumulates messages in the pending batch and fires the real POST after settle.
-   * When absent, the compose reverts to its pre-TASK-500 direct-POST behaviour
+   * When absent, the compose reverts to its earlier direct-POST behaviour
    * (useful for tests/storybook and the custom-answer path, which is always exempt).
    */
   onBatchSubmit?: (body: string, dictated: boolean) => void;
 
   /**
-   * TASK-500: Called on every keystroke in the textarea so the parent can
+   * Called on every keystroke in the textarea so the parent can
    * hard-suspend the settle timer while a follow-up draft is in progress.
    */
   onBatchType?: () => void;
 
   /**
-   * TASK-500: Called when the user triggers a send-now override (double-Enter
+   * Called when the user triggers a send-now override (double-Enter
    * while PENDING/SUSPENDED). The parent fires the batch immediately.
    * Only meaningful when onBatchSubmit is also provided.
    */
   onBatchSendNow?: () => void;
 
   // ---------------------------------------------------------------------------
-  // TASK-500.1: batch display preferences (passed from parent, single source).
+  // Batch display preferences (passed from parent, single source).
   // ---------------------------------------------------------------------------
 
   /**
-   * TASK-500.1: current batch display preferences. Passed from threads.$agent.tsx
+   * Current batch display preferences. Passed from threads.$agent.tsx
    * which owns the single useBatchPrefs() instance. Do NOT call useBatchPrefs()
    * inside Compose -- single source of truth in the parent, passed down so the
    * gear and the rendered indicator always agree.
@@ -161,13 +159,13 @@ interface ComposeProps {
   batchPrefs?: BatchPrefs;
 
   /**
-   * TASK-500.1: setter for batch preferences. Passed from parent.
+   * Setter for batch preferences. Passed from parent.
    * Accepts a partial update; holdSeconds is clamped to [2, 300] by the hook.
    */
   onBatchPrefsChange?: (next: Partial<BatchPrefs>) => void;
 
   /**
-   * TASK-500.4: Called on every keystroke with the current textarea value so
+   * Called on every keystroke with the current textarea value so
    * the parent can display a live draft preview in the pending bubble.
    * Also called with "" after a batch submit so the preview clears.
    * Standard mode only; custom-answer mode never calls this.
@@ -175,7 +173,7 @@ interface ComposeProps {
   onDraftChange?: (draft: string) => void;
 
   /**
-   * TASK-500.5: When the user cancels a pending batch, the parent captures the
+   * When the user cancels a pending batch, the parent captures the
    * held text and passes it back here so it is restored into the compose textarea
    * rather than being silently discarded. Transitions from "" to a non-empty
    * string trigger the restore; the same string value on a subsequent render
@@ -239,7 +237,7 @@ function useVoice(
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // TASK-446 fix layer 1: the WS message listener is registered ONCE per
+  // Fix layer 1: the WS message listener is registered ONCE per
   // session, so a direct closure over onFinalText goes stale the moment the
   // parent re-renders (its captured draft froze at session start - that was
   // the overwrite-after-a-pause bug). The listener reads through this ref,
@@ -249,7 +247,7 @@ function useVoice(
     onFinalTextRef.current = onFinalText;
   }, [onFinalText]);
 
-  // TASK-446 item 2: silence auto-stop. Armed at recorder start, reset on
+  // Item 2: silence auto-stop. Armed at recorder start, reset on
   // every speech signal (interim/final - isSpeechSignal), fired = stopVoice.
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -440,10 +438,9 @@ function useVoice(
           return;
         }
         // Upstream pipe live: RE-arm the silence window so a slow Deepgram
-        // connect never eats the silence budget while the user is speaking
-        // (Atlas fold, TASK-446). The recorder-start arm stays as the
-        // dead-pipe fallback - a session whose upstream never opens still
-        // stops itself.
+        // connect never eats the silence budget while the user is speaking.
+        // The recorder-start arm stays as the dead-pipe fallback - a
+        // session whose upstream never opens still stops itself.
         if (state === "upstream_open") {
           resetSilenceTimer();
         }
@@ -471,7 +468,7 @@ function useVoice(
         const text = m["text"] as string;
         emit("parse", `final: len=${text.length}`);
         // Through the ref - always the LATEST handler, never the closure
-        // captured at session start (TASK-446 fix layer 1).
+        // captured at session start.
         onFinalTextRef.current(text);
         // Clear ghost row.
         setVoiceState({ status: "active", interim: "" });
@@ -542,7 +539,7 @@ export function Compose({
   const uploading = attachFetcher.state !== "idle";
   const isCustomMode = respondingToDecisionId !== undefined;
 
-  // TASK-500: double-Enter send-now override. Track timestamp of the last Enter
+  // Double-Enter send-now override. Track timestamp of the last Enter
   // press that resulted in a batch submit (draft was non-empty). A subsequent
   // Enter within DOUBLE_ENTER_MS on an empty draft calls onBatchSendNow.
   const lastBatchEnterMsRef = useRef(0);
@@ -552,12 +549,12 @@ export function Compose({
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // TASK-500.5: tracks the last restoreDraft value that was applied so the
+  // Tracks the last restoreDraft value that was applied so the
   // effect below only fires on genuinely NEW non-empty values, not on every
   // parent re-render that passes the same string.
   const lastRestoredRef = useRef("");
 
-  // Per-agent draft persistence (2026-06-12). The Compose instance is REUSED
+  // Per-agent draft persistence. The Compose instance is REUSED
   // when navigating between threads, so a single draft state leaked across
   // agents. We namespace the draft in sessionStorage by agent and:
   //   - persist at every mutation site (commitDraft) under the CURRENT key, so
@@ -592,7 +589,7 @@ export function Compose({
     setDraft(sessionStorage.getItem(draftStorageKey) ?? "");
   }, [draftStorageKey, isCustomMode]);
 
-  // TASK-500.5: when the parent cancels a pending batch and supplies the held
+  // When the parent cancels a pending batch and supplies the held
   // text via restoreDraft, write it back into the compose box. The idempotency
   // guard (lastRestoredRef) ensures the restore only fires when a genuinely NEW
   // non-empty value arrives -- repeated renders with the same string are no-ops.
@@ -604,7 +601,7 @@ export function Compose({
     setTimeout(() => textareaRef.current?.focus(), 0);
   }, [restoreDraft, commitDraft]);
 
-  // TASK-450: pending attachment chips. Each chip carries the markdown returned
+  // Pending attachment chips. Each chip carries the markdown returned
   // by the attach route plus display metadata derived at push time. The chip
   // row renders above the textarea; send-time merge via buildOutgoingBody.
   const [pendingAttachments, setPendingAttachments] = useState<
@@ -628,7 +625,7 @@ export function Compose({
   // This avoids flickering when the drag crosses child elements.
   const [dragCount, setDragCount] = useState(0);
 
-  // TASK-500.1: batch settings popover (self-contained controlled div; no new dep).
+  // Batch settings popover (self-contained controlled div; no new dep).
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -669,26 +666,24 @@ export function Compose({
   }, [settingsOpen]);
 
   // ---------------------------------------------------------------------------
-  // Voice - append final text at a STABLE ANCHOR (peer-review fold, Atlas
-  // TASK-433): the anchor is captured at voice-session start and advanced ONLY
-  // by voice finals. Typing while speaking must not scatter voice fragments
-  // through hand-typed text - the voice stream stays contiguous. The anchor
+  // Voice - append final text at a STABLE ANCHOR: the anchor is captured at
+  // voice-session start and advanced ONLY by voice finals. Typing while speaking must not
+  // scatter voice fragments through hand-typed text - the voice stream stays contiguous. The anchor
   // is clamped to the current value length so edits elsewhere can never make
   // it invalid.
   // ---------------------------------------------------------------------------
 
   const voiceAnchorRef = useRef<number | null>(null);
 
-  // TASK-446 fix layer 2: a synchronous mirror of the LATEST compose text.
+  // Fix layer 2: a synchronous mirror of the LATEST compose text.
   // The render-time effect below covers typing, attachments, clears, and
   // custom-mode prop changes; handleFinalText also writes it directly so two
   // finals landing inside one render frame both see fresh text (setState is
   // async - the second final would otherwise read the pre-insert value).
   const currentTextRef = useRef("");
 
-  // Dictation provenance (Alex, 2026-06-11: "header so you know it's
-  // dictated"): true once any voice final lands in the current draft, reset
-  // on send. Sent as dictated=1 so the written block carries a marker -
+  // Dictation provenance: true once any voice final lands in the current
+  // draft, reset on send. Sent as dictated=1 so the written block carries a marker -
   // readers (human + agent) then know the text is transcribed speech and may
   // carry transcription wonk. Editing after dictating keeps the flag: the
   // bulk of the text is still voice-born.
@@ -757,8 +752,8 @@ export function Compose({
   // the next session re-anchors at the then-current cursor. Deliberately NOT
   // re-captured as the user types mid-session.
   //
-  // TASK-446 anchor-source fix (2026-06-14): anchor against the ACTUAL current
-  // text, not selectionStart blindly. Two problems with the old read:
+  // Anchor-source fix: anchor against the ACTUAL current text, not selectionStart
+  // blindly. Two problems with the old read:
   //   1. selectionStart is 0 for a textarea that was never focused (the common
   //      case - the user clicks the mic without first clicking into the box),
   //      so dictation anchored at position 0 and prepended to / mangled an
@@ -771,7 +766,7 @@ export function Compose({
   // mirror handleFinalText computes against - they can never disagree), and
   // only honour selectionStart when the textarea genuinely holds focus (a
   // real cursor the user placed). Otherwise anchor at the END of the current
-  // text so dictation appends. This keeps the TASK-433 "insert at the user's
+  // text so dictation appends. This keeps the "insert at the user's
   // cursor" behaviour intact while fixing the unfocused/stale-draft cases.
   const prevVoiceActiveRef = useRef(false);
   useEffect(() => {
@@ -814,7 +809,7 @@ export function Compose({
     attachFetcher.submit(fd, { method: "post", encType: "multipart/form-data" });
   }
 
-  // TASK-450: React to attachFetcher completion and push returned markdown into
+  // React to attachFetcher completion and push returned markdown into
   // pending chips. The markdown link text encodes the filename; detect images by
   // whether the markdown starts with "!" (image syntax vs plain link syntax).
   // insertMarkdownAtCursor is removed - chips replace inline markdown insertion.
@@ -847,7 +842,7 @@ export function Compose({
     // Stop voice before submitting - no hot mic survives send.
     stopVoice();
 
-    // TASK-450: build FormData manually so pending attachment markdowns are
+    // Build FormData manually so pending attachment markdowns are
     // merged into the body/text field via buildOutgoingBody. This keeps the
     // action schema unchanged - body/text remain free strings.
     const markdowns = pendingAttachments.map((a) => a.markdown);
@@ -867,7 +862,7 @@ export function Compose({
       setPendingAttachments([]);
       if (onSent) onSent();
     } else if (onBatchSubmit) {
-      // TASK-500: standard mode with batch hook - buffer the message; do NOT POST.
+      // Standard mode with batch hook - buffer the message; do NOT POST.
       // The parent will fire the real POST after settle or send-now.
       const mergedBody = buildOutgoingBody(currentDraft, markdowns);
       if (mergedBody.trim()) {
@@ -878,7 +873,7 @@ export function Compose({
       }
       // Clear the compose box immediately so the user can type the next message.
       commitDraft("");
-      // TASK-500.4: clear live draft preview now that the message is in the batch.
+      // Clear live draft preview now that the message is in the batch.
       if (onDraftChange) onDraftChange("");
       voiceUsedRef.current = false;
       setPendingAttachments([]);
@@ -926,10 +921,10 @@ export function Compose({
 
     e.preventDefault();
 
-    // TASK-500: double-Enter send-now override (standard mode + batch hook only).
+    // Double-Enter send-now override (standard mode + batch hook only).
     // If the draft is empty and a batch Enter happened within DOUBLE_ENTER_MS,
-    // fire send-now instead of a normal (empty) submit. This lets Alex tap Enter
-    // twice in quick succession after a message to skip the settle window.
+    // fire send-now instead of a normal (empty) submit. This lets the operator tap
+    // Enter twice in quick succession after a message to skip the settle window.
     if (
       onBatchSendNow &&
       !isCustomMode &&
@@ -946,7 +941,7 @@ export function Compose({
       return;
     }
 
-    // Plain Enter sends, matching every chat surface Alex lives in.
+    // Plain Enter sends, matching every chat surface the operator lives in.
     // Allow send when there are pending attachments even if the draft is empty
     // (attachment-only sends are legal - mirrors the Send button disabled logic).
     if (busy || uploading || (!currentDraft.trim() && pendingAttachments.length === 0)) return;
@@ -954,7 +949,7 @@ export function Compose({
   }
 
   function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    // TASK-450: use extractPasteFiles to handle both file-manager copies
+    // Use extractPasteFiles to handle both file-manager copies
     // (clipboardData.files) and bitmap pastes from Snipping Tool etc.
     // (clipboardData.items of kind "file"). preventDefault only when files
     // found so plain text pastes keep native behaviour.
@@ -1004,11 +999,11 @@ export function Compose({
 
   const showDragOverlay = dragCount > 0;
   const currentDraft = isCustomMode ? (value ?? "") : draft;
-  // TASK-450: send is allowed when there is text OR pending attachments.
+  // Send is allowed when there is text OR pending attachments.
   const hasSendable = currentDraft.trim().length > 0 || pendingAttachments.length > 0;
 
-  // TASK-463: auto-grow the textarea with its content so a long dictated block is
-  // fully visible (Alex's brain-dump ask). Reset to auto first so it can SHRINK
+  // Auto-grow the textarea with its content so a long dictated block is
+  // fully visible. Reset to auto first so it can SHRINK
   // when text is deleted; the className max-h caps it and overflow scrolls past
   // the cap. Runs on every draft change (typing, voice append, paste, custom-mode
   // sync) since they all flow through currentDraft.
@@ -1069,7 +1064,7 @@ export function Compose({
         ref={fileInputRef}
         type="file"
         multiple
-        /* Any-type policy (2026-06-12): no accept filter - the server
+        /* Any-type policy: no accept filter - the server
            classifies; unknown types store + serve as downloads. */
         className="sr-only"
         aria-hidden="true"
@@ -1104,7 +1099,7 @@ export function Compose({
           </div>
         ) : null}
 
-        {/* TASK-450: pending attachment chips - shown above the textarea when
+        {/* Pending attachment chips - shown above the textarea when
             at least one file has been uploaded but not yet sent. Each chip
             shows an icon (image vs file), the truncated filename, and a
             44px-target X to remove the chip (file stays on disk). */}
@@ -1169,10 +1164,10 @@ export function Compose({
                     ? (e) => onChange(e.target.value)
                     : (e) => {
                         commitDraft(e.target.value);
-                        // TASK-500: signal a keystroke to the batch state machine so the
+                        // Signal a keystroke to the batch state machine so the
                         // settle timer is hard-suspended while a follow-up draft is active.
                         if (onBatchType) onBatchType();
-                        // TASK-500.4: propagate live draft text for preview in the pending bubble.
+                        // Propagate live draft text for preview in the pending bubble.
                         if (onDraftChange) onDraftChange(e.target.value);
                       }
                 }
@@ -1275,7 +1270,7 @@ export function Compose({
                           </button>
                         ))}
                       </div>
-                      {/* TASK-500.4: live preview toggle */}
+                      {/* Live preview toggle */}
                       <div className="mb-3 flex items-center justify-between">
                         <span className="label-mono text-xs text-muted-foreground">
                           Show typing in bubble

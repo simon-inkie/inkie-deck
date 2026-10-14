@@ -1,6 +1,6 @@
 .DS_Store
 .env
-# Daemon config + age-encrypted secrets (TASK-435) - machine-local, never committed
+# Daemon config + age-encrypted secrets - machine-local, never committed
 .env.production
 .mc-secrets.age
 /node_modules/

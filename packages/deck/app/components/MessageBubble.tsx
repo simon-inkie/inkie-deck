@@ -1,11 +1,11 @@
 /**
  * MessageBubble.tsx - Plain markdown chat bubble for non-card message blocks.
  *
- * Renders a single message block as a chat bubble. Alex's own messages
+ * Renders a single message block as a chat bubble. The operator's own messages
  * (own=true) appear right-aligned with a distinct background; agent messages
  * appear left-aligned in a neutral style.
  *
- * Read receipts (TASK-443): own bubbles show a tick cluster beside the
+ * Read receipts: own bubbles show a tick cluster beside the
  * timestamp - one tick (Check, muted) = sent, two ticks (CheckCheck,
  * primary) = read. The data is the existing header.status sent->read flip
  * (the flip IS the read receipt per SYSTEM.md inter-agent comms); this is
@@ -13,18 +13,18 @@
  * conservative direction for a receipt (never imply an unread message was
  * read). Agent bubbles carry no ticks v1.
  *
- * Working indicator (TASK-444): own bubbles with status: working show a
+ * Working indicator: own bubbles with status: working show a
  * Loader2 spin icon and a "<agent> is on this" label. The indicator clears
  * (reverts to double tick) once a later agent reply supersedes it. The
  * superseded boolean and threadAgent name arrive as props from the thread
  * route (which has the full block list); bubbleReceiptState in working.ts
  * makes the single decision. Unknown status values degrade to sent tick.
  *
- * This is the THRD-03 plain bubble. Decision card rendering is Wave 3 -
+ * This is the plain bubble. Decision card rendering is Wave 3 -
  * this component intentionally handles only blocks where card is undefined.
  *
- * No .server imports - all data arrives via props (FND-02).
- * ASCII only - no em-dashes (FND-05).
+ * No .server imports - all data arrives via props.
+ * ASCII only - no em-dashes.
  */
 import { Check, CheckCheck, Loader2, Mic } from "lucide-react";
 import { Link } from "react-router";
@@ -48,7 +48,7 @@ const COLUMN_VARIANT: Record<
 };
 
 interface MessageBubbleProps {
-  /** Whether this block was sent by Alex (own=true) or the agent. */
+  /** Whether this block was sent by the operator (own=true) or the agent. */
   own: boolean;
   /** The message block to render. card must be undefined (use DecisionCard for cards). */
   block: MessageBlock;
@@ -61,13 +61,13 @@ interface MessageBubbleProps {
   onOpenDoc?: (doc: string) => void;
   /**
    * The thread agent name (e.g. "scribe"). Used in the working indicator
-   * label: "<threadAgent> is on this". Provided by the thread route (FND-02).
+   * label: "<threadAgent> is on this". Provided by the thread route.
    * Required for the working indicator to render; harmlessly absent for
    * non-own bubbles and when the feature is not needed.
    */
   threadAgent?: string;
   /**
-   * TASK-457: sender's avatar URL (/avatars/<from>?v=<mtime>) when the
+   * Sender's avatar URL (/avatars/<from>?v=<mtime>) when the
    * sending agent has an avatar.png. Non-own bubbles only; initials disc
    * is the fallback inside Avatar itself.
    */
@@ -75,20 +75,20 @@ interface MessageBubbleProps {
   /**
    * Whether this working-status block has been superseded by a later agent
    * reply in the thread. Computed by isSuperseded in threads.$agent.tsx and
-   * passed as a primitive so MessageBubble stays a dumb renderer (FND-02).
+   * passed as a primitive so MessageBubble stays a dumb renderer.
    * Defaults to false when absent (conservative: show indicator if working).
    */
   superseded?: boolean;
   /**
-   * TASK-445: Optional column from the kanban card whose ticketId matches this
+   * Optional column from the kanban card whose ticketId matches this
    * block's ticket field. Shown as a derived column Badge beside the ticket
    * chip when present AND the receipt state is not "working" (manual flip
    * takes precedence as the more specific signal).
    */
   ticketColumn?: string;
   /**
-   * TASK-465: force the "working" indicator on this bubble regardless of
-   * block.status. Set by the thread route on Alex's LAST bubble when the
+   * Force the "working" indicator on this bubble regardless of
+   * block.status. Set by the thread route on the operator's LAST bubble when the
    * agent's tmux pane is actively stirring (heuristic working signal). Lets the
    * indicator show before any agent reply or status flip exists on disk.
    */
@@ -105,7 +105,7 @@ interface MessageBubbleProps {
 export function MessageBubble({ own, block, now, onOpenDoc, threadAgent, superseded = false, ticketColumn, avatarUrl, forceWorking = false }: MessageBubbleProps) {
   const alignClass = own ? "items-end" : "items-start";
   // Own bubbles are primary-teal: prose links (also teal) were invisible on
-  // them (Alex, 2026-06-11). Fixed via the semantic bubble-own class +
+  // them. Fixed via the semantic bubble-own class +
   // .prose-mc.bubble-own a rule in app.css. Postmortem of two failed
   // arbitrary-variant attempts: [&_.prose-mc_a] never matched (the bubble
   // element ITSELF carries .prose-mc - no nested wrapper), and [&_a] tied
@@ -114,9 +114,9 @@ export function MessageBubble({ own, block, now, onOpenDoc, threadAgent, superse
     ? "bubble-own bg-primary text-primary-foreground rounded-2xl rounded-br-sm"
     : "bg-card text-card-foreground border border-border rounded-2xl rounded-bl-sm";
 
-  // Derive the receipt state from block status + superseded flag (TASK-444).
+  // Derive the receipt state from block status + superseded flag.
   // bubbleReceiptState handles the working > read > sent precedence chain.
-  // TASK-465: a live tmux-activity signal (forceWorking) shows "working" even
+  // A live tmux-activity signal (forceWorking) shows "working" even
   // before any status flip exists on disk; otherwise fall back to the on-disk
   // receipt (working > read > sent).
   const receiptState = own
@@ -126,8 +126,8 @@ export function MessageBubble({ own, block, now, onOpenDoc, threadAgent, superse
     : null;
 
   // Working indicator label: "<agent> is on this", plus the message age when
-  // older than an hour (Atlas fold: a crashed agent self-discloses instead of
-  // showing a live indicator forever; phrased as SENT age, never work duration).
+  // older than an hour, so a crashed agent self-discloses instead of showing a
+  // live indicator forever. Phrased as SENT age, never work duration.
   const ageSuffix =
     receiptState === "working"
       ? workingAgeSuffix(block.header.timestamp, now ? new Date(now) : new Date())
@@ -138,7 +138,7 @@ export function MessageBubble({ own, block, now, onOpenDoc, threadAgent, superse
   return (
     <div className={`flex flex-col ${alignClass} mb-4`}>
       <div className="mb-1 px-1 text-xs text-muted-foreground flex flex-wrap items-center gap-1.5">
-        {/* TASK-457: sender face on agent bubbles ("You" needs no face). */}
+        {/* Sender face on agent bubbles ("You" needs no face). */}
         {!own ? (
           <Avatar
             name={block.header.from}
@@ -178,7 +178,7 @@ export function MessageBubble({ own, block, now, onOpenDoc, threadAgent, superse
       </div>
       <div className="mt-1 flex items-center gap-1 px-1">
         <Timestamp iso={block.header.timestamp} now={now} />
-        {/* Dictation provenance (2026-06-11): mic glyph + label when the
+        {/* Dictation provenance: mic glyph + label when the
             block carries the dictated: true meta line - tells the reader the
             text is transcribed speech and may carry transcription wonk. */}
         {/^dictated: true$/m.test(block.rawMeta) ? (

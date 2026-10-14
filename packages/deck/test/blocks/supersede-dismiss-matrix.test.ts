@@ -13,7 +13,7 @@
  * Also covers: parse + serialize round-trip for the new fields on both card
  * types, JSON round-trip of reason/note, decoy body values ignored.
  *
- * ASCII only - no em-dashes per FND-05.
+ * ASCII only - no em-dashes.
  */
 import { describe, it, expect } from "vitest";
 import { parseBlock } from "~/lib/blocks/parse.js";

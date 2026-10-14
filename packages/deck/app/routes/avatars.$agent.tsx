@@ -1,5 +1,5 @@
 /**
- * avatars.$agent.tsx - Resource route serving agent avatar files (TASK-457).
+ * avatars.$agent.tsx - Resource route serving agent avatar files.
  *
  * GET only (loader). Validates the agent param against the ROSTER name
  * convention BEFORE any fs call, then delegates to readAvatar() from the
@@ -10,8 +10,8 @@
  * with ?v=<mtimeMs> - a replaced file is a NEW URL (the convention's
  * mtime cache-bust).
  *
- * SEAM RULE (FND-02): this file imports ONLY from the .server module.
- * ASCII only - no em-dashes (FND-05).
+ * SEAM RULE: this file imports ONLY from the .server module.
+ * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/avatars.$agent";
 import { readAvatar, AGENT_NAME_RE } from "~/lib/avatars.server";
