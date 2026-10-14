@@ -84,8 +84,7 @@ Out of scope (and where it goes instead):
   version just written.
 - Why: review findings 1 to 3 of the second review.
 - Supersedes: nothing, additive
-- Commits: see the entry added with the next commit if any; the sha of this
-  change is recorded in the PR description
+- Commits: e55184b fix(deck): surface removed drafts, avoid false poll conflict, keep save result after write (#66)
 
 Known limitation added: `request.formData()` reads the whole request body
 before the 1 MB content cap is applied, so the cap bounds what is stored, not
