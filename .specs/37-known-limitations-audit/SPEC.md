@@ -63,7 +63,7 @@ Out of scope: anything outside that section (see Follow-ups).
 Opus round 1: clean, no blockers. Optional nits taken: rewrapped two
 over-long paragraphs, softened the Windows entry heading to "has run by hand
 under WSL 2", added a Check results section here, cited
-`boot-agents.sh:631`.
+`boot-agents.sh:642`.
 
 Human review of head 3423dee (two reviews). No Critical or Major. Two Minor,
 both fixed: the "nothing else depends on egress" sentence now names the

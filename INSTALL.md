@@ -1136,7 +1136,7 @@ session but cannot answer the runtime's own setup prompts (folder trust, the
 resume picker, the fullscreen offer). It reports a launch as ready only when it
 has seen the composer, exits `3` while that is pending, and does not arm an
 opted-in monitor on a launch that was not ready. See tier 3 for the exact steps.
-Checked: `boot-agents.sh:631` waits up to `BOOT_READY_SECS` (default 45) per fresh
+Checked: `boot-agents.sh:642` waits up to `BOOT_READY_SECS` (default 45) per fresh
 launch.
 
 **Starting Deck on boot has not been checked.** The systemd user service in
