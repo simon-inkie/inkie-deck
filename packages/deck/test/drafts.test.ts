@@ -4,7 +4,7 @@
  *
  * ASCII only - no em-dashes.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -52,8 +52,11 @@ describe("configuration", () => {
   it("is disabled without WORKSPACE_ROOT and with a relative one", () => {
     delete process.env["WORKSPACE_ROOT"];
     expect(draftsEnabled(process.env)).toBe(false);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     process.env["WORKSPACE_ROOT"] = "relative/dir";
     expect(draftsEnabled(process.env)).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("absolute"));
+    warn.mockRestore();
   });
 });
 
@@ -102,6 +105,31 @@ describe("create, read, save", () => {
   it("rejects oversized content", async () => {
     const res = await saveDraft({ name: "big", content: "x".repeat(1024 * 1024 + 1), create: true });
     expect(!res.ok && res.status).toBe(413);
+  });
+});
+
+describe("line endings, odd paths and the sidecar", () => {
+  it("stores LF and returns content equal to what the editor holds", async () => {
+    const res = await saveDraft({ name: "a", content: "a\r\nb\r\n", create: true });
+    expect(fs.readFileSync(draftFile("a.md"), "utf8")).toBe("a\nb\n");
+    expect(res.ok && res.draft.content).toBe("a\nb\n");
+  });
+
+  it("returns a JSON error, not a throw, when the draft path is a directory", async () => {
+    fs.mkdirSync(draftFile("dir.md"), { recursive: true });
+    const res = await saveDraft({ name: "dir", content: "x", baseVersion: null });
+    expect(res.ok).toBe(false);
+    expect(!res.ok && res.status).toBe(400);
+  });
+
+  it("keeps every person record when different drafts save concurrently", async () => {
+    const names = Array.from({ length: 8 }, (_, i) => `d${i}`);
+    const results = await Promise.all(
+      names.map((n) => saveDraft({ name: n, content: n, create: true }))
+    );
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect(listDrafts().every((d) => d.writer === "person")).toBe(true);
+    expect(listDrafts()).toHaveLength(8);
   });
 });
 
@@ -251,6 +279,24 @@ describe("api route", () => {
 
     const read = await get("?name=r.md");
     expect((await read.json()).draft.content).toBe("agent");
+  });
+
+  it("a multipart save of multi-line text is stored LF and reloads clean", async () => {
+    const created = await post({ intent: "create", name: "m", content: "" });
+    const { draft } = await created.json();
+    const saved = await post({
+      intent: "save",
+      name: "m",
+      content: "line one\nline two\n",
+      baseVersion: draft.version,
+    });
+    expect(saved.status).toBe(200);
+    const body = await saved.json();
+    expect(body.draft.content).toBe("line one\nline two\n");
+    expect(fs.readFileSync(draftFile("m.md"), "utf8")).toBe("line one\nline two\n");
+    const read = await (await get("?name=m.md")).json();
+    expect(read.draft.content).toBe("line one\nline two\n");
+    expect(read.draft.version).toBe(body.draft.version);
   });
 
   it("404s when no workspace is configured", async () => {

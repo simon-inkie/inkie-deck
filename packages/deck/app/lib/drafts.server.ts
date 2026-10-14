@@ -77,13 +77,21 @@ export function resolveWorkspaceRoot(
   return v;
 }
 
+let lastConfigWarning = "";
+
 /** Whether this instance has a workspace configured (never throws). */
 export function draftsEnabled(
   env: Record<string, string | undefined> = process.env
 ): boolean {
   try {
     return resolveWorkspaceRoot(env) !== undefined;
-  } catch {
+  } catch (err) {
+    // A relative path would silently hide the feature; say why, once per message.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg !== lastConfigWarning) {
+      lastConfigWarning = msg;
+      console.warn(`[drafts] Drafts disabled: ${msg}`);
+    }
     return false;
   }
 }
@@ -221,7 +229,10 @@ export async function saveDraft(input: SaveInput): Promise<DraftResult> {
   if (typeof input.content !== "string") {
     return { ok: false, error: "Content must be text.", status: 400 };
   }
-  if (Buffer.byteLength(input.content, "utf8") > MAX_DRAFT_BYTES) {
+  // Multipart form posts turn LF into CRLF; store LF so the file and the
+  // editor text compare equal and the file is not CRLF-polluted.
+  const content = input.content.replace(/\r\n?/g, "\n");
+  if (Buffer.byteLength(content, "utf8") > MAX_DRAFT_BYTES) {
     return { ok: false, error: "Draft is larger than 1 MB.", status: 413 };
   }
 
@@ -239,31 +250,49 @@ export async function saveDraft(input: SaveInput): Promise<DraftResult> {
     return { ok: false, error: "Drafts folder is not available.", status: 500 };
   }
 
-  return withInboxLock(target, async (): Promise<DraftResult> => {
-    const meta = readMeta(dirReal);
-    let current: DraftView | null = null;
-    if (fs.existsSync(target)) current = view(dirReal, name, meta);
-
-    if (input.create && current) {
-      return { ok: false, error: "A draft with that name already exists.", status: 409 };
-    }
-    if (!input.force && !input.create) {
-      const base = input.baseVersion ?? null;
-      const currentVersion = current ? current.version : null;
-      if (base !== currentVersion) {
-        return {
-          ok: false,
-          error: "This draft changed outside the editor.",
-          status: 409,
-          conflict: true,
-          ...(current ? { current } : {}),
-        };
+  try {
+    return await withInboxLock(target, async (): Promise<DraftResult> => {
+      const meta = readMeta(dirReal);
+      let current: DraftView | null = null;
+      try {
+        current = view(dirReal, name, meta);
+      } catch {
+        // Absent (or vanished a moment ago) is a new file; anything else
+        // present at that path (a directory) is not a draft.
+        if (fs.lstatSync(target, { throwIfNoEntry: false })) {
+          return { ok: false, error: "That path is not a draft file.", status: 400 };
+        }
       }
-    }
 
-    atomicWrite(target, input.content);
-    meta[name] = sha256(input.content);
-    writeMeta(dirReal, meta);
-    return { ok: true, draft: view(dirReal, name, meta) };
-  });
+      if (input.create && current) {
+        return { ok: false, error: "A draft with that name already exists.", status: 409 };
+      }
+      if (!input.force && !input.create) {
+        const base = input.baseVersion ?? null;
+        const currentVersion = current ? current.version : null;
+        if (base !== currentVersion) {
+          return {
+            ok: false,
+            error: "This draft changed outside the editor.",
+            status: 409,
+            conflict: true,
+            ...(current ? { current } : {}),
+          };
+        }
+      }
+
+      atomicWrite(target, content);
+      // The sidecar is shared by every draft, so its read-modify-write takes
+      // its own lock (always after the per-draft lock, so no ordering cycle).
+      const version = sha256(content);
+      await withInboxLock(path.join(dirReal, META_FILENAME), async () => {
+        const fresh = readMeta(dirReal);
+        fresh[name] = version;
+        writeMeta(dirReal, fresh);
+      });
+      return { ok: true, draft: view(dirReal, name, readMeta(dirReal)) };
+    });
+  } catch {
+    return { ok: false, error: "Could not save the draft.", status: 500 };
+  }
 }

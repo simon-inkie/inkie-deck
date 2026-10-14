@@ -70,7 +70,105 @@ async function openDraft() {
   await flush();
 }
 
+function textarea() {
+  return container.querySelector<HTMLTextAreaElement>('[data-testid="draft-text"]')!;
+}
+function click(testid: string) {
+  return act(async () => {
+    container.querySelector<HTMLButtonElement>(`[data-testid="${testid}"]`)!.click();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+async function type(value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    setter.call(textarea(), value);
+    textarea().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+function postBodies(): FormData[] {
+  const f = fetch as unknown as ReturnType<typeof vi.fn>;
+  return f.mock.calls
+    .filter((c) => (c[1] as RequestInit | undefined)?.method === "POST")
+    .map((c) => (c[1] as RequestInit).body as FormData);
+}
+function stubSave(respond: (form: FormData) => Response) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return respond(init.body as FormData);
+      if (url === "/api/drafts") return json({ ok: true, drafts: [current] });
+      return json({ ok: true, draft: current });
+    })
+  );
+}
+
 describe("DraftEditor", () => {
+  it("saves edits with the loaded version and goes clean afterwards", async () => {
+    stubSave((form) => {
+      current = dto({ version: "v2", content: String(form.get("content")) });
+      return json({ ok: true, draft: current });
+    });
+    await openDraft();
+    const save = () => container.querySelector<HTMLButtonElement>('[data-testid="draft-save"]')!;
+    expect(save().disabled).toBe(true);
+    await type("hello world");
+    expect(save().disabled).toBe(false);
+    expect(container.querySelector('[data-testid="draft-status"]')!.textContent).toContain("unsaved");
+    await click("draft-save");
+    const [form] = postBodies();
+    expect(form!.get("baseVersion")).toBe("v1");
+    expect(form!.get("content")).toBe("hello world");
+    expect(save().disabled).toBe(true);
+    expect(container.querySelector('[data-testid="draft-status"]')!.textContent).not.toContain("unsaved");
+  });
+
+  it("a 409 on save shows the conflict alert and keeps the person's text", async () => {
+    stubSave(() => {
+      current = dto({ version: "v2", content: "agent edit", writer: "agent" });
+      return json({ ok: false, conflict: true, current }, 409);
+    });
+    await openDraft();
+    await type("my edit");
+    await click("draft-save");
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')!.textContent).toContain("unsaved edits");
+    expect(textarea().value).toBe("my edit");
+  });
+
+  it("Load the newer copy replaces the text and clears the alert", async () => {
+    await openDraft();
+    await type("my edit");
+    current = dto({ version: "v2", content: "agent edit", writer: "agent" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    await click("draft-load-theirs");
+    expect(textarea().value).toBe("agent edit");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[data-testid="draft-status"]')!.textContent).toContain("the agent");
+  });
+
+  it("Keep mine and overwrite posts force=1 against the newer version's content", async () => {
+    stubSave((form) => {
+      current = dto({ version: "v3", content: String(form.get("content")) });
+      return json({ ok: true, draft: current });
+    });
+    await openDraft();
+    await type("my edit");
+    current = dto({ version: "v2", content: "agent edit", writer: "agent" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    await click("draft-keep-mine");
+    const [form] = postBodies();
+    expect(form!.get("force")).toBe("1");
+    expect(form!.get("content")).toBe("my edit");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(textarea().value).toBe("my edit");
+    expect(container.querySelector('[data-testid="draft-status"]')!.textContent).toContain("you");
+  });
+
   it("shows last-saved time and who wrote the version", async () => {
     await openDraft();
     const status = container.querySelector('[data-testid="draft-status"]')!.textContent!;

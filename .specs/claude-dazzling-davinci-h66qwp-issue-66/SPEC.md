@@ -60,4 +60,20 @@ Out of scope (and where it goes instead):
 - What changed: SPEC, server module, API route, Drafts page, tests.
 - Why: first slice of #66.
 - Supersedes: nothing, additive
-- Commits: see branch
+- Commits: 40f5943 feat(deck): Markdown draft editor over workspace drafts folder (#66)
+
+### 2026-10-14: review fixes
+- What changed: saves normalise CRLF/CR to LF (browser multipart posts had
+  turned LF into CRLF, leaving files CRLF and the editor permanently dirty);
+  errors inside the save lock now return JSON (a directory at the draft path
+  gives 400, other failures 500) instead of throwing; the shared sidecar
+  read-modify-write takes its own lock; a relative WORKSPACE_ROOT now logs a
+  warning instead of silently hiding the feature; added tests for each, and
+  editor tests for save, "Load the newer copy" and "Keep mine and overwrite".
+- Why: review findings on the PR, all fixed in the commit after 40f5943.
+- Supersedes: nothing, additive
+- Commits: see the review-fix commit on the branch
+
+Known limitation added: `request.formData()` reads the whole request body
+before the 1 MB content cap is applied, so the cap bounds what is stored, not
+what is received. Fine for a loopback-only, unauthenticated Deck.
