@@ -140,9 +140,35 @@ function draftPath(dirReal: string, name: string, forWrite: boolean): string {
 
 type Meta = Record<string, string>; // name -> version hash last saved by the person
 
+/**
+ * Read a regular file as UTF-8 through one file descriptor, never more than
+ * max + 1 bytes: a file that grows after a stat cannot defeat the cap.
+ * Throws DraftTooLarge when the file is over max, and the plain fs error
+ * (ENOENT, EISDIR) otherwise.
+ */
+function readCapped(file: string, max: number): { text: string; mtime: Date } {
+  const fd = fs.openSync(file, "r");
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error("Not a regular file.");
+    if (st.size > max) throw new DraftTooLarge();
+    const buf = Buffer.alloc(max + 1);
+    let n = 0;
+    for (;;) {
+      const r = fs.readSync(fd, buf, n, buf.length - n, null);
+      if (r === 0) break;
+      n += r;
+      if (n > max) throw new DraftTooLarge();
+    }
+    return { text: buf.subarray(0, n).toString("utf8"), mtime: st.mtime };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function readMeta(dirReal: string): Meta {
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(dirReal, META_FILENAME), "utf8"));
+    const parsed = JSON.parse(readCapped(path.join(dirReal, META_FILENAME), MAX_DRAFT_BYTES).text);
     const files = parsed?.files;
     if (!files || typeof files !== "object") return {};
     const out: Meta = {};
@@ -166,7 +192,7 @@ function readMetaForWrite(dirReal: string): Meta {
   const file = path.join(dirReal, META_FILENAME);
   let raw: string;
   try {
-    raw = fs.readFileSync(file, "utf8");
+    raw = readCapped(file, MAX_DRAFT_BYTES).text;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw err;
@@ -174,7 +200,11 @@ function readMetaForWrite(dirReal: string): Meta {
   try {
     JSON.parse(raw);
   } catch {
-    fs.copyFileSync(file, `${file}.bad`);
+    // Never follow a planted link: remove whatever is at the backup path
+    // (unlink acts on a symlink itself) and create the copy exclusively.
+    const bad = `${file}.bad`;
+    fs.rmSync(bad, { force: true });
+    fs.copyFileSync(file, bad, fs.constants.COPYFILE_EXCL);
     console.warn(`[drafts] ${META_FILENAME} is not valid JSON; kept a copy as ${META_FILENAME}.bad`);
     return {};
   }
@@ -201,16 +231,13 @@ class DraftTooLarge extends Error {
 
 function view(dirReal: string, name: string, meta: Meta): DraftView {
   const p = draftPath(dirReal, name, false);
-  const st = fs.statSync(p);
-  if (!st.isFile()) throw new Error("Draft not found.");
-  if (st.size > MAX_DRAFT_BYTES) throw new DraftTooLarge();
-  const content = fs.readFileSync(p, "utf8");
+  const { text: content, mtime } = readCapped(p, MAX_DRAFT_BYTES);
   const version = sha256(content);
   return {
     name,
     content,
     version,
-    savedAt: st.mtime.toISOString(),
+    savedAt: mtime.toISOString(),
     writer: meta[name] === version ? "person" : "agent",
   };
 }

@@ -11,6 +11,7 @@
  * ASCII only - no em-dashes.
  */
 import type { Route } from "./+types/api.drafts";
+import { resolveAllowedOrigins } from "../../server/voice-relay.mjs";
 import {
   draftsEnabled,
   listDrafts,
@@ -45,34 +46,34 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 /**
- * Refuse a browser-initiated cross-origin write. Deck has no authentication,
- * so a page on another origin that the person's browser can use to reach this
- * server could otherwise POST (even with force=1) and overwrite a draft by
- * name. Browsers always send Origin on cross-origin POSTs and Sec-Fetch-Site
- * on modern ones; requests with neither (an agent using curl) are not browser
- * cross-site requests and pass. Behind a proxy that rewrites Host, same-origin
- * saves would be refused: keep the Host header intact.
+ * Refuse a browser-initiated write from an origin Deck does not expect. Deck
+ * has no authentication, so a page on another origin that the person's browser
+ * can use to reach this server could otherwise POST (even with force=1) and
+ * overwrite a draft by name.
+ *
+ * The Origin header is checked against an ALLOWLIST (the same mechanism and
+ * env var as the voice proxy: VOICE_ALLOWED_ORIGINS, default
+ * http://localhost:$PORT plus the dev port), not against the Host header.
+ * Comparing against Host is defeated by DNS rebinding, where the attacker
+ * controls both. Browsers always send Origin on POSTs, so a browser request
+ * with a missing-from-list or "null" Origin is refused; so is any
+ * Sec-Fetch-Site other than same-origin or none. Requests with neither header
+ * (an agent using curl) are not browser cross-site requests and pass.
+ *
+ * Reaching Deck by another name (a tailnet host, a Host-rewriting proxy)
+ * requires listing that origin in VOICE_ALLOWED_ORIGINS, exactly as for voice.
  */
 function crossOriginWrite(request: Request): boolean {
   const site = request.headers.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") return true;
   const origin = request.headers.get("origin");
-  if (origin) {
-    let originHost: string;
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      return true;
-    }
-    const host = request.headers.get("host") ?? new URL(request.url).host;
-    if (originHost !== host) return true;
-  }
-  return false;
+  if (origin === null) return false;
+  return !resolveAllowedOrigins(process.env).includes(origin);
 }
 
 export async function action({ request }: Route.ActionArgs) {
   if (crossOriginWrite(request)) {
-    return json({ ok: false, error: "Cross-origin writes are not allowed." }, 403);
+    return json({ ok: false, error: "Cross-origin writes are not allowed. If you reach Deck by another name, list that origin in VOICE_ALLOWED_ORIGINS." }, 403);
   }
   if (!draftsEnabled(process.env)) {
     return json({ ok: false, error: "Drafts are not configured." }, 404);

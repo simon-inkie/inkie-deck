@@ -63,6 +63,9 @@ export function DraftEditor() {
   const [gone, setGone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // An open/create request is in flight: the text is read-only so nothing typed
+  // now can be replaced, unprompted, by the response.
+  const [switching, setSwitching] = useState(false);
   const [newName, setNewName] = useState("");
 
   const loadedRef = useRef<DraftDto | null>(null);
@@ -111,12 +114,17 @@ export function DraftEditor() {
     async (name: string) => {
       if (!confirmDiscard()) return;
       const seq = ++openSeqRef.current;
-      const { status, body } = await api<{ ok: boolean; draft?: DraftDto }>(
-        `/api/drafts?name=${encodeURIComponent(name)}`
-      );
-      if (seq !== openSeqRef.current) return;
-      if (status === 200 && body.draft) adopt(body.draft);
-      else setError("Could not open that draft.");
+      setSwitching(true);
+      try {
+        const { status, body } = await api<{ ok: boolean; draft?: DraftDto; error?: string }>(
+          `/api/drafts?name=${encodeURIComponent(name)}`
+        );
+        if (seq !== openSeqRef.current) return;
+        if (status === 200 && body.draft) adopt(body.draft);
+        else setError(body.error ?? "Could not open that draft.");
+      } finally {
+        if (seq === openSeqRef.current) setSwitching(false);
+      }
     },
     [adopt, confirmDiscard]
   );
@@ -154,21 +162,26 @@ export function DraftEditor() {
     if (!newName.trim()) return;
     if (!confirmDiscard()) return;
     const seq = ++openSeqRef.current;
-    const { status, body } = await api<SaveBody>("/api/drafts", {
-      method: "POST",
-      body: formBody({ intent: "create", name: newName, content: "" }),
-    });
-    if (seq !== openSeqRef.current) {
-      // The person opened something else meanwhile; the file exists, so list it.
-      void refreshList();
-      return;
-    }
-    if (status === 200 && body.draft) {
-      setNewName("");
-      adopt(body.draft);
-      void refreshList();
-    } else {
-      setError(body.error ?? "Could not create the draft.");
+    setSwitching(true);
+    try {
+      const { status, body } = await api<SaveBody>("/api/drafts", {
+        method: "POST",
+        body: formBody({ intent: "create", name: newName, content: "" }),
+      });
+      if (seq !== openSeqRef.current) {
+        // The person opened something else meanwhile; the file exists, so list it.
+        void refreshList();
+        return;
+      }
+      if (status === 200 && body.draft) {
+        setNewName("");
+        adopt(body.draft);
+        void refreshList();
+      } else {
+        setError(body.error ?? "Could not create the draft.");
+      }
+    } finally {
+      if (seq === openSeqRef.current) setSwitching(false);
     }
   }, [newName, adopt, refreshList, confirmDiscard]);
 
@@ -277,7 +290,7 @@ export function DraftEditor() {
           <strong>This draft was removed outside the editor.</strong>
           <span>Your text is still here. You can write it back as a new file.</span>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="destructive" data-testid="draft-recreate" onClick={() => void save(true)}>
+            <Button size="sm" variant="destructive" data-testid="draft-recreate" disabled={saving} onClick={() => void save(true)}>
               Keep mine and recreate
             </Button>
           </div>
@@ -299,7 +312,7 @@ export function DraftEditor() {
             <Button size="sm" variant="outline" data-testid="draft-load-theirs" onClick={() => adopt(remote)}>
               Load the newer copy
             </Button>
-            <Button size="sm" variant="destructive" data-testid="draft-keep-mine" onClick={() => void save(true)}>
+            <Button size="sm" variant="destructive" data-testid="draft-keep-mine" disabled={saving} onClick={() => void save(true)}>
               Keep mine and overwrite
             </Button>
           </div>
@@ -313,6 +326,7 @@ export function DraftEditor() {
             aria-label={`Editing ${loaded.name}`}
             className="min-h-[50vh] w-full rounded-md border border-border bg-background p-3 font-mono text-sm"
             value={text}
+            readOnly={switching}
             spellCheck
             onChange={(e) => setText(e.target.value)}
           />

@@ -450,4 +450,72 @@ describe("DraftEditor with several drafts", () => {
     expect(container.querySelector('[data-testid="draft-gone"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
+
+  it("makes the text read-only while an open is in flight, so typing cannot be lost", async () => {
+    let releaseOpen!: () => void;
+    const gate = { release: () => {} };
+    const inner = (fetch as unknown as ReturnType<typeof vi.fn>).getMockImplementation() as (
+      u: string,
+      i?: RequestInit
+    ) => Promise<Response>;
+    await start();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (!init?.method && String(url).includes("name=b.md")) {
+          await new Promise<void>((r) => (gate.release = r));
+        }
+        return inner(url, init);
+      })
+    );
+    releaseOpen = () => gate.release();
+    await select("b.md");
+    expect(textarea().readOnly).toBe(true);
+    await act(async () => {
+      releaseOpen();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(textarea().readOnly).toBe(false);
+    expect(textarea().value).toBe("bravo");
+  });
+
+  it("shows the server's message when opening fails (for example a 413)", async () => {
+    files["a.md"] = dto({ name: "a.md", content: "alpha", version: "a1" });
+    const inner = (fetch as unknown as ReturnType<typeof vi.fn>).getMockImplementation() as (
+      u: string,
+      i?: RequestInit
+    ) => Promise<Response>;
+    act(() => root.render(<DraftEditor />));
+    await flush();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (!init?.method && String(url).includes("name=b.md")) {
+          return json({ ok: false, error: "Draft is larger than 1 MB; edit it outside the Deck." }, 413);
+        }
+        return inner(url, init);
+      })
+    );
+    await select("b.md");
+    expect(container.querySelector('[data-testid="draft-error"]')!.textContent).toContain("larger than 1 MB");
+  });
+
+  it("disables Keep mine and Recreate while a save is in flight", async () => {
+    await start();
+    await type("alpha edited");
+    files["a.md"] = dto({ name: "a.md", content: "agent", version: "a2", writer: "agent" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    const keep = () => container.querySelector<HTMLButtonElement>('[data-testid="draft-keep-mine"]')!;
+    expect(keep().disabled).toBe(false);
+    holdNextPost = true;
+    await click("draft-keep-mine");
+    expect(keep().disabled).toBe(true);
+    await act(async () => {
+      releasePost!();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(posts.filter((f) => f.get("force") === "1")).toHaveLength(1);
+  });
 });

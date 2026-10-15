@@ -334,18 +334,64 @@ describe("api route", () => {
     } as never);
   };
 
-  it("refuses cross-origin browser writes and allows same-origin and header-less ones", async () => {
-    expect((await postWith({ origin: "http://evil.example" })).status).toBe(403);
-    expect((await postWith({ "sec-fetch-site": "cross-site" })).status).toBe(403);
-    expect((await postWith({ "sec-fetch-site": "same-site" })).status).toBe(403);
-    expect(fs.existsSync(draftFile("o.md"))).toBe(false);
-    expect(
-      (await postWith({ origin: "http://deck.local:5173", host: "deck.local:5173", "sec-fetch-site": "same-origin" }))
-        .status
-    ).toBe(200);
-    expect(fs.existsSync(draftFile("o.md"))).toBe(true);
-    fs.rmSync(draftFile("o.md"));
-    expect((await postWith({})).status).toBe(200);
+  it("refuses cross-origin browser writes and allows allowlisted and header-less ones", async () => {
+    const savedOrigins = process.env["VOICE_ALLOWED_ORIGINS"];
+    delete process.env["VOICE_ALLOWED_ORIGINS"];
+    try {
+      expect((await postWith({ origin: "http://evil.example" })).status).toBe(403);
+      expect((await postWith({ origin: "null" })).status).toBe(403);
+      expect((await postWith({ "sec-fetch-site": "cross-site" })).status).toBe(403);
+      expect((await postWith({ "sec-fetch-site": "same-site" })).status).toBe(403);
+      // A matching Origin does not rescue a cross-site fetch.
+      expect(
+        (await postWith({ origin: "http://localhost:4242", "sec-fetch-site": "cross-site" })).status
+      ).toBe(403);
+      expect(fs.existsSync(draftFile("o.md"))).toBe(false);
+      // Default allowlist: this app's own origin.
+      expect(
+        (await postWith({ origin: "http://localhost:4242", "sec-fetch-site": "same-origin" })).status
+      ).toBe(200);
+      expect(fs.existsSync(draftFile("o.md"))).toBe(true);
+      fs.rmSync(draftFile("o.md"));
+      expect((await postWith({})).status).toBe(200);
+    } finally {
+      if (savedOrigins === undefined) delete process.env["VOICE_ALLOWED_ORIGINS"];
+      else process.env["VOICE_ALLOWED_ORIGINS"] = savedOrigins;
+    }
+  });
+
+  it("DNS rebinding: an Origin that matches the attacker's own Host is still refused", async () => {
+    const saved = process.env["VOICE_ALLOWED_ORIGINS"];
+    delete process.env["VOICE_ALLOWED_ORIGINS"];
+    try {
+      const res = await postWith({
+        origin: "http://rebind.evil.example:4242",
+        host: "rebind.evil.example:4242",
+        "sec-fetch-site": "same-origin",
+      });
+      expect(res.status).toBe(403);
+      expect(fs.existsSync(draftFile("o.md"))).toBe(false);
+    } finally {
+      if (saved !== undefined) process.env["VOICE_ALLOWED_ORIGINS"] = saved;
+    }
+  });
+
+  it("an allowlisted origin works behind a proxy that rewrites Host", async () => {
+    const saved = process.env["VOICE_ALLOWED_ORIGINS"];
+    process.env["VOICE_ALLOWED_ORIGINS"] = "https://deck.tailnet.example";
+    try {
+      const res = await postWith({
+        origin: "https://deck.tailnet.example",
+        host: "127.0.0.1:4242",
+        "sec-fetch-site": "same-origin",
+      });
+      expect(res.status).toBe(200);
+      // The allowlist REPLACES the default.
+      expect((await postWith({ origin: "http://localhost:4242" })).status).toBe(403);
+    } finally {
+      if (saved === undefined) delete process.env["VOICE_ALLOWED_ORIGINS"];
+      else process.env["VOICE_ALLOWED_ORIGINS"] = saved;
+    }
   });
 });
 
@@ -413,5 +459,35 @@ describe("races and bounds", () => {
     warn.mockRestore();
     expect(fs.readFileSync(draftFile(META_FILENAME + ".bad"), "utf8")).toBe("{not json");
     expect(JSON.parse(fs.readFileSync(draftFile(META_FILENAME), "utf8")).files["b.md"]).toBeTruthy();
+  });
+
+  it("does not follow a symlink planted at the .bad backup path", async () => {
+    const outside = mkdtempSync();
+    try {
+      await saveDraft({ name: "a", content: "one", create: true });
+      fs.writeFileSync(path.join(outside, "victim.txt"), "keep me");
+      fs.writeFileSync(draftFile(META_FILENAME), "{not json");
+      fs.symlinkSync(path.join(outside, "victim.txt"), draftFile(META_FILENAME + ".bad"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await saveDraft({ name: "b", content: "two", create: true });
+      warn.mockRestore();
+      expect(fs.readFileSync(path.join(outside, "victim.txt"), "utf8")).toBe("keep me");
+      expect(fs.lstatSync(draftFile(META_FILENAME + ".bad")).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(draftFile(META_FILENAME + ".bad"), "utf8")).toBe("{not json");
+    } finally {
+      rmSync(outside);
+    }
+  });
+
+  it("treats an oversized sidecar as unreadable rather than loading it", async () => {
+    await saveDraft({ name: "a", content: "one", create: true });
+    fs.writeFileSync(draftFile(META_FILENAME), "x".repeat(1024 * 1024 + 1));
+    const r = readDraft("a");
+    expect(r.ok && r.draft.writer).toBe("agent");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await saveDraft({ name: "b", content: "two", create: true });
+    warn.mockRestore();
+    expect(res.ok).toBe(true); // the draft is saved; the sidecar failure is logged
+    expect(fs.statSync(draftFile(META_FILENAME)).size).toBe(1024 * 1024 + 1);
   });
 });
