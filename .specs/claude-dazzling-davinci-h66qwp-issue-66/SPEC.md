@@ -149,3 +149,16 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
 - Commits: d30e9d4 fix(deck): origin allowlist for draft writes, read-only while switching, capped fd reads (#66)
 - Accepted, not changed: the lock file left outside the workspace in the
   folder-swap race (see TL;DR limitations).
+
+### 2026-10-15: fifth review round
+- What changed: draft and sidecar reads open with O_NONBLOCK and refuse
+  non-regular files (a FIFO named like a draft no longer freezes the server);
+  the read buffer is no longer zero-filled; the dev launcher passes
+  VOICE_ALLOWED_ORIGINS to the app so `--port N` works; `.env.example` notes
+  that browser saves need the origin listed; the draft tests pin PORT and
+  VOICE_ALLOWED_ORIGINS; the PR body no longer carries the session link.
+  `REVIEW.md` has a round 5 section.
+- Why: Opus review at the previous head, approve with minor follow-ups.
+- Supersedes: nothing, additive (the round 4 fd read gains the non-blocking open).
+- Commits: 8175afa fix(deck): non-blocking draft reads, dev app origin allowlist, test env isolation (#66)
+

@@ -18,6 +18,7 @@ Commits referred to (oldest first):
 | d9a13ea | fix(deck): typecheck in draft editor test, reword SPEC to pass leak gate |
 | ddd1b7b | test(deck): fix mock typing in draft editor test |
 | d30e9d4 | fix(deck): origin allowlist for draft writes, read-only while switching, capped fd reads |
+| 8175afa | fix(deck): non-blocking draft reads, dev app origin allowlist, test env isolation |
 
 ## Round 1: first Opus review at 40f5943
 
@@ -71,3 +72,15 @@ Commits referred to (oldest first):
 | 7 | Nit | Force-save buttons enabled during a save | Fixed: disabled while saving; test added | d30e9d4 |
 | 8 | Nit | No tests for `Origin: null`, or a matching Origin with `Sec-Fetch-Site: cross-site` | Fixed: both added, plus DNS-rebinding and proxy-allowlist cases | d30e9d4 |
 | 9 | Nit | PR description out of date | Fixed: regenerated from the SPEC (dev workspace path, test-plan head, 403 rule, proxy/allowlist behaviour, 413 handling) | PR body edit |
+
+## Round 5: Opus review at 44b8686 (approve with minor follow-ups, CI green)
+
+| # | Severity | Finding | Outcome | Commit |
+| --- | --- | --- | --- | --- |
+| 1 | Minor | `openSync(file, "r")` blocks on a FIFO named like a draft (or a symlink to one) before fstat can refuse it, freezing the server on list, open or poll (regression from the round 4 fd read) | Fixed: open with O_RDONLY and O_NONBLOCK, fstat, refuse non-regular files; same helper serves the sidecar. Tests with mkfifo (skipped where unavailable) for read, list, symlink-to-FIFO and save; reverting the flag makes the test hang, which was confirmed | 8175afa |
+| 2 | Minor | The dev launcher gave VOICE_ALLOWED_ORIGINS only to the voice proxy, so with `--port N` every draft write from the app got 403 | Fixed: the app environment now gets the same VOICE_ALLOWED_ORIGINS; a script-level source check covers it. Not exercised by running the launcher | 8175afa |
+| 3 | Nit | `.env.example` should say browser saves need the origin listed in VOICE_ALLOWED_ORIGINS | Fixed | 8175afa |
+| 4 | Nit | Tests hard-code localhost:4242 | Fixed: PORT and VOICE_ALLOWED_ORIGINS are cleared before and restored after every draft test | 8175afa |
+| 5 | Nit | `Buffer.alloc(max + 1)` zero-fills 1 MB per list and poll | Fixed: `allocUnsafe`; only the bytes actually read are used | 8175afa |
+| 6 | Nit | PR body footer carries the claude.ai session link | Fixed: removed from the PR description; the squash-merge note about older commit trailers stays | PR body edit |
+
