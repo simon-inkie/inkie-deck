@@ -1093,9 +1093,10 @@ server's. Until #32 was fixed the fonts never loaded even when online, because
 the `@import` that was meant to fetch them was dropped; if you see fallback
 fonts on a connected browser now, that is a regression worth reporting. With the
 optional subsystems below switched off and nobody subscribed to browser
-notifications, nothing else in the core application depends on egress. With
-them on, image descriptions call Google's API and voice connects to Deepgram;
-web push, once a browser has subscribed, sends to that browser's push service.
+notifications, nothing else in Deck itself depends on egress. The agents' model
+CLIs still need their provider, as tier 3 says. With the optional subsystems
+on, image descriptions call Google's API and voice connects to Deepgram; web
+push, once a browser has subscribed, sends to that browser's push service.
 Checked: the stylesheet is still linked from Google Fonts in
 `packages/deck/app/root.tsx`.
 

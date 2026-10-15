@@ -8,8 +8,9 @@
 
 Audits every entry in INSTALL.md "Known limitations" against the code and the
 merged PRs. Corrects three entries the 2026-09-27 WSL run changed, one that a
-merged PR made wrong, adds two real limitations that were unlisted (first boot
-needs a person, boot start unchecked), and puts a "checked" note on entries
+merged PR made wrong, adds three real limitations that were unlisted (first boot
+needs a person, boot start unchecked, web push is switched on by a browser
+subscription), and puts a "checked" note on entries
 that are still true.
 
 ## Scope
@@ -38,8 +39,10 @@ Out of scope: anything outside that section (see Follow-ups).
   reading or a command.
 - Entries still true are left in place, with a "Checked" sentence only where
   something was actually looked at.
-- Added two entries, each backed by code or an existing section of the
-  document: first boot needs a person, boot start unchecked. Native Windows
+- Added three entries, each backed by code or an existing section of the
+  document: first boot needs a person, boot start unchecked, and web push
+  (no operator key, a browser subscription switches it on; read from
+  `push.server.ts` and `push-watcher.mjs`). Native Windows
   unsupported went into the reworded Windows entry, not a new one. The root
   and platform entries were rewritten in place.
 - Entries nobody could measure (optional subsystems, boot start) carry the
@@ -71,6 +74,10 @@ under WSL 2", added a Check results section here, cited
 
 CodeRabbit CLI (via the maintainer): the SPEC said three entries were
 added where two were, and two entries had no date. Both fixed.
+
+Review of head 64bf9ed: the SPEC count was stale (now three added, web push
+included) and the egress sentence could be read as "runs offline"; it now
+says the agents' model CLIs need their provider.
 
 Human review of head 3423dee (two reviews). No Critical or Major. Two Minor,
 both fixed: the "nothing else depends on egress" sentence now names the
