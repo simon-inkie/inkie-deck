@@ -11,7 +11,8 @@ was deferred, and the commit. Commits on this branch, by short id:
 | 945d527 | merge of main, round 2 fixes |
 | d5484a8 | round 3 fixes |
 | df04422 | round 4 fixes, adds this file |
-| 5ae2586, 887d0b3 | REVIEW.md follow-ups |
+| 5ae2586 | REVIEW.md commit ids |
+| 887d0b3 | REVIEW.md leak-gate fix |
 | ce2c6a2 | round 5 fixes |
 
 ## Open maintainer decision
