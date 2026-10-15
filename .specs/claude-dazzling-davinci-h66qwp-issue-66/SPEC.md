@@ -119,7 +119,7 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
 - Why: review findings; the data-loss and confinement items were Major.
 - Supersedes: the second-round poll comparison and the "fall back to the
   version just written" result path, both replaced as above.
-- Commits: see the sha entry below.
+- Commits: b0297fb fix(deck): guard draft switching, stale responses, confinement and cross-origin writes (#66)
 - Deferred: `Claude-Session` trailers in 40f5943, fb5663b and b2edbbb need a
   history rewrite, which this work is not allowed to do; a maintainer can strip
   them on squash merge. Reads remain synchronous (now bounded to 1 MB each);
