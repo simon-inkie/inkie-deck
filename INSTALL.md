@@ -828,9 +828,24 @@ created exactly as before. Memory never changes the exit code. The reasons:
 - the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). Before wiring nothing is
   wired; during the install the line says so and the settings are restored.
 
+- anything in the agent's `.claude` directory is a symlink. The checkout's
+  install command writes a temporary file and a backup beside `settings.json`
+  and follows links, so a planted link could redirect a write onto another
+  file. Nothing is written; remove the link and run the install command with
+  `--agent <name>`. Deck checks again after the install and, if a link appeared
+  meanwhile, reports `PARTIAL` rather than `on`.
+
 Separately, `create-agent.sh` refuses to create an agent whose
 `.claude/settings.json` (or `.claude` directory) is a symlink, because the
 settings are written in place and could land in a global file.
+
+After a successful memory install the checkout's installer leaves a one-time
+backup of the previous settings next to `settings.json` (a `settings.json.*.bak`
+file in the agent's `.claude`). It is the installer's own file and is kept on
+success; delete it when you no longer want it. After a failed install Deck
+restores the settings and removes any backup or temporary file the failed run
+created. If Ctrl-C reaches the installer itself, Deck restores the settings and
+reports it, and its temporary copy of the settings is deleted.
 
 Not covered here: semantic search (it needs a vector database and a paid
 embeddings key), the background watcher, and a persona file for the memory

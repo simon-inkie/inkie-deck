@@ -732,6 +732,10 @@ add("PreCompact", "auto", "on-pre-compact");
 add("PreCompact", "manual", "on-pre-compact");
 fs.writeFileSync(f, JSON.stringify(d, null, 2));
 '
+# Like the real installer, leave a backup beside the settings, and a temporary
+# file when it dies mid-write.
+echo '{}' > "$settings.fixture.bak"
+[ -n "\${FIXTURE_FAIL_AFTER_MERGE:-}" ] && echo '{}' > "$settings.fixture.tmp"
 # A failure AFTER the hooks merged, and a hold so a test can signal mid-install.
 [ -n "\${FIXTURE_FAIL_AFTER_MERGE:-}" ] && exit "$FIXTURE_FAIL_AFTER_MERGE"
 if [ -n "\${FIXTURE_HOLD:-}" ]; then touch "$FIXTURE_HOLD"; sleep 2; fi
@@ -883,6 +887,54 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(settingsOf(box, "wren").hooks).toBeUndefined();
     expect(settingsOf(box, "wren").env.AGENT_NAME).toBe("wren");
     expect(result.output).toMatch(/memory off \(memory install exited 3; settings restored, nothing wired\)/);
+    // What the installer left beside the settings is cleaned up too.
+    const left = fs.readdirSync(path.join(box.agentsHome, "wren", ".claude"));
+    expect(left).toEqual(["settings.json"]);
+  });
+
+  /** A planted symlink in .claude, whatever its name, must stop memory with no writes. */
+  function plantedLinkCase(linkName: string): void {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const victim = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(victim, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(victim, path.join(dir, linkName));
+
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(a symlink in the agent's \.claude directory; nothing written\)/);
+    expect(fs.readFileSync(victim, "utf8")).toBe('{"keep":"me"}');
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  }
+
+  it("refuses memory when a temporary-file name in .claude is a planted symlink", () => {
+    plantedLinkCase("settings.json.planted.tmp");
+  });
+
+  it("refuses memory when a backup name in .claude is a planted symlink", () => {
+    plantedLinkCase("settings.json.planted.bak");
+  });
+
+  it("rejects a symlinked .claude directory before writing anything", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const elsewhere = path.join(path.dirname(box.home), "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.mkdirSync(path.join(box.agentsHome, "wren"), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(box.agentsHome, "wren", ".claude"));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
   });
 
   it("reports a PARTIAL state when the settings cannot be restored", () => {
@@ -968,6 +1020,8 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     const box = sandbox();
     const root = memoryLayer(box);
     const hold = path.join(box.home, "install-started");
+    const tmp = path.join(path.dirname(box.home), "tmp-for-snapshot");
+    fs.mkdirSync(tmp);
 
     const child = spawn("bash", [SCRIPT, "wren", "--no-verify"], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -978,6 +1032,7 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
         PATH: testPath(box, false),
         MEMORY_LAYER_ROOT: root,
         FIXTURE_HOLD: hold,
+        TMPDIR: tmp,
       },
     });
     let output = "";
@@ -992,6 +1047,8 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(await exited).toBe(143);
     expect(output).toMatch(/memory off \(interrupted during memory install; settings restored, nothing wired\)/);
     expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    // The settings snapshot does not outlive the run.
+    expect(fs.readdirSync(tmp)).toEqual([]);
   });
 
   it("states memory is off in the summary when there is nothing to wire", () => {

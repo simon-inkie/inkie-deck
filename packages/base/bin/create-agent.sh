@@ -440,6 +440,35 @@ settings_is_contained() {
   [[ ! -L "$AGENT_HOME/.claude" && ! -L "$AGENT_HOME/.claude/settings.json" ]]
 }
 
+# Stricter, for handing the directory to the memory layer's installer. That
+# installer writes a temporary file and a backup beside settings.json and both
+# writes follow links, so ANY symlink in the agent's .claude (a planted
+# settings.json.<anything> as much as settings.json itself) can redirect a write
+# onto another file. Refuse on any of them rather than guess at the names.
+memory_dir_is_clean() {
+  settings_is_contained || return 1
+  [[ ! -d "$AGENT_HOME/.claude" ]] && return 0
+  [[ -z "$(find "$AGENT_HOME/.claude" -type l -print -quit 2>/dev/null)" ]]
+}
+
+# Files the installer may leave beside settings.json (temporary, backup). Used
+# to remove only what it created, after a restore.
+MEMORY_PRESEED=""
+list_settings_extras() {
+  local f
+  for f in "$AGENT_HOME/.claude"/settings.json.*; do
+    [[ -e "$f" || -L "$f" ]] && printf '%s\n' "$f"
+  done
+}
+remove_new_settings_extras() {
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    grep -qxF -- "$f" <<< "$MEMORY_PRESEED" && continue
+    [[ -f "$f" && ! -L "$f" ]] && rm -f -- "$f"
+  done < <(list_settings_extras)
+}
+
 # Give up on wiring, say why on the final line, and leave settings alone.
 memory_skip() {
   MEMORY_PENDING=0
@@ -456,7 +485,14 @@ restore_settings() {
   [[ -n "$MEMORY_SNAPSHOT" && -f "$MEMORY_SNAPSHOT" ]] || return 1
   # Redirect rather than cp: it keeps the file's mode and fails when the target
   # is no longer a regular file, instead of quietly copying into a directory.
-  settings_is_contained && cat "$MEMORY_SNAPSHOT" > "$AGENT_HOME/.claude/settings.json"
+  settings_is_contained || return 1
+  cat "$MEMORY_SNAPSHOT" > "$AGENT_HOME/.claude/settings.json" || return 1
+  remove_new_settings_extras
+}
+
+drop_snapshot() {
+  [[ -n "$MEMORY_SNAPSHOT" ]] && rm -f "$MEMORY_SNAPSHOT"
+  MEMORY_SNAPSHOT=""
 }
 
 # Add USER_NAME to the settings env block unless one is already there.
@@ -506,9 +542,10 @@ wire_memory() {
   # keeps a value that was already there, so a settings file carrying another
   # agent's name would seed one silo and route the hooks to a different one.
   local routed
-  if ! settings_is_contained; then
-    memory_skip "settings file is a symlink"
-    warn "memory is off: $AGENT_HOME/.claude is or contains a symlink; nothing was written through it."
+  if ! memory_dir_is_clean; then
+    memory_skip "a symlink in the agent's .claude directory; nothing written"
+    warn "memory is off: $AGENT_HOME/.claude is, or contains, a symlink. The memory install writes"
+    warn "  files there and would follow it. Remove the link, then run the install command with --agent $NAME."
     return
   fi
   routed="$(CA_SETTINGS="$AGENT_HOME/.claude/settings.json" node_run <<'JS'
@@ -526,9 +563,12 @@ JS
   fi
 
   # Keep a copy so a failure after the hooks merged can be undone.
-  MEMORY_SNAPSHOT="$(mktemp)"
-  cp -p "$AGENT_HOME/.claude/settings.json" "$MEMORY_SNAPSHOT" \
-    || { memory_skip "could not snapshot the agent's settings"; return; }
+  # Created 0600 from the start: the settings can hold secrets and a copy in
+  # $TMPDIR must not be wider than the original.
+  MEMORY_SNAPSHOT="$(umask 077; mktemp)" || { memory_skip "could not snapshot the agent's settings"; return; }
+  cat "$AGENT_HOME/.claude/settings.json" > "$MEMORY_SNAPSHOT" \
+    || { drop_snapshot; memory_skip "could not snapshot the agent's settings"; return; }
+  MEMORY_PRESEED="$(list_settings_extras)"
 
   # --skip-build: building is a one-off for the checkout, not a per-agent step.
   MEMORY_WIRING=1
@@ -536,6 +576,15 @@ JS
     --agent "$NAME" </dev/null >/dev/null
   status=$?
   MEMORY_WIRING=0
+  # Re-check after the installer and before anything else is written or claimed:
+  # a link that appeared meanwhile means writes may have gone elsewhere.
+  if ! memory_dir_is_clean; then
+    drop_snapshot
+    memory_skip "PARTIAL: a symlink appeared in the agent's .claude directory during the install; check where it points"
+    warn "memory is NOT reported on: $AGENT_HOME/.claude contains a symlink after the install ran."
+    warn "  Nothing further was written. Inspect the link target and $AGENT_HOME/.claude/settings.json."
+    return
+  fi
   if [[ $status -ne 0 ]]; then
     if restore_settings; then
       memory_skip "memory install exited $status; settings restored, nothing wired"
@@ -917,7 +966,7 @@ memory_on_exit() {
     show=1
   fi
   [[ $show -eq 1 || $MEMORY_PRINT -eq 1 ]] && print_memory_line
-  [[ -n "$MEMORY_SNAPSHOT" ]] && rm -f "$MEMORY_SNAPSHOT"
+  drop_snapshot
   exit "$rc"
 }
 
@@ -925,8 +974,11 @@ memory_on_exit() {
 # interrupted while the memory install is in flight must leave a visible report
 # and the settings as they were. The handler prints in that case because it may
 # be running inside the EXIT trap, where a further exit skips the trap's print.
-# Bash runs a trap after the foreground child finishes, so the installer is not
-# cut off half way; the settings are restored afterwards.
+# Bash runs a trap only after the foreground command it is waiting on ends. A
+# signal sent to this script alone therefore lets the installer finish, and the
+# settings are restored afterwards. A terminal Ctrl-C or a hangup goes to the
+# whole process group and also stops the installer and its helper wherever they
+# are, which is exactly the case the restore and the snapshot cleanup are for.
 on_signal() {
   local code="$1"
   MEMORY_PENDING=0
@@ -943,6 +995,7 @@ on_signal() {
     MEMORY_PRINT=1
     MEMORY_REPORT="off (run interrupted before memory was wired)"
   fi
+  drop_snapshot
   exit "$code"
 }
 

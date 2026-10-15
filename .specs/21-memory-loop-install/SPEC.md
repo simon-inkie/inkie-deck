@@ -135,3 +135,9 @@ Later commits omit it.
 - Supersedes: "reported off although hooks may be wired" in the TL;DR notes; the earlier rule that a failed probe still wired memory.
 - Not done: removing `Claude-Session` trailers from the first two commits. That needs a history rewrite and force-push, which were ruled out; left for a decision (squash merge drops them).
 - Commits: see branch
+
+### 2026-10-15: review round 4 (symlinks beside settings, snapshot hygiene)
+- What changed: (1) memory is refused, with nothing written, when ANY entry in the agent's `.claude` is a symlink, because the checkout's installer writes a temporary file and a backup beside `settings.json` and both follow links; containment is checked again after the installer and before `USER_NAME` is stamped or `on` is reported (a link that appeared means `PARTIAL`). The creation-time guard still covers only `.claude` and `settings.json`. (2) The settings snapshot is created 0600, without `cp -p`, and removed on signal as well as on normal exit. (3) After a restore, regular `settings.json.*` files that the failed run created are removed; a backup left by a successful install is kept and documented. The signal comment now says what is true: a signal to the script alone lets the installer finish, while a terminal Ctrl-C also stops the installer. (4) `REVIEW.md` records every round.
+- Why: review round 4.
+- Supersedes: the symlink check that covered only `.claude` and `settings.json` at wiring time.
+- Commits: see branch
