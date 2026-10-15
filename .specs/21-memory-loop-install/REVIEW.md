@@ -3,8 +3,8 @@
 Every finding from every review round, with severity, what was done or why it
 was deferred, and the commit. Commit ids are short shas on this branch:
 f76901c (initial), 54efe35 (SPEC id fix), 42266ec (round 1 fixes), 945d527
-(merge of main and round 2 fixes), d5484a8 (round 3 fixes), and the commit that
-adds this file (round 4).
+(merge of main and round 2 fixes), d5484a8 (round 3 fixes), and df04422
+(round 4 fixes, which also adds this file).
 
 ## Open maintainer decision
 
@@ -50,10 +50,10 @@ message, or the maintainer can authorise a rewrite. Raised in rounds 1 and 3.
 
 | Severity | Finding | Outcome | Commit |
 |---|---|---|---|
-| Major | The symlink guard covered only `.claude` and `settings.json`, but the checkout's installer writes a temporary file and a backup beside the settings and both follow links; a planted link could overwrite another file, and `USER_NAME` was stamped through a symlink with `on` reported | Fixed: memory refused, nothing written, on ANY symlink in `.claude`; containment re-checked after the installer and before stamping or reporting on (a link that appeared gives PARTIAL). Tests: planted temporary-file link, planted backup link, symlinked `.claude` directory | round 4 commit |
-| Minor | The settings snapshot leaked in the temp directory after an interrupted install, and was created with the settings file's mode | Fixed: created 0600, no `cp -p`, removed in the signal handler; test that no snapshot remains after SIGTERM | round 4 commit |
-| Minor | A comment claimed the installer is never cut off, true only for a signal to the script's own process | Fixed: comment reworded. A regular temporary file the failed run created is removed after the restore | round 4 commit |
-| Nit | A backup stayed in `.claude` after a restore | Fixed: files the failed run created are removed after the restore; a backup left by a successful install is kept and documented in INSTALL.md | round 4 commit |
+| Major | The symlink guard covered only `.claude` and `settings.json`, but the checkout's installer writes a temporary file and a backup beside the settings and both follow links; a planted link could overwrite another file, and `USER_NAME` was stamped through a symlink with `on` reported | Fixed: memory refused, nothing written, on ANY symlink in `.claude`; containment re-checked after the installer and before stamping or reporting on (a link that appeared gives PARTIAL). Tests: planted temporary-file link, planted backup link, symlinked `.claude` directory | df04422 |
+| Minor | The settings snapshot leaked in the temp directory after an interrupted install, and was created with the settings file's mode | Fixed: created 0600, no `cp -p`, removed in the signal handler; test that no snapshot remains after SIGTERM | df04422 |
+| Minor | A comment claimed the installer is never cut off, true only for a signal to the script's own process | Fixed: comment reworded. A regular temporary file the failed run created is removed after the restore | df04422 |
+| Nit | A backup stayed in `.claude` after a restore | Fixed: files the failed run created are removed after the restore; a backup left by a successful install is kept and documented in INSTALL.md | df04422 |
 
 ## Not done, by design
 
