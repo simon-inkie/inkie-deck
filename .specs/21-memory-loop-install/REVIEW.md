@@ -1,21 +1,27 @@
 # Review log for #21 (PR #67)
 
 Every finding from every review round, with severity, what was done or why it
-was deferred, and the commit. Commit ids are short shas on this branch:
-f76901c (initial), 54efe35 (SPEC id fix), 42266ec (round 1 fixes), 945d527
-(merge of main and round 2 fixes), d5484a8 (round 3 fixes), and df04422
-(round 4 fixes, which also adds this file).
+was deferred, and the commit. Commits on this branch, by short id:
+
+| Id | What |
+|---|---|
+| f76901c | initial implementation |
+| 54efe35 | SPEC id fix |
+| 42266ec | round 1 fixes |
+| 945d527 | merge of main, round 2 fixes |
+| d5484a8 | round 3 fixes |
+| df04422 | round 4 fixes, adds this file |
 
 ## Open maintainer decision
 
-The commits f76901c and 54efe35 carry a `Claude-Session:` trailer that the
+The first two commits in the table above carry a `Claude-Session:` trailer that the
 repository's private-session-link leak rule flags in
 `pnpm check:leaks:messages` (not part of the required CI list). Removing it
 needs a history rewrite and a force-push, which were ruled out for this work.
 Later commits omit the trailer. A squash merge must drop those lines from its
 message, or the maintainer can authorise a rewrite. Raised in rounds 1 and 3.
 
-## Round 1, first review (head f76901c, 54efe35)
+## Round 1, first review (first two commits)
 
 | Severity | Finding | Outcome | Commit |
 |---|---|---|---|
