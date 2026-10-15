@@ -15,7 +15,7 @@ was deferred, and the commit. Commits on this branch, by short id:
 | 887d0b3 | REVIEW.md leak-gate fix |
 | ce2c6a2 | round 5 fixes |
 | 1cf33f5 | round 6 fixes |
-| R7ID | round 7 fixes |
+| be8d318 | round 7 fixes |
 
 ## Open maintainer decision
 
@@ -94,13 +94,13 @@ Scope was narrowed by the maintainer to the real defects; the rest was skipped o
 
 | Severity | Finding | Outcome | Commit |
 |---|---|---|---|
-| Minor (real behaviour) | A saved copy of stdout (fd 7) was inherited by every child, so a detached grandchild kept the caller's pipe open (`create-agent \| tail` took seconds longer) and replaced a caller's own fd 7 | Fixed: fd 7 is opened only inside the exit handler and closed for the installer and the node helper. Test: a detached child of the install does not hold the pipe (confirmed to fail without the fix) | R7ID |
-| Minor | `..` in the agents home is resolved by text in the check but through real directories by the shell, so with a symlink before it the check passed while persona files landed elsewhere | Fixed: an agents home with a `..` component is refused. Test | R7ID |
-| Minor | A global settings path that is a dangling symlink to the agent's not-yet-created settings is missed | Not fixed, by maintainer decision to avoid new machinery: the claim in INSTALL.md and the SPEC was narrowed to say so | R7ID |
-| Minor | `merge_settings` still writes in place after an earlier check | Not fixed, by maintainer decision: documented in INSTALL.md and the SPEC as a limitation under the same-user threat model | R7ID |
+| Minor (real behaviour) | A saved copy of stdout (fd 7) was inherited by every child, so a detached grandchild kept the caller's pipe open (`create-agent \| tail` took seconds longer) and replaced a caller's own fd 7 | Fixed: fd 7 is opened only inside the exit handler and closed for the installer and the node helper. Test: a detached child of the install does not hold the pipe (confirmed to fail without the fix) | be8d318 |
+| Minor | `..` in the agents home is resolved by text in the check but through real directories by the shell, so with a symlink before it the check passed while persona files landed elsewhere | Fixed: an agents home with a `..` component is refused. Test | be8d318 |
+| Minor | A global settings path that is a dangling symlink to the agent's not-yet-created settings is missed | Not fixed, by maintainer decision to avoid new machinery: the claim in INSTALL.md and the SPEC was narrowed to say so | be8d318 |
+| Minor | `merge_settings` still writes in place after an earlier check | Not fixed, by maintainer decision: documented in INSTALL.md and the SPEC as a limitation under the same-user threat model | be8d318 |
 | Nit | The scaffold error always gives the same generic reason | Skipped by maintainer decision | none |
-| Nit | Wording about `--verify-only` printing, and the stage after the stamp | Skipped by maintainer decision, except that the false `--verify-only` claim in the round 6 row was corrected | R7ID |
-| Nit | A stale test count in the SPEC | The false count was removed | R7ID |
+| Nit | Wording about `--verify-only` printing, and the stage after the stamp | Skipped by maintainer decision, except that the false `--verify-only` claim in the round 6 row was corrected | be8d318 |
+| Nit | A stale test count in the SPEC | The false count was removed | be8d318 |
 
 ## Not done, by design
 
