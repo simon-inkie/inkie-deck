@@ -197,3 +197,21 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
 - Not changed: draft files themselves are not checked for multiple hard links
   (only the sidecar was asked about); `REVIEW.md` has a round 8 section.
 
+### 2026-10-15: ninth review round
+- What changed:
+  - Hard links: a draft whose open descriptor has more than one hard link is
+    treated as not a draft (not listed, 404 on open, 400 on save; never read or
+    written through). The file a draft name resolves to must itself match the
+    draft-name pattern, so a symlink can no longer make a draft out of the
+    sidecar, its `.bad` backup or a `.lock` file.
+  - Temp files: the drafts module writes drafts and the sidecar through an
+    `O_EXCL` temp file with a random suffix, mode 0644, then renames, removing
+    the temp file on error. It no longer calls the shared `atomicWrite`.
+- Why: review of the previous head (two Major, reproduced).
+- Supersedes: the earlier use of `atomicWrite` for drafts and the sidecar.
+- Commits: aa431ca fix(deck): refuse hard-linked drafts and bookkeeping names; use exclusive random temp files (#66)
+- Follow-up, separate from this PR: the shared `atomicWrite` in
+  `safe-fs.server.ts` (used by the inbox, queue and other stores) has the same
+  predictable temp name and symlink-following write. It was deliberately not
+  changed here because other surfaces depend on it.
+

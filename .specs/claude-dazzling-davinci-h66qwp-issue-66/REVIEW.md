@@ -22,6 +22,7 @@ Commits referred to (oldest first):
 | a5f6659 | test(deck): run FIFO tests in a child process with a hard timeout |
 | 1616e25 | fix(deck): confine the draft sidecar read and backup; test dev restart keeps drafts |
 | e1492f1 | feat(deck): guard unsaved draft edits against route changes and tab close |
+| aa431ca | fix(deck): refuse hard-linked drafts and bookkeeping names; use exclusive random temp files |
 
 ## Round 1: first Opus review at 40f5943
 
@@ -106,4 +107,13 @@ Round 7 was not delivered to this builder, so it is not recorded here.
 | 1 | Major | The sidecar `.deck-drafts.json` was read without confinement, and on a JSON parse failure its target was copied into `.deck-drafts.json.bad`; with the sidecar pointed at an outside private file and an in-folder symlink onto the backup, the draft API returned the outside bytes | Fixed: the sidecar is read only if it resolves to itself inside the drafts folder (realpath), is not a symlink (O_NOFOLLOW) and has one hard link (checked on the open descriptor); otherwise it is ignored on reads (everything reads as "agent", logged once) and the sidecar update is skipped. The backup is written from the confined read, never by copying through the path. Tests: symlinked sidecar, symlinked sidecar that parses, hard-linked sidecar, target not rewritten, ordinary corrupt backup still works; the first three fail on the old code (confirmed by restoring it) | 1616e25 |
 | 2 | Major | Only the picker and create were guarded: clicking Projects or an agent, or reloading or closing the tab, silently destroyed unsaved edits | Fixed: `useBlocker` asks before an in-app pathname change while dirty (decline stays, confirm leaves); a `beforeunload` listener is registered only while dirty and removed when clean, after a save and on unmount. Tests for both, including clean and after-save; they fail with the guards removed (confirmed) | e1492f1 |
 | 3 | Gap | No regression test that drafts survive a dev restart | Fixed: the reseed moved into `scripts/dev-paths.mjs` (used by `dev.mjs`); the test runs the real `resetRuntime` twice against a temp root with the real fixtures and checks `.runtime` is wiped while the draft and its person attribution survive. It fails if the workspace is moved back under `.runtime` (confirmed) | 1616e25 |
+
+## Round 9: review of head c73eadf (changes requested, two Major reproduced; CI green)
+
+The sidecar fix, the unsaved-edit guards and the dev-restart fix were confirmed to hold.
+
+| # | Severity | Finding | Outcome | Commit |
+| --- | --- | --- | --- | --- |
+| 1 | Major | Draft reads did not refuse hard links: `ln <outside private file> drafts/x.md` passed confinement and the API returned the outside bytes; a hard-linked sidecar leaked the same way through an in-folder symlink `leak.md` onto it | Fixed: the open descriptor is refused when it has more than one hard link, for every draft read, list and save (the sidecar already was); the file a draft name resolves to must itself be a draft name, so a symlink onto the sidecar, its `.bad` backup or a `.lock` is never a draft. A hard-linked draft is treated as not a draft: not listed, 404 on open, 400 on save (never written through). Tests: hard-linked draft read/list/save, symlink onto a hard-linked sidecar, symlink onto the sidecar, backup and lock names; all fail on the old code (confirmed by restoring it) | aa431ca |
+| 2 | Major | The shared `atomicWrite` temp name (`<file>.tmp-<pid>-<Date.now()>`) is predictable and `writeFileSync` follows a symlink planted there, so a save overwrote an outside file and left the draft (or the sidecar) as a symlink to it | Fixed inside the drafts module only: drafts and the sidecar are written through an `O_EXCL` temp file with a random 96-bit suffix in the same directory, mode 0644, renamed over the target and removed on error; the backup was already an exclusive create. Test plants symlinks at the old predictable names (several clock offsets, with `Date.now` pinned) for both the draft and the sidecar, then saves; fails on the old code (confirmed). A no-leftover-temp-files test passes on both versions by design | aa431ca |
 
