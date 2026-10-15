@@ -20,6 +20,8 @@ Commits referred to (oldest first):
 | d30e9d4 | fix(deck): origin allowlist for draft writes, read-only while switching, capped fd reads |
 | 8175afa | fix(deck): non-blocking draft reads, dev app origin allowlist, test env isolation |
 | a5f6659 | test(deck): run FIFO tests in a child process with a hard timeout |
+| 1616e25 | fix(deck): confine the draft sidecar read and backup; test dev restart keeps drafts |
+| e1492f1 | feat(deck): guard unsaved draft edits against route changes and tab close |
 
 ## Round 1: first Opus review at 40f5943
 
@@ -94,4 +96,14 @@ Commits referred to (oldest first):
 | 3 | Nit (optional) | Stat before opening so a device node is not opened first | Done as a mitigation: `statSync` rejects non-regular files before the open; the `fstat` after the open stays authoritative, so a swap between the two cannot bypass the check. With the pre-check in place the in-process FIFO cases are stopped by it, so the O_NONBLOCK open is only reached in a swap race and is not independently covered by a test | a5f6659 |
 | 4 | Nit | REVIEW.md round 5 row 1 overstated the tests | Fixed: reworded; this round added | this docs commit |
 | 5 | Out of scope | Pre-existing blocking `readFileSync` in `withInboxLock` (`safe-fs.server.ts`) | Not changed; recorded in the SPEC as a known pre-existing limitation | none |
+
+## Round 8: review of head 86ae24b (two Major, one gap)
+
+Round 7 was not delivered to this builder, so it is not recorded here.
+
+| # | Severity | Finding | Outcome | Commit |
+| --- | --- | --- | --- | --- |
+| 1 | Major | The sidecar `.deck-drafts.json` was read without confinement, and on a JSON parse failure its target was copied into `.deck-drafts.json.bad`; with the sidecar pointed at an outside private file and an in-folder symlink onto the backup, the draft API returned the outside bytes | Fixed: the sidecar is read only if it resolves to itself inside the drafts folder (realpath), is not a symlink (O_NOFOLLOW) and has one hard link (checked on the open descriptor); otherwise it is ignored on reads (everything reads as "agent", logged once) and the sidecar update is skipped. The backup is written from the confined read, never by copying through the path. Tests: symlinked sidecar, symlinked sidecar that parses, hard-linked sidecar, target not rewritten, ordinary corrupt backup still works; the first three fail on the old code (confirmed by restoring it) | 1616e25 |
+| 2 | Major | Only the picker and create were guarded: clicking Projects or an agent, or reloading or closing the tab, silently destroyed unsaved edits | Fixed: `useBlocker` asks before an in-app pathname change while dirty (decline stays, confirm leaves); a `beforeunload` listener is registered only while dirty and removed when clean, after a save and on unmount. Tests for both, including clean and after-save; they fail with the guards removed (confirmed) | e1492f1 |
+| 3 | Gap | No regression test that drafts survive a dev restart | Fixed: the reseed moved into `scripts/dev-paths.mjs` (used by `dev.mjs`); the test runs the real `resetRuntime` twice against a temp root with the real fixtures and checks `.runtime` is wiped while the draft and its person attribution survive. It fails if the workspace is moved back under `.runtime` (confirmed) | 1616e25 |
 

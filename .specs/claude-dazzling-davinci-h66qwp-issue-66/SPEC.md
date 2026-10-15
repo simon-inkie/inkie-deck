@@ -175,3 +175,25 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
   `safe-fs.server.ts` does a blocking synchronous `readFileSync` of the lock
   file on release, which would also block on a FIFO planted at the lock path.
 
+### 2026-10-15: eighth review round
+- What changed:
+  - Sidecar confinement: the sidecar is trusted only if it resolves to itself
+    inside the drafts folder, is not a symlink (O_NOFOLLOW on the open) and has
+    a single hard link. Otherwise reads treat it as absent (every draft reads
+    as "agent", one log line) and writes skip updating it; the draft still
+    saves. The `.bad` backup is written from the confined read with an
+    exclusive create. Known consequence: while a hostile sidecar stays in
+    place, attribution cannot be recorded; remove or fix the file.
+  - Leaving with unsaved edits: `useBlocker` for in-app route changes and a
+    `beforeunload` guard registered only while dirty. A closed or reloaded tab
+    asks the browser's generic prompt; there is no local recovery draft.
+  - The dev reseed lives in `scripts/dev-paths.mjs` and is run by a test to
+    show drafts survive a dev restart.
+- Why: review of the previous head (two Major, one gap).
+- Supersedes: the round 4 `.bad` backup (copied through the path) is replaced
+  by a write from the confined read.
+- Commits: 1616e25 fix(deck): confine the draft sidecar read and backup; test dev restart keeps drafts (#66)
+- Commits: e1492f1 feat(deck): guard unsaved draft edits against route changes and tab close (#66)
+- Not changed: draft files themselves are not checked for multiple hard links
+  (only the sidecar was asked about); `REVIEW.md` has a round 8 section.
+
