@@ -508,7 +508,7 @@ describe("races and bounds", () => {
   // A blocked synchronous open cannot be interrupted by vitest's per-test
   // timeout, so these run the real module in a child process with a hard
   // timeout: a regression FAILS here instead of hanging the suite.
-  const hasMkfifo = spawnSync("mkfifo", ["--help"]).error?.code !== "ENOENT";
+  const hasMkfifo = (spawnSync("mkfifo", ["--help"]).error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT";
 
   function runInChild(body: string): { timedOut: boolean; out: string } {
     const dir = mkdtempSync();
