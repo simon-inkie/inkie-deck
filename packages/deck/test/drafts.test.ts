@@ -19,7 +19,8 @@ import { loader, action } from "~/routes/api.drafts";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
 import { withInboxLock } from "~/lib/safe-fs.server";
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -504,36 +505,54 @@ describe("races and bounds", () => {
     expect(fs.statSync(draftFile(META_FILENAME)).size).toBe(1024 * 1024 + 1);
   });
 
-  it("does not block on a FIFO named like a draft (or a symlink to one)", () => {
-    const outside = mkdtempSync();
+  // A blocked synchronous open cannot be interrupted by vitest's per-test
+  // timeout, so these run the real module in a child process with a hard
+  // timeout: a regression FAILS here instead of hanging the suite.
+  const hasMkfifo = spawnSync("mkfifo", ["--help"]).error?.code !== "ENOENT";
+
+  function runInChild(body: string): { timedOut: boolean; out: string } {
+    const dir = mkdtempSync();
     try {
-      fs.mkdirSync(path.join(ws, "drafts"));
-      try {
-        execFileSync("mkfifo", [draftFile("pipe.md")]);
-        execFileSync("mkfifo", [path.join(outside, "target-pipe")]);
-      } catch {
-        return; // no mkfifo on this platform: nothing to test
-      }
-      fs.symlinkSync(path.join(outside, "target-pipe"), draftFile("linked.md"));
-      const r = readDraft("pipe");
-      expect(r.ok).toBe(false);
-      expect(readDraft("linked").ok).toBe(false);
-      expect(listDrafts().map((d) => d.name)).not.toContain("pipe.md");
-      expect(listDrafts().map((d) => d.name)).not.toContain("linked.md");
+      const script = path.join(dir, "child.mjs");
+      const mod = pathToFileURL(path.resolve(__dirname, "..", "app", "lib", "drafts.server.ts")).href;
+      fs.writeFileSync(script, `const m = await import(${JSON.stringify(mod)});\n${body}\n`);
+      const r = spawnSync(process.execPath, ["--import", "tsx", script], {
+        cwd: path.resolve(__dirname, ".."),
+        env: { ...process.env, WORKSPACE_ROOT: ws, MC_SANDBOX_ONLY: "1" },
+        timeout: 20_000,
+        encoding: "utf8",
+      });
+      return { timedOut: r.error !== undefined || r.signal !== null, out: String(r.stdout) + String(r.stderr) };
     } finally {
-      rmSync(outside);
+      rmSync(dir);
     }
+  }
+
+  it.skipIf(!hasMkfifo)("does not block on a FIFO named like a draft, or a symlink to a FIFO inside drafts/", () => {
+    fs.mkdirSync(path.join(ws, "drafts"));
+    execFileSync("mkfifo", [draftFile("pipe.md")]);
+    execFileSync("mkfifo", [draftFile("target.fifo")]);
+    fs.symlinkSync(draftFile("target.fifo"), draftFile("linked.md"));
+    const { timedOut, out } = runInChild(`
+      const a = m.readDraft("pipe");
+      const b = m.readDraft("linked");
+      const names = m.listDrafts().map((d) => d.name);
+      console.log(JSON.stringify({ a: a.ok, b: b.ok, names }));
+    `);
+    expect(timedOut).toBe(false);
+    const res = JSON.parse(out.trim().split("\n").pop()!);
+    expect(res).toEqual({ a: false, b: false, names: [] });
   });
 
-  it("refuses to save over a FIFO instead of blocking", async () => {
+  it.skipIf(!hasMkfifo)("refuses to save over a FIFO instead of blocking", () => {
     fs.mkdirSync(path.join(ws, "drafts"));
-    try {
-      execFileSync("mkfifo", [draftFile("pipe.md")]);
-    } catch {
-      return;
-    }
-    const res = await saveDraft({ name: "pipe", content: "x", baseVersion: null });
-    expect(res.ok).toBe(false);
+    execFileSync("mkfifo", [draftFile("pipe.md")]);
+    const { timedOut, out } = runInChild(`
+      const r = await m.saveDraft({ name: "pipe", content: "x", baseVersion: null });
+      console.log(JSON.stringify({ ok: r.ok }));
+    `);
+    expect(timedOut).toBe(false);
+    expect(JSON.parse(out.trim().split("\n").pop()!)).toEqual({ ok: false });
   });
 });
 

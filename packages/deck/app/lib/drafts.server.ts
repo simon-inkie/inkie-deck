@@ -152,6 +152,10 @@ function readCapped(file: string, max: number): { text: string; mtime: Date } {
   // freeze the whole server. With it the open returns at once, fstat shows a
   // non-regular file, and it is refused before any read. Regular files read
   // normally.
+  // Cheap pre-check so a device node or pipe is not opened at all. It is only
+  // a mitigation: the fstat below is the authoritative check, because the path
+  // can be swapped between this stat and the open.
+  if (!fs.statSync(file).isFile()) throw new Error("Not a regular file.");
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     const st = fs.fstatSync(fd);
