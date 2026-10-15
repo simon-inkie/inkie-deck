@@ -147,12 +147,19 @@ type Meta = Record<string, string>; // name -> version hash last saved by the pe
  * (ENOENT, EISDIR) otherwise.
  */
 function readCapped(file: string, max: number): { text: string; mtime: Date } {
-  const fd = fs.openSync(file, "r");
+  // O_NONBLOCK: opening a FIFO for reading blocks until a writer appears, and
+  // this runs synchronously, so a FIFO named x.md (or a symlink to one) would
+  // freeze the whole server. With it the open returns at once, fstat shows a
+  // non-regular file, and it is refused before any read. Regular files read
+  // normally.
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new Error("Not a regular file.");
     if (st.size > max) throw new DraftTooLarge();
-    const buf = Buffer.alloc(max + 1);
+    // Uninitialised on purpose (no 1 MB zero-fill per list or poll); only the
+    // n bytes actually read are ever used.
+    const buf = Buffer.allocUnsafe(max + 1);
     let n = 0;
     for (;;) {
       const r = fs.readSync(fd, buf, n, buf.length - n, null);

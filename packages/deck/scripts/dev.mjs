@@ -155,7 +155,13 @@ const args = [
   ...passthrough,
 ];
 // The app never reads the speech key; see scripts/voice-env.mjs.
-const appEnv = withVoiceDisabledReason(env);
+// The app DOES need VOICE_ALLOWED_ORIGINS: the draft write check uses the same
+// origin allowlist as the voice proxy, and with `--port N` the app's own origin
+// is not the library default.
+const appEnv = {
+  ...withVoiceDisabledReason(env),
+  VOICE_ALLOWED_ORIGINS: proxyEnv.VOICE_ALLOWED_ORIGINS,
+};
 const child = spawn("react-router", args, {
   stdio: "inherit",
   env: appEnv,

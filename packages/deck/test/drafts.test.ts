@@ -19,19 +19,32 @@ import { loader, action } from "~/routes/api.drafts";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
 import { withInboxLock } from "~/lib/safe-fs.server";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let ws: string;
 let saved: string | undefined;
+let savedPort: string | undefined;
+let savedOrigins: string | undefined;
 
 beforeEach(() => {
+  // The origin allowlist default depends on PORT and VOICE_ALLOWED_ORIGINS;
+  // pin both so the tests do not depend on the machine's environment.
+  savedPort = process.env["PORT"];
+  savedOrigins = process.env["VOICE_ALLOWED_ORIGINS"];
+  delete process.env["PORT"];
+  delete process.env["VOICE_ALLOWED_ORIGINS"];
   ws = mkdtempSync();
   saved = process.env["WORKSPACE_ROOT"];
   process.env["WORKSPACE_ROOT"] = ws;
 });
 
 afterEach(() => {
+  if (savedPort === undefined) delete process.env["PORT"];
+  else process.env["PORT"] = savedPort;
+  if (savedOrigins === undefined) delete process.env["VOICE_ALLOWED_ORIGINS"];
+  else process.env["VOICE_ALLOWED_ORIGINS"] = savedOrigins;
   if (saved === undefined) delete process.env["WORKSPACE_ROOT"];
   else process.env["WORKSPACE_ROOT"] = saved;
   rmSync(ws);
@@ -489,5 +502,45 @@ describe("races and bounds", () => {
     warn.mockRestore();
     expect(res.ok).toBe(true); // the draft is saved; the sidecar failure is logged
     expect(fs.statSync(draftFile(META_FILENAME)).size).toBe(1024 * 1024 + 1);
+  });
+
+  it("does not block on a FIFO named like a draft (or a symlink to one)", () => {
+    const outside = mkdtempSync();
+    try {
+      fs.mkdirSync(path.join(ws, "drafts"));
+      try {
+        execFileSync("mkfifo", [draftFile("pipe.md")]);
+        execFileSync("mkfifo", [path.join(outside, "target-pipe")]);
+      } catch {
+        return; // no mkfifo on this platform: nothing to test
+      }
+      fs.symlinkSync(path.join(outside, "target-pipe"), draftFile("linked.md"));
+      const r = readDraft("pipe");
+      expect(r.ok).toBe(false);
+      expect(readDraft("linked").ok).toBe(false);
+      expect(listDrafts().map((d) => d.name)).not.toContain("pipe.md");
+      expect(listDrafts().map((d) => d.name)).not.toContain("linked.md");
+    } finally {
+      rmSync(outside);
+    }
+  });
+
+  it("refuses to save over a FIFO instead of blocking", async () => {
+    fs.mkdirSync(path.join(ws, "drafts"));
+    try {
+      execFileSync("mkfifo", [draftFile("pipe.md")]);
+    } catch {
+      return;
+    }
+    const res = await saveDraft({ name: "pipe", content: "x", baseVersion: null });
+    expect(res.ok).toBe(false);
+  });
+});
+
+describe("dev launcher", () => {
+  it("passes the origin allowlist to the app, not only to the voice proxy", () => {
+    const src = fs.readFileSync(path.resolve(__dirname, "..", "scripts", "dev.mjs"), "utf8");
+    const appEnv = src.slice(src.indexOf("const appEnv"), src.indexOf("const child = spawn"));
+    expect(appEnv).toContain("VOICE_ALLOWED_ORIGINS: proxyEnv.VOICE_ALLOWED_ORIGINS");
   });
 });
