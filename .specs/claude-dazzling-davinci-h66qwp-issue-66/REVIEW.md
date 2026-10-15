@@ -19,6 +19,7 @@ Commits referred to (oldest first):
 | ddd1b7b | test(deck): fix mock typing in draft editor test |
 | d30e9d4 | fix(deck): origin allowlist for draft writes, read-only while switching, capped fd reads |
 | 8175afa | fix(deck): non-blocking draft reads, dev app origin allowlist, test env isolation |
+| a5f6659 | test(deck): run FIFO tests in a child process with a hard timeout |
 
 ## Round 1: first Opus review at 40f5943
 
@@ -77,10 +78,20 @@ Commits referred to (oldest first):
 
 | # | Severity | Finding | Outcome | Commit |
 | --- | --- | --- | --- | --- |
-| 1 | Minor | `openSync(file, "r")` blocks on a FIFO named like a draft (or a symlink to one) before fstat can refuse it, freezing the server on list, open or poll (regression from the round 4 fd read) | Fixed: open with O_RDONLY and O_NONBLOCK, fstat, refuse non-regular files; same helper serves the sidecar. Tests with mkfifo (skipped where unavailable) for read, list, symlink-to-FIFO and save; reverting the flag makes the test hang, which was confirmed | 8175afa |
+| 1 | Minor | `openSync(file, "r")` blocks on a FIFO named like a draft (or a symlink to one) before fstat can refuse it, freezing the server on list, open or poll (regression from the round 4 fd read) | Fixed: open with O_RDONLY and O_NONBLOCK, fstat, refuse non-regular files; same helper serves the sidecar. The first tests used mkfifo in-process; they hung rather than failed on regression, returned early (counted as passed) without mkfifo, and their symlink case was refused by the path check before the open ran. Reworked in round 6 | 8175afa |
 | 2 | Minor | The dev launcher gave VOICE_ALLOWED_ORIGINS only to the voice proxy, so with `--port N` every draft write from the app got 403 | Fixed: the app environment now gets the same VOICE_ALLOWED_ORIGINS; a script-level source check covers it. Not exercised by running the launcher | 8175afa |
 | 3 | Nit | `.env.example` should say browser saves need the origin listed in VOICE_ALLOWED_ORIGINS | Fixed | 8175afa |
 | 4 | Nit | Tests hard-code localhost:4242 | Fixed: PORT and VOICE_ALLOWED_ORIGINS are cleared before and restored after every draft test | 8175afa |
 | 5 | Nit | `Buffer.alloc(max + 1)` zero-fills 1 MB per list and poll | Fixed: `allocUnsafe`; only the bytes actually read are used | 8175afa |
 | 6 | Nit | PR body footer carries the claude.ai session link | Fixed: removed from the PR description; the squash-merge note about older commit trailers stays | PR body edit |
+
+## Round 6: Opus review at fd9bb56 (approve, CI green, no Critical or Major)
+
+| # | Severity | Finding | Outcome | Commit |
+| --- | --- | --- | --- | --- |
+| 1 | Minor | FIFO tests hang instead of failing on regression (a blocked synchronous open ignores the test timeout) and return early where mkfifo is missing | Fixed: the cases run the real module in a child process (`node --import tsx`) with a 20 s hard timeout, so a regression fails cleanly (confirmed by removing the fix: both tests failed after the timeout); `it.skipIf(!hasMkfifo)` so a missing mkfifo reports as skipped. CI workflows not touched | a5f6659 |
+| 2 | Nit | The symlink case pointed at a FIFO outside the workspace, so the path check refused it before the non-blocking open ran | Fixed: the link now targets a FIFO inside `drafts/` | a5f6659 |
+| 3 | Nit (optional) | Stat before opening so a device node is not opened first | Done as a mitigation: `statSync` rejects non-regular files before the open; the `fstat` after the open stays authoritative, so a swap between the two cannot bypass the check. With the pre-check in place the in-process FIFO cases are stopped by it, so the O_NONBLOCK open is only reached in a swap race and is not independently covered by a test | a5f6659 |
+| 4 | Nit | REVIEW.md round 5 row 1 overstated the tests | Fixed: reworded; this round added | this docs commit |
+| 5 | Out of scope | Pre-existing blocking `readFileSync` in `withInboxLock` (`safe-fs.server.ts`) | Not changed; recorded in the SPEC as a known pre-existing limitation | none |
 

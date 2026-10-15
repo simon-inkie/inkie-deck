@@ -162,3 +162,16 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
 - Supersedes: nothing, additive (the round 4 fd read gains the non-blocking open).
 - Commits: 8175afa fix(deck): non-blocking draft reads, dev app origin allowlist, test env isolation (#66)
 
+### 2026-10-15: sixth review round
+- What changed: the FIFO tests run the real module in a child process with a
+  20 s hard timeout and `it.skipIf(!hasMkfifo)`, and the symlink case targets a
+  FIFO inside `drafts/`; the read helper stats the path before opening as a
+  mitigation (fstat after the open stays authoritative); `REVIEW.md` round 5
+  wording corrected and round 6 added.
+- Why: Opus review at the previous head, approve.
+- Supersedes: the round 5 description of the FIFO tests.
+- Commits: a5f6659 test(deck): run FIFO tests in a child process with a hard timeout (#66)
+- Known pre-existing limitation, not changed here: `withInboxLock` in
+  `safe-fs.server.ts` does a blocking synchronous `readFileSync` of the lock
+  file on release, which would also block on a FIFO planted at the lock path.
+
