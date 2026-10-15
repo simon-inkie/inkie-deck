@@ -556,6 +556,103 @@ describe("races and bounds", () => {
   });
 });
 
+describe("sidecar confinement", () => {
+  const SECRET = "PRIVATE-OUTSIDE-BYTES that are not json";
+  let outside: string;
+  beforeEach(() => {
+    outside = mkdtempSync();
+    fs.writeFileSync(path.join(outside, "private.txt"), SECRET);
+    fs.mkdirSync(path.join(ws, "drafts"));
+    // The exposure path: a draft-named symlink onto the backup file.
+    fs.symlinkSync(draftFile(META_FILENAME + ".bad"), draftFile("leak.md"));
+  });
+  afterEach(() => rmSync(outside));
+
+  function expectNothingLeaked() {
+    expect(fs.existsSync(draftFile(META_FILENAME + ".bad"))).toBe(false);
+    const r = readDraft("leak");
+    expect(r.ok && r.draft.content).not.toContain("PRIVATE");
+    expect(r.ok).toBe(false);
+    expect(fs.readFileSync(path.join(outside, "private.txt"), "utf8")).toBe(SECRET);
+  }
+
+  it("never copies or reads through a symlinked sidecar", async () => {
+    fs.symlinkSync(path.join(outside, "private.txt"), draftFile(META_FILENAME));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await saveDraft({ name: "a", content: "one", create: true });
+    warn.mockRestore();
+    expect(res.ok).toBe(true); // the draft itself still saves
+    expectNothingLeaked();
+    expect(fs.lstatSync(draftFile(META_FILENAME)).isSymbolicLink()).toBe(true); // untouched
+  });
+
+  it("does not take attribution from a symlinked sidecar that parses", async () => {
+    await saveDraft({ name: "a", content: "one", create: true });
+    const hash = crypto.createHash("sha256").update("one", "utf8").digest("hex");
+    fs.writeFileSync(path.join(outside, "meta.json"), JSON.stringify({ version: 1, files: { "a.md": hash } }));
+    fs.rmSync(draftFile(META_FILENAME));
+    fs.symlinkSync(path.join(outside, "meta.json"), draftFile(META_FILENAME));
+    const r = readDraft("a");
+    expect(r.ok && r.draft.writer).toBe("agent");
+  });
+
+  it("never copies or reads through a hard-linked sidecar", async () => {
+    fs.linkSync(path.join(outside, "private.txt"), draftFile(META_FILENAME));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await saveDraft({ name: "a", content: "one", create: true });
+    warn.mockRestore();
+    expect(res.ok).toBe(true);
+    expectNothingLeaked();
+    expect(fs.readFileSync(draftFile(META_FILENAME), "utf8")).toBe(SECRET); // not rewritten either
+  });
+
+  it("does not rewrite the target of a symlinked sidecar", async () => {
+    // The outside target is valid JSON, so only the confinement (not a parse
+    // failure) stops the Deck from treating it as its sidecar.
+    fs.writeFileSync(path.join(outside, "meta.json"), JSON.stringify({ version: 1, files: {} }));
+    fs.symlinkSync(path.join(outside, "meta.json"), draftFile(META_FILENAME));
+    await saveDraft({ name: "a", content: "one", create: true });
+    expect(JSON.parse(fs.readFileSync(path.join(outside, "meta.json"), "utf8")).files).toEqual({});
+  });
+
+  it("still keeps a backup of an ordinary corrupt sidecar", async () => {
+    fs.writeFileSync(draftFile(META_FILENAME), "{not json");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await saveDraft({ name: "a", content: "one", create: true });
+    warn.mockRestore();
+    expect(fs.readFileSync(draftFile(META_FILENAME + ".bad"), "utf8")).toBe("{not json");
+  });
+});
+
+describe("drafts survive a dev restart", () => {
+  it("the real dev reseed wipes .runtime but leaves the workspace and its drafts alone", async () => {
+    const root = mkdtempSync();
+    try {
+      fs.cpSync(path.resolve(__dirname, "..", "fixtures"), path.join(root, "fixtures"), { recursive: true });
+      const { devPaths, resetRuntime } = await import(
+        pathToFileURL(path.resolve(__dirname, "..", "scripts", "dev-paths.mjs")).href
+      );
+      const p = devPaths(root);
+      // The workspace must not live under the directory that is wiped.
+      expect(p.runtimeWorkspace.startsWith(p.runtimeDir + path.sep)).toBe(false);
+
+      resetRuntime(root); // first start
+      process.env["WORKSPACE_ROOT"] = p.runtimeWorkspace;
+      const created = await saveDraft({ name: "keep-me", content: "# my draft\n", create: true });
+      expect(created.ok).toBe(true);
+      fs.writeFileSync(path.join(p.runtimeInbox, "marker.txt"), "runtime state");
+
+      resetRuntime(root); // restart
+      expect(fs.existsSync(path.join(p.runtimeInbox, "marker.txt"))).toBe(false); // .runtime was wiped
+      const after = readDraft("keep-me");
+      expect(after.ok && after.draft.content).toBe("# my draft\n");
+      expect(after.ok && after.draft.writer).toBe("person"); // sidecar survived too
+    } finally {
+      rmSync(root);
+    }
+  });
+});
+
 describe("dev launcher", () => {
   it("passes the origin allowlist to the app, not only to the voice proxy", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", "scripts", "dev.mjs"), "utf8");

@@ -18,39 +18,21 @@
  *
  * ASCII only - no em-dashes.
  */
-import { cpSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { withVoiceDisabledReason } from "./voice-env.mjs";
+import { devPaths, resetRuntime } from "./dev-paths.mjs";
 
 const root = process.cwd();
-const demoInbox = path.join(root, "fixtures", "demo-inbox");
-const runtimeDir = path.join(root, ".runtime");
-const runtimeInbox = path.join(runtimeDir, "inbox");
-const runtimeAttachments = path.join(runtimeDir, "attachments");
-const runtimeProjects = path.join(runtimeDir, "projects");
-const runtimeData = path.join(runtimeDir, "data");
-// Outside .runtime on purpose: .runtime is deleted and reseeded on every start,
-// and drafts must survive a restart.
-const runtimeWorkspace = path.join(root, ".workspace");
-
-// Fall back to the minimal fixture set if the demo inbox is absent.
-const source = existsSync(demoInbox)
-  ? demoInbox
-  : path.join(root, "fixtures", "inbox");
-
-rmSync(runtimeDir, { recursive: true, force: true });
-mkdirSync(runtimeDir, { recursive: true });
-cpSync(source, runtimeInbox, { recursive: true });
-mkdirSync(runtimeAttachments, { recursive: true });
-
-// Seed the projects runtime dir from fixtures/projects.
-const fixturesProjects = path.join(root, "fixtures", "projects");
-cpSync(fixturesProjects, runtimeProjects, { recursive: true });
-
-// DATA_ROOT for MC state files (queue state) - must exist at boot.
-mkdirSync(runtimeData, { recursive: true });
-mkdirSync(runtimeWorkspace, { recursive: true });
+const {
+  runtimeDir,
+  runtimeInbox,
+  runtimeAttachments,
+  runtimeProjects,
+  runtimeData,
+  runtimeWorkspace,
+} = devPaths(root);
+const source = resetRuntime(root);
 
 // REVIEW_ROOTS for dev: the repo root itself + .runtime so docs/plans/*.md
 // can be opened directly in the review panel (intentional).

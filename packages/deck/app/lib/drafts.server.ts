@@ -146,7 +146,11 @@ type Meta = Record<string, string>; // name -> version hash last saved by the pe
  * Throws DraftTooLarge when the file is over max, and the plain fs error
  * (ENOENT, EISDIR) otherwise.
  */
-function readCapped(file: string, max: number): { text: string; mtime: Date } {
+function readCapped(
+  file: string,
+  max: number,
+  opts: { noLinks?: boolean } = {}
+): { text: string; mtime: Date } {
   // O_NONBLOCK: opening a FIFO for reading blocks until a writer appears, and
   // this runs synchronously, so a FIFO named x.md (or a symlink to one) would
   // freeze the whole server. With it the open returns at once, fstat shows a
@@ -156,10 +160,17 @@ function readCapped(file: string, max: number): { text: string; mtime: Date } {
   // a mitigation: the fstat below is the authoritative check, because the path
   // can be swapped between this stat and the open.
   if (!fs.statSync(file).isFile()) throw new Error("Not a regular file.");
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  // noLinks (the sidecar): never follow a final-component symlink (O_NOFOLLOW)
+  // and refuse a file with more than one hard link. Both are decided on the
+  // open descriptor, so a swap after any earlier check cannot get past them.
+  const fd = fs.openSync(
+    file,
+    fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (opts.noLinks ? fs.constants.O_NOFOLLOW : 0)
+  );
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new Error("Not a regular file.");
+    if (opts.noLinks && st.nlink > 1) throw new SidecarRefused("it has more than one hard link");
     if (st.size > max) throw new DraftTooLarge();
     // Uninitialised on purpose (no 1 MB zero-fill per list or poll); only the
     // n bytes actually read are ever used.
@@ -177,9 +188,41 @@ function readCapped(file: string, max: number): { text: string; mtime: Date } {
   }
 }
 
+/** The sidecar is a link, resolves outside the drafts folder, or is hard-linked. */
+class SidecarRefused extends Error {
+  constructor(why: string) {
+    super(`${META_FILENAME} refused: ${why}.`);
+  }
+}
+
+const warned = new Set<string>();
+function warnOnce(msg: string): void {
+  if (warned.has(msg)) return;
+  warned.add(msg);
+  console.warn(`[drafts] ${msg}`);
+}
+
+/**
+ * Read the sidecar's text, confined the way drafts are: the path must resolve
+ * to itself inside the (already realpathed) drafts folder, must not be a
+ * symlink, and must not be hard-linked elsewhere. Otherwise an agent could
+ * point it at a private file and have the Deck read it (and, on a parse
+ * failure, copy it to the .bad backup). ENOENT propagates (no sidecar yet).
+ */
+function readSidecarText(dirReal: string): string {
+  const file = path.join(dirReal, META_FILENAME);
+  if (fs.realpathSync(file) !== file) throw new SidecarRefused("it resolves outside the drafts folder or through a link");
+  try {
+    return readCapped(file, MAX_DRAFT_BYTES, { noLinks: true }).text;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ELOOP") throw new SidecarRefused("it is a symbolic link");
+    throw err;
+  }
+}
+
 function readMeta(dirReal: string): Meta {
   try {
-    const parsed = JSON.parse(readCapped(path.join(dirReal, META_FILENAME), MAX_DRAFT_BYTES).text);
+    const parsed = JSON.parse(readSidecarText(dirReal));
     const files = parsed?.files;
     if (!files || typeof files !== "object") return {};
     const out: Meta = {};
@@ -187,7 +230,8 @@ function readMeta(dirReal: string): Meta {
       if (typeof v === "string") out[k] = v;
     }
     return out;
-  } catch {
+  } catch (err) {
+    if (err instanceof SidecarRefused) warnOnce(err.message);
     return {};
   }
 }
@@ -203,7 +247,7 @@ function readMetaForWrite(dirReal: string): Meta {
   const file = path.join(dirReal, META_FILENAME);
   let raw: string;
   try {
-    raw = readCapped(file, MAX_DRAFT_BYTES).text;
+    raw = readSidecarText(dirReal);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw err;
@@ -212,10 +256,11 @@ function readMetaForWrite(dirReal: string): Meta {
     JSON.parse(raw);
   } catch {
     // Never follow a planted link: remove whatever is at the backup path
-    // (unlink acts on a symlink itself) and create the copy exclusively.
+    // (unlink acts on a symlink itself) and create the copy exclusively. The
+    // bytes come from the confined read above, never from re-opening the path.
     const bad = `${file}.bad`;
     fs.rmSync(bad, { force: true });
-    fs.copyFileSync(file, bad, fs.constants.COPYFILE_EXCL);
+    fs.writeFileSync(bad, raw, { flag: "wx" });
     console.warn(`[drafts] ${META_FILENAME} is not valid JSON; kept a copy as ${META_FILENAME}.bad`);
     return {};
   }
