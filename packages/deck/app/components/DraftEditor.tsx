@@ -10,6 +10,7 @@
  * Pure helpers are exported for tests. ASCII only - no em-dashes.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useBlocker } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 
@@ -90,6 +91,28 @@ export function DraftEditor() {
     if (!dirtyRef.current) return true;
     return window.confirm("Discard unsaved changes?");
   }, []);
+
+  // Leaving the page with unsaved edits: in-app route changes (a nav link, an
+  // agent in the sidebar) go through the router's blocker, and closing or
+  // reloading the tab goes through beforeunload. Both only while dirty.
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      dirtyRef.current && currentLocation.pathname !== nextLocation.pathname
+  );
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    if (window.confirm("Discard unsaved changes?")) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
 
   const refreshList = useCallback(async () => {
     const { body } = await api<{ ok: boolean; drafts?: DraftSummaryDto[] }>("/api/drafts");

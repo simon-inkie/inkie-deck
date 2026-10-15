@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React, { act } from "react";
+import { Link, createRoutesStub } from "react-router";
 import { createRoot, type Root } from "react-dom/client";
 import { DraftEditor, DRAFT_POLL_MS, type DraftDto } from "~/components/DraftEditor";
 
@@ -25,6 +26,26 @@ const dto = (over: Partial<DraftDto>): DraftDto => ({
   writer: "person",
   ...over,
 });
+
+// useBlocker needs a data router, so the editor is always rendered inside one,
+// next to a link to another route.
+function Page() {
+  return (
+    <>
+      <Link to="/other" data-testid="go-other">
+        other
+      </Link>
+      <DraftEditor />
+    </>
+  );
+}
+function renderEditor() {
+  const Stub = createRoutesStub([
+    { path: "/drafts", Component: Page },
+    { path: "/other", Component: () => <div data-testid="other-page">other page</div> },
+  ]);
+  root.render(<Stub initialEntries={["/drafts"]} />);
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
@@ -59,7 +80,7 @@ async function flush() {
 }
 
 async function openDraft() {
-  act(() => root.render(<DraftEditor />));
+  act(() => renderEditor());
   await flush();
   const select = container.querySelector<HTMLSelectElement>('[data-testid="draft-select"]')!;
   await act(async () => {
@@ -330,7 +351,7 @@ describe("DraftEditor with several drafts", () => {
     });
   }
   async function start() {
-    act(() => root.render(<DraftEditor />));
+    act(() => renderEditor());
     await flush();
     await select("a.md");
   }
@@ -485,7 +506,7 @@ describe("DraftEditor with several drafts", () => {
       u: string,
       i?: RequestInit
     ) => Promise<Response>;
-    act(() => root.render(<DraftEditor />));
+    act(() => renderEditor());
     await flush();
     vi.stubGlobal(
       "fetch",
@@ -517,5 +538,74 @@ describe("DraftEditor with several drafts", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(posts.filter((f) => f.get("force") === "1")).toHaveLength(1);
+  });
+
+  describe("leaving the page with unsaved edits", () => {
+    const goOther = () =>
+      act(async () => {
+        container.querySelector<HTMLAnchorElement>('[data-testid="go-other"]')!.click();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    const onOtherPage = () => container.querySelector('[data-testid="other-page"]') !== null;
+    const fireUnload = () => {
+      const e = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+
+    it("asks before an in-app route change, and stays put when declined", async () => {
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      await start();
+      await type("unsaved");
+      await goOther();
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(onOtherPage()).toBe(false);
+      expect(textarea().value).toBe("unsaved");
+      confirm.mockRestore();
+    });
+
+    it("leaves when the person confirms", async () => {
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      await start();
+      await type("unsaved");
+      await goOther();
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(onOtherPage()).toBe(true);
+      confirm.mockRestore();
+    });
+
+    it("does not ask when clean, and does not ask after a save", async () => {
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      await start();
+      await goOther();
+      expect(onOtherPage()).toBe(true);
+      expect(confirm).not.toHaveBeenCalled();
+      confirm.mockRestore();
+    });
+
+    it("does not ask after the edits were saved", async () => {
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      await start();
+      await type("unsaved");
+      await click("draft-save");
+      await goOther();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(onOtherPage()).toBe(true);
+      confirm.mockRestore();
+    });
+
+    it("guards tab close and reload only while dirty, and removes the listener after", async () => {
+      await start();
+      expect(fireUnload()).toBe(false); // clean
+      await type("unsaved");
+      expect(fireUnload()).toBe(true); // dirty
+      await click("draft-save");
+      expect(fireUnload()).toBe(false); // saved
+      await type("more");
+      expect(fireUnload()).toBe(true);
+      act(() => root.unmount());
+      expect(fireUnload()).toBe(false); // unmounted: listener removed
+      root = createRoot(container); // for afterEach's unmount
+    });
   });
 });
