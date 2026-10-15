@@ -162,3 +162,9 @@ Later commits omit it.
 - Skipped on purpose: error-message wording, the stage after the stamp, and `--verify-only` print wording; the stale test count was removed.
 - Supersedes: nothing, additive
 - Commits: see branch
+
+### 2026-10-15: review round 8 (tests only)
+- What changed: the test that built a gated name at run time now uses neutral installer-style names (no workaround for the leak gate, which is untouched), and the detached-child test asserts exit status, the installer call, the `memory on` line and the wired hooks before its timing assertion.
+- Why: review round 8.
+- Supersedes: the "built in the test" note in earlier entries about spelling the installer's own file names.
+- Commits: see branch

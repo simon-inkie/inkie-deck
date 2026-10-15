@@ -16,6 +16,7 @@ was deferred, and the commit. Commits on this branch, by short id:
 | ce2c6a2 | round 5 fixes |
 | 1cf33f5 | round 6 fixes |
 | be8d318 | round 7 fixes |
+| R8ID | round 8 fixes |
 
 ## Open maintainer decision
 
@@ -70,10 +71,10 @@ message, or the maintainer can authorise a rewrite. Raised in rounds 1, 3, 4 and
 
 | Severity | Finding | Outcome | Commit |
 |---|---|---|---|
-| Major | The guard looked only for symlinks. A HARD link named like the installer's temporary file made the installer rewrite the shared file and rename it over the agent's settings; an agent home that is itself a symlink to a parent of `.claude` passed both checks and wired global settings | Partly fixed, and an overstatement when written: refuse when the agent home is a symlink or `.claude` does not resolve to `<agents home>/<name>/.claude`, at creation and before wiring; refuse when any file in `.claude` has a link count above one, or any `settings.json.*` entry exists before the install; re-check after the install; the restore also refuses a hard-linked settings file. Tests for both cases with the installer's real temporary and backup names (built in the test, not written literally, for the leak gate), plus a hard link appearing during the install. NOT fixed, by nature: a link planted in the instant between the check and the installer's write is only caught afterwards, once the write has happened. This is acceptable only under a same-user threat model, and is stated in the SPEC and INSTALL.md. Round 6 found this still missed a hard-linked settings.json already in place, a find that failed open, and creation failing for a not-yet-existing agents home under a symlinked ancestor | ce2c6a2 |
+| Major | The guard looked only for symlinks. A HARD link named like the installer's temporary file made the installer rewrite the shared file and rename it over the agent's settings; an agent home that is itself a symlink to a parent of `.claude` passed both checks and wired global settings | Partly fixed, and an overstatement when written: refuse when the agent home is a symlink or `.claude` does not resolve to `<agents home>/<name>/.claude`, at creation and before wiring; refuse when any file in `.claude` has a link count above one, or any `settings.json.*` entry exists before the install; re-check after the install; the restore also refuses a hard-linked settings file. Tests for both cases with installer-style temporary and backup names (round 8 replaced an earlier runtime-assembled spelling with neutral names), plus a hard link appearing during the install. NOT fixed, by nature: a link planted in the instant between the check and the installer's write is only caught afterwards, once the write has happened. This is acceptable only under a same-user threat model, and is stated in the SPEC and INSTALL.md. Round 6 found this still missed a hard-linked settings.json already in place, a find that failed open, and creation failing for a not-yet-existing agents home under a symlinked ancestor | ce2c6a2 |
 | Minor | A signal inside the exit handler while the installer is not running printed no memory line, and the `USER_NAME` write was in place | Fixed: the handler prints whenever it runs inside the exit handler, tracking the stage (`off ... before the install ran`, `PARTIAL ... after the install ran`, `on (interrupted before USER_NAME was stamped)`); `USER_NAME` is written through a temporary file and a rename. Test: signal during the post-install check | ce2c6a2 |
 | Minor | REVIEW.md overstated the round 3 and 4 symlink rows, and the trailer line omitted round 4 | Fixed: rows corrected, trailer line lists every round | ce2c6a2 |
-| Nit | The temp-directory test did not assert the snapshot mode, and the planted-link tests used invented names | Fixed: asserts 0600 while the install is held; real names built in the test | ce2c6a2 |
+| Nit | The temp-directory test did not assert the snapshot mode, and the planted-link tests used invented names | Fixed: asserts 0600 while the install is held; installer-style neutral names | ce2c6a2 |
 | Nit | A stray blank line split a bullet in INSTALL.md | Fixed | ce2c6a2 |
 
 ## Round 6 (head 3b96653)
@@ -101,6 +102,13 @@ Scope was narrowed by the maintainer to the real defects; the rest was skipped o
 | Nit | The scaffold error always gives the same generic reason | Skipped by maintainer decision | none |
 | Nit | Wording about `--verify-only` printing, and the stage after the stamp | Skipped by maintainer decision, except that the false `--verify-only` claim in the round 6 row was corrected | be8d318 |
 | Nit | A stale test count in the SPEC | The false count was removed | be8d318 |
+
+## Round 8 (head 823d230)
+
+| Severity | Finding | Outcome | Commit |
+|---|---|---|---|
+| Minor | A test assembled the memory layer's silo-style name from string pieces at run time to get past the literal scanner | Fixed: every such place (one, found by searching the tests, fixtures and docs for joins, concatenation and character codes) now uses a neutral installer-style name, and the leak gate passes with no workaround; the gate itself is untouched. Because the guard refuses a link under any `settings.json.<x>` name, the neutral names test the same behaviour | R8ID |
+| Minor | The detached-child test asserted only elapsed time, so it could pass if scaffolding failed or the installer never ran | Fixed: before the timing assertion it now asserts the exit status, the `CREATED` line, that the fixture installer was invoked (its call log), the `memory on` line and the three wired hooks. Re-confirmed that it still fails without the `7>&-` on the installer, now at the timing assertion (3459 ms against a 2500 ms limit) | R8ID |
 
 ## Not done, by design
 

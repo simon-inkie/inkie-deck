@@ -942,22 +942,23 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
   });
 
-  // The memory layer's own tmp and backup names, built here so the leak gate's
-  // rule on that project's name is not tripped by a literal.
-  const REAL_TMP = `settings.json.${[".the", "brain"].join("-").slice(1)}.tmp`;
-  const REAL_BAK = `settings.json.${[".the", "brain"].join("-").slice(1)}.bak`;
+  // Names in the style of an installer's temporary file and backup. The guard
+  // refuses a link under ANY settings.json.<x> name, so these stand for the real
+  // ones without needing to spell them.
+  const TMP_STYLE = "settings.json.installer.tmp";
+  const BAK_STYLE = "settings.json.installer.bak";
 
-  it("refuses memory when the installer's real temporary-file name is a planted symlink", () => {
-    plantedLinkCase(REAL_TMP);
+  it("refuses memory when a temporary-file-style name is a planted symlink", () => {
+    plantedLinkCase(TMP_STYLE);
   });
 
-  it("refuses memory when the installer's real backup name is a dangling planted symlink", () => {
+  it("refuses memory when a backup-style name is a dangling planted symlink", () => {
     const box = sandbox();
     const root = memoryLayer(box);
     const victim = path.join(path.dirname(box.home), "not-created-yet.json");
     const dir = path.join(box.agentsHome, "wren", ".claude");
     fs.mkdirSync(dir, { recursive: true });
-    fs.symlinkSync(victim, path.join(dir, REAL_BAK));
+    fs.symlinkSync(victim, path.join(dir, BAK_STYLE));
 
     const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
 
@@ -965,14 +966,14 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(fs.existsSync(victim)).toBe(false);
   });
 
-  it("refuses memory when the installer's real temporary-file name is a HARD link to another file", () => {
+  it("refuses memory when a temporary-file-style name is a HARD link to another file", () => {
     const box = sandbox();
     const root = memoryLayer(box);
     const victim = path.join(path.dirname(box.home), "global-settings.json");
     fs.writeFileSync(victim, '{"keep":"me"}');
     const dir = path.join(box.agentsHome, "wren", ".claude");
     fs.mkdirSync(dir, { recursive: true });
-    fs.linkSync(victim, path.join(dir, REAL_TMP));
+    fs.linkSync(victim, path.join(dir, TMP_STYLE));
 
     const result = run(box, ["wren", "--no-verify"], {
       env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat" },
@@ -1094,12 +1095,24 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
         FIXTURE_DETACH: "1",
       },
     });
-    child.stdout.resume();
-    child.stderr.resume();
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
     // "close" waits for every holder of the pipe; "exit" is the script itself.
-    await new Promise((resolve) => child.on("close", resolve));
+    const status = await new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+    const elapsed = Date.now() - started;
+
+    // First prove the run did what the timing is about: scaffolding succeeded,
+    // the install command really ran, and the agent ended up wired. Only then
+    // is a quick finish evidence about the pipe and not about an early failure.
+    expect(status).toBe(EXIT.CANNOT_VERIFY); // created, verification skipped by --no-verify
+    expect(output).toContain("CREATED wren");
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(true);
+    expect(output).toMatch(/memory on /);
+    expect(Object.keys(settingsOf(box, "wren").hooks).sort()).toEqual(["PreCompact", "Stop", "UserPromptSubmit"]);
+
     // The detached sleep lasts 3s. Had it inherited the pipe, close would wait for it.
-    expect(Date.now() - started).toBeLessThan(2500);
+    expect(elapsed).toBeLessThan(2500);
   });
 
   it("refuses an agents home with a .. component that a symlink would resolve differently", () => {
