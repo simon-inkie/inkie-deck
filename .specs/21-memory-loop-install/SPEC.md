@@ -141,3 +141,10 @@ Later commits omit it.
 - Why: review round 4.
 - Supersedes: the symlink check that covered only `.claude` and `settings.json` at wiring time.
 - Commits: see branch
+
+### 2026-10-15: review round 5 (hard links, symlinked agent home, exit-handler signals)
+- What changed: (1) Containment now means more than "no symlinks": the agent home must not be a symlink and `.claude` must resolve to `<agents home>/<name>/.claude`, at creation and before wiring and for the restore; before the install any `settings.json.*` entry refuses memory, and any file in `.claude` with a link count above one (a hard link) refuses it; both link checks run again after the install. (2) A signal inside the exit handler now always prints a memory line, tracking a stage (before the install, install returned but unchecked, installed but `USER_NAME` not stamped, stamped); `USER_NAME` is written through a temporary file and a rename. (3) REVIEW.md corrected and extended.
+- Why: review round 5 reproduced the global-settings overwrite with a hard link and with a symlinked agent home.
+- Limitation, stated rather than called fixed: a link planted in the instant between the pre-install check and the installer's write is caught only afterwards, once the write has happened; we then report `PARTIAL` and do not stamp `USER_NAME`, but the write itself is not prevented. That is acceptable only under a same-user threat model. Hard links also need the agents home and the target on one filesystem. The earlier "never a global one" claims hold for links already in place, not against a racing process.
+- Supersedes: the symlink-only check from the previous entry.
+- Commits: see branch

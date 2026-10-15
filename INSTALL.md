@@ -825,19 +825,31 @@ created exactly as before. Memory never changes the exit code. The reasons:
   `.claude/settings.json` and remove the memory hooks, or fix the cause and
   re-run the install command. The silo may be partly seeded; the command is
   idempotent;
-- the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). Before wiring nothing is
-  wired; during the install the line says so and the settings are restored.
+- the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). The last line always says
+  what state that left: before wiring nothing is wired; during the install the
+  settings are restored; after the install returned it says `on (interrupted
+  before USER_NAME was stamped)` or `PARTIAL`, and names what to check;
+- the agent's `.claude` directory is not inside the agent's own directory (the
+  agent home is a symlink, or `.claude` resolves elsewhere), or it holds a
+  symlink or a hard link (a regular file with more than one link). The
+  checkout's install command writes a temporary file and a backup beside
+  `settings.json` and follows links, so a planted link could redirect a write
+  onto another file, such as a global settings file. Nothing is written;
+  remove the link and run the install command with `--agent <name>`;
+- the agent's `.claude` already holds files named `settings.json.<something>`
+  that this run did not create. A new agent has none, and that is where a
+  planted link would hide. Remove them and run the install command.
 
-- anything in the agent's `.claude` directory is a symlink. The checkout's
-  install command writes a temporary file and a backup beside `settings.json`
-  and follows links, so a planted link could redirect a write onto another
-  file. Nothing is written; remove the link and run the install command with
-  `--agent <name>`. Deck checks again after the install and, if a link appeared
-  meanwhile, reports `PARTIAL` rather than `on`.
+Deck checks again after the install and, if a link appeared meanwhile, reports
+`PARTIAL` rather than `on`. That later check runs after the install's write, so
+it reports a link planted in the instant between the first check and the write;
+it cannot prevent it. The protection is against links already in place, not
+against another process on your account racing the install.
 
-Separately, `create-agent.sh` refuses to create an agent whose
-`.claude/settings.json` (or `.claude` directory) is a symlink, because the
-settings are written in place and could land in a global file.
+Separately, `create-agent.sh` refuses to create an agent whose agent home,
+`.claude` directory or `.claude/settings.json` is a symlink or resolves outside
+`<agents home>/<name>`, because the settings are written in place and could
+land in a global file.
 
 After a successful memory install the checkout's installer leaves a one-time
 backup of the previous settings next to `settings.json` (a `settings.json.*.bak`
