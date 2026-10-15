@@ -16,7 +16,7 @@ was deferred, and the commit. Commits on this branch, by short id:
 | ce2c6a2 | round 5 fixes |
 | 1cf33f5 | round 6 fixes |
 | be8d318 | round 7 fixes |
-| R8ID | round 8 fixes |
+| b0b1469 | round 8 fixes |
 
 ## Open maintainer decision
 
@@ -107,8 +107,8 @@ Scope was narrowed by the maintainer to the real defects; the rest was skipped o
 
 | Severity | Finding | Outcome | Commit |
 |---|---|---|---|
-| Minor | A test assembled the memory layer's silo-style name from string pieces at run time to get past the literal scanner | Fixed: every such place (one, found by searching the tests, fixtures and docs for joins, concatenation and character codes) now uses a neutral installer-style name, and the leak gate passes with no workaround; the gate itself is untouched. Because the guard refuses a link under any `settings.json.<x>` name, the neutral names test the same behaviour | R8ID |
-| Minor | The detached-child test asserted only elapsed time, so it could pass if scaffolding failed or the installer never ran | Fixed: before the timing assertion it now asserts the exit status, the `CREATED` line, that the fixture installer was invoked (its call log), the `memory on` line and the three wired hooks. Re-confirmed that it still fails without the `7>&-` on the installer, now at the timing assertion (3459 ms against a 2500 ms limit) | R8ID |
+| Minor | A test assembled the memory layer's silo-style name from string pieces at run time to get past the literal scanner | Fixed: every such place (one, found by searching the tests, fixtures and docs for joins, concatenation and character codes) now uses a neutral installer-style name, and the leak gate passes with no workaround; the gate itself is untouched. Because the guard refuses a link under any `settings.json.<x>` name, the neutral names test the same behaviour | b0b1469 |
+| Minor | The detached-child test asserted only elapsed time, so it could pass if scaffolding failed or the installer never ran | Fixed: before the timing assertion it now asserts the exit status, the `CREATED` line, that the fixture installer was invoked (its call log), the `memory on` line and the three wired hooks. Re-confirmed that it still fails without the `7>&-` on the installer, now at the timing assertion (3459 ms against a 2500 ms limit) | b0b1469 |
 
 ## Not done, by design
 
