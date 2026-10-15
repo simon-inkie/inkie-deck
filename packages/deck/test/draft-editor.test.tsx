@@ -411,7 +411,7 @@ describe("DraftEditor with several drafts", () => {
     // Hold the next poll GET: it will answer with the OLD version a1.
     const gate = { release: () => {} };
     const realFetch = fetch as unknown as ReturnType<typeof vi.fn>;
-    const inner = realFetch.getMockImplementation()!;
+    const inner = realFetch.getMockImplementation() as (u: string, i?: RequestInit) => Promise<Response>;
     let held = false;
     vi.stubGlobal(
       "fetch",
