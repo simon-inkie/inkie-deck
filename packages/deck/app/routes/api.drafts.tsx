@@ -44,7 +44,36 @@ export async function loader({ request }: Route.LoaderArgs) {
   return res.ok ? json(res) : json(res, res.status);
 }
 
+/**
+ * Refuse a browser-initiated cross-origin write. Deck has no authentication,
+ * so a page on another origin that the person's browser can use to reach this
+ * server could otherwise POST (even with force=1) and overwrite a draft by
+ * name. Browsers always send Origin on cross-origin POSTs and Sec-Fetch-Site
+ * on modern ones; requests with neither (an agent using curl) are not browser
+ * cross-site requests and pass. Behind a proxy that rewrites Host, same-origin
+ * saves would be refused: keep the Host header intact.
+ */
+function crossOriginWrite(request: Request): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") return true;
+  const origin = request.headers.get("origin");
+  if (origin) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return true;
+    }
+    const host = request.headers.get("host") ?? new URL(request.url).host;
+    if (originHost !== host) return true;
+  }
+  return false;
+}
+
 export async function action({ request }: Route.ActionArgs) {
+  if (crossOriginWrite(request)) {
+    return json({ ok: false, error: "Cross-origin writes are not allowed." }, 403);
+  }
   if (!draftsEnabled(process.env)) {
     return json({ ok: false, error: "Drafts are not configured." }, 404);
   }

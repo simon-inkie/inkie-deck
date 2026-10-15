@@ -29,3 +29,6 @@ data/
 /.playwright/
 /blob-report/
 e2e/.e2e-env
+
+# Local dev workspace for Markdown drafts (kept across dev restarts)
+/.workspace/

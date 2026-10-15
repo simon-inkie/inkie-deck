@@ -69,6 +69,24 @@ export function DraftEditor() {
   loadedRef.current = loaded;
 
   const dirty = loaded !== null && text !== loaded.content;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  // adoptRef counts every time the editor's text is replaced wholesale (open,
+  // create, load newer copy). A save response that finds it changed belongs to
+  // a selection that is no longer on screen and must not be applied.
+  const adoptRef = useRef(0);
+  // genRef counts every event that makes an in-flight poll GET untrustworthy:
+  // adopt, save start, save finish. savingRef is true while a save is in flight.
+  const genRef = useRef(0);
+  const savingRef = useRef(false);
+  // Latest open/create request wins; an older response is dropped.
+  const openSeqRef = useRef(0);
+
+  const confirmDiscard = useCallback((): boolean => {
+    if (!dirtyRef.current) return true;
+    return window.confirm("Discard unsaved changes?");
+  }, []);
 
   const refreshList = useCallback(async () => {
     const { body } = await api<{ ok: boolean; drafts?: DraftSummaryDto[] }>("/api/drafts");
@@ -80,6 +98,8 @@ export function DraftEditor() {
   }, [refreshList]);
 
   const adopt = useCallback((d: DraftDto) => {
+    adoptRef.current++;
+    genRef.current++;
     setLoaded(d);
     setText(d.content);
     setRemote(null);
@@ -89,13 +109,16 @@ export function DraftEditor() {
 
   const open = useCallback(
     async (name: string) => {
+      if (!confirmDiscard()) return;
+      const seq = ++openSeqRef.current;
       const { status, body } = await api<{ ok: boolean; draft?: DraftDto }>(
         `/api/drafts?name=${encodeURIComponent(name)}`
       );
+      if (seq !== openSeqRef.current) return;
       if (status === 200 && body.draft) adopt(body.draft);
       else setError("Could not open that draft.");
     },
-    [adopt]
+    [adopt, confirmDiscard]
   );
 
   // Watch the open file for changes made outside this editor.
@@ -103,17 +126,20 @@ export function DraftEditor() {
     if (!loaded) return;
     const id = setInterval(async () => {
       const asked = loadedRef.current;
-      if (!asked) return;
+      if (!asked || savingRef.current) return;
+      const gen = genRef.current;
       try {
         const { status, body } = await api<{ ok: boolean; draft?: DraftDto }>(
           `/api/drafts?name=${encodeURIComponent(asked.name)}`
         );
-        // Compare against what is loaded NOW: a save may have finished while
-        // this GET was in flight, and the GET then reflects that save.
+        // A GET can read the file before a save lands and arrive after it, or
+        // the other way round. Any adopt or save since it started makes the
+        // answer untrustworthy, so drop it; the next tick asks again.
         const now = loadedRef.current;
-        if (!now || now.name !== asked.name) return;
-        if (status === 200 && body.draft && body.draft.version !== now.version) {
-          setRemote(body.draft);
+        if (!now || genRef.current !== gen || savingRef.current) return;
+        if (status === 200 && body.draft) {
+          setGone(false);
+          setRemote(body.draft.version !== now.version ? body.draft : null);
         } else if (status === 404) {
           setGone(true);
         }
@@ -126,10 +152,17 @@ export function DraftEditor() {
 
   const create = useCallback(async () => {
     if (!newName.trim()) return;
+    if (!confirmDiscard()) return;
+    const seq = ++openSeqRef.current;
     const { status, body } = await api<SaveBody>("/api/drafts", {
       method: "POST",
       body: formBody({ intent: "create", name: newName, content: "" }),
     });
+    if (seq !== openSeqRef.current) {
+      // The person opened something else meanwhile; the file exists, so list it.
+      void refreshList();
+      return;
+    }
     if (status === 200 && body.draft) {
       setNewName("");
       adopt(body.draft);
@@ -137,11 +170,14 @@ export function DraftEditor() {
     } else {
       setError(body.error ?? "Could not create the draft.");
     }
-  }, [newName, adopt, refreshList]);
+  }, [newName, adopt, refreshList, confirmDiscard]);
 
   const save = useCallback(
     async (force: boolean) => {
       if (!loaded) return;
+      const adoptAtStart = adoptRef.current;
+      savingRef.current = true;
+      genRef.current++;
       setSaving(true);
       try {
         const { status, body } = await api<SaveBody>("/api/drafts", {
@@ -154,7 +190,13 @@ export function DraftEditor() {
             force: force ? "1" : undefined,
           }),
         });
-        if (status === 200 && body.draft) {
+        if (adoptRef.current !== adoptAtStart) {
+          // The person switched drafts (or loaded another copy) while this
+          // save was in flight. Applying it would pair this response with a
+          // different draft's text, and the next Save would write that text
+          // into this file. The file itself was saved; just refresh the list.
+          void refreshList();
+        } else if (status === 200 && body.draft) {
           setLoaded(body.draft);
           setRemote(null);
           setGone(false);
@@ -168,6 +210,8 @@ export function DraftEditor() {
           setError(body.error ?? "Save failed.");
         }
       } finally {
+        savingRef.current = false;
+        genRef.current++;
         setSaving(false);
       }
     },
@@ -183,7 +227,10 @@ export function DraftEditor() {
             data-testid="draft-select"
             className="h-9 rounded-md border border-border bg-background px-2 text-sm"
             value={loaded?.name ?? ""}
-            onChange={(e) => e.target.value && void open(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next) void open(next);
+            }}
           >
             <option value="">Choose a draft</option>
             {drafts.map((d) => (

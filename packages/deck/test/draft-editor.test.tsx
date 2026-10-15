@@ -275,3 +275,179 @@ describe("DraftEditor", () => {
     expect(container.querySelector<HTMLTextAreaElement>('[data-testid="draft-text"]')!.value).toBe("hello");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Switching, create, and stale responses (multi-draft store)
+// ---------------------------------------------------------------------------
+
+describe("DraftEditor with several drafts", () => {
+  let files: Record<string, DraftDto>;
+  /** Release function for a POST held open by holdNextPost. */
+  let releasePost: (() => void) | null;
+  let holdNextPost: boolean;
+  const posts: FormData[] = [];
+
+  beforeEach(() => {
+    posts.length = 0;
+    releasePost = null;
+    holdNextPost = false;
+    files = {
+      "a.md": dto({ name: "a.md", content: "alpha", version: "a1" }),
+      "b.md": dto({ name: "b.md", content: "bravo", version: "b1" }),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          const form = init.body as FormData;
+          posts.push(form);
+          const name = String(form.get("name"));
+          if (form.get("intent") === "create") {
+            files[name + ".md"] = dto({ name: name + ".md", content: "", version: "n1" });
+            return json({ ok: true, draft: files[name + ".md"] });
+          }
+          if (holdNextPost) {
+            holdNextPost = false;
+            await new Promise<void>((r) => (releasePost = r));
+          }
+          files[name] = dto({ name, content: String(form.get("content")), version: name + "-saved" });
+          return json({ ok: true, draft: files[name] });
+        }
+        if (url === "/api/drafts") return json({ ok: true, drafts: Object.values(files) });
+        const name = decodeURIComponent(url.split("name=")[1] ?? "");
+        return files[name] ? json({ ok: true, draft: files[name] }) : json({ ok: false }, 404);
+      })
+    );
+  });
+
+  async function select(name: string) {
+    const el = container.querySelector<HTMLSelectElement>('[data-testid="draft-select"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(el, name);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+  async function start() {
+    act(() => root.render(<DraftEditor />));
+    await flush();
+    await select("a.md");
+  }
+
+  it("asks before switching away from unsaved edits, and keeps them when declined", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await start();
+    await type("my unsaved edit");
+    await select("b.md");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(textarea().value).toBe("my unsaved edit");
+    expect(
+      (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).includes("b.md"))
+    ).toBe(false);
+    confirm.mockReturnValue(true);
+    await select("b.md");
+    expect(textarea().value).toBe("bravo");
+    confirm.mockRestore();
+  });
+
+  it("does not ask when there is nothing unsaved", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await start();
+    await select("b.md");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("bravo");
+    confirm.mockRestore();
+  });
+
+  it("asks before creating a draft over unsaved edits, and creates nothing when declined", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await start();
+    await type("my unsaved edit");
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>('[data-testid="draft-new-name"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "fresh");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click("draft-create");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(posts).toHaveLength(0);
+    expect(textarea().value).toBe("my unsaved edit");
+    confirm.mockReturnValue(true);
+    await click("draft-create");
+    expect(posts).toHaveLength(1);
+    expect(textarea().value).toBe("");
+    confirm.mockRestore();
+  });
+
+  it("a save answered after the person switched drafts is not applied to the new draft", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await start();
+    await type("alpha edited");
+    holdNextPost = true;
+    await click("draft-save"); // POST for a.md is now held open
+    await select("b.md"); // person moves on; confirm accepted
+    expect(textarea().value).toBe("bravo");
+    await act(async () => {
+      releasePost!();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // b.md is still what is on screen, with b's version as its base.
+    expect(textarea().value).toBe("bravo");
+    expect(container.querySelector('[data-testid="draft-status"]')!.textContent).not.toContain("unsaved");
+    await type("bravo edited");
+    await click("draft-save");
+    const last = posts[posts.length - 1]!;
+    expect(last.get("name")).toBe("b.md");
+    expect(last.get("baseVersion")).toBe("b1");
+    expect(files["a.md"]!.content).toBe("alpha edited");
+    vi.restoreAllMocks();
+  });
+
+  it("a poll GET that read the old file but arrives after the person's save raises no alert", async () => {
+    await start();
+    await type("alpha edited");
+    // Hold the next poll GET: it will answer with the OLD version a1.
+    let releaseGet!: () => void;
+    const realFetch = fetch as unknown as ReturnType<typeof vi.fn>;
+    const inner = realFetch.getMockImplementation()!;
+    let held = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (!held && !init?.method && String(url).includes("name=a.md")) {
+          held = true;
+          const snapshot = files["a.md"]!; // old state, captured before the save
+          await new Promise<void>((r) => (releaseGet = r));
+          return json({ ok: true, draft: snapshot });
+        }
+        return inner(url, init);
+      })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    await click("draft-save"); // completes while the GET is still pending
+    await act(async () => {
+      releaseGet();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("clears the removed alert when the file reappears with the same content", async () => {
+    await start();
+    delete files["a.md"];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    expect(container.querySelector('[data-testid="draft-gone"]')).not.toBeNull();
+    files["a.md"] = dto({ name: "a.md", content: "alpha", version: "a1" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS + 10);
+    });
+    expect(container.querySelector('[data-testid="draft-gone"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+});

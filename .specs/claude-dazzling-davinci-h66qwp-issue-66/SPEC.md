@@ -89,3 +89,39 @@ Out of scope (and where it goes instead):
 Known limitation added: `request.formData()` reads the whole request body
 before the 1 MB content cap is applied, so the cap bounds what is stored, not
 what is received. Fine for a loopback-only, unauthenticated Deck.
+
+### 2026-10-15: third review round (two reviews and CodeRabbit)
+- What changed:
+  - Editor: switching drafts or creating one while edits are unsaved asks
+    first (`window.confirm`); declining keeps the text. A save response is
+    dropped if the editor's text was replaced meanwhile (switch, create, load
+    newer copy), so one draft's save can no longer attach to another's text.
+    An older open/create response is dropped when a newer one was issued.
+  - Poll: replaced "compare after the await" with a generation counter. Any
+    adopt or save start/finish since the GET began, or a save in flight, makes
+    the answer be discarded, which also covers a GET that read the pre-save
+    file and arrives after the save. A 200 now clears the "removed" alert and
+    a matching version clears a stale conflict alert.
+  - Server: the save result is the version this save wrote (content, hash,
+    mtime taken right after the write), never a re-read, so another writer
+    landing during the sidecar wait cannot be echoed back as the base for the
+    next save. Confinement is re-checked inside the lock immediately before the
+    write and before the sidecar write, so a `drafts/` folder swapped for a
+    symlink while the save was queued cannot redirect it. Existing files over
+    1 MB are never read (read answers 413, list shows them without reading,
+    save refuses). A corrupt sidecar is copied to `.deck-drafts.json.bad` and
+    logged before it is replaced.
+  - API: browser cross-origin writes are refused with 403 (Sec-Fetch-Site not
+    same-origin/none, or Origin host differing from Host). Header-less
+    requests (agents using curl) pass.
+  - Dev: the default dev workspace moved to `packages/deck/.workspace/`
+    (gitignored) because `.runtime/` is deleted on every start.
+- Why: review findings; the data-loss and confinement items were Major.
+- Supersedes: the second-round poll comparison and the "fall back to the
+  version just written" result path, both replaced as above.
+- Commits: see the sha entry below.
+- Deferred: `Claude-Session` trailers in 40f5943, fb5663b and b2edbbb need a
+  history rewrite, which this work is not allowed to do; a maintainer can strip
+  them on squash merge. Reads remain synchronous (now bounded to 1 MB each);
+  case-insensitive filesystem collisions (`Draft.md` vs `draft.md`) were not
+  examined.

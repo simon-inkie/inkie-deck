@@ -30,7 +30,9 @@ const runtimeInbox = path.join(runtimeDir, "inbox");
 const runtimeAttachments = path.join(runtimeDir, "attachments");
 const runtimeProjects = path.join(runtimeDir, "projects");
 const runtimeData = path.join(runtimeDir, "data");
-const runtimeWorkspace = path.join(runtimeDir, "workspace");
+// Outside .runtime on purpose: .runtime is deleted and reseeded on every start,
+// and drafts must survive a restart.
+const runtimeWorkspace = path.join(root, ".workspace");
 
 // Fall back to the minimal fixture set if the demo inbox is absent.
 const source = existsSync(demoInbox)

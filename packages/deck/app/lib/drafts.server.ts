@@ -155,6 +155,32 @@ function readMeta(dirReal: string): Meta {
   }
 }
 
+/**
+ * Read the sidecar for a read-modify-write. Unlike readMeta this must not
+ * silently treat a corrupt file as empty: the rewrite would then drop every
+ * other draft's attribution. A file that exists but does not parse is copied
+ * to `<sidecar>.bad` and logged before it is replaced. Any other read error
+ * (for example the path is a directory) throws, so nothing is overwritten.
+ */
+function readMetaForWrite(dirReal: string): Meta {
+  const file = path.join(dirReal, META_FILENAME);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw err;
+  }
+  try {
+    JSON.parse(raw);
+  } catch {
+    fs.copyFileSync(file, `${file}.bad`);
+    console.warn(`[drafts] ${META_FILENAME} is not valid JSON; kept a copy as ${META_FILENAME}.bad`);
+    return {};
+  }
+  return readMeta(dirReal);
+}
+
 function writeMeta(dirReal: string, meta: Meta): void {
   atomicWrite(
     path.join(dirReal, META_FILENAME),
@@ -166,10 +192,18 @@ function writeMeta(dirReal: string, meta: Meta): void {
 // Reads
 // ---------------------------------------------------------------------------
 
+/** An existing file over the cap: never read into memory by the Deck. */
+class DraftTooLarge extends Error {
+  constructor() {
+    super("Draft is larger than 1 MB.");
+  }
+}
+
 function view(dirReal: string, name: string, meta: Meta): DraftView {
   const p = draftPath(dirReal, name, false);
   const st = fs.statSync(p);
   if (!st.isFile()) throw new Error("Draft not found.");
+  if (st.size > MAX_DRAFT_BYTES) throw new DraftTooLarge();
   const content = fs.readFileSync(p, "utf8");
   const version = sha256(content);
   return {
@@ -188,8 +222,16 @@ export function listDrafts(): DraftSummary[] {
   for (const entry of fs.readdirSync(dirReal, { withFileTypes: true })) {
     if (!(entry.isFile() || entry.isSymbolicLink()) || !DRAFT_NAME_RE.test(entry.name)) continue;
     try {
-      const { name, savedAt, writer } = view(dirReal, entry.name, meta);
-      out.push({ name, savedAt, writer });
+      try {
+        const { name, savedAt, writer } = view(dirReal, entry.name, meta);
+        out.push({ name, savedAt, writer });
+      } catch (err) {
+        if (!(err instanceof DraftTooLarge)) throw err;
+        // Listed without being read; the Deck cannot have saved it (cap), so
+        // it reads as the agent's. Opening it answers 413.
+        const st = fs.statSync(draftPath(dirReal, entry.name, false));
+        out.push({ name: entry.name, savedAt: st.mtime.toISOString(), writer: "agent" });
+      }
     } catch {
       /* unreadable or escaping entry: not listed */
     }
@@ -203,7 +245,10 @@ export function readDraft(rawName: string): DraftResult {
   try {
     const dirReal = draftsDirReal(false);
     return { ok: true, draft: view(dirReal, name, readMeta(dirReal)) };
-  } catch {
+  } catch (err) {
+    if (err instanceof DraftTooLarge) {
+      return { ok: false, error: "Draft is larger than 1 MB; edit it outside the Deck.", status: 413 };
+    }
     return { ok: false, error: "Draft not found.", status: 404 };
   }
 }
@@ -256,7 +301,10 @@ export async function saveDraft(input: SaveInput): Promise<DraftResult> {
       let current: DraftView | null = null;
       try {
         current = view(dirReal, name, meta);
-      } catch {
+      } catch (err) {
+        if (err instanceof DraftTooLarge) {
+          return { ok: false, error: "Existing draft is larger than 1 MB; edit it outside the Deck.", status: 413 };
+        }
         // Absent (or vanished a moment ago) is a new file; anything else
         // present at that path (a directory) is not a draft.
         if (fs.lstatSync(target, { throwIfNoEntry: false })) {
@@ -281,37 +329,44 @@ export async function saveDraft(input: SaveInput): Promise<DraftResult> {
         }
       }
 
+      // The confinement checks above ran before the lock wait. Re-run them
+      // now, immediately before the write, so a drafts folder swapped for a
+      // symlink while this save was queued cannot redirect the write.
+      if (draftsDirReal(false) !== dirReal) {
+        return { ok: false, error: "Drafts folder changed; not saved.", status: 500 };
+      }
+      draftPath(dirReal, name, true);
+      if (fs.lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        return { ok: false, error: "Draft is a symbolic link.", status: 400 };
+      }
+
       atomicWrite(target, content);
-      // The sidecar is shared by every draft, so its read-modify-write takes
-      // its own lock (always after the per-draft lock, so no ordering cycle).
       const version = sha256(content);
+      let savedAt = new Date().toISOString();
+      try {
+        savedAt = fs.statSync(target).mtime.toISOString();
+      } catch {
+        /* keep the clock time */
+      }
       // The file is on disk now, so nothing below may turn this into a
-      // failure: a retry would 409 against the person's own text. A sidecar
-      // failure is logged (the draft then reads as "agent" until the next
-      // save), and the result falls back to the version just written.
+      // failure: a retry would 409 against the person's own text. The result
+      // is the version THIS save wrote, not a re-read: another writer may land
+      // while the sidecar lock is awaited, and echoing their version would let
+      // the next ordinary save overwrite it without a conflict. The sidecar is
+      // shared by every draft, so its read-modify-write takes its own lock
+      // (always after the per-draft lock, so no ordering cycle). A sidecar
+      // failure is logged; the draft then reads as "agent" until the next save.
       try {
         await withInboxLock(path.join(dirReal, META_FILENAME), async () => {
-          const fresh = readMeta(dirReal);
+          if (draftsDirReal(false) !== dirReal) throw new Error("drafts folder changed");
+          const fresh = readMetaForWrite(dirReal);
           fresh[name] = version;
           writeMeta(dirReal, fresh);
         });
       } catch (err) {
         console.warn("[drafts] saved draft but could not update the sidecar:", err);
       }
-      try {
-        return { ok: true, draft: view(dirReal, name, readMeta(dirReal)) };
-      } catch {
-        return {
-          ok: true,
-          draft: {
-            name,
-            content,
-            version,
-            savedAt: new Date().toISOString(),
-            writer: "person",
-          },
-        };
-      }
+      return { ok: true, draft: { name, content, version, savedAt, writer: "person" } };
     });
   } catch {
     return { ok: false, error: "Could not save the draft.", status: 500 };

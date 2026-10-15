@@ -17,6 +17,10 @@ import {
 } from "~/lib/drafts.server";
 import { loader, action } from "~/routes/api.drafts";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
+import { withInboxLock } from "~/lib/safe-fs.server";
+import crypto from "node:crypto";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let ws: string;
 let saved: string | undefined;
@@ -318,5 +322,96 @@ describe("api route", () => {
     delete process.env["WORKSPACE_ROOT"];
     expect((await get()).status).toBe(404);
     expect((await post({ intent: "create", name: "r", content: "" })).status).toBe(404);
+  });
+
+  const postWith = (headers: Record<string, string>) => {
+    const f = new FormData();
+    f.set("intent", "create");
+    f.set("name", "o");
+    f.set("content", "x");
+    return action({
+      request: new Request("http://deck.local:5173/api/drafts", { method: "POST", body: f, headers }),
+    } as never);
+  };
+
+  it("refuses cross-origin browser writes and allows same-origin and header-less ones", async () => {
+    expect((await postWith({ origin: "http://evil.example" })).status).toBe(403);
+    expect((await postWith({ "sec-fetch-site": "cross-site" })).status).toBe(403);
+    expect((await postWith({ "sec-fetch-site": "same-site" })).status).toBe(403);
+    expect(fs.existsSync(draftFile("o.md"))).toBe(false);
+    expect(
+      (await postWith({ origin: "http://deck.local:5173", host: "deck.local:5173", "sec-fetch-site": "same-origin" }))
+        .status
+    ).toBe(200);
+    expect(fs.existsSync(draftFile("o.md"))).toBe(true);
+    fs.rmSync(draftFile("o.md"));
+    expect((await postWith({})).status).toBe(200);
+  });
+});
+
+describe("races and bounds", () => {
+  it("returns the version this save wrote even if another writer lands during the sidecar wait", async () => {
+    await saveDraft({ name: "seed", content: "s", create: true });
+    const sidecar = draftFile(META_FILENAME);
+    let saving!: Promise<Awaited<ReturnType<typeof saveDraft>>>;
+    const holder = withInboxLock(sidecar, async () => {
+      saving = saveDraft({ name: "a", content: "A", create: true });
+      for (let i = 0; i < 400 && !fs.existsSync(draftFile("a.md")); i++) await sleep(5);
+      fs.writeFileSync(draftFile("a.md"), "B from agent");
+      await sleep(20);
+    });
+    await holder;
+    const res = await saving;
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.draft.content).toBe("A");
+    expect(res.draft.version).toBe(crypto.createHash("sha256").update("A").digest("hex"));
+    // The next ordinary save from that version must conflict with the agent's B.
+    const next = await saveDraft({ name: "a", content: "A2", baseVersion: res.draft.version });
+    expect(!next.ok && next.conflict).toBe(true);
+    expect(fs.readFileSync(draftFile("a.md"), "utf8")).toBe("B from agent");
+  });
+
+  it("does not write through a drafts folder swapped for a symlink while the save was queued", async () => {
+    const outside = mkdtempSync();
+    try {
+      fs.mkdirSync(path.join(ws, "drafts"));
+      const target = draftFile("new.md");
+      let saving!: Promise<Awaited<ReturnType<typeof saveDraft>>>;
+      await withInboxLock(target, async () => {
+        saving = saveDraft({ name: "new", content: "x", create: true });
+        // Swap the folder, and carry the held lock across so the waiter keeps waiting.
+        fs.renameSync(path.join(ws, "drafts"), path.join(ws, "drafts-old"));
+        fs.symlinkSync(outside, path.join(ws, "drafts"));
+        fs.copyFileSync(path.join(ws, "drafts-old", "new.md.lock"), path.join(outside, "new.md.lock"));
+        await sleep(40);
+      });
+      const res = await saving;
+      expect(res.ok).toBe(false);
+      expect(fs.existsSync(path.join(outside, "new.md"))).toBe(false);
+      expect(fs.readdirSync(outside).filter((f) => !f.endsWith(".lock"))).toEqual([]);
+    } finally {
+      rmSync(outside);
+    }
+  });
+
+  it("never reads a file over the cap: read answers 413, list still shows it, save refuses", async () => {
+    fs.mkdirSync(path.join(ws, "drafts"));
+    fs.writeFileSync(draftFile("huge.md"), "x".repeat(1024 * 1024 + 1));
+    const r = readDraft("huge");
+    expect(!r.ok && r.status).toBe(413);
+    expect(listDrafts().map((d) => d.name)).toContain("huge.md");
+    const s = await saveDraft({ name: "huge", content: "small", force: true });
+    expect(!s.ok && s.status).toBe(413);
+  });
+
+  it("keeps a copy of a corrupt sidecar before replacing it", async () => {
+    await saveDraft({ name: "a", content: "one", create: true });
+    fs.writeFileSync(draftFile(META_FILENAME), "{not json");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await saveDraft({ name: "b", content: "two", create: true });
+    warn.mockRestore();
+    expect(fs.readFileSync(draftFile(META_FILENAME + ".bad"), "utf8")).toBe("{not json");
+    expect(JSON.parse(fs.readFileSync(draftFile(META_FILENAME), "utf8")).files["b.md"]).toBeTruthy();
   });
 });
