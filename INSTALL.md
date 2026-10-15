@@ -1113,8 +1113,9 @@ is enough) writes `vapid-keys.json` under the data root
 (`getVapidKeys` in `packages/deck/app/lib/push.server.ts`). Nothing is sent
 until a browser subscribes, which stores its endpoint in
 `push-subscriptions.json`. From then on, while the production launcher's
-`push-watcher.mjs` is running, every new message from a non-user sender is
-posted to each stored endpoint, which is the push service of that browser's
+`push-watcher.mjs` is running, newly appended messages from a non-user sender
+in threads the watcher has already baselined are posted to each stored
+endpoint, which is the push service of that browser's
 vendor, so those hosts must be reachable from the server. With no
 subscription the watcher polls the inbox files and sends nothing. Like the
 others it has not been run for this list; this entry was read from
