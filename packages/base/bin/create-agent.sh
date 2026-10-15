@@ -74,6 +74,7 @@
 # reply with a zero exit status is FAILED, never a pass.
 
 set -uo pipefail
+exec 7>&1
 
 EXIT_VERIFIED=0
 EXIT_SCAFFOLD_ERROR=1
@@ -433,36 +434,109 @@ MEMORY_PRINT=0       # 1 when the final "memory ..." line must be printed
 MEMORY_WIRING=0      # 1 only while the memory install command is in flight
 MEMORY_SNAPSHOT=""   # copy of the settings file taken before the installer ran
 MEMORY_IN_EXIT=0     # 1 once the exit handler is running (memory is wired there)
+MEMORY_ARMED=0       # 1 when this run set out to wire memory (not --verify-only)
 MEMORY_STAGE=""      # "", "ran" (installer returned, unchecked), "installed", "stamped"
 
-# Settings are rejected, never written through, when the per-agent settings file
-# or its directory is a symlink: a write would land wherever the link points,
-# which can be a global settings file, and "never a global one" would be false.
-#
-# The agent home itself must also be a real directory directly under the agents
-# home: if it were a link (to $HOME, say) then its .claude would be a real
-# directory and the global settings, and no link inside it would show.
-settings_is_contained() {
-  local want
-  [[ ! -L "$AGENT_HOME" ]] || return 1
-  want="$(resolve_path "$AGENTS_HOME")/$NAME"
-  [[ "$(resolve_path "$AGENT_HOME")" == "$want" ]] || return 1
-  [[ ! -L "$AGENT_HOME/.claude" && ! -L "$AGENT_HOME/.claude/settings.json" ]] || return 1
-  [[ ! -e "$AGENT_HOME/.claude" ]] || [[ "$(resolve_path "$AGENT_HOME/.claude")" == "$want/.claude" ]]
+# Containment of the per-agent settings, done in node so that it works the same
+# on Linux and macOS and FAILS CLOSED: a node that cannot run, or a path it
+# cannot examine, is "not contained". The rules, for a write that is to land in
+# <agents home>/<name>/.claude/settings.json and nowhere else:
+#   - the agent home is not a symlink and resolves to <agents home>/<name>, where
+#     the agents home is resolved through any symlinked ancestor even when it
+#     does not exist yet;
+#   - .claude, if present, is not a symlink and resolves to <that>/.claude;
+#   - settings.json, if present, is a regular file, not a symlink, and has a link
+#     count of one (a hard link would write through to the other name);
+#   - it is not the same file as the user's own global settings
+#     ($HOME/.claude/settings.json, or $CLAUDE_CONFIG_DIR/settings.json), by
+#     resolved path or by device and inode, which also catches a link pointing
+#     the other way;
+#   - mode "tree" adds: nothing anywhere under .claude is a symlink, and no
+#     regular file there has a link count above one. The memory layer's
+#     installer writes a temporary file and a backup beside settings.json and
+#     follows links, so a planted link under any name can redirect a write.
+# This is a check at one moment. A link planted afterwards is only caught by the
+# check that runs again after the install, which is too late to prevent the write.
+contain_check() {
+  CA_MODE="$1" CA_AGENTS_HOME="$AGENTS_HOME" CA_AGENT_HOME="$AGENT_HOME" CA_NAME="$NAME" \
+    node_run <<'JS' >/dev/null 2>&1
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const { CA_MODE: mode, CA_AGENTS_HOME, CA_AGENT_HOME, CA_NAME: name } = process.env;
+
+// realpath that tolerates a path whose last components do not exist yet: resolve
+// the deepest existing ancestor and append the rest.
+function loose(p) {
+  const rest = [];
+  let cur = path.resolve(p);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...rest.reverse());
+    } catch (err) {
+      if (err.code !== "ENOENT" && err.code !== "ENOTDIR") throw err;
+      const parent = path.dirname(cur);
+      if (parent === cur) throw err;
+      rest.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+const lstat = (p) => {
+  try { return fs.lstatSync(p); } catch (err) { if (err.code === "ENOENT") return null; throw err; }
+};
+const fail = () => process.exit(1);
+
+const want = path.join(loose(CA_AGENTS_HOME), name);
+const home = path.resolve(CA_AGENT_HOME);
+const homeStat = lstat(home);
+if (homeStat && homeStat.isSymbolicLink()) fail();
+if (loose(home) !== want) fail();
+
+const claude = path.join(home, ".claude");
+const claudeStat = lstat(claude);
+if (claudeStat) {
+  if (claudeStat.isSymbolicLink() || !claudeStat.isDirectory()) fail();
+  if (loose(claude) !== path.join(want, ".claude")) fail();
 }
 
-# Stricter, for handing the directory to the memory layer's installer. That
-# installer writes a temporary file and a backup beside settings.json and both
-# writes follow links, so a symlink OR a hard link anywhere in the agent's
-# .claude (a planted settings.json.<anything> as much as settings.json itself)
-# can redirect a write onto another file. A hard link is a regular file with a
-# link count above one. Refuse on any of them rather than guess at the names.
-memory_dir_is_clean() {
-  settings_is_contained || return 1
-  [[ ! -d "$AGENT_HOME/.claude" ]] && return 0
-  [[ -z "$(find "$AGENT_HOME/.claude" -type l -print -quit 2>/dev/null)" ]] || return 1
-  [[ -z "$(find "$AGENT_HOME/.claude" -type f -links +1 -print -quit 2>/dev/null)" ]]
+const settings = path.join(claude, "settings.json");
+const settingsStat = lstat(settings);
+if (settingsStat) {
+  if (settingsStat.isSymbolicLink() || !settingsStat.isFile() || settingsStat.nlink !== 1) fail();
 }
+
+// Never the user's own global settings, whichever way a link points.
+const globals = [];
+if (process.env.HOME) globals.push(path.join(process.env.HOME, ".claude", "settings.json"));
+if (process.env.CLAUDE_CONFIG_DIR) globals.push(path.join(process.env.CLAUDE_CONFIG_DIR, "settings.json"));
+const mine = path.join(want, ".claude", "settings.json");
+for (const g of globals) {
+  if (loose(g) === mine) fail();
+  const gs = lstat(g);
+  if (gs && settingsStat) {
+    const real = fs.statSync(g, { throwIfNoEntry: false });
+    if (real && real.dev === settingsStat.dev && real.ino === settingsStat.ino) fail();
+  }
+}
+
+if (mode === "tree" && claudeStat) {
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      const st = fs.lstatSync(full);
+      if (st.isSymbolicLink()) fail();
+      if (st.isDirectory()) walk(full);
+      else if (st.isFile() && st.nlink !== 1) fail();
+    }
+  };
+  walk(claude);
+}
+JS
+}
+
+settings_is_contained() { contain_check scaffold; }
+memory_dir_is_clean() { contain_check tree; }
 
 # Before the install only: a brand-new agent home holds no settings.json.<x>
 # entries, so any that exist were put there by someone else and are the place a
@@ -503,6 +577,14 @@ print_memory_line() {
   say "create-agent: memory $MEMORY_REPORT"
 }
 
+# The signal handler prints through fd 7, a copy of the script's own stdout made
+# at start. A trap runs inside whatever redirection the interrupted command had
+# (the installer and the containment check both run with their output sent to
+# /dev/null), so printing to plain stdout from there would be silently lost.
+print_memory_line_signal() {
+  { say; say "create-agent: memory $MEMORY_REPORT"; } >&7
+}
+
 restore_settings() {
   [[ -n "$MEMORY_SNAPSHOT" && -f "$MEMORY_SNAPSHOT" ]] || return 1
   # Redirect rather than cp: it keeps the file's mode and fails when the target
@@ -524,6 +606,7 @@ stamp_user_name() {
   node_run <<'JS'
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 const file = process.env.CA_SETTINGS;
 const user = process.env.CA_USER_NAME;
 const data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -532,8 +615,13 @@ if (!("USER_NAME" in data.env)) data.env.USER_NAME = user;
 // Temporary file in the same directory, then a rename: a signal or a crash can
 // never leave the settings truncated half way. The name does not begin with
 // "settings.json." so it cannot be mistaken for the installer's own files.
-const tmp = path.join(path.dirname(file), `.settings-stamp-${process.pid}.tmp`);
-fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: fs.statSync(file).mode & 0o777 });
+const mode = fs.statSync(file).mode & 0o777;
+// A random name opened with "wx" (create, never follow or reuse), so a link
+// planted under a guessable name cannot be written through. The mode option is
+// masked by the umask, so set it explicitly before the rename.
+const tmp = path.join(path.dirname(file), `.settings-stamp-${crypto.randomBytes(8).toString("hex")}.tmp`);
+fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+fs.chmodSync(tmp, mode);
 fs.renameSync(tmp, file);
 JS
 }
@@ -613,14 +701,14 @@ JS
   bash "$installer" --skip-build --settings "$AGENT_HOME/.claude/settings.json" \
     --agent "$NAME" </dev/null >/dev/null
   status=$?
-  MEMORY_WIRING=0
   MEMORY_STAGE="ran"
+  MEMORY_WIRING=0
   # Re-check after the installer and before anything else is written or claimed:
   # a link that appeared meanwhile means writes may have gone elsewhere.
   if ! memory_dir_is_clean; then
     drop_snapshot
-    memory_skip "PARTIAL: a symlink or hard link appeared in the agent's .claude during the install; check where it points"
-    warn "memory is NOT reported on: $AGENT_HOME/.claude contains a symlink or hard link after the install ran."
+    memory_skip "PARTIAL: the agent's .claude failed its containment check after the install (a link appeared, or settings.json was replaced); check where it points"
+    warn "memory is NOT reported on: $AGENT_HOME/.claude failed its containment check after the install ran."
     warn "  Nothing further was written. Inspect the link target and $AGENT_HOME/.claude/settings.json."
     return
   fi
@@ -642,8 +730,14 @@ JS
 
   MEMORY_STAGE="installed"
   if [[ -n "${USER_NAME:-}" ]]; then
+    MEMORY_STAGE="stamping"
     CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_USER_NAME="$USER_NAME" stamp_user_name \
       || warn "could not write USER_NAME into the agent's settings; memory prompts will not name you."
+    # Fail closed once more before claiming anything: the stamp wrote a file.
+    if ! memory_dir_is_clean; then
+      memory_skip "PARTIAL: the agent's .claude failed its containment check after USER_NAME was stamped; check $AGENT_HOME/.claude/settings.json"
+      return
+    fi
   else
     warn "USER_NAME is not set, so the memory prompts will not name the person. Set it and re-run, or edit the agent's settings env."
   fi
@@ -1031,9 +1125,9 @@ on_signal() {
     else
       MEMORY_REPORT="off (PARTIAL: interrupted during memory install and settings could NOT be restored; check $AGENT_HOME/.claude/settings.json)"
     fi
-    print_memory_line
+    print_memory_line_signal
     MEMORY_PRINT=0
-  elif [[ $MEMORY_IN_EXIT -eq 1 ]]; then
+  elif [[ $MEMORY_IN_EXIT -eq 1 && $MEMORY_ARMED -eq 1 ]]; then
     # Inside the exit handler but not in the installer: before it ran, after it
     # returned, or while USER_NAME was being stamped. Say which, because the
     # exit handler's own print is skipped when this exits.
@@ -1041,10 +1135,11 @@ on_signal() {
       "")        MEMORY_REPORT="off (interrupted before the memory install ran; nothing written)" ;;
       ran)       MEMORY_REPORT="off (PARTIAL: interrupted after the memory install ran and before its result was checked; hooks may be wired, check $AGENT_HOME/.claude/settings.json)" ;;
       installed) MEMORY_REPORT="on (interrupted before USER_NAME was stamped; hooks wired and silo seeded, add env.USER_NAME by hand)" ;;
+      stamping)  MEMORY_REPORT="on (interrupted while USER_NAME was being stamped; hooks wired and silo seeded, the settings are intact because the stamp is an atomic rename, but env.USER_NAME may or may not be there)" ;;
       stamped)   MEMORY_REPORT="on (interrupted after wiring finished; hooks wired, silo seeded)" ;;
       *)         ;;   # already decided; print what it says
     esac
-    print_memory_line
+    print_memory_line_signal
     MEMORY_PRINT=0
   else
     MEMORY_PRINT=1
@@ -1054,7 +1149,7 @@ on_signal() {
   exit "$code"
 }
 
-[[ "$VERIFY_ONLY" -eq 1 ]] || MEMORY_PENDING=1
+[[ "$VERIFY_ONLY" -eq 1 ]] || { MEMORY_PENDING=1; MEMORY_ARMED=1; }
 trap memory_on_exit EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM

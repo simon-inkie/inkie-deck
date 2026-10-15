@@ -14,6 +14,7 @@ was deferred, and the commit. Commits on this branch, by short id:
 | 5ae2586 | REVIEW.md commit ids |
 | 887d0b3 | REVIEW.md leak-gate fix |
 | ce2c6a2 | round 5 fixes |
+| R6ID | round 6 fixes |
 
 ## Open maintainer decision
 
@@ -68,11 +69,23 @@ message, or the maintainer can authorise a rewrite. Raised in rounds 1, 3, 4 and
 
 | Severity | Finding | Outcome | Commit |
 |---|---|---|---|
-| Major | The guard looked only for symlinks. A HARD link named like the installer's temporary file made the installer rewrite the shared file and rename it over the agent's settings; an agent home that is itself a symlink to a parent of `.claude` passed both checks and wired global settings | Fixed for links already in place: refuse when the agent home is a symlink or `.claude` does not resolve to `<agents home>/<name>/.claude`, at creation and before wiring; refuse when any file in `.claude` has a link count above one, or any `settings.json.*` entry exists before the install; re-check after the install; the restore also refuses a hard-linked settings file. Tests for both cases with the installer's real temporary and backup names (built in the test, not written literally, for the leak gate), plus a hard link appearing during the install. NOT fixed, by nature: a link planted in the instant between the check and the installer's write is only caught afterwards, once the write has happened. This is acceptable only under a same-user threat model, and is stated in the SPEC and INSTALL.md | ce2c6a2 |
+| Major | The guard looked only for symlinks. A HARD link named like the installer's temporary file made the installer rewrite the shared file and rename it over the agent's settings; an agent home that is itself a symlink to a parent of `.claude` passed both checks and wired global settings | Partly fixed, and an overstatement when written: refuse when the agent home is a symlink or `.claude` does not resolve to `<agents home>/<name>/.claude`, at creation and before wiring; refuse when any file in `.claude` has a link count above one, or any `settings.json.*` entry exists before the install; re-check after the install; the restore also refuses a hard-linked settings file. Tests for both cases with the installer's real temporary and backup names (built in the test, not written literally, for the leak gate), plus a hard link appearing during the install. NOT fixed, by nature: a link planted in the instant between the check and the installer's write is only caught afterwards, once the write has happened. This is acceptable only under a same-user threat model, and is stated in the SPEC and INSTALL.md. Round 6 found this still missed a hard-linked settings.json already in place, a find that failed open, and creation failing for a not-yet-existing agents home under a symlinked ancestor | ce2c6a2 |
 | Minor | A signal inside the exit handler while the installer is not running printed no memory line, and the `USER_NAME` write was in place | Fixed: the handler prints whenever it runs inside the exit handler, tracking the stage (`off ... before the install ran`, `PARTIAL ... after the install ran`, `on (interrupted before USER_NAME was stamped)`); `USER_NAME` is written through a temporary file and a rename. Test: signal during the post-install check | ce2c6a2 |
 | Minor | REVIEW.md overstated the round 3 and 4 symlink rows, and the trailer line omitted round 4 | Fixed: rows corrected, trailer line lists every round | ce2c6a2 |
 | Nit | The temp-directory test did not assert the snapshot mode, and the planted-link tests used invented names | Fixed: asserts 0600 while the install is held; real names built in the test | ce2c6a2 |
 | Nit | A stray blank line split a bullet in INSTALL.md | Fixed | ce2c6a2 |
+
+## Round 6 (head 3b96653)
+
+| Severity | Finding | Outcome | Commit |
+|---|---|---|---|
+| Major | First-time creation failed with a scaffold error when the agents home did not exist yet and its path had a symlinked ancestor or a trailing slash (`readlink -f` fails on two missing components) | Fixed: containment moved to node, resolving the deepest existing ancestor and appending the rest. Tests: symlinked ancestor with a not-yet-existing agents home, and a trailing slash | R6ID |
+| Major | A hard link already in place on `settings.json` itself was written through (the scaffold writes in place) | Fixed: `settings.json` must be a regular file, not a symlink, with a link count of one, or creation is a scaffold error. Test. (Writing through a temporary file and a rename was not added; the refusal is the guard.) | R6ID |
+| Minor | `find` failed open: a missing or failing find meant clean, so a hard link planted during the install and a pre-existing hard-linked settings.json gave `on` | Fixed: the whole check runs in node and fails closed (any error means not contained). Tests: hard link during the install gives PARTIAL | R6ID |
+| Minor | The `USER_NAME` stamp used a predictable temporary name that a planted link could redirect | Fixed: random name opened with the exclusive-create flag, mode set with an explicit chmod, and the containment check repeated before `on` is reported | R6ID |
+| Minor | Links pointing the other way (`$HOME/.claude` to the agent's directory, an agents home that resolves above `$HOME`) were not seen | Fixed for `$HOME/.claude/settings.json` and `$CLAUDE_CONFIG_DIR/settings.json`: the agent's settings must not be the same file by path or by inode. Not covered: global settings kept in any other location. The docs say so. Tests: reversed link, CLAUDE_CONFIG_DIR | R6ID |
+| Minor | REVIEW, SPEC and INSTALL overstated the earlier fixes | Corrected here, in the SPEC and in INSTALL.md | R6ID |
+| Nit | The signal line said `before USER_NAME was stamped` when the stamp had finished, and the stage covered gaps | Improved: a `stamping` stage with a hedged line; the stage is set before the install flag drops; an unarmed run (`--verify-only`) prints nothing. Remaining limitation: an interrupt in the few instructions between the stamp finishing and the stage being set reads as `stamping`. Also found and fixed while testing: a signal handler's output was being lost when it ran inside a command with its output redirected to /dev/null, so it now prints through a saved copy of stdout | R6ID |
 
 ## Not done, by design
 

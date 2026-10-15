@@ -797,7 +797,7 @@ packages/base/bin/create-agent.sh wren --role "keeps the notes"
 ```
 
 For each agent that wires the memory hooks into that agent's own
-`.claude/settings.json` (never a global one), records `USER_NAME` there, and
+`.claude/settings.json` (not your global one, see the checks below), records `USER_NAME` there, and
 seeds the agent's memory silo, by running the checkout's own non-interactive
 install command. The silo is picked by the `AGENT_NAME` Deck already writes
 into that file. The last line of the output (printed after any verification) says which way it went:
@@ -846,10 +846,17 @@ it reports a link planted in the instant between the first check and the write;
 it cannot prevent it. The protection is against links already in place, not
 against another process on your account racing the install.
 
-Separately, `create-agent.sh` refuses to create an agent whose agent home,
-`.claude` directory or `.claude/settings.json` is a symlink or resolves outside
-`<agents home>/<name>`, because the settings are written in place and could
-land in a global file.
+Separately, `create-agent.sh` refuses to create an agent (a scaffold error,
+before anything is written) when the agent home, its `.claude` directory or its
+`.claude/settings.json` is a symlink, resolves outside `<agents home>/<name>`,
+or when `settings.json` is a hard link (link count above one); and when the
+agent's settings are the same file as your own global settings
+(`$HOME/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` when
+set), by path or by inode, whichever way a link points. The settings are
+written in place and could otherwise land in a global file. These checks run in
+node and fail closed: if they cannot run, nothing is written. They look at one
+moment; see the note on timing above. They cover the user's default settings
+locations only, not every file your account can write.
 
 After a successful memory install the checkout's installer leaves a one-time
 backup of the previous settings next to `settings.json` (a `settings.json.*.bak`

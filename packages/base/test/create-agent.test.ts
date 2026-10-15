@@ -1010,6 +1010,72 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
   });
 
+  it("creates an agent when the agents home does not exist yet and a parent of it is a symlink", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const real = path.join(path.dirname(box.home), "real-var-home");
+    fs.mkdirSync(real);
+    const linked = path.join(path.dirname(box.home), "var-home");
+    fs.symlinkSync(real, linked);
+    const agents = path.join(linked, "agents"); // not created yet
+
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { AGENTS_HOME: agents, MEMORY_LAYER_ROOT: root },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toContain("CREATED wren");
+    expect(result.output).toMatch(/memory on /);
+    expect(fs.existsSync(path.join(real, "agents", "wren", "SOUL.md"))).toBe(true);
+  });
+
+  it("creates an agent when the not-yet-existing agents home is given with a trailing slash", () => {
+    const box = sandbox();
+    const agents = path.join(path.dirname(box.home), "fresh-agents") + "/";
+
+    const result = run(box, ["wren", "--no-verify"], { env: { AGENTS_HOME: agents } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toContain("CREATED wren");
+    expect(fs.existsSync(path.join(agents, "wren", "SOUL.md"))).toBe(true);
+  });
+
+  it("refuses a settings.json that is already a hard link to another file, before writing", () => {
+    const box = sandbox();
+    const victim = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(victim, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.linkSync(victim, path.join(dir, "settings.json"));
+
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readFileSync(victim, "utf8")).toBe('{"keep":"me"}');
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(false);
+  });
+
+  it("refuses when the user's own settings directory is a link pointing at the agent's", () => {
+    const box = sandbox();
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(dir, path.join(box.home, ".claude")); // HOME/.claude -> agent's .claude
+
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(false);
+  });
+
+  it("refuses a CLAUDE_CONFIG_DIR that is the agent's own settings directory", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { CLAUDE_CONFIG_DIR: path.join(box.agentsHome, "wren", ".claude") },
+    });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+  });
+
   it("reports PARTIAL, never on, when a hard link appears while the install runs", () => {
     const box = sandbox();
     const root = memoryLayer(box);
@@ -1021,7 +1087,7 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     });
 
     expect(result.status).toBe(EXIT.CANNOT_VERIFY);
-    expect(result.output).toMatch(/memory off \(PARTIAL: a symlink or hard link appeared/);
+    expect(result.output).toMatch(/memory off \(PARTIAL: the agent's \.claude failed its containment check after the install/);
     expect(result.output).not.toMatch(/memory on /);
     // USER_NAME was not stamped after the check failed.
     expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
@@ -1031,12 +1097,13 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     const box = sandbox();
     const root = memoryLayer(box);
     const watch = path.join(box.agentsHome, "wren", ".claude", "settings.json.fixture.bak");
-    const mark = path.join(box.home, "find-held");
-    // A find that stalls once the fixture installer has run, i.e. during the
-    // post-install check, which is inside the exit handler and after the installer.
+    const mark = path.join(box.home, "node-held");
+    // A node that stalls once the fixture installer has run: the first node
+    // call after the installer is the post-install containment check, which is
+    // inside the exit handler and after the installer.
     fs.writeFileSync(
-      path.join(box.stubBin, "find"),
-      `#!/bin/sh\nif [ -e "${watch}" ]; then touch "${mark}"; sleep 2; fi\nexec /usr/bin/find "$@"\n`,
+      path.join(box.stubBin, "node"),
+      `#!/bin/sh\nif [ -e "${watch}" ]; then touch "${mark}"; sleep 2; fi\nexec "${process.execPath}" "$@"\n`,
       { mode: 0o755 },
     );
 
@@ -1063,7 +1130,7 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(output).toMatch(/create-agent: memory off \(PARTIAL: interrupted after the memory install ran/);
   });
 
-  it("reports a PARTIAL state when the settings cannot be restored", () => {
+  it("reports PARTIAL, not a restore, when a failed install leaves settings.json replaced by a directory", () => {
     const box = sandbox();
     const root = memoryLayer(box);
     // Make the restore fail portably: the failing installer replaces
@@ -1082,7 +1149,7 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     });
 
     expect(result.status).toBe(EXIT.CANNOT_VERIFY);
-    expect(result.output).toMatch(/memory off \(PARTIAL: memory install exited 3 and settings could NOT be restored\)/);
+    expect(result.output).toMatch(/memory off \(PARTIAL: the agent's \.claude failed its containment check after the install/);
   });
 
   it("refuses memory when the settings already route to a different agent", () => {
