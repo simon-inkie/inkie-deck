@@ -77,3 +77,13 @@ both fixed: the "nothing else depends on egress" sentence now names the
 optional integrations that do (Google API, Deepgram, web push), and the
 Windows-limitation entry now counts the Windows section's `sh-manual` blocks
 among the unexecuted ones.
+
+Maintainer follow-up (2026-10-15): the optional-subsystems entry said web
+push needs keys and is off without them. Read from `push.server.ts`
+(`getVapidKeys`, lazy keypair on the first `/api/push-subscribe` request,
+stored in `vapid-keys.json`) and `push-watcher.mjs` (sends only when a stored
+subscription exists, to each subscription endpoint). Fixed: web push now has
+its own entry (subscription-activated, no operator key, outbound to the
+browser vendor's push service), the optional-subsystems entry covers only
+Deepgram and Gemini, and the egress sentence says "nobody subscribed". Not
+run, code reading only.

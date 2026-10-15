@@ -1092,18 +1092,32 @@ fallback fonts with no explanation. That is the browser's connection, not the
 server's. Until #32 was fixed the fonts never loaded even when online, because
 the `@import` that was meant to fetch them was dropped; if you see fallback
 fonts on a connected browser now, that is a regression worth reporting. With the
-optional subsystems below switched off, nothing else in the core application
-depends on egress; with them on, image descriptions call Google's API, voice
-connects to Deepgram and web push sends to the subscribers' push services.
+optional subsystems below switched off and nobody subscribed to browser
+notifications, nothing else in the core application depends on egress. With
+them on, image descriptions call Google's API and voice connects to Deepgram;
+web push, once a browser has subscribed, sends to that browser's push service.
 Checked: the stylesheet is still linked from Google Fonts in
 `packages/deck/app/root.tsx`.
 
-**Optional subsystems are unverified here.** Voice dictation (Deepgram),
-image descriptions (Gemini) and web push all need keys, are off without them,
-and are not exercised by the rig. As of 2026-10-12 no one has run them by hand
-for this list either; only the no-key path of the voice proxy was read, in
+**Optional subsystems are unverified here.** Voice dictation (Deepgram) and
+image descriptions (Gemini) need keys, are off without them, and are not
+exercised by the rig. As of 2026-10-12 no one has run them by hand for this
+list either; only the no-key path of the voice proxy was read, in
 `packages/deck/server/voice-proxy.mjs`. They degrade rather than fail: the
 voice proxy starts without a key and tells the client it has none.
+
+**Web push needs no operator key; a subscription switches it on.** Deck makes
+its own VAPID keypair: the first request to `/api/push-subscribe` (a plain GET
+is enough) writes `vapid-keys.json` under the data root
+(`getVapidKeys` in `packages/deck/app/lib/push.server.ts`). Nothing is sent
+until a browser subscribes, which stores its endpoint in
+`push-subscriptions.json`. From then on, while the production launcher's
+`push-watcher.mjs` is running, every new message from a non-user sender is
+posted to each stored endpoint, which is the push service of that browser's
+vendor, so those hosts must be reachable from the server. With no
+subscription the watcher polls the inbox files and sends nothing. Like the
+others it has not been run for this list; this entry was read from
+`push.server.ts` and `push-watcher.mjs` on 2026-10-15.
 
 Voice is a SECOND listener, on its own port, and a few of its settings are not
 the app's. See [Voice dictation](#voice-dictation-optional) for the working
