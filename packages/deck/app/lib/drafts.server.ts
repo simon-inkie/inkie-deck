@@ -18,7 +18,7 @@
  * current copy, unless `force` is set. The check and the write run under the
  * shared advisory lock, so two saves through this module cannot interleave.
  * An external writer that does not take that lock can still land between the
- * check and the rename; atomicWrite keeps the file whole, but that one write
+ * check and the rename; the temp-file rename keeps the file whole, but that one write
  * would be lost. The editor also polls, which narrows the window in practice.
  *
  * Who wrote the current version. Files carry no author. The sidecar
@@ -36,7 +36,6 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
-  atomicWrite,
   assertNoLiveSiloRoot,
   confineToRootReal,
   withInboxLock,
@@ -127,11 +126,44 @@ function draftsDirReal(create: boolean): string {
 }
 
 function draftPath(dirReal: string, name: string, forWrite: boolean): string {
-  return confineToRootReal(path.join(dirReal, name), dirReal, {
+  const resolved = confineToRootReal(path.join(dirReal, name), dirReal, {
     forWrite,
     label: "drafts",
     notFound: "Draft not found.",
   });
+  // The file a draft name resolves to must itself be a draft name. An in-folder
+  // symlink such as leak.md -> .deck-drafts.json (or .bad, or a .lock) would
+  // otherwise read or overwrite the Deck's own bookkeeping files.
+  if (!DRAFT_NAME_RE.test(path.basename(resolved))) {
+    throw new Error("Draft resolves to a file that is not a draft.");
+  }
+  return resolved;
+}
+
+/**
+ * Write a file atomically without trusting any name on disk: the temp file is
+ * created with O_EXCL ("wx": it fails if anything, including a planted
+ * symlink, already exists at that name) under an unpredictable random suffix
+ * in the same directory, then renamed over the target. The shared atomicWrite
+ * helper uses a predictable name (pid and clock) and writeFileSync follows a
+ * symlink planted there, so it is not used for anything in the workspace.
+ */
+function safeWriteFile(target: string, data: string): void {
+  const tmp = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${crypto.randomBytes(12).toString("hex")}.tmp`
+  );
+  try {
+    fs.writeFileSync(tmp, data, { encoding: "utf8", flag: "wx", mode: 0o644 });
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* never created, or already renamed */
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +181,7 @@ type Meta = Record<string, string>; // name -> version hash last saved by the pe
 function readCapped(
   file: string,
   max: number,
-  opts: { noLinks?: boolean } = {}
+  opts: { noLinks?: boolean; noHardLinks?: boolean } = {}
 ): { text: string; mtime: Date } {
   // O_NONBLOCK: opening a FIFO for reading blocks until a writer appears, and
   // this runs synchronously, so a FIFO named x.md (or a symlink to one) would
@@ -170,7 +202,9 @@ function readCapped(
   try {
     const st = fs.fstatSync(fd);
     if (!st.isFile()) throw new Error("Not a regular file.");
-    if (opts.noLinks && st.nlink > 1) throw new SidecarRefused("it has more than one hard link");
+    // A hard link to a file outside the folder passes every path check (the
+    // name is inside), so it is refused on the descriptor, for drafts too.
+    if ((opts.noLinks || opts.noHardLinks) && st.nlink > 1) throw new HardLinked();
     if (st.size > max) throw new DraftTooLarge();
     // Uninitialised on purpose (no 1 MB zero-fill per list or poll); only the
     // n bytes actually read are ever used.
@@ -185,6 +219,13 @@ function readCapped(
     return { text: buf.subarray(0, n).toString("utf8"), mtime: st.mtime };
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+/** A file with more than one hard link: not a draft, and not a sidecar. */
+class HardLinked extends Error {
+  constructor() {
+    super("Refused: the file has more than one hard link.");
   }
 }
 
@@ -215,6 +256,7 @@ function readSidecarText(dirReal: string): string {
   try {
     return readCapped(file, MAX_DRAFT_BYTES, { noLinks: true }).text;
   } catch (err) {
+    if (err instanceof HardLinked) throw new SidecarRefused("it has more than one hard link");
     if ((err as NodeJS.ErrnoException).code === "ELOOP") throw new SidecarRefused("it is a symbolic link");
     throw err;
   }
@@ -268,7 +310,7 @@ function readMetaForWrite(dirReal: string): Meta {
 }
 
 function writeMeta(dirReal: string, meta: Meta): void {
-  atomicWrite(
+  safeWriteFile(
     path.join(dirReal, META_FILENAME),
     JSON.stringify({ version: 1, files: meta }, null, 2) + "\n"
   );
@@ -287,7 +329,7 @@ class DraftTooLarge extends Error {
 
 function view(dirReal: string, name: string, meta: Meta): DraftView {
   const p = draftPath(dirReal, name, false);
-  const { text: content, mtime } = readCapped(p, MAX_DRAFT_BYTES);
+  const { text: content, mtime } = readCapped(p, MAX_DRAFT_BYTES, { noHardLinks: true });
   const version = sha256(content);
   return {
     name,
@@ -423,7 +465,7 @@ export async function saveDraft(input: SaveInput): Promise<DraftResult> {
         return { ok: false, error: "Draft is a symbolic link.", status: 400 };
       }
 
-      atomicWrite(target, content);
+      safeWriteFile(target, content);
       const version = sha256(content);
       let savedAt = new Date().toISOString();
       try {

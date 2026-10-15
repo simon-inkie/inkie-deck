@@ -653,6 +653,88 @@ describe("drafts survive a dev restart", () => {
   });
 });
 
+describe("hard-linked drafts and the sidecar names", () => {
+  const SECRET = "PRIVATE-OUTSIDE-BYTES";
+  let outside: string;
+  beforeEach(() => {
+    outside = mkdtempSync();
+    fs.writeFileSync(path.join(outside, "private.txt"), SECRET);
+    fs.mkdirSync(path.join(ws, "drafts"));
+  });
+  afterEach(() => rmSync(outside));
+
+  it("a draft hard-linked to an outside file is not read, listed or saved over", async () => {
+    fs.linkSync(path.join(outside, "private.txt"), draftFile("x.md"));
+    const r = readDraft("x");
+    expect(r.ok).toBe(false);
+    expect(r.ok && r.draft.content).not.toBe(SECRET);
+    expect(listDrafts().map((d) => d.name)).not.toContain("x.md");
+    const s = await saveDraft({ name: "x", content: "overwrite", force: true });
+    expect(s.ok).toBe(false);
+    expect(fs.readFileSync(path.join(outside, "private.txt"), "utf8")).toBe(SECRET);
+    expect(fs.readFileSync(draftFile("x.md"), "utf8")).toBe(SECRET); // left as it was
+  });
+
+  it("an in-folder symlink onto a hard-linked sidecar is not readable as a draft", () => {
+    fs.linkSync(path.join(outside, "private.txt"), draftFile(META_FILENAME));
+    fs.symlinkSync(draftFile(META_FILENAME), draftFile("leak.md"));
+    const r = readDraft("leak");
+    expect(r.ok).toBe(false);
+    expect(r.ok && r.draft.content).not.toContain("PRIVATE");
+    expect(listDrafts().map((d) => d.name)).not.toContain("leak.md");
+  });
+
+  it.each([META_FILENAME, META_FILENAME + ".bad", "a.md.lock"])(
+    "an in-folder symlink onto %s is not a draft",
+    async (target) => {
+      fs.writeFileSync(draftFile(target), '{"version":1,"files":{}}');
+      fs.symlinkSync(draftFile(target), draftFile("leak.md"));
+      expect(readDraft("leak").ok).toBe(false);
+      expect(listDrafts().map((d) => d.name)).not.toContain("leak.md");
+      const s = await saveDraft({ name: "leak", content: "x", force: true });
+      expect(s.ok).toBe(false);
+      expect(fs.readFileSync(draftFile(target), "utf8")).toBe('{"version":1,"files":{}}');
+    }
+  );
+});
+
+describe("temp files are never predictable or symlink-following", () => {
+  it("a save is unaffected by symlinks planted at the old pid/clock temp names", async () => {
+    const outside = mkdtempSync();
+    const FIXED = 1_800_000_000_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(FIXED);
+    try {
+      fs.mkdirSync(path.join(ws, "drafts"));
+      const victimDraft = path.join(outside, "draft-victim.txt");
+      const victimMeta = path.join(outside, "meta-victim.txt");
+      fs.writeFileSync(victimDraft, "ORIGINAL-1");
+      fs.writeFileSync(victimMeta, "ORIGINAL-2");
+      // The old helper named its temp file <final>.tmp-<pid>-<Date.now()>.
+      for (let dt = -3; dt <= 3; dt++) {
+        fs.symlinkSync(victimDraft, `${draftFile("a.md")}.tmp-${process.pid}-${FIXED + dt}`);
+        fs.symlinkSync(victimMeta, `${draftFile(META_FILENAME)}.tmp-${process.pid}-${FIXED + dt}`);
+      }
+      const res = await saveDraft({ name: "a", content: "real text", create: true });
+      expect(res.ok).toBe(true);
+      expect(fs.readFileSync(victimDraft, "utf8")).toBe("ORIGINAL-1");
+      expect(fs.readFileSync(victimMeta, "utf8")).toBe("ORIGINAL-2");
+      expect(fs.lstatSync(draftFile("a.md")).isSymbolicLink()).toBe(false);
+      expect(fs.lstatSync(draftFile(META_FILENAME)).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(draftFile("a.md"), "utf8")).toBe("real text");
+    } finally {
+      now.mockRestore();
+      rmSync(outside);
+    }
+  });
+
+  it("leaves no temp files behind after saves", async () => {
+    await saveDraft({ name: "a", content: "one", create: true });
+    await saveDraft({ name: "b", content: "two", create: true });
+    const left = fs.readdirSync(path.join(ws, "drafts")).filter((f) => f.endsWith(".tmp"));
+    expect(left).toEqual([]);
+  });
+});
+
 describe("dev launcher", () => {
   it("passes the origin allowlist to the app, not only to the voice proxy", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", "scripts", "dev.mjs"), "utf8");
