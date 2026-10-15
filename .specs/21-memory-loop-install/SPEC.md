@@ -16,10 +16,15 @@ unbuilt one, `--no-memory`, or a failing install command, the final line reports
 same exit code as before. INSTALL.md tier 3 gains an optional memory step. This
 is the M1 slice only.
 
-Known limitation, live: if the memory install command fails part way (for
-example after the hooks merge but before the silo is seeded) the agent is
-reported `off` although its settings may already hold the hooks. The warning
-says so; the command is idempotent, so re-running it repairs it.
+Known limitation, live: if the memory install command fails after the hooks
+merged, Deck restores the agent's previous settings and reports it. The silo
+may still be partly seeded (the command is idempotent, so re-running repairs
+it). If the settings cannot be restored the report starts `off (PARTIAL: ...)`
+and names the file to clean.
+
+Also live: the first two commits on this branch carry a `Claude-Session:`
+trailer that the repo's private-session-link rule flags. History was not
+rewritten (no force-push), so a squash merge must drop those lines.
 
 ## Scope
 
@@ -122,4 +127,11 @@ Later commits omit it.
 - What changed: merged main (the `--model` work) keeping both variable blocks and both summary lines. A SIGINT, SIGTERM or SIGHUP during the probe now clears the pending flag, so an interrupted run does not wire memory or claim it did (exit 130, 143 or 129). The summary memory line is conditional: `off (reason)` when nothing is to be wired, `to be wired after verification` otherwise. The INSTALL.md memory block is fenced `sh-manual`, because it needs a real checkout and the rig cannot run it.
 - Why: re-review findings.
 - Supersedes: the unconditional summary wording in the previous entry.
+- Commits: see branch
+
+### 2026-10-15: review round 3
+- What changed: (1) memory is refused, settings untouched, when the agent's settings already carry a different `env.AGENT_NAME` (it would seed one silo and route hooks to another). (2) A snapshot of the settings is taken before the install command; on failure after the hooks merged they are restored, or a `PARTIAL` report names the file. (3) A symlinked `.claude` or `settings.json` is rejected before any write (a scaffold error at creation, and a second guard before wiring). (4) A failed probe (wrong phrase, empty reply, runtime error) now leaves memory unwired with a visible reason; skipped or impossible verification (`--no-verify`, no runtime) still wires. (5) A signal during the install prints `memory off (interrupted during memory install ...)` and restores the settings; a signal before wiring prints `off (run interrupted before memory was wired)`.
+- Why: review findings (conflicting identity, partial state, symlink escape, interrupt report, wiring after a failed probe). New tests: failure after merge, unrestorable partial, conflicting identity, symlink, probe failure, probe error, interrupt during install.
+- Supersedes: "reported off although hooks may be wired" in the TL;DR notes; the earlier rule that a failed probe still wired memory.
+- Not done: removing `Claude-Session` trailers from the first two commits. That needs a history rewrite and force-push, which were ruled out; left for a decision (squash merge drops them).
 - Commits: see branch

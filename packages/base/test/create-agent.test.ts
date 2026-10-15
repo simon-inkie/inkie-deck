@@ -732,6 +732,9 @@ add("PreCompact", "auto", "on-pre-compact");
 add("PreCompact", "manual", "on-pre-compact");
 fs.writeFileSync(f, JSON.stringify(d, null, 2));
 '
+# A failure AFTER the hooks merged, and a hold so a test can signal mid-install.
+[ -n "\${FIXTURE_FAIL_AFTER_MERGE:-}" ] && exit "$FIXTURE_FAIL_AFTER_MERGE"
+if [ -n "\${FIXTURE_HOLD:-}" ]; then touch "$FIXTURE_HOLD"; sleep 2; fi
 # ...and only then is a missing tsx fatal, which is why Deck checks it first.
 [ -x "$root/node_modules/.bin/tsx" ] || exit 2
 mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
@@ -866,6 +869,131 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
   });
 
+  it("restores the settings when the install fails AFTER the hooks were merged", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, FIXTURE_FAIL_AFTER_MERGE: "3" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    // The fixture really did merge hooks before failing (the call was logged),
+    // and Deck put the previous settings back.
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(true);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(settingsOf(box, "wren").env.AGENT_NAME).toBe("wren");
+    expect(result.output).toMatch(/memory off \(memory install exited 3; settings restored, nothing wired\)/);
+  });
+
+  it("reports a PARTIAL state when the settings cannot be restored", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    // Make the restore fail portably: the failing installer replaces
+    // settings.json with a directory, which cannot be written back over.
+    const installer = path.join(root, "scripts", "install.sh");
+    fs.writeFileSync(
+      installer,
+      fs
+        .readFileSync(installer, "utf8")
+        .replace('[ -n "${FIXTURE_FAIL_AFTER_MERGE:-}" ] && exit "$FIXTURE_FAIL_AFTER_MERGE"',
+          '[ -n "${FIXTURE_FAIL_AFTER_MERGE:-}" ] && { rm -f "$settings"; mkdir "$settings"; exit "$FIXTURE_FAIL_AFTER_MERGE"; }'),
+      { mode: 0o755 },
+    );
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, FIXTURE_FAIL_AFTER_MERGE: "3" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(PARTIAL: memory install exited 3 and settings could NOT be restored\)/);
+  });
+
+  it("refuses memory when the settings already route to a different agent", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const settingsFile = path.join(box.agentsHome, "wren", ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+    fs.writeFileSync(settingsFile, JSON.stringify({ env: { AGENT_NAME: "fern" } }));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(settings env\.AGENT_NAME is "fern", not "wren"\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+    expect(fs.existsSync(path.join(box.home, SILO_DIR))).toBe(false);
+  });
+
+  it("rejects a symlinked per-agent settings file before writing anything", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const elsewhere = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(elsewhere, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(dir, "settings.json"));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(result.output).toContain("symlink");
+    expect(fs.readFileSync(elsewhere, "utf8")).toBe('{"keep":"me"}');
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("leaves memory unwired, with a visible reason, when the verification probe fails", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    stubRuntime(box, 'echo "boot phrase: wrong"');
+    const result = run(box, ["wren"], { stub: true, env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.FAILED);
+    expect(result.output).toMatch(/memory off \(verification did not pass/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("leaves memory unwired when the probe runtime errors out", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    stubRuntime(box, "exit 9");
+    const result = run(box, ["wren"], { stub: true, env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(verification did not pass/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("leaves a visible report, and the settings restored, when interrupted during the memory install", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const hold = path.join(box.home, "install-started");
+
+    const child = spawn("bash", [SCRIPT, "wren", "--no-verify"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, false),
+        MEMORY_LAYER_ROOT: root,
+        FIXTURE_HOLD: hold,
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+
+    for (let i = 0; i < 100 && !fs.existsSync(hold); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(fs.existsSync(hold)).toBe(true);
+    child.kill("SIGTERM");
+
+    expect(await exited).toBe(143);
+    expect(output).toMatch(/memory off \(interrupted during memory install; settings restored, nothing wired\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
   it("states memory is off in the summary when there is nothing to wire", () => {
     const box = sandbox();
     const result = run(box, ["wren", "--no-verify"]);
@@ -907,7 +1035,7 @@ echo "boot phrase: $(grep -oE 'boot-[0-9a-f]{16}' IDENTITY.md | head -n1)"`,
     });
 
     expect(result.status).toBe(EXIT.CANNOT_VERIFY);
-    expect(result.output).toMatch(/memory\s+off \(memory install exited 2\)/);
+    expect(result.output).toMatch(/memory\s+off \(memory install exited 2; settings restored/);
     expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(true);
     expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
   });

@@ -806,9 +806,31 @@ into that file. The last line of the output (printed after any verification) say
 create-agent: memory on (hooks wired in /home/you/agents/wren/.claude/settings.json, silo seeded)
 ```
 
-With no checkout, an unbuilt one, `--no-memory`, or an install command that
-fails, the last line reads `create-agent: memory off (reason)`, a warning explains why, and
-the agent is created exactly as before. Memory never changes the exit code.
+Memory is wired last, after the persona check, so that check's own turn is not
+recorded as the agent's first memory. When it is not wired, the last line reads
+`create-agent: memory off (reason)`, a warning explains why, and the agent is
+created exactly as before. Memory never changes the exit code. The reasons:
+
+- no checkout configured, `--no-memory`, or a checkout that is not built and
+  installed (settings are not touched);
+- the agent's `.claude/settings.json` already says `env.AGENT_NAME` is another
+  agent, which would seed one memory silo and send the hooks to a different
+  one (settings are not touched; fix the name and run the checkout's install
+  command with `--agent <name>`);
+- the persona check failed or the model CLI errored, so a broken agent is not
+  wired (once fixed, run the checkout's install command with `--agent <name>`);
+- the checkout's install command failed. Deck puts the agent's previous
+  settings back, so no hooks are left active, and says so. If it cannot put
+  them back the line starts `off (PARTIAL: ...)`: open the agent's
+  `.claude/settings.json` and remove the memory hooks, or fix the cause and
+  re-run the install command. The silo may be partly seeded; the command is
+  idempotent;
+- the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). Before wiring nothing is
+  wired; during the install the line says so and the settings are restored.
+
+Separately, `create-agent.sh` refuses to create an agent whose
+`.claude/settings.json` (or `.claude` directory) is a symlink, because the
+settings are written in place and could land in a global file.
 
 Not covered here: semantic search (it needs a vector database and a paid
 embeddings key), the background watcher, and a persona file for the memory

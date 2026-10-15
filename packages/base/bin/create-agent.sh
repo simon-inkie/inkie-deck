@@ -428,6 +428,36 @@ install_inbox_on_path() {
 # ---------------------------------------------------------------------------
 
 MEMORY_REPORT="off (MEMORY_LAYER_ROOT not set)"
+MEMORY_PENDING=0     # 1 while memory is still to be wired on the way out
+MEMORY_PRINT=0       # 1 when the final "memory ..." line must be printed
+MEMORY_WIRING=0      # 1 only while the memory install command is in flight
+MEMORY_SNAPSHOT=""   # copy of the settings file taken before the installer ran
+
+# Settings are rejected, never written through, when the per-agent settings file
+# or its directory is a symlink: a write would land wherever the link points,
+# which can be a global settings file, and "never a global one" would be false.
+settings_is_contained() {
+  [[ ! -L "$AGENT_HOME/.claude" && ! -L "$AGENT_HOME/.claude/settings.json" ]]
+}
+
+# Give up on wiring, say why on the final line, and leave settings alone.
+memory_skip() {
+  MEMORY_PENDING=0
+  MEMORY_PRINT=1
+  MEMORY_REPORT="off ($1)"
+}
+
+print_memory_line() {
+  say
+  say "create-agent: memory $MEMORY_REPORT"
+}
+
+restore_settings() {
+  [[ -n "$MEMORY_SNAPSHOT" && -f "$MEMORY_SNAPSHOT" ]] || return 1
+  # Redirect rather than cp: it keeps the file's mode and fails when the target
+  # is no longer a regular file, instead of quietly copying into a directory.
+  settings_is_contained && cat "$MEMORY_SNAPSHOT" > "$AGENT_HOME/.claude/settings.json"
+}
 
 # Add USER_NAME to the settings env block unless one is already there.
 stamp_user_name() {
@@ -472,15 +502,53 @@ wire_memory() {
     return
   fi
 
+  # Silo routing is by env.AGENT_NAME in this very settings file. merge_settings
+  # keeps a value that was already there, so a settings file carrying another
+  # agent's name would seed one silo and route the hooks to a different one.
+  local routed
+  if ! settings_is_contained; then
+    memory_skip "settings file is a symlink"
+    warn "memory is off: $AGENT_HOME/.claude is or contains a symlink; nothing was written through it."
+    return
+  fi
+  routed="$(CA_SETTINGS="$AGENT_HOME/.claude/settings.json" node_run <<'JS'
+import * as fs from "node:fs";
+const d = JSON.parse(fs.readFileSync(process.env.CA_SETTINGS, "utf8"));
+process.stdout.write(typeof d?.env?.AGENT_NAME === "string" ? d.env.AGENT_NAME : "");
+JS
+)" || { memory_skip "could not read the agent's settings"; return; }
+  if [[ "$routed" != "$NAME" ]]; then
+    memory_skip "settings env.AGENT_NAME is \"$routed\", not \"$NAME\""
+    warn "memory is off: the agent's settings route memory to \"$routed\", not \"$NAME\"."
+    warn "  Wiring it would seed one silo and send the hooks to another. Fix env.AGENT_NAME, then"
+    warn "  run the memory layer's install command with --agent $NAME. Settings were not touched."
+    return
+  fi
+
+  # Keep a copy so a failure after the hooks merged can be undone.
+  MEMORY_SNAPSHOT="$(mktemp)"
+  cp -p "$AGENT_HOME/.claude/settings.json" "$MEMORY_SNAPSHOT" \
+    || { memory_skip "could not snapshot the agent's settings"; return; }
+
   # --skip-build: building is a one-off for the checkout, not a per-agent step.
+  MEMORY_WIRING=1
   bash "$installer" --skip-build --settings "$AGENT_HOME/.claude/settings.json" \
     --agent "$NAME" </dev/null >/dev/null
   status=$?
+  MEMORY_WIRING=0
   if [[ $status -ne 0 ]]; then
-    MEMORY_REPORT="off (memory install exited $status)"
-    warn "memory is off: the memory layer's install command exited $status."
-    warn "  The hooks may be partly wired and the silo may be missing; the install command is"
-    warn "  idempotent, so fix the cause and run it again with --agent $NAME. Deck carries on."
+    if restore_settings; then
+      memory_skip "memory install exited $status; settings restored, nothing wired"
+      warn "memory is off: the memory layer's install command exited $status."
+      warn "  The agent's settings were restored to what they were before. The silo may be partly"
+      warn "  seeded; the install command is idempotent, so fix the cause and run it again with"
+      warn "  --agent $NAME. Deck carries on."
+    else
+      memory_skip "PARTIAL: memory install exited $status and settings could NOT be restored"
+      warn "memory is PARTLY wired: the install command exited $status and the previous settings"
+      warn "  could not be put back. Check $AGENT_HOME/.claude/settings.json for memory hooks and"
+      warn "  remove them, or fix the cause and re-run the install command with --agent $NAME."
+    fi
     return
   fi
 
@@ -716,6 +784,7 @@ else
       "expected the templates/ directory alongside bin/ in this package"
   done
 
+  settings_is_contained || die_scaffold "refusing to write through a symlink:" "  $AGENT_HOME/.claude or $AGENT_HOME/.claude/settings.json is a symlink," "  and the settings are written in place, so they could land in a global file." "  Remove the link, or choose another name."
   mkdir -p "$AGENT_HOME" || die_scaffold "could not create $AGENT_HOME"
   for template in "${PERSONA_FILES[@]}"; do
     cp "$TEMPLATES_DIR/$template" "$AGENT_HOME/$template" \
@@ -841,22 +910,47 @@ report_cannot_verify() {
 memory_on_exit() {
   local rc=$?
   rm -f "${PROBE_OUT:-}" "${PROBE_ERR:-}"
+  local show=$MEMORY_PRINT
   if [[ $MEMORY_PENDING -eq 1 ]]; then
     MEMORY_PENDING=0
     wire_memory "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}"
-    say
-    say "create-agent: memory $MEMORY_REPORT"
+    show=1
   fi
+  [[ $show -eq 1 || $MEMORY_PRINT -eq 1 ]] && print_memory_line
+  [[ -n "$MEMORY_SNAPSHOT" ]] && rm -f "$MEMORY_SNAPSHOT"
   exit "$rc"
 }
-MEMORY_PENDING=0
+
+# A run interrupted or killed before its verdict must not wire memory, and one
+# interrupted while the memory install is in flight must leave a visible report
+# and the settings as they were. The handler prints in that case because it may
+# be running inside the EXIT trap, where a further exit skips the trap's print.
+# Bash runs a trap after the foreground child finishes, so the installer is not
+# cut off half way; the settings are restored afterwards.
+on_signal() {
+  local code="$1"
+  MEMORY_PENDING=0
+  if [[ $MEMORY_WIRING -eq 1 ]]; then
+    MEMORY_WIRING=0
+    if restore_settings; then
+      MEMORY_REPORT="off (interrupted during memory install; settings restored, nothing wired)"
+    else
+      MEMORY_REPORT="off (PARTIAL: interrupted during memory install and settings could NOT be restored; check $AGENT_HOME/.claude/settings.json)"
+    fi
+    print_memory_line
+    MEMORY_PRINT=0
+  else
+    MEMORY_PRINT=1
+    MEMORY_REPORT="off (run interrupted before memory was wired)"
+  fi
+  exit "$code"
+}
+
 [[ "$VERIFY_ONLY" -eq 1 ]] || MEMORY_PENDING=1
 trap memory_on_exit EXIT
-# A run that is interrupted or killed mid-probe never reached its verdict, so it
-# must not wire memory or claim it did. Exit with the conventional 128+signal.
-trap 'MEMORY_PENDING=0; exit 130' INT
-trap 'MEMORY_PENDING=0; exit 143' TERM
-trap 'MEMORY_PENDING=0; exit 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
 
 if [[ "$VERIFY" == "no" ]]; then
   report_cannot_verify "Verification was skipped (--no-verify)."
@@ -904,6 +998,7 @@ if [[ $PROBE_STATUS -ne 0 ]]; then
   [[ $PROBE_STATUS -eq 124 ]] && detail="timed out after ${PROBE_TIMEOUT}s"
   lines=("The runtime did not answer ($detail).")
   [[ -n "$PROBE_STDERR" ]] && lines+=("" "It said:" "$PROBE_STDERR")
+  memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
   report_cannot_verify "Ran \`claude -p\` from the agent home and got no usable reply." "${lines[@]}"
 fi
 
@@ -919,6 +1014,7 @@ if [[ -z "${REPLY//[[:space:]]/}" ]]; then
   printf '  mechanism being tested, so the persona is unproven and treated as absent.\n'
   printf '\n'
   printf '  The files are at %s. Open a session there and see what it says it is.\n' "$AGENT_HOME"
+  memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
   exit "$EXIT_FAILED"
 fi
 
@@ -959,4 +1055,5 @@ printf '    - does %s/CLAUDE.md still import IDENTITY.md?\n' "$AGENT_HOME"
 printf '    - is anything assembling context with a size cap that silently drops\n'
 printf '      the persona when it is exceeded, rather than truncating and saying so?\n'
 printf '    - is a hook meant to inject this context installed, and did it run?\n'
+memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
 exit "$EXIT_FAILED"
