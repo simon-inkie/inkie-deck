@@ -15,6 +15,7 @@ was deferred, and the commit. Commits on this branch, by short id:
 | 887d0b3 | REVIEW.md leak-gate fix |
 | ce2c6a2 | round 5 fixes |
 | 1cf33f5 | round 6 fixes |
+| R7ID | round 7 fixes |
 
 ## Open maintainer decision
 
@@ -85,7 +86,21 @@ message, or the maintainer can authorise a rewrite. Raised in rounds 1, 3, 4 and
 | Minor | The `USER_NAME` stamp used a predictable temporary name that a planted link could redirect | Fixed: random name opened with the exclusive-create flag, mode set with an explicit chmod, and the containment check repeated before `on` is reported | 1cf33f5 |
 | Minor | Links pointing the other way (`$HOME/.claude` to the agent's directory, an agents home that resolves above `$HOME`) were not seen | Fixed for `$HOME/.claude/settings.json` and `$CLAUDE_CONFIG_DIR/settings.json`: the agent's settings must not be the same file by path or by inode. Not covered: global settings kept in any other location. The docs say so. Tests: reversed link, CLAUDE_CONFIG_DIR | 1cf33f5 |
 | Minor | REVIEW, SPEC and INSTALL overstated the earlier fixes | Corrected here, in the SPEC and in INSTALL.md | 1cf33f5 |
-| Nit | The signal line said `before USER_NAME was stamped` when the stamp had finished, and the stage covered gaps | Improved: a `stamping` stage with a hedged line; the stage is set before the install flag drops; an unarmed run (`--verify-only`) prints nothing. Remaining limitation: an interrupt in the few instructions between the stamp finishing and the stage being set reads as `stamping`. Also found and fixed while testing: a signal handler's output was being lost when it ran inside a command with its output redirected to /dev/null, so it now prints through a saved copy of stdout | 1cf33f5 |
+| Nit | The signal line said `before USER_NAME was stamped` when the stamp had finished, and the stage covered gaps | Improved: a `stamping` stage with a hedged line; the stage is set before the install flag drops; an unarmed run (`--verify-only`) is excluded from the exit-handler branch only; an interrupted `--verify-only` probe still prints `memory off (run interrupted before memory was wired)`, which is a known wart (round 7, skipped). Remaining limitation: an interrupt in the few instructions between the stamp finishing and the stage being set reads as `stamping`. Also found and fixed while testing: a signal handler's output was being lost when it ran inside a command with its output redirected to /dev/null, so it now prints through a saved copy of stdout | 1cf33f5 |
+
+## Round 7 (head c616a9d)
+
+Scope was narrowed by the maintainer to the real defects; the rest was skipped on purpose.
+
+| Severity | Finding | Outcome | Commit |
+|---|---|---|---|
+| Minor (real behaviour) | A saved copy of stdout (fd 7) was inherited by every child, so a detached grandchild kept the caller's pipe open (`create-agent \| tail` took seconds longer) and replaced a caller's own fd 7 | Fixed: fd 7 is opened only inside the exit handler and closed for the installer and the node helper. Test: a detached child of the install does not hold the pipe (confirmed to fail without the fix) | R7ID |
+| Minor | `..` in the agents home is resolved by text in the check but through real directories by the shell, so with a symlink before it the check passed while persona files landed elsewhere | Fixed: an agents home with a `..` component is refused. Test | R7ID |
+| Minor | A global settings path that is a dangling symlink to the agent's not-yet-created settings is missed | Not fixed, by maintainer decision to avoid new machinery: the claim in INSTALL.md and the SPEC was narrowed to say so | R7ID |
+| Minor | `merge_settings` still writes in place after an earlier check | Not fixed, by maintainer decision: documented in INSTALL.md and the SPEC as a limitation under the same-user threat model | R7ID |
+| Nit | The scaffold error always gives the same generic reason | Skipped by maintainer decision | none |
+| Nit | Wording about `--verify-only` printing, and the stage after the stamp | Skipped by maintainer decision, except that the false `--verify-only` claim in the round 6 row was corrected | R7ID |
+| Nit | A stale test count in the SPEC | The false count was removed | R7ID |
 
 ## Not done, by design
 

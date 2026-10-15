@@ -72,7 +72,7 @@ Incompatibilities with the issue text and with assumptions in it:
 
 ## Test plan
 
-- `pnpm -C packages/base exec vitest run test/create-agent.test.ts`: 11 new
+- `pnpm -C packages/base exec vitest run test/create-agent.test.ts`: the new
   memory cases using a fixture checkout that honours the interface above.
 - Manual: the real `scripts/install.sh` hook merge run against a copy of the
   checkout in a temporary HOME. `agent init` through the real `tsx` was not
@@ -154,4 +154,11 @@ Later commits omit it.
 - Why: review round 6.
 - Limits, stated: global settings kept anywhere other than those two locations are not recognised; the timing limitation from the previous entry stands; a failing restore after a failed install is now mostly pre-empted by the post-install containment check, so the restore-failure branch is hard to reach and is untested directly.
 - Supersedes: the find-based checks.
+- Commits: see branch
+
+### 2026-10-15: review round 7 (narrowed)
+- What changed: (1) the saved copy of stdout used by the signal report is opened only in the exit handler and closed for every child it launches, so a detached grandchild cannot hold the caller's pipe; test. (2) An agents home containing `..` is refused, because the shell resolves it through real directories and the check resolved it by text; test.
+- Narrowed claims, not fixed (maintainer decision, same-user threat model): a global settings file that is a dangling symlink to the agent's not-yet-created settings is not recognised; `create-agent.sh` still merges the agent's settings in place after the check; INSTALL.md says both. The round 6 wording "links pointing the other way" therefore means links that resolve, not dangling ones.
+- Skipped on purpose: error-message wording, the stage after the stamp, and `--verify-only` print wording; the stale test count was removed.
+- Supersedes: nothing, additive
 - Commits: see branch

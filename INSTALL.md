@@ -849,14 +849,27 @@ against another process on your account racing the install.
 Separately, `create-agent.sh` refuses to create an agent (a scaffold error,
 before anything is written) when the agent home, its `.claude` directory or its
 `.claude/settings.json` is a symlink, resolves outside `<agents home>/<name>`,
-or when `settings.json` is a hard link (link count above one); and when the
-agent's settings are the same file as your own global settings
+or when `settings.json` is a hard link (link count above one); when the agent's
+settings are the same file as your own global settings
 (`$HOME/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` when
-set), by path or by inode, whichever way a link points. The settings are
-written in place and could otherwise land in a global file. These checks run in
-node and fail closed: if they cannot run, nothing is written. They look at one
-moment; see the note on timing above. They cover the user's default settings
-locations only, not every file your account can write.
+set), by resolved path or by inode; and when `AGENTS_HOME` contains a `..`
+component, because the shell and the check can resolve that differently when a
+symlink comes before it. These checks run in node and fail closed: if they
+cannot run, nothing is written.
+
+What the checks do not promise. They look at one moment, they know only the
+two global locations above, and they trust everything on your account:
+
+- a link planted between the check and the write (see the note on timing above);
+- a global settings file that is a dangling symlink pointing at the agent's
+  not-yet-created settings is not recognised as the same file;
+- the agent's own `settings.json` is still merged in place by `create-agent.sh`
+  (the check comes first, and a name that was checked is not re-checked at the
+  write), whereas the memory step's `USER_NAME` write goes through a new file
+  and a rename.
+
+This is a same-user threat model: it protects against mistakes and links that
+are already there, not against another process on your account.
 
 After a successful memory install the checkout's installer leaves a one-time
 backup of the previous settings next to `settings.json` (a `settings.json.*.bak`

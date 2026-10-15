@@ -74,7 +74,6 @@
 # reply with a zero exit status is FAILED, never a pass.
 
 set -uo pipefail
-exec 7>&1
 
 EXIT_VERIFIED=0
 EXIT_SCAFFOLD_ERROR=1
@@ -126,7 +125,7 @@ usage() {
 # node >= 22 is already this repository's engine floor.
 # ---------------------------------------------------------------------------
 
-node_run() { node --input-type=module - ; }
+node_run() { node --input-type=module - 7>&-; }
 
 gen_nonce() {
   node_run <<'JS'
@@ -465,6 +464,11 @@ import * as path from "node:path";
 
 const { CA_MODE: mode, CA_AGENTS_HOME, CA_AGENT_HOME, CA_NAME: name } = process.env;
 
+// A ".." is resolved by the kernel through real directories but by text here,
+// and the two disagree whenever a symlink sits before it (the check would then
+// pass for one directory while the files land in another). Refuse it outright.
+if ([CA_AGENTS_HOME, CA_AGENT_HOME].some((p) => p.split(path.sep).includes(".."))) process.exit(1);
+
 // realpath that tolerates a path whose last components do not exist yet: resolve
 // the deepest existing ancestor and append the rest.
 function loose(p) {
@@ -578,11 +582,16 @@ print_memory_line() {
 }
 
 # The signal handler prints through fd 7, a copy of the script's own stdout made
-# at start. A trap runs inside whatever redirection the interrupted command had
+# when the exit handler starts and closed again for every child it launches, so
+# a detached grandchild cannot hold the caller's pipe open. A trap runs inside whatever redirection the interrupted command had
 # (the installer and the containment check both run with their output sent to
 # /dev/null), so printing to plain stdout from there would be silently lost.
 print_memory_line_signal() {
-  { say; say "create-agent: memory $MEMORY_REPORT"; } >&7
+  if { true >&7; } 2>/dev/null; then
+    { say; say "create-agent: memory $MEMORY_REPORT"; } >&7
+  else
+    print_memory_line
+  fi
 }
 
 restore_settings() {
@@ -699,7 +708,7 @@ JS
   # --skip-build: building is a one-off for the checkout, not a per-agent step.
   MEMORY_WIRING=1
   bash "$installer" --skip-build --settings "$AGENT_HOME/.claude/settings.json" \
-    --agent "$NAME" </dev/null >/dev/null
+    --agent "$NAME" </dev/null >/dev/null 7>&-
   status=$?
   MEMORY_STAGE="ran"
   MEMORY_WIRING=0
@@ -1094,6 +1103,7 @@ report_cannot_verify() {
 memory_on_exit() {
   local rc=$?
   MEMORY_IN_EXIT=1
+  exec 7>&1
   rm -f "${PROBE_OUT:-}" "${PROBE_ERR:-}"
   local show=$MEMORY_PRINT
   if [[ $MEMORY_PENDING -eq 1 ]]; then

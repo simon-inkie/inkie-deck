@@ -736,6 +736,9 @@ fs.writeFileSync(f, JSON.stringify(d, null, 2));
 # file when it dies mid-write.
 echo '{}' > "$settings.fixture.bak"
 [ -n "\${FIXTURE_FAIL_AFTER_MERGE:-}" ] && echo '{}' > "$settings.fixture.tmp"
+# A detached grandchild with its output sent away, as a daemonising installer
+# would leave behind. It must not inherit the caller's pipe.
+[ -n "\${FIXTURE_DETACH:-}" ] && (sleep 3 </dev/null >/dev/null 2>&1 &)
 # A hard link that appears while the install runs (caught only afterwards).
 [ -n "\${FIXTURE_PLANT_HARDLINK:-}" ] && ln "$FIXTURE_PLANT_HARDLINK" "$settings.fixture.hard"
 # A failure AFTER the hooks merged, and a hold so a test can signal mid-install.
@@ -1074,6 +1077,43 @@ mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
     });
 
     expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+  });
+
+  it("does not let a detached child of the install hold the caller's pipe open", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const started = Date.now();
+    const child = spawn("bash", [SCRIPT, "wren", "--no-verify"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, false),
+        MEMORY_LAYER_ROOT: root,
+        FIXTURE_DETACH: "1",
+      },
+    });
+    child.stdout.resume();
+    child.stderr.resume();
+    // "close" waits for every holder of the pipe; "exit" is the script itself.
+    await new Promise((resolve) => child.on("close", resolve));
+    // The detached sleep lasts 3s. Had it inherited the pipe, close would wait for it.
+    expect(Date.now() - started).toBeLessThan(2500);
+  });
+
+  it("refuses an agents home with a .. component that a symlink would resolve differently", () => {
+    const box = sandbox();
+    const top = path.dirname(box.home);
+    const real = path.join(top, "real");
+    fs.mkdirSync(path.join(real, "sub"), { recursive: true });
+    fs.symlinkSync(path.join(real, "sub"), path.join(top, "l"));
+    // By text, <top>/l/.. is <top>; through the symlink the kernel sees <top>/real.
+    const result = run(box, ["wren", "--no-verify"], { env: { AGENTS_HOME: `${top}/l/..` } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(real, "wren"))).toBe(false);
+    expect(fs.existsSync(path.join(top, "wren"))).toBe(false);
   });
 
   it("reports PARTIAL, never on, when a hard link appears while the install runs", () => {
