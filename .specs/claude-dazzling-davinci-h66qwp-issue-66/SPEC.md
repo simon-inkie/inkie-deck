@@ -120,7 +120,7 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
 - Supersedes: the second-round poll comparison and the "fall back to the
   version just written" result path, both replaced as above.
 - Commits: b0297fb fix(deck): guard draft switching, stale responses, confinement and cross-origin writes (#66)
-- Deferred: `Claude-Session` trailers in 40f5943, fb5663b and b2edbbb need a
+- Deferred: `Claude-Session` trailers in the first three commits of this branch need a
   history rewrite, which this work is not allowed to do; a maintainer can strip
   them on squash merge. Reads remain synchronous (now bounded to 1 MB each);
   case-insensitive filesystem collisions (`Draft.md` vs `draft.md`) were not

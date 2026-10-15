@@ -409,7 +409,7 @@ describe("DraftEditor with several drafts", () => {
     await start();
     await type("alpha edited");
     // Hold the next poll GET: it will answer with the OLD version a1.
-    let releaseGet!: () => void;
+    const gate = { release: () => {} };
     const realFetch = fetch as unknown as ReturnType<typeof vi.fn>;
     const inner = realFetch.getMockImplementation()!;
     let held = false;
@@ -419,7 +419,7 @@ describe("DraftEditor with several drafts", () => {
         if (!held && !init?.method && String(url).includes("name=a.md")) {
           held = true;
           const snapshot = files["a.md"]!; // old state, captured before the save
-          await new Promise<void>((r) => (releaseGet = r));
+          await new Promise<void>((r) => (gate.release = r));
           return json({ ok: true, draft: snapshot });
         }
         return inner(url, init);
@@ -430,7 +430,7 @@ describe("DraftEditor with several drafts", () => {
     });
     await click("draft-save"); // completes while the GET is still pending
     await act(async () => {
-      releaseGet();
+      gate.release();
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(container.querySelector('[role="alert"]')).toBeNull();
