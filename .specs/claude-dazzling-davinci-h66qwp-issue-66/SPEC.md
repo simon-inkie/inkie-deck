@@ -21,6 +21,15 @@ Known limitations, stated up front:
   advisory lock), but not against an external writer that lands between the
   check and the rename. The editor polls every 5 seconds to narrow this.
 - The Drafts link is in the desktop top bar only, not the mobile agent strip.
+- Browser writes are accepted only from allowlisted origins (the voice proxy's
+  `VOICE_ALLOWED_ORIGINS`, default `http://localhost:$PORT` plus the dev port).
+  Reaching Deck by another name, or through a proxy that rewrites Host, needs
+  that origin listed. Requests with no Origin or Sec-Fetch-Site (agents using
+  curl) pass. Draft reads over GET are not origin-protected, like the rest of
+  Deck.
+- In the folder-swap race the waiting save's `.lock` file can be created in the
+  outside directory before the re-check refuses the write. It holds only a
+  token and is removed on release; no draft content is written there.
 
 ## Scope
 In scope:
@@ -125,3 +134,18 @@ what is received. Fine for a loopback-only, unauthenticated Deck.
   them on squash merge. Reads remain synchronous (now bounded to 1 MB each);
   case-insensitive filesystem collisions (`Draft.md` vs `draft.md`) were not
   examined.
+
+### 2026-10-15: fourth review round
+- What changed: Origin is checked against the shared allowlist instead of
+  Host (closes DNS rebinding, supports allowlisted proxies); the editor is
+  read-only while an open or create is pending; the server's message is shown
+  when opening fails (413); force-save buttons are disabled while saving;
+  draft and sidecar reads go through one file descriptor capped at the limit
+  plus one byte; the `.bad` sidecar backup never follows a symlink; tests for
+  `Origin: null`, matching Origin with a cross-site fetch, rebinding and the
+  proxy allowlist. `REVIEW.md` records every finding of every round.
+- Why: Opus review at the previous head, approve with minor follow-ups.
+- Supersedes: the Host-based cross-origin check from the third round.
+- Commits: d30e9d4 fix(deck): origin allowlist for draft writes, read-only while switching, capped fd reads (#66)
+- Accepted, not changed: the lock file left outside the workspace in the
+  folder-swap race (see TL;DR limitations).
