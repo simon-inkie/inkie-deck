@@ -64,8 +64,7 @@ list is the set of folders under `INBOX_ROOT`.
 If it is missing, check `MC_INBOX_AGENT_ALLOWLIST` in `packages/deck/.env`
 (or your environment). When that is set, it is a comma-separated list of the
 only agents Deck will show. Add `quill` to it and restart Deck. Leave it
-unset to show every agent. With it set and `quill` missing, sending a message
-to `quill` fails with a server error.
+unset to show every agent.
 
 ## 3. Start it
 
@@ -126,7 +125,7 @@ rm -rf "$AGENTS_HOME/quill" "$INBOX_ROOT/quill"
 Deleting the inbox deletes the conversation history, so copy it somewhere
 first if you want it. If you use `MC_INBOX_AGENT_ALLOWLIST`, take `quill` out
 of it. Deck stops listing the agent straight away. Check that
-`curl -sS http://localhost:4242/` no longer mentions it.
+`curl -sS http://localhost:4242/` (4242 is the default port) no longer mentions it.
 
 ## If something goes wrong
 
