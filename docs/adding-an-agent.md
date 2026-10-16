@@ -125,7 +125,8 @@ rm -rf "$AGENTS_HOME/quill" "$INBOX_ROOT/quill"
 Deleting the inbox deletes the conversation history, so copy it somewhere
 first if you want it. If you use `MC_INBOX_AGENT_ALLOWLIST`, take `quill` out
 of it. Deck stops listing the agent straight away. Check that
-`curl -sS http://localhost:4242/` (4242 is the default port) no longer mentions it.
+`curl -sS http://localhost:4242/` (4242 is the default port) no longer
+mentions it.
 
 ## If something goes wrong
 
