@@ -1,0 +1,217 @@
+# #66: Basic text editor inside the Deck for drafting with agents
+
+- Issue: #66
+- Branch: claude/dazzling-davinci-h66qwp-issue-66
+- Started: 2026-10-14
+
+## TL;DR
+First slice of a Markdown draft editor in the Deck. A draft is an ordinary
+`<WORKSPACE_ROOT>/drafts/<name>.md` file, so an agent reads and writes it with
+its normal file tools. The Deck gets a Drafts page (plain textarea) to open,
+create and save drafts, showing when the file was last saved and whether the
+current version was written by the person (via this editor) or by the agent
+(anything else). If the file changes outside the editor while it is open, a
+visible warning offers "load the newer copy" or "keep mine and overwrite".
+No rich text, no multi-cursor, no external integrations, no new service.
+
+Known limitations, stated up front:
+- "Agent" means "changed outside this editor". A person using another tool
+  also reads as "agent". It is an inference from a content hash, not identity.
+- The conflict check is atomic against other saves through the Deck (shared
+  advisory lock), but not against an external writer that lands between the
+  check and the rename. The editor polls every 5 seconds to narrow this.
+- The Drafts link is in the desktop top bar only, not the mobile agent strip.
+- Browser writes are accepted only from allowlisted origins (the voice proxy's
+  `VOICE_ALLOWED_ORIGINS`, default `http://localhost:$PORT` plus the dev port).
+  Reaching Deck by another name, or through a proxy that rewrites Host, needs
+  that origin listed. Requests with no Origin or Sec-Fetch-Site (agents using
+  curl) pass. Draft reads over GET are not origin-protected, like the rest of
+  Deck.
+- In the folder-swap race the waiting save's `.lock` file can be created in the
+  outside directory before the re-check refuses the write. It holds only a
+  token and is removed on release; no draft content is written there.
+
+## Scope
+In scope:
+- `WORKSPACE_ROOT` env (optional); Drafts route, `/api/drafts` seam, editor.
+- Flat `*.md` names only, confined to the realpath of `drafts/`.
+Out of scope (and where it goes instead):
+- Large-paste handling and attachments: #65, untouched.
+- Rich text, comments, suggestions, real-time collaboration, Google Docs.
+- Per-draft history or diff view.
+
+## Decisions
+- Where drafts live: `<WORKSPACE_ROOT>/drafts/`. No existing "workspace root"
+  existed in the Deck's root table, so a new optional env var was added; unset
+  hides the feature. Not added to the required boot-time root table.
+- Authorship: a hidden sidecar `drafts/.deck-drafts.json` stores the hash of
+  the version the Deck last saved. Hash match = person, else agent. Chosen over
+  front matter, which would pollute the file the agent reads.
+- Conflicts: last write wins with a warning, as the issue suggested, not a
+  lock. Save carries the loaded version; mismatch returns 409 with the current
+  copy.
+- Agent change notification: the editor polls the file; the existing file
+  watch was not reused.
+
+## Test plan
+- `packages/deck/test/drafts.test.ts`: temp-workspace tests for create, save,
+  list, authorship, conflicts, concurrency, symlink and traversal confinement,
+  and the API route.
+- `packages/deck/test/draft-editor.test.tsx`: jsdom render test for the status
+  line and the external-change warning.
+- Full check list from CONTRIBUTING.md.
+
+## Follow-ups
+- Mobile nav entry; a diff against the last person-saved version.
+
+## Log
+### 2026-10-14: slice implemented
+- What changed: SPEC, server module, API route, Drafts page, tests.
+- Why: first slice of #66.
+- Supersedes: nothing, additive
+- Commits: 40f5943 feat(deck): Markdown draft editor over workspace drafts folder (#66)
+
+### 2026-10-14: review fixes
+- What changed: saves normalise CRLF/CR to LF (browser multipart posts had
+  turned LF into CRLF, leaving files CRLF and the editor permanently dirty);
+  errors inside the save lock now return JSON (a directory at the draft path
+  gives 400, other failures 500) instead of throwing; the shared sidecar
+  read-modify-write takes its own lock; a relative WORKSPACE_ROOT now logs a
+  warning instead of silently hiding the feature; added tests for each, and
+  editor tests for save, "Load the newer copy" and "Keep mine and overwrite".
+- Why: review findings on the PR, all fixed in the commit after 40f5943.
+- Supersedes: nothing, additive
+- Commits: fb5663b fix(deck): normalise draft line endings, JSON errors in save lock, lock sidecar (#66)
+
+### 2026-10-14: second review round
+- What changed: a draft removed outside the editor now shows a visible alert
+  (from the poll's 404, or from a 409 save with no current copy) with "Keep mine
+  and recreate" (force save); the poll compares against the version loaded
+  after its GET returns, so a save finishing mid-poll raises no false alert;
+  failures after the file is written (sidecar update, final read) no longer
+  fail the save, the sidecar failure is logged and the result falls back to the
+  version just written.
+- Why: review findings 1 to 3 of the second review.
+- Supersedes: nothing, additive
+- Commits: e55184b fix(deck): surface removed drafts, avoid false poll conflict, keep save result after write (#66)
+
+Known limitation added: `request.formData()` reads the whole request body
+before the 1 MB content cap is applied, so the cap bounds what is stored, not
+what is received. Fine for a loopback-only, unauthenticated Deck.
+
+### 2026-10-15: third review round (two reviews and CodeRabbit)
+- What changed:
+  - Editor: switching drafts or creating one while edits are unsaved asks
+    first (`window.confirm`); declining keeps the text. A save response is
+    dropped if the editor's text was replaced meanwhile (switch, create, load
+    newer copy), so one draft's save can no longer attach to another's text.
+    An older open/create response is dropped when a newer one was issued.
+  - Poll: replaced "compare after the await" with a generation counter. Any
+    adopt or save start/finish since the GET began, or a save in flight, makes
+    the answer be discarded, which also covers a GET that read the pre-save
+    file and arrives after the save. A 200 now clears the "removed" alert and
+    a matching version clears a stale conflict alert.
+  - Server: the save result is the version this save wrote (content, hash,
+    mtime taken right after the write), never a re-read, so another writer
+    landing during the sidecar wait cannot be echoed back as the base for the
+    next save. Confinement is re-checked inside the lock immediately before the
+    write and before the sidecar write, so a `drafts/` folder swapped for a
+    symlink while the save was queued cannot redirect it. Existing files over
+    1 MB are never read (read answers 413, list shows them without reading,
+    save refuses). A corrupt sidecar is copied to `.deck-drafts.json.bad` and
+    logged before it is replaced.
+  - API: browser cross-origin writes are refused with 403 (Sec-Fetch-Site not
+    same-origin/none, or Origin host differing from Host). Header-less
+    requests (agents using curl) pass.
+  - Dev: the default dev workspace moved to `packages/deck/.workspace/`
+    (gitignored) because `.runtime/` is deleted on every start.
+- Why: review findings; the data-loss and confinement items were Major.
+- Supersedes: the second-round poll comparison and the "fall back to the
+  version just written" result path, both replaced as above.
+- Commits: b0297fb fix(deck): guard draft switching, stale responses, confinement and cross-origin writes (#66)
+- Deferred: `Claude-Session` trailers in the first three commits of this branch need a
+  history rewrite, which this work is not allowed to do; a maintainer can strip
+  them on squash merge. Reads remain synchronous (now bounded to 1 MB each);
+  case-insensitive filesystem collisions (`Draft.md` vs `draft.md`) were not
+  examined.
+
+### 2026-10-15: fourth review round
+- What changed: Origin is checked against the shared allowlist instead of
+  Host (closes DNS rebinding, supports allowlisted proxies); the editor is
+  read-only while an open or create is pending; the server's message is shown
+  when opening fails (413); force-save buttons are disabled while saving;
+  draft and sidecar reads go through one file descriptor capped at the limit
+  plus one byte; the `.bad` sidecar backup never follows a symlink; tests for
+  `Origin: null`, matching Origin with a cross-site fetch, rebinding and the
+  proxy allowlist. `REVIEW.md` records every finding of every round.
+- Why: Opus review at the previous head, approve with minor follow-ups.
+- Supersedes: the Host-based cross-origin check from the third round.
+- Commits: d30e9d4 fix(deck): origin allowlist for draft writes, read-only while switching, capped fd reads (#66)
+- Accepted, not changed: the lock file left outside the workspace in the
+  folder-swap race (see TL;DR limitations).
+
+### 2026-10-15: fifth review round
+- What changed: draft and sidecar reads open with O_NONBLOCK and refuse
+  non-regular files (a FIFO named like a draft no longer freezes the server);
+  the read buffer is no longer zero-filled; the dev launcher passes
+  VOICE_ALLOWED_ORIGINS to the app so `--port N` works; `.env.example` notes
+  that browser saves need the origin listed; the draft tests pin PORT and
+  VOICE_ALLOWED_ORIGINS; the PR body no longer carries the session link.
+  `REVIEW.md` has a round 5 section.
+- Why: Opus review at the previous head, approve with minor follow-ups.
+- Supersedes: nothing, additive (the round 4 fd read gains the non-blocking open).
+- Commits: 8175afa fix(deck): non-blocking draft reads, dev app origin allowlist, test env isolation (#66)
+
+### 2026-10-15: sixth review round
+- What changed: the FIFO tests run the real module in a child process with a
+  20 s hard timeout and `it.skipIf(!hasMkfifo)`, and the symlink case targets a
+  FIFO inside `drafts/`; the read helper stats the path before opening as a
+  mitigation (fstat after the open stays authoritative); `REVIEW.md` round 5
+  wording corrected and round 6 added.
+- Why: Opus review at the previous head, approve.
+- Supersedes: the round 5 description of the FIFO tests.
+- Commits: a5f6659 test(deck): run FIFO tests in a child process with a hard timeout (#66)
+- Known pre-existing limitation, not changed here: `withInboxLock` in
+  `safe-fs.server.ts` does a blocking synchronous `readFileSync` of the lock
+  file on release, which would also block on a FIFO planted at the lock path.
+
+### 2026-10-15: eighth review round
+- What changed:
+  - Sidecar confinement: the sidecar is trusted only if it resolves to itself
+    inside the drafts folder, is not a symlink (O_NOFOLLOW on the open) and has
+    a single hard link. Otherwise reads treat it as absent (every draft reads
+    as "agent", one log line) and writes skip updating it; the draft still
+    saves. The `.bad` backup is written from the confined read with an
+    exclusive create. Known consequence: while a hostile sidecar stays in
+    place, attribution cannot be recorded; remove or fix the file.
+  - Leaving with unsaved edits: `useBlocker` for in-app route changes and a
+    `beforeunload` guard registered only while dirty. A closed or reloaded tab
+    asks the browser's generic prompt; there is no local recovery draft.
+  - The dev reseed lives in `scripts/dev-paths.mjs` and is run by a test to
+    show drafts survive a dev restart.
+- Why: review of the previous head (two Major, one gap).
+- Supersedes: the round 4 `.bad` backup (copied through the path) is replaced
+  by a write from the confined read.
+- Commits: 1616e25 fix(deck): confine the draft sidecar read and backup; test dev restart keeps drafts (#66)
+- Commits: e1492f1 feat(deck): guard unsaved draft edits against route changes and tab close (#66)
+- Not changed: draft files themselves are not checked for multiple hard links
+  (only the sidecar was asked about); `REVIEW.md` has a round 8 section.
+
+### 2026-10-15: ninth review round
+- What changed:
+  - Hard links: a draft whose open descriptor has more than one hard link is
+    treated as not a draft (not listed, 404 on open, 400 on save; never read or
+    written through). The file a draft name resolves to must itself match the
+    draft-name pattern, so a symlink can no longer make a draft out of the
+    sidecar, its `.bad` backup or a `.lock` file.
+  - Temp files: the drafts module writes drafts and the sidecar through an
+    `O_EXCL` temp file with a random suffix, mode 0644, then renames, removing
+    the temp file on error. It no longer calls the shared `atomicWrite`.
+- Why: review of the previous head (two Major, reproduced).
+- Supersedes: the earlier use of `atomicWrite` for drafts and the sidecar.
+- Commits: aa431ca fix(deck): refuse hard-linked drafts and bookkeeping names; use exclusive random temp files (#66)
+- Follow-up, separate from this PR: the shared `atomicWrite` in
+  `safe-fs.server.ts` (used by the inbox, queue and other stores) has the same
+  predictable temp name and symlink-following write. It was deliberately not
+  changed here because other surfaces depend on it.
+

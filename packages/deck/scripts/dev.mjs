@@ -18,35 +18,21 @@
  *
  * ASCII only - no em-dashes.
  */
-import { cpSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { withVoiceDisabledReason } from "./voice-env.mjs";
+import { devPaths, resetRuntime } from "./dev-paths.mjs";
 
 const root = process.cwd();
-const demoInbox = path.join(root, "fixtures", "demo-inbox");
-const runtimeDir = path.join(root, ".runtime");
-const runtimeInbox = path.join(runtimeDir, "inbox");
-const runtimeAttachments = path.join(runtimeDir, "attachments");
-const runtimeProjects = path.join(runtimeDir, "projects");
-const runtimeData = path.join(runtimeDir, "data");
-
-// Fall back to the minimal fixture set if the demo inbox is absent.
-const source = existsSync(demoInbox)
-  ? demoInbox
-  : path.join(root, "fixtures", "inbox");
-
-rmSync(runtimeDir, { recursive: true, force: true });
-mkdirSync(runtimeDir, { recursive: true });
-cpSync(source, runtimeInbox, { recursive: true });
-mkdirSync(runtimeAttachments, { recursive: true });
-
-// Seed the projects runtime dir from fixtures/projects.
-const fixturesProjects = path.join(root, "fixtures", "projects");
-cpSync(fixturesProjects, runtimeProjects, { recursive: true });
-
-// DATA_ROOT for MC state files (queue state) - must exist at boot.
-mkdirSync(runtimeData, { recursive: true });
+const {
+  runtimeDir,
+  runtimeInbox,
+  runtimeAttachments,
+  runtimeProjects,
+  runtimeData,
+  runtimeWorkspace,
+} = devPaths(root);
+const source = resetRuntime(root);
 
 // REVIEW_ROOTS for dev: the repo root itself + .runtime so docs/plans/*.md
 // can be opened directly in the review panel (intentional).
@@ -69,6 +55,8 @@ const env = {
   REVIEW_ROOTS: reviewRoots,
   PROJECTS_ROOT: process.env.PROJECTS_ROOT || runtimeProjects,
   DATA_ROOT: process.env.DATA_ROOT || runtimeData,
+  // #66: workspace for Markdown drafts (<WORKSPACE_ROOT>/drafts/*.md).
+  WORKSPACE_ROOT: process.env.WORKSPACE_ROOT || runtimeWorkspace,
   // Keep the queue-state file INSIDE the dev DATA_ROOT. Without this the
   // makeStores default (cwd/data/queue-state.json) sits outside .runtime/data
   // and every deadline-anchor write 500s the home loader on the confinement
@@ -100,6 +88,7 @@ console.log(`[dev] ATTACHMENTS_ROOT=${env.ATTACHMENTS_ROOT}`);
 console.log(`[dev] REVIEW_ROOTS=${reviewRoots}`);
 console.log(`[dev] PROJECTS_ROOT=${env.PROJECTS_ROOT}`);
 console.log(`[dev] DATA_ROOT=${env.DATA_ROOT}`);
+console.log(`[dev] WORKSPACE_ROOT=${env.WORKSPACE_ROOT}`);
 console.log(`[dev] MC_NOW=${env.MC_NOW || "(unset - real clock)"}`);
 console.log(`[dev] VOICE_PROXY_URL=${voiceProxyUrl}`);
 
@@ -148,7 +137,13 @@ const args = [
   ...passthrough,
 ];
 // The app never reads the speech key; see scripts/voice-env.mjs.
-const appEnv = withVoiceDisabledReason(env);
+// The app DOES need VOICE_ALLOWED_ORIGINS: the draft write check uses the same
+// origin allowlist as the voice proxy, and with `--port N` the app's own origin
+// is not the library default.
+const appEnv = {
+  ...withVoiceDisabledReason(env),
+  VOICE_ALLOWED_ORIGINS: proxyEnv.VOICE_ALLOWED_ORIGINS,
+};
 const child = spawn("react-router", args, {
   stdio: "inherit",
   env: appEnv,

@@ -116,6 +116,8 @@ interface AppShellProps {
    * not the old duplicate terminal-browsing surface that link used to open.
    */
   activityNavOn?: boolean;
+  /** #66: a WORKSPACE_ROOT is configured, so the Drafts editor link is shown. */
+  draftsNavOn?: boolean;
   /**
    * Top-bar escalation: agents `stuck`/`needs-you` for longer than the
    * escalation threshold (see escalatedAgents, activity.shared.ts).
@@ -142,7 +144,7 @@ const UNKNOWN_CODEX_QUOTA: CodexQuotaDisplayData = {
   providers: {},
 };
 
-export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false, escalated = [], codexQuota = UNKNOWN_CODEX_QUOTA }: AppShellProps) {
+export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = true, instanceLabel, modelSelector, cronAdminOn = false, activityNavOn = false, draftsNavOn = false, escalated = [], codexQuota = UNKNOWN_CODEX_QUOTA }: AppShellProps) {
   const params = useParams();
   const active = params.agent;
   const location = useLocation();
@@ -268,6 +270,18 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           >
             Projects
           </NavLink>
+          {draftsNavOn ? (
+            <NavLink
+              to="/drafts"
+              className={({ isActive }) =>
+                isActive
+                  ? "label-mono min-h-[44px] hidden md:flex items-center text-foreground underline underline-offset-4"
+                  : "label-mono min-h-[44px] hidden md:flex items-center text-muted-foreground transition-colors hover:text-foreground"
+              }
+            >
+              Drafts
+            </NavLink>
+          ) : null}
           {/* Scheduler admin link - operator-only, shown only when cronAdminOn. */}
           {cronAdminOn ? (
             <NavLink
