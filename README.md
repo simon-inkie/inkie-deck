@@ -7,7 +7,8 @@ ties them together.
 **To run it, see [INSTALL.md](INSTALL.md)**: three tiers, from a five-minute
 sandbox on fixture data through a real production install to live agents in
 tmux. Its shell blocks are extracted from the document and executed on every
-rig run, so what it tells you to type is what was measured. The rest of this
+rig run, so what it tells you to type is what was measured. To add another
+agent once you are running, see [docs/adding-an-agent.md](docs/adding-an-agent.md). The rest of this
 file is about the repository itself.
 
 ## How this repository got its code

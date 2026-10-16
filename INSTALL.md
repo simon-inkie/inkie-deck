@@ -1268,6 +1268,8 @@ only a display name: it is a filename in your inbox root. Checked: `mcUser` in
 
 ## Where to go next
 
+- `docs/adding-an-agent.md`: adding a second agent once you are running:
+  create, verify, start, first message, remove, and what goes wrong.
 - `README.md`: the layout, the checks the project runs on itself, and the
   rules the machines enforce.
 - `packages/base/README.md`: the persona-file pattern, the `inbox` CLI, and
