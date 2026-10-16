@@ -36,6 +36,7 @@
 #                              [--model <id>] [--verify | --no-verify]
 #                              [--inbox-root <path>]
 #                              [--agents-home <path>] [--no-install-path]
+#                              [--memory-root <path> | --no-memory]
 #   bin/create-agent.sh --verify-only <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
@@ -45,6 +46,17 @@
 #                                which may be a costlier model on a paid plan.
 #   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
 #                                makes `inbox` resolve as a bare command name.
+#   --memory-root <path>         checkout of the memory layer (default:
+#                                $MEMORY_LAYER_ROOT). When it holds a built
+#                                install, this agent's own .claude/settings.json
+#                                gets the memory hooks and its memory silo is
+#                                seeded. Absent, unbuilt or failing: memory is
+#                                reported OFF and creation carries on. It never
+#                                changes the exit code.
+#   --no-memory                  leave memory off even if a checkout is present.
+#
+# USER_NAME (environment, optional) is written into the agent's settings env
+# block when memory is on, so the memory prompts can name the person.
 #
 # Exit codes. Four terminal states, never collapsed into one another:
 #
@@ -113,7 +125,7 @@ usage() {
 # node >= 22 is already this repository's engine floor.
 # ---------------------------------------------------------------------------
 
-node_run() { node --input-type=module - ; }
+node_run() { node --input-type=module - 7>&-; }
 
 gen_nonce() {
   node_run <<'JS'
@@ -402,6 +414,347 @@ install_inbox_on_path() {
 }
 
 # ---------------------------------------------------------------------------
+# the memory loop (opt-in safe)
+#
+# Wires the memory layer's hooks into THIS agent's own settings.json (never a
+# global one) and seeds the agent's memory silo, by running the layer's own
+# non-interactive install command against a checkout it was already given.
+# Deck imports nothing from it; the integration is files on disk.
+#
+# Memory is optional, so nothing in here may fail the creation. Every outcome
+# lands in MEMORY_REPORT as "on" or "off (reason)" and the run carries on. The
+# silo is routed by AGENT_NAME, which merge_settings already stamped, so no
+# --link pointer is written into the agent home.
+# ---------------------------------------------------------------------------
+
+MEMORY_REPORT="off (MEMORY_LAYER_ROOT not set)"
+MEMORY_PENDING=0     # 1 while memory is still to be wired on the way out
+MEMORY_PRINT=0       # 1 when the final "memory ..." line must be printed
+MEMORY_WIRING=0      # 1 only while the memory install command is in flight
+MEMORY_SNAPSHOT=""   # copy of the settings file taken before the installer ran
+MEMORY_IN_EXIT=0     # 1 once the exit handler is running (memory is wired there)
+MEMORY_ARMED=0       # 1 when this run set out to wire memory (not --verify-only)
+MEMORY_STAGE=""      # "", "ran" (installer returned, unchecked), "installed", "stamped"
+
+# Containment of the per-agent settings, done in node so that it works the same
+# on Linux and macOS and FAILS CLOSED: a node that cannot run, or a path it
+# cannot examine, is "not contained". The rules, for a write that is to land in
+# <agents home>/<name>/.claude/settings.json and nowhere else:
+#   - the agent home is not a symlink and resolves to <agents home>/<name>, where
+#     the agents home is resolved through any symlinked ancestor even when it
+#     does not exist yet;
+#   - .claude, if present, is not a symlink and resolves to <that>/.claude;
+#   - settings.json, if present, is a regular file, not a symlink, and has a link
+#     count of one (a hard link would write through to the other name);
+#   - it is not the same file as the user's own global settings
+#     ($HOME/.claude/settings.json, or $CLAUDE_CONFIG_DIR/settings.json), by
+#     resolved path or by device and inode, which also catches a link pointing
+#     the other way;
+#   - mode "tree" adds: nothing anywhere under .claude is a symlink, and no
+#     regular file there has a link count above one. The memory layer's
+#     installer writes a temporary file and a backup beside settings.json and
+#     follows links, so a planted link under any name can redirect a write.
+# This is a check at one moment. A link planted afterwards is only caught by the
+# check that runs again after the install, which is too late to prevent the write.
+contain_check() {
+  CA_MODE="$1" CA_AGENTS_HOME="$AGENTS_HOME" CA_AGENT_HOME="$AGENT_HOME" CA_NAME="$NAME" \
+    node_run <<'JS' >/dev/null 2>&1
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const { CA_MODE: mode, CA_AGENTS_HOME, CA_AGENT_HOME, CA_NAME: name } = process.env;
+
+// A ".." is resolved by the kernel through real directories but by text here,
+// and the two disagree whenever a symlink sits before it (the check would then
+// pass for one directory while the files land in another). Refuse it outright.
+if ([CA_AGENTS_HOME, CA_AGENT_HOME].some((p) => p.split(path.sep).includes(".."))) process.exit(1);
+
+// realpath that tolerates a path whose last components do not exist yet: resolve
+// the deepest existing ancestor and append the rest.
+function loose(p) {
+  const rest = [];
+  let cur = path.resolve(p);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...rest.reverse());
+    } catch (err) {
+      if (err.code !== "ENOENT" && err.code !== "ENOTDIR") throw err;
+      const parent = path.dirname(cur);
+      if (parent === cur) throw err;
+      rest.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+const lstat = (p) => {
+  try { return fs.lstatSync(p); } catch (err) { if (err.code === "ENOENT") return null; throw err; }
+};
+const fail = () => process.exit(1);
+
+const want = path.join(loose(CA_AGENTS_HOME), name);
+const home = path.resolve(CA_AGENT_HOME);
+const homeStat = lstat(home);
+if (homeStat && homeStat.isSymbolicLink()) fail();
+if (loose(home) !== want) fail();
+
+const claude = path.join(home, ".claude");
+const claudeStat = lstat(claude);
+if (claudeStat) {
+  if (claudeStat.isSymbolicLink() || !claudeStat.isDirectory()) fail();
+  if (loose(claude) !== path.join(want, ".claude")) fail();
+}
+
+const settings = path.join(claude, "settings.json");
+const settingsStat = lstat(settings);
+if (settingsStat) {
+  if (settingsStat.isSymbolicLink() || !settingsStat.isFile() || settingsStat.nlink !== 1) fail();
+}
+
+// Never the user's own global settings, whichever way a link points.
+const globals = [];
+if (process.env.HOME) globals.push(path.join(process.env.HOME, ".claude", "settings.json"));
+if (process.env.CLAUDE_CONFIG_DIR) globals.push(path.join(process.env.CLAUDE_CONFIG_DIR, "settings.json"));
+const mine = path.join(want, ".claude", "settings.json");
+for (const g of globals) {
+  if (loose(g) === mine) fail();
+  const gs = lstat(g);
+  if (gs && settingsStat) {
+    const real = fs.statSync(g, { throwIfNoEntry: false });
+    if (real && real.dev === settingsStat.dev && real.ino === settingsStat.ino) fail();
+  }
+}
+
+if (mode === "tree" && claudeStat) {
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      const st = fs.lstatSync(full);
+      if (st.isSymbolicLink()) fail();
+      if (st.isDirectory()) walk(full);
+      else if (st.isFile() && st.nlink !== 1) fail();
+    }
+  };
+  walk(claude);
+}
+JS
+}
+
+settings_is_contained() { contain_check scaffold; }
+memory_dir_is_clean() { contain_check tree; }
+
+# Before the install only: a brand-new agent home holds no settings.json.<x>
+# entries, so any that exist were put there by someone else and are the place a
+# planted link would hide. After the install the installer's own backup is
+# expected, so this is not part of memory_dir_is_clean.
+no_foreign_settings_extras() {
+  [[ -z "$(list_settings_extras)" ]]
+}
+
+# Files the installer may leave beside settings.json (temporary, backup). Used
+# to remove only what it created, after a restore.
+MEMORY_PRESEED=""
+list_settings_extras() {
+  local f
+  for f in "$AGENT_HOME/.claude"/settings.json.*; do
+    [[ -e "$f" || -L "$f" ]] && printf '%s\n' "$f"
+  done
+}
+remove_new_settings_extras() {
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    grep -qxF -- "$f" <<< "$MEMORY_PRESEED" && continue
+    [[ -f "$f" && ! -L "$f" ]] && rm -f -- "$f"
+  done < <(list_settings_extras)
+}
+
+# Give up on wiring, say why on the final line, and leave settings alone.
+memory_skip() {
+  MEMORY_PENDING=0
+  MEMORY_PRINT=1
+  MEMORY_STAGE="done"
+  MEMORY_REPORT="off ($1)"
+}
+
+print_memory_line() {
+  say
+  say "create-agent: memory $MEMORY_REPORT"
+}
+
+# The signal handler prints through fd 7, a copy of the script's own stdout made
+# when the exit handler starts and closed again for every child it launches, so
+# a detached grandchild cannot hold the caller's pipe open. A trap runs inside whatever redirection the interrupted command had
+# (the installer and the containment check both run with their output sent to
+# /dev/null), so printing to plain stdout from there would be silently lost.
+print_memory_line_signal() {
+  if { true >&7; } 2>/dev/null; then
+    { say; say "create-agent: memory $MEMORY_REPORT"; } >&7
+  else
+    print_memory_line
+  fi
+}
+
+restore_settings() {
+  [[ -n "$MEMORY_SNAPSHOT" && -f "$MEMORY_SNAPSHOT" ]] || return 1
+  # Redirect rather than cp: it keeps the file's mode and fails when the target
+  # is no longer a regular file, instead of quietly copying into a directory.
+  # Not into a shared inode either: a hard-linked settings file would put the
+  # snapshot into another file's contents.
+  memory_dir_is_clean || return 1
+  cat "$MEMORY_SNAPSHOT" > "$AGENT_HOME/.claude/settings.json" || return 1
+  remove_new_settings_extras
+}
+
+drop_snapshot() {
+  [[ -n "$MEMORY_SNAPSHOT" ]] && rm -f "$MEMORY_SNAPSHOT"
+  MEMORY_SNAPSHOT=""
+}
+
+# Add USER_NAME to the settings env block unless one is already there.
+stamp_user_name() {
+  node_run <<'JS'
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
+const file = process.env.CA_SETTINGS;
+const user = process.env.CA_USER_NAME;
+const data = JSON.parse(fs.readFileSync(file, "utf8"));
+data.env = data.env && typeof data.env === "object" ? data.env : {};
+if (!("USER_NAME" in data.env)) data.env.USER_NAME = user;
+// Temporary file in the same directory, then a rename: a signal or a crash can
+// never leave the settings truncated half way. The name does not begin with
+// "settings.json." so it cannot be mistaken for the installer's own files.
+const mode = fs.statSync(file).mode & 0o777;
+// A random name opened with "wx" (create, never follow or reuse), so a link
+// planted under a guessable name cannot be written through. The mode option is
+// masked by the umask, so set it explicitly before the rename.
+const tmp = path.join(path.dirname(file), `.settings-stamp-${crypto.randomBytes(8).toString("hex")}.tmp`);
+fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+fs.chmodSync(tmp, mode);
+fs.renameSync(tmp, file);
+JS
+}
+
+wire_memory() {
+  local root="$1" installer status
+  installer="$root/scripts/install.sh"
+
+  if [[ $NO_MEMORY -eq 1 ]]; then
+    MEMORY_REPORT="off (--no-memory)"; return
+  fi
+  if [[ -z "$root" ]]; then
+    MEMORY_REPORT="off (MEMORY_LAYER_ROOT not set)"; return
+  fi
+  if [[ ! -f "$installer" ]]; then
+    MEMORY_REPORT="off (no install command at $installer)"
+    warn "memory is off: $root is not a memory layer checkout. Deck carries on without it."
+    return
+  fi
+  # Everything the installer needs is checked BEFORE it runs. The real one
+  # merges the hooks first and only then looks for tsx, so a missing tsx would
+  # leave hooks written while memory was reported off.
+  local missing="" script
+  for script in user-prompt-submit on-stop on-pre-compact; do
+    [[ -f "$root/dist/claude-code/bin/$script.sh" ]] || missing="$missing dist/claude-code/bin/$script.sh"
+  done
+  [[ -x "$root/node_modules/.bin/tsx" ]] || missing="$missing node_modules/.bin/tsx"
+  if [[ -n "$missing" ]]; then
+    MEMORY_REPORT="off (not built: missing${missing})"
+    warn "memory is off: the memory layer checkout at $root is not built and installed."
+    warn "  Build it, then re-run its install command with --agent $NAME. Settings were not touched."
+    return
+  fi
+
+  # Silo routing is by env.AGENT_NAME in this very settings file. merge_settings
+  # keeps a value that was already there, so a settings file carrying another
+  # agent's name would seed one silo and route the hooks to a different one.
+  local routed
+  if ! memory_dir_is_clean; then
+    memory_skip "the agent's .claude is not contained, or holds a symlink or hard link; nothing written"
+    warn "memory is off: $AGENT_HOME/.claude is outside the agent's own directory, or is or contains a"
+    warn "  symlink or hard link. The memory install writes files there and would follow it. Remove the"
+    warn "  link, then run the install command with --agent $NAME."
+    return
+  fi
+  if ! no_foreign_settings_extras; then
+    memory_skip "unexpected settings.json.* entries in the agent's .claude; nothing written"
+    warn "memory is off: $AGENT_HOME/.claude holds files named settings.json.<something> that this run"
+    warn "  did not create. The memory install writes files with such names. Remove them, then run the"
+    warn "  install command with --agent $NAME."
+    return
+  fi
+  routed="$(CA_SETTINGS="$AGENT_HOME/.claude/settings.json" node_run <<'JS'
+import * as fs from "node:fs";
+const d = JSON.parse(fs.readFileSync(process.env.CA_SETTINGS, "utf8"));
+process.stdout.write(typeof d?.env?.AGENT_NAME === "string" ? d.env.AGENT_NAME : "");
+JS
+)" || { memory_skip "could not read the agent's settings"; return; }
+  if [[ "$routed" != "$NAME" ]]; then
+    memory_skip "settings env.AGENT_NAME is \"$routed\", not \"$NAME\""
+    warn "memory is off: the agent's settings route memory to \"$routed\", not \"$NAME\"."
+    warn "  Wiring it would seed one silo and send the hooks to another. Fix env.AGENT_NAME, then"
+    warn "  run the memory layer's install command with --agent $NAME. Settings were not touched."
+    return
+  fi
+
+  # Keep a copy so a failure after the hooks merged can be undone.
+  # Created 0600 from the start: the settings can hold secrets and a copy in
+  # $TMPDIR must not be wider than the original.
+  MEMORY_SNAPSHOT="$(umask 077; mktemp)" || { memory_skip "could not snapshot the agent's settings"; return; }
+  cat "$AGENT_HOME/.claude/settings.json" > "$MEMORY_SNAPSHOT" \
+    || { drop_snapshot; memory_skip "could not snapshot the agent's settings"; return; }
+  MEMORY_PRESEED="$(list_settings_extras)"
+
+  # --skip-build: building is a one-off for the checkout, not a per-agent step.
+  MEMORY_WIRING=1
+  bash "$installer" --skip-build --settings "$AGENT_HOME/.claude/settings.json" \
+    --agent "$NAME" </dev/null >/dev/null 7>&-
+  status=$?
+  MEMORY_STAGE="ran"
+  MEMORY_WIRING=0
+  # Re-check after the installer and before anything else is written or claimed:
+  # a link that appeared meanwhile means writes may have gone elsewhere.
+  if ! memory_dir_is_clean; then
+    drop_snapshot
+    memory_skip "PARTIAL: the agent's .claude failed its containment check after the install (a link appeared, or settings.json was replaced); check where it points"
+    warn "memory is NOT reported on: $AGENT_HOME/.claude failed its containment check after the install ran."
+    warn "  Nothing further was written. Inspect the link target and $AGENT_HOME/.claude/settings.json."
+    return
+  fi
+  if [[ $status -ne 0 ]]; then
+    if restore_settings; then
+      memory_skip "memory install exited $status; settings restored, nothing wired"
+      warn "memory is off: the memory layer's install command exited $status."
+      warn "  The agent's settings were restored to what they were before. The silo may be partly"
+      warn "  seeded; the install command is idempotent, so fix the cause and run it again with"
+      warn "  --agent $NAME. Deck carries on."
+    else
+      memory_skip "PARTIAL: memory install exited $status and settings could NOT be restored"
+      warn "memory is PARTLY wired: the install command exited $status and the previous settings"
+      warn "  could not be put back. Check $AGENT_HOME/.claude/settings.json for memory hooks and"
+      warn "  remove them, or fix the cause and re-run the install command with --agent $NAME."
+    fi
+    return
+  fi
+
+  MEMORY_STAGE="installed"
+  if [[ -n "${USER_NAME:-}" ]]; then
+    MEMORY_STAGE="stamping"
+    CA_SETTINGS="$AGENT_HOME/.claude/settings.json" CA_USER_NAME="$USER_NAME" stamp_user_name \
+      || warn "could not write USER_NAME into the agent's settings; memory prompts will not name you."
+    # Fail closed once more before claiming anything: the stamp wrote a file.
+    if ! memory_dir_is_clean; then
+      memory_skip "PARTIAL: the agent's .claude failed its containment check after USER_NAME was stamped; check $AGENT_HOME/.claude/settings.json"
+      return
+    fi
+  else
+    warn "USER_NAME is not set, so the memory prompts will not name the person. Set it and re-run, or edit the agent's settings env."
+  fi
+  MEMORY_STAGE="stamped"
+  MEMORY_REPORT="on (hooks wired in $AGENT_HOME/.claude/settings.json, silo seeded)"
+}
+
+# ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
 
@@ -413,6 +766,8 @@ VERIFY_ONLY=0
 INBOX_ROOT_ARG=""
 AGENTS_HOME_ARG=""
 INSTALL_PATH=1
+MEMORY_ROOT_ARG=""
+NO_MEMORY=0
 MODEL=""
 
 while [[ $# -gt 0 ]]; do
@@ -424,6 +779,8 @@ while [[ $# -gt 0 ]]; do
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
+    --memory-root)  [[ $# -ge 2 ]] || die_scaffold "--memory-root needs a value"; MEMORY_ROOT_ARG="$2";  shift 2 ;;
+    --no-memory)    NO_MEMORY=1; shift ;;
     --verify)       VERIFY="yes"; shift ;;
     --no-verify)    VERIFY="no"; shift ;;
     --verify-only)  VERIFY_ONLY=1; VERIFY="yes"; shift ;;
@@ -620,6 +977,7 @@ else
       "expected the templates/ directory alongside bin/ in this package"
   done
 
+  settings_is_contained || die_scaffold "refusing to write settings outside the agent's own directory:" "  $AGENT_HOME, its .claude or its settings.json is a symlink, or resolves" "  somewhere other than $AGENTS_HOME/$NAME. The settings are written in place," "  so they could land in a global file. Remove the link, or choose another name."
   mkdir -p "$AGENT_HOME" || die_scaffold "could not create $AGENT_HOME"
   for template in "${PERSONA_FILES[@]}"; do
     cp "$TEMPLATES_DIR/$template" "$AGENT_HOME/$template" \
@@ -664,6 +1022,13 @@ else
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
+  if [[ $NO_MEMORY -eq 1 ]]; then
+    say "  memory         off (--no-memory)"
+  elif [[ -z "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}" ]]; then
+    say "  memory         off (MEMORY_LAYER_ROOT not set)"
+  else
+    say "  memory         to be wired after verification (see the last line)"
+  fi
   say "  model          ${MODEL:-"(runtime default; see INSTALL.md)"}"
   say "  boot phrase    $NONCE"
   say
@@ -731,6 +1096,75 @@ report_cannot_verify() {
   exit "$EXIT_CANNOT_VERIFY"
 }
 
+# Memory is wired on the way out, AFTER the probe below. The probe runs the
+# agent's real `claude -p` from its home, which would fire any memory hooks
+# already in its settings and seed a probe turn as the agent's first memory.
+# Every exit from here on, whatever the verdict, goes through the trap.
+memory_on_exit() {
+  local rc=$?
+  MEMORY_IN_EXIT=1
+  exec 7>&1
+  rm -f "${PROBE_OUT:-}" "${PROBE_ERR:-}"
+  local show=$MEMORY_PRINT
+  if [[ $MEMORY_PENDING -eq 1 ]]; then
+    MEMORY_PENDING=0
+    wire_memory "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}"
+    show=1
+  fi
+  [[ $show -eq 1 || $MEMORY_PRINT -eq 1 ]] && print_memory_line
+  drop_snapshot
+  exit "$rc"
+}
+
+# A run interrupted or killed before its verdict must not wire memory, and one
+# interrupted while the memory install is in flight must leave a visible report
+# and the settings as they were. The handler prints in that case because it may
+# be running inside the EXIT trap, where a further exit skips the trap's print.
+# Bash runs a trap only after the foreground command it is waiting on ends. A
+# signal sent to this script alone therefore lets the installer finish, and the
+# settings are restored afterwards. A terminal Ctrl-C or a hangup goes to the
+# whole process group and also stops the installer and its helper wherever they
+# are, which is exactly the case the restore and the snapshot cleanup are for.
+on_signal() {
+  local code="$1"
+  MEMORY_PENDING=0
+  if [[ $MEMORY_WIRING -eq 1 ]]; then
+    MEMORY_WIRING=0
+    if restore_settings; then
+      MEMORY_REPORT="off (interrupted during memory install; settings restored, nothing wired)"
+    else
+      MEMORY_REPORT="off (PARTIAL: interrupted during memory install and settings could NOT be restored; check $AGENT_HOME/.claude/settings.json)"
+    fi
+    print_memory_line_signal
+    MEMORY_PRINT=0
+  elif [[ $MEMORY_IN_EXIT -eq 1 && $MEMORY_ARMED -eq 1 ]]; then
+    # Inside the exit handler but not in the installer: before it ran, after it
+    # returned, or while USER_NAME was being stamped. Say which, because the
+    # exit handler's own print is skipped when this exits.
+    case "$MEMORY_STAGE" in
+      "")        MEMORY_REPORT="off (interrupted before the memory install ran; nothing written)" ;;
+      ran)       MEMORY_REPORT="off (PARTIAL: interrupted after the memory install ran and before its result was checked; hooks may be wired, check $AGENT_HOME/.claude/settings.json)" ;;
+      installed) MEMORY_REPORT="on (interrupted before USER_NAME was stamped; hooks wired and silo seeded, add env.USER_NAME by hand)" ;;
+      stamping)  MEMORY_REPORT="on (interrupted while USER_NAME was being stamped; hooks wired and silo seeded, the settings are intact because the stamp is an atomic rename, but env.USER_NAME may or may not be there)" ;;
+      stamped)   MEMORY_REPORT="on (interrupted after wiring finished; hooks wired, silo seeded)" ;;
+      *)         ;;   # already decided; print what it says
+    esac
+    print_memory_line_signal
+    MEMORY_PRINT=0
+  else
+    MEMORY_PRINT=1
+    MEMORY_REPORT="off (run interrupted before memory was wired)"
+  fi
+  drop_snapshot
+  exit "$code"
+}
+
+[[ "$VERIFY_ONLY" -eq 1 ]] || { MEMORY_PENDING=1; MEMORY_ARMED=1; }
+trap memory_on_exit EXIT
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
+
 if [[ "$VERIFY" == "no" ]]; then
   report_cannot_verify "Verification was skipped (--no-verify)."
 fi
@@ -749,7 +1183,6 @@ If there is no boot phrase in your context, write: boot phrase: NONE"
 
 PROBE_TIMEOUT="${CREATE_AGENT_VERIFY_TIMEOUT:-180}"
 PROBE_OUT="$(mktemp)"; PROBE_ERR="$(mktemp)"
-trap 'rm -f "$PROBE_OUT" "$PROBE_ERR"' EXIT
 
 say
 say "create-agent: verifying $NAME ..."
@@ -778,6 +1211,7 @@ if [[ $PROBE_STATUS -ne 0 ]]; then
   [[ $PROBE_STATUS -eq 124 ]] && detail="timed out after ${PROBE_TIMEOUT}s"
   lines=("The runtime did not answer ($detail).")
   [[ -n "$PROBE_STDERR" ]] && lines+=("" "It said:" "$PROBE_STDERR")
+  memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
   report_cannot_verify "Ran \`claude -p\` from the agent home and got no usable reply." "${lines[@]}"
 fi
 
@@ -793,6 +1227,7 @@ if [[ -z "${REPLY//[[:space:]]/}" ]]; then
   printf '  mechanism being tested, so the persona is unproven and treated as absent.\n'
   printf '\n'
   printf '  The files are at %s. Open a session there and see what it says it is.\n' "$AGENT_HOME"
+  memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
   exit "$EXIT_FAILED"
 fi
 
@@ -833,4 +1268,5 @@ printf '    - does %s/CLAUDE.md still import IDENTITY.md?\n' "$AGENT_HOME"
 printf '    - is anything assembling context with a size cap that silently drops\n'
 printf '      the persona when it is exceeded, rather than truncating and saying so?\n'
 printf '    - is a hook meant to inject this context installed, and did it run?\n'
+memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
 exit "$EXIT_FAILED"

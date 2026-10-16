@@ -783,6 +783,106 @@ did.
 Reload Deck and the agent is there. Nothing needs restarting; the agent list
 is the set of directories under `INBOX_ROOT`.
 
+### Optional: give the agent a memory loop
+
+Memory is optional, and Deck works the same without it. If you have the
+separate memory-layer project checked out and built (its own README covers
+that, and its basic loop needs only the model CLI you already have: no extra
+key, no Docker), tell `create-agent.sh` where it is, before creating agents:
+
+```sh-manual
+export MEMORY_LAYER_ROOT=$HOME/src/memory-layer   # any name, any place
+export USER_NAME=$(id -un)                        # optional, names you in memory prompts
+packages/base/bin/create-agent.sh wren --role "keeps the notes"
+```
+
+For each agent that wires the memory hooks into that agent's own
+`.claude/settings.json` (not your global one, see the checks below), records `USER_NAME` there, and
+seeds the agent's memory silo, by running the checkout's own non-interactive
+install command. The silo is picked by the `AGENT_NAME` Deck already writes
+into that file. The last line of the output (printed after any verification) says which way it went:
+
+```text
+create-agent: memory on (hooks wired in /home/you/agents/wren/.claude/settings.json, silo seeded)
+```
+
+Memory is wired last, after the persona check, so that check's own turn is not
+recorded as the agent's first memory. When it is not wired, the last line reads
+`create-agent: memory off (reason)`, a warning explains why, and the agent is
+created exactly as before. Memory never changes the exit code. The reasons:
+
+- no checkout configured, `--no-memory`, or a checkout that is not built and
+  installed (settings are not touched);
+- the agent's `.claude/settings.json` already says `env.AGENT_NAME` is another
+  agent, which would seed one memory silo and send the hooks to a different
+  one (settings are not touched; fix the name and run the checkout's install
+  command with `--agent <name>`);
+- the persona check failed or the model CLI errored, so a broken agent is not
+  wired (once fixed, run the checkout's install command with `--agent <name>`);
+- the checkout's install command failed. Deck puts the agent's previous
+  settings back, so no hooks are left active, and says so. If it cannot put
+  them back the line starts `off (PARTIAL: ...)`: open the agent's
+  `.claude/settings.json` and remove the memory hooks, or fix the cause and
+  re-run the install command. The silo may be partly seeded; the command is
+  idempotent;
+- the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). The last line always says
+  what state that left: before wiring nothing is wired; during the install the
+  settings are restored; after the install returned it says `on (interrupted
+  before USER_NAME was stamped)` or `PARTIAL`, and names what to check;
+- the agent's `.claude` directory is not inside the agent's own directory (the
+  agent home is a symlink, or `.claude` resolves elsewhere), or it holds a
+  symlink or a hard link (a regular file with more than one link). The
+  checkout's install command writes a temporary file and a backup beside
+  `settings.json` and follows links, so a planted link could redirect a write
+  onto another file, such as a global settings file. Nothing is written;
+  remove the link and run the install command with `--agent <name>`;
+- the agent's `.claude` already holds files named `settings.json.<something>`
+  that this run did not create. A new agent has none, and that is where a
+  planted link would hide. Remove them and run the install command.
+
+Deck checks again after the install and, if a link appeared meanwhile, reports
+`PARTIAL` rather than `on`. That later check runs after the install's write, so
+it reports a link planted in the instant between the first check and the write;
+it cannot prevent it. The protection is against links already in place, not
+against another process on your account racing the install.
+
+Separately, `create-agent.sh` refuses to create an agent (a scaffold error,
+before anything is written) when the agent home, its `.claude` directory or its
+`.claude/settings.json` is a symlink, resolves outside `<agents home>/<name>`,
+or when `settings.json` is a hard link (link count above one); when the agent's
+settings are the same file as your own global settings
+(`$HOME/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` when
+set), by resolved path or by inode; and when `AGENTS_HOME` contains a `..`
+component, because the shell and the check can resolve that differently when a
+symlink comes before it. These checks run in node and fail closed: if they
+cannot run, nothing is written.
+
+What the checks do not promise. They look at one moment, they know only the
+two global locations above, and they trust everything on your account:
+
+- a link planted between the check and the write (see the note on timing above);
+- a global settings file that is a dangling symlink pointing at the agent's
+  not-yet-created settings is not recognised as the same file;
+- the agent's own `settings.json` is still merged in place by `create-agent.sh`
+  (the check comes first, and a name that was checked is not re-checked at the
+  write), whereas the memory step's `USER_NAME` write goes through a new file
+  and a rename.
+
+This is a same-user threat model: it protects against mistakes and links that
+are already there, not against another process on your account.
+
+After a successful memory install the checkout's installer leaves a one-time
+backup of the previous settings next to `settings.json` (a `settings.json.*.bak`
+file in the agent's `.claude`). It is the installer's own file and is kept on
+success; delete it when you no longer want it. After a failed install Deck
+restores the settings and removes any backup or temporary file the failed run
+created. If Ctrl-C reaches the installer itself, Deck restores the settings and
+reports it, and its temporary copy of the settings is deleted.
+
+Not covered here: semantic search (it needs a vector database and a paid
+embeddings key), the background watcher, and a persona file for the memory
+layer's session-start hook. Those are tracked as follow-ups on issue #21.
+
 ### Start the sessions
 
 ```sh

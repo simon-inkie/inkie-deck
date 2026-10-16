@@ -19,7 +19,7 @@
  * inherited, so a real runtime installed on the machine running the tests can
  * neither be reached by accident nor change the result.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -680,5 +680,689 @@ echo "I do not appear to have a boot phrase in my context."`,
     const result = run(box, ["wren"], { stub: true });
 
     expect(result.output).toContain(`cwd: ${path.join(box.agentsHome, "wren")}`);
+  });
+});
+
+/**
+ * The memory loop is opt-in safe: wired when a built memory-layer checkout is
+ * present, reported OFF (and never an error) when it is not.
+ *
+ * The fixture is a stand-in checkout that honours the documented install
+ * interface (`scripts/install.sh --skip-build --settings FILE --agent NAME`,
+ * exit 0 on success, hooks merged without clobbering, silo seeded under HOME).
+ * It is a fixture, not the real thing: the real command is exercised by hand,
+ * see the SPEC.
+ */
+describe("memory loop", () => {
+  // Neutral name: where the fixture seeds a silo is the fixture's business.
+  const SILO_DIR = ".memory-fixture";
+
+  const FIXTURE_INSTALLER = `#!/usr/bin/env bash
+set -euo pipefail
+settings=""; agent=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --settings) settings="$2"; shift 2 ;;
+    --agent) agent="$2"; shift 2 ;;
+    --skip-build) shift ;;
+    *) exit 1 ;;
+  esac
+done
+root="$(cd -P "$(dirname "$0")/.." && pwd)"
+[ -n "\${FIXTURE_FAIL:-}" ] && exit "$FIXTURE_FAIL"
+# Like the real installer: the built hook scripts are required up front (exit 2)...
+for s in user-prompt-submit on-stop on-pre-compact; do
+  [ -f "$root/dist/claude-code/bin/$s.sh" ] || exit 2
+done
+echo "--settings $settings --agent $agent --skip-build" >> "$root/scripts/calls.log"
+# ...the hooks are merged BEFORE tsx is looked for...
+SETTINGS="$settings" node --input-type=module -e '
+import * as fs from "node:fs";
+const f = process.env.SETTINGS;
+const d = JSON.parse(fs.readFileSync(f, "utf8"));
+d.hooks = d.hooks ?? {};
+const add = (event, matcher, script) => {
+  const entry = { hooks: [{ type: "command", command: "/fixture/" + script + ".sh" }] };
+  if (matcher) entry.matcher = matcher;
+  d.hooks[event] = [...(d.hooks[event] ?? []), entry];
+};
+add("UserPromptSubmit", null, "user-prompt-submit");
+add("Stop", null, "on-stop");
+add("PreCompact", "auto", "on-pre-compact");
+add("PreCompact", "manual", "on-pre-compact");
+fs.writeFileSync(f, JSON.stringify(d, null, 2));
+'
+# Like the real installer, leave a backup beside the settings, and a temporary
+# file when it dies mid-write.
+echo '{}' > "$settings.fixture.bak"
+[ -n "\${FIXTURE_FAIL_AFTER_MERGE:-}" ] && echo '{}' > "$settings.fixture.tmp"
+# A detached grandchild with its output sent away, as a daemonising installer
+# would leave behind. It must not inherit the caller's pipe.
+[ -n "\${FIXTURE_DETACH:-}" ] && (sleep 3 </dev/null >/dev/null 2>&1 &)
+# A hard link that appears while the install runs (caught only afterwards).
+[ -n "\${FIXTURE_PLANT_HARDLINK:-}" ] && ln "$FIXTURE_PLANT_HARDLINK" "$settings.fixture.hard"
+# A failure AFTER the hooks merged, and a hold so a test can signal mid-install.
+[ -n "\${FIXTURE_FAIL_AFTER_MERGE:-}" ] && exit "$FIXTURE_FAIL_AFTER_MERGE"
+if [ -n "\${FIXTURE_HOLD:-}" ]; then touch "$FIXTURE_HOLD"; sleep 2; fi
+# ...and only then is a missing tsx fatal, which is why Deck checks it first.
+[ -x "$root/node_modules/.bin/tsx" ] || exit 2
+mkdir -p "$HOME/@SILO@/agents/$agent/memory/observations"
+`;
+
+  function memoryLayer(box: Sandbox, options: { built?: boolean; tsx?: boolean } = {}): string {
+    const root = path.join(path.dirname(box.home), "memory-layer-with-any-name");
+    fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+    fs.writeFileSync(path.join(root, "scripts", "install.sh"), FIXTURE_INSTALLER.replace("@SILO@", SILO_DIR), {
+      mode: 0o755,
+    });
+    if (options.built ?? true) {
+      const bin = path.join(root, "dist", "claude-code", "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      for (const s of ["user-prompt-submit", "on-stop", "on-pre-compact"]) {
+        fs.writeFileSync(path.join(bin, `${s}.sh`), "#!/bin/sh\n", { mode: 0o755 });
+      }
+    }
+    if (options.tsx ?? true) {
+      const nb = path.join(root, "node_modules", ".bin");
+      fs.mkdirSync(nb, { recursive: true });
+      fs.writeFileSync(path.join(nb, "tsx"), "#!/bin/sh\n", { mode: 0o755 });
+    }
+    return root;
+  }
+
+  const settingsOf = (box: Sandbox, name: string) =>
+    JSON.parse(fs.readFileSync(path.join(box.agentsHome, name, ".claude", "settings.json"), "utf8"));
+
+  it("wires the hooks into the agent's own settings and seeds its silo when the checkout is present", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY); // unchanged: memory never moves the exit code
+    expect(result.output).toMatch(/memory\s+on /);
+    const settings = settingsOf(box, "wren");
+    expect(Object.keys(settings.hooks).sort()).toEqual(["PreCompact", "Stop", "UserPromptSubmit"]);
+    expect(settings.env.AGENT_NAME).toBe("wren");
+    expect(settings.env.USER_NAME).toBe("pat");
+    expect(fs.existsSync(path.join(box.home, SILO_DIR, "agents", "wren", "memory", "observations"))).toBe(true);
+
+    // Per agent, not global: nothing was written to a home-level settings file.
+    expect(fs.existsSync(path.join(box.home, ".claude", "settings.json"))).toBe(false);
+    const calls = fs.readFileSync(path.join(root, "scripts", "calls.log"), "utf8");
+    expect(calls).toContain(`--settings ${path.join(box.agentsHome, "wren", ".claude", "settings.json")}`);
+    expect(calls).toContain("--agent wren");
+    expect(calls).toContain("--skip-build");
+  });
+
+  it("honours --memory-root, and accepts a checkout under any name", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify", "--memory-root", root]);
+    expect(result.output).toMatch(/memory\s+on /);
+  });
+
+  it("reports memory OFF and still creates the agent when no checkout is configured", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(MEMORY_LAYER_ROOT not set\)/);
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
+    const settings = settingsOf(box, "wren");
+    expect(settings.hooks).toBeUndefined();
+    expect(settings.env.USER_NAME).toBeUndefined();
+    expect(fs.existsSync(path.join(box.home, SILO_DIR))).toBe(false);
+  });
+
+  it("reports OFF when the configured path is not a checkout", () => {
+    const box = sandbox();
+    const missing = path.join(path.dirname(box.home), "nothing-here");
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: missing } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(no install command/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("reports OFF when the checkout is present but unbuilt", () => {
+    const box = sandbox();
+    const root = memoryLayer(box, { built: false });
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(not built: missing/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("reports OFF and writes NO hooks when the build is present but tsx is missing", () => {
+    const box = sandbox();
+    const root = memoryLayer(box, { tsx: false });
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(not built: missing node_modules\/\.bin\/tsx\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("does not wire memory, or claim to, when the run is terminated during the probe", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const marker = path.join(box.home, "probe-started");
+    stubRuntime(box, `touch "${marker}"\nsleep 2\necho "boot phrase: none"`);
+
+    const child = spawn("bash", [SCRIPT, "wren"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, true),
+        MEMORY_LAYER_ROOT: root,
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+
+    for (let i = 0; i < 100 && !fs.existsSync(marker); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(fs.existsSync(marker)).toBe(true);
+    child.kill("SIGTERM");
+
+    expect(await exited).toBe(143);
+    expect(output).not.toMatch(/memory on /);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("restores the settings when the install fails AFTER the hooks were merged", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, FIXTURE_FAIL_AFTER_MERGE: "3" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    // The fixture really did merge hooks before failing (the call was logged),
+    // and Deck put the previous settings back.
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(true);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(settingsOf(box, "wren").env.AGENT_NAME).toBe("wren");
+    expect(result.output).toMatch(/memory off \(memory install exited 3; settings restored, nothing wired\)/);
+    // What the installer left beside the settings is cleaned up too.
+    const left = fs.readdirSync(path.join(box.agentsHome, "wren", ".claude"));
+    expect(left).toEqual(["settings.json"]);
+  });
+
+  /** A planted symlink in .claude, whatever its name, must stop memory with no writes. */
+  function plantedLinkCase(linkName: string): void {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const victim = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(victim, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(victim, path.join(dir, linkName));
+
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(the agent's \.claude is not contained, or holds a symlink or hard link; nothing written\)/);
+    expect(fs.readFileSync(victim, "utf8")).toBe('{"keep":"me"}');
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  }
+
+  it("refuses memory when a temporary-file name in .claude is a planted symlink", () => {
+    plantedLinkCase("settings.json.planted.tmp");
+  });
+
+  it("refuses memory when a backup name in .claude is a planted symlink", () => {
+    plantedLinkCase("settings.json.planted.bak");
+  });
+
+  it("rejects a symlinked .claude directory before writing anything", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const elsewhere = path.join(path.dirname(box.home), "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.mkdirSync(path.join(box.agentsHome, "wren"), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(box.agentsHome, "wren", ".claude"));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  // Names in the style of an installer's temporary file and backup. The guard
+  // refuses a link under ANY settings.json.<x> name, so these stand for the real
+  // ones without needing to spell them.
+  const TMP_STYLE = "settings.json.installer.tmp";
+  const BAK_STYLE = "settings.json.installer.bak";
+
+  it("refuses memory when a temporary-file-style name is a planted symlink", () => {
+    plantedLinkCase(TMP_STYLE);
+  });
+
+  it("refuses memory when a backup-style name is a dangling planted symlink", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const victim = path.join(path.dirname(box.home), "not-created-yet.json");
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(victim, path.join(dir, BAK_STYLE));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.output).toMatch(/memory off \(the agent's \.claude is not contained/);
+    expect(fs.existsSync(victim)).toBe(false);
+  });
+
+  it("refuses memory when a temporary-file-style name is a HARD link to another file", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const victim = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(victim, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.linkSync(victim, path.join(dir, TMP_STYLE));
+
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(the agent's \.claude is not contained, or holds a symlink or hard link/);
+    expect(fs.readFileSync(victim, "utf8")).toBe('{"keep":"me"}');
+    expect(fs.statSync(victim).nlink).toBe(2);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("refuses memory on any pre-existing settings.json.* entry it did not create", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "settings.json.stray"), "x");
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.output).toMatch(/memory off \(unexpected settings\.json\.\* entries/);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("rejects an agent home that is a symlink to another directory, before writing anything", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const fakeHome = path.join(path.dirname(box.home), "somewhere-else");
+    fs.mkdirSync(fakeHome);
+    fs.symlinkSync(fakeHome, path.join(box.agentsHome, "wren"));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readdirSync(fakeHome)).toEqual([]);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("creates an agent when the agents home does not exist yet and a parent of it is a symlink", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const real = path.join(path.dirname(box.home), "real-var-home");
+    fs.mkdirSync(real);
+    const linked = path.join(path.dirname(box.home), "var-home");
+    fs.symlinkSync(real, linked);
+    const agents = path.join(linked, "agents"); // not created yet
+
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { AGENTS_HOME: agents, MEMORY_LAYER_ROOT: root },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toContain("CREATED wren");
+    expect(result.output).toMatch(/memory on /);
+    expect(fs.existsSync(path.join(real, "agents", "wren", "SOUL.md"))).toBe(true);
+  });
+
+  it("creates an agent when the not-yet-existing agents home is given with a trailing slash", () => {
+    const box = sandbox();
+    const agents = path.join(path.dirname(box.home), "fresh-agents") + "/";
+
+    const result = run(box, ["wren", "--no-verify"], { env: { AGENTS_HOME: agents } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toContain("CREATED wren");
+    expect(fs.existsSync(path.join(agents, "wren", "SOUL.md"))).toBe(true);
+  });
+
+  it("refuses a settings.json that is already a hard link to another file, before writing", () => {
+    const box = sandbox();
+    const victim = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(victim, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.linkSync(victim, path.join(dir, "settings.json"));
+
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readFileSync(victim, "utf8")).toBe('{"keep":"me"}');
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(false);
+  });
+
+  it("refuses when the user's own settings directory is a link pointing at the agent's", () => {
+    const box = sandbox();
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(dir, path.join(box.home, ".claude")); // HOME/.claude -> agent's .claude
+
+    const result = run(box, ["wren", "--no-verify"]);
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(false);
+  });
+
+  it("refuses a CLAUDE_CONFIG_DIR that is the agent's own settings directory", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { CLAUDE_CONFIG_DIR: path.join(box.agentsHome, "wren", ".claude") },
+    });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+  });
+
+  it("does not let a detached child of the install hold the caller's pipe open", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const started = Date.now();
+    const child = spawn("bash", [SCRIPT, "wren", "--no-verify"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, false),
+        MEMORY_LAYER_ROOT: root,
+        FIXTURE_DETACH: "1",
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    // "close" waits for every holder of the pipe; "exit" is the script itself.
+    const status = await new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+    const elapsed = Date.now() - started;
+
+    // First prove the run did what the timing is about: scaffolding succeeded,
+    // the install command really ran, and the agent ended up wired. Only then
+    // is a quick finish evidence about the pipe and not about an early failure.
+    expect(status).toBe(EXIT.CANNOT_VERIFY); // created, verification skipped by --no-verify
+    expect(output).toContain("CREATED wren");
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(true);
+    expect(output).toMatch(/memory on /);
+    expect(Object.keys(settingsOf(box, "wren").hooks).sort()).toEqual(["PreCompact", "Stop", "UserPromptSubmit"]);
+
+    // The detached sleep lasts 3s. Had it inherited the pipe, close would wait for it.
+    expect(elapsed).toBeLessThan(2500);
+  });
+
+  it("refuses an agents home with a .. component that a symlink would resolve differently", () => {
+    const box = sandbox();
+    const top = path.dirname(box.home);
+    const real = path.join(top, "real");
+    fs.mkdirSync(path.join(real, "sub"), { recursive: true });
+    fs.symlinkSync(path.join(real, "sub"), path.join(top, "l"));
+    // By text, <top>/l/.. is <top>; through the symlink the kernel sees <top>/real.
+    const result = run(box, ["wren", "--no-verify"], { env: { AGENTS_HOME: `${top}/l/..` } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(real, "wren"))).toBe(false);
+    expect(fs.existsSync(path.join(top, "wren"))).toBe(false);
+  });
+
+  it("reports PARTIAL, never on, when a hard link appears while the install runs", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const victim = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(victim, '{"keep":"me"}');
+
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, USER_NAME: "pat", FIXTURE_PLANT_HARDLINK: victim },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(PARTIAL: the agent's \.claude failed its containment check after the install/);
+    expect(result.output).not.toMatch(/memory on /);
+    // USER_NAME was not stamped after the check failed.
+    expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
+  });
+
+  it("prints a memory line when a signal arrives inside the exit handler but outside the installer", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const watch = path.join(box.agentsHome, "wren", ".claude", "settings.json.fixture.bak");
+    const mark = path.join(box.home, "node-held");
+    // A node that stalls once the fixture installer has run: the first node
+    // call after the installer is the post-install containment check, which is
+    // inside the exit handler and after the installer.
+    fs.writeFileSync(
+      path.join(box.stubBin, "node"),
+      `#!/bin/sh\nif [ -e "${watch}" ]; then touch "${mark}"; sleep 2; fi\nexec "${process.execPath}" "$@"\n`,
+      { mode: 0o755 },
+    );
+
+    const child = spawn("bash", [SCRIPT, "wren", "--no-verify"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, true),
+        MEMORY_LAYER_ROOT: root,
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+
+    for (let i = 0; i < 100 && !fs.existsSync(mark); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(fs.existsSync(mark)).toBe(true);
+    child.kill("SIGTERM");
+
+    expect(await exited).toBe(143);
+    expect(output).toMatch(/create-agent: memory off \(PARTIAL: interrupted after the memory install ran/);
+  });
+
+  it("reports PARTIAL, not a restore, when a failed install leaves settings.json replaced by a directory", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    // Make the restore fail portably: the failing installer replaces
+    // settings.json with a directory, which cannot be written back over.
+    const installer = path.join(root, "scripts", "install.sh");
+    fs.writeFileSync(
+      installer,
+      fs
+        .readFileSync(installer, "utf8")
+        .replace('[ -n "${FIXTURE_FAIL_AFTER_MERGE:-}" ] && exit "$FIXTURE_FAIL_AFTER_MERGE"',
+          '[ -n "${FIXTURE_FAIL_AFTER_MERGE:-}" ] && { rm -f "$settings"; mkdir "$settings"; exit "$FIXTURE_FAIL_AFTER_MERGE"; }'),
+      { mode: 0o755 },
+    );
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, FIXTURE_FAIL_AFTER_MERGE: "3" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(PARTIAL: the agent's \.claude failed its containment check after the install/);
+  });
+
+  it("refuses memory when the settings already route to a different agent", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const settingsFile = path.join(box.agentsHome, "wren", ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+    fs.writeFileSync(settingsFile, JSON.stringify({ env: { AGENT_NAME: "fern" } }));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(settings env\.AGENT_NAME is "fern", not "wren"\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+    expect(fs.existsSync(path.join(box.home, SILO_DIR))).toBe(false);
+  });
+
+  it("rejects a symlinked per-agent settings file before writing anything", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const elsewhere = path.join(path.dirname(box.home), "global-settings.json");
+    fs.writeFileSync(elsewhere, '{"keep":"me"}');
+    const dir = path.join(box.agentsHome, "wren", ".claude");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(dir, "settings.json"));
+
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(result.output).toContain("symlink");
+    expect(fs.readFileSync(elsewhere, "utf8")).toBe('{"keep":"me"}');
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("leaves memory unwired, with a visible reason, when the verification probe fails", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    stubRuntime(box, 'echo "boot phrase: wrong"');
+    const result = run(box, ["wren"], { stub: true, env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.FAILED);
+    expect(result.output).toMatch(/memory off \(verification did not pass/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("leaves memory unwired when the probe runtime errors out", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    stubRuntime(box, "exit 9");
+    const result = run(box, ["wren"], { stub: true, env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory off \(verification did not pass/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+  });
+
+  it("leaves a visible report, and the settings restored, when interrupted during the memory install", async () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const hold = path.join(box.home, "install-started");
+    const tmp = path.join(path.dirname(box.home), "tmp-for-snapshot");
+    fs.mkdirSync(tmp);
+
+    const child = spawn("bash", [SCRIPT, "wren", "--no-verify"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: box.home,
+        AGENTS_HOME: box.agentsHome,
+        INBOX_ROOT: box.inboxRoot,
+        PATH: testPath(box, false),
+        MEMORY_LAYER_ROOT: root,
+        FIXTURE_HOLD: hold,
+        TMPDIR: tmp,
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+
+    for (let i = 0; i < 100 && !fs.existsSync(hold); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(fs.existsSync(hold)).toBe(true);
+    // While the install is held, the snapshot exists and is private to the owner.
+    const during = fs.readdirSync(tmp);
+    expect(during).toHaveLength(1);
+    expect(fs.statSync(path.join(tmp, during[0])).mode & 0o777).toBe(0o600);
+    child.kill("SIGTERM");
+
+    expect(await exited).toBe(143);
+    expect(output).toMatch(/memory off \(interrupted during memory install; settings restored, nothing wired\)/);
+    expect(settingsOf(box, "wren").hooks).toBeUndefined();
+    // The settings snapshot does not outlive the run.
+    expect(fs.readdirSync(tmp)).toEqual([]);
+  });
+
+  it("states memory is off in the summary when there is nothing to wire", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--no-verify"]);
+    expect(result.output).toMatch(/memory\s+off \(MEMORY_LAYER_ROOT not set\)/);
+    expect(result.output).not.toContain("to be wired");
+  });
+
+  it("wires the PreCompact auto and manual matchers", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+    const matchers = settingsOf(box, "wren").hooks.PreCompact.map((e: { matcher: string }) => e.matcher);
+    expect(matchers).toEqual(["auto", "manual"]);
+  });
+
+  it("wires memory only AFTER the verification probe, so the probe is not a first memory", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    // The runtime records whether hooks were already in the agent's settings
+    // at the moment it was asked, then answers with the boot phrase.
+    stubRuntime(
+      box,
+      `grep -q '"hooks"' .claude/settings.json && echo hooks-present > "${path.join(box.home, "probe-saw")}" || echo hooks-absent > "${path.join(box.home, "probe-saw")}"
+echo "boot phrase: $(grep -oE 'boot-[0-9a-f]{16}' IDENTITY.md | head -n1)"`,
+    );
+    const result = run(box, ["wren"], { stub: true, env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.status).toBe(EXIT.VERIFIED);
+    expect(fs.readFileSync(path.join(box.home, "probe-saw"), "utf8").trim()).toBe("hooks-absent");
+    expect(result.output).toMatch(/memory on /);
+    expect(settingsOf(box, "wren").hooks).toBeDefined();
+  });
+
+  it("reports OFF, with the exit code, when the install command fails, and still creates the agent", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], {
+      env: { MEMORY_LAYER_ROOT: root, FIXTURE_FAIL: "2" },
+    });
+
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toMatch(/memory\s+off \(memory install exited 2; settings restored/);
+    expect(fs.existsSync(path.join(box.agentsHome, "wren", "SOUL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(box.inboxRoot, "wren", "inbox"))).toBe(true);
+  });
+
+  it("--no-memory leaves memory off even when a checkout is present", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify", "--no-memory"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.output).toMatch(/memory\s+off \(--no-memory\)/);
+    expect(fs.existsSync(path.join(root, "scripts", "calls.log"))).toBe(false);
+  });
+
+  it("warns, but stays on, when USER_NAME is unset", () => {
+    const box = sandbox();
+    const root = memoryLayer(box);
+    const result = run(box, ["wren", "--no-verify"], { env: { MEMORY_LAYER_ROOT: root } });
+
+    expect(result.output).toMatch(/memory\s+on /);
+    expect(result.stderr).toContain("USER_NAME is not set");
+    expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
   });
 });
