@@ -1075,10 +1075,13 @@ which would put it down to the wrong cause.
 
 ## Known limitations
 
-Current, verified, and written down rather than discovered later.
+Written down rather than discovered later. Each entry says what was measured,
+by whom (the rig, or by hand) and when. "Checked" means someone read the code
+or ran the command by hand on 2026-10-12, not that the rig covers it.
 
 **No authentication.** Repeated here because it belongs on any list of this
-kind. See the top of this document.
+kind. See the top of this document. Checked: the application has no login or
+session routes (`packages/deck/app/routes`).
 
 **On WSL, `claude` can resolve to a Windows binary.** PATH often includes
 Windows directories, so `command -v claude` may return a path under `/mnt/c/`
@@ -1102,7 +1105,8 @@ shown as a separate message from whoever the quoted header names. Nothing is
 lost, it is attributed to the wrong sender, and no reader-side rule can
 separate a quoted header from a real one with certainty. Closing it means
 changing what writers put on disk, so it stays on this list rather than being
-guessed at on read.
+guessed at on read. Checked: the `inbox` parser still splits a message at a
+quoted header inside a code fence, and does not split at a plain `## heading`.
 
 **The two readers of the protocol do not agree everywhere, and the list of
 where is a file rather than this paragraph.** The python3 CLI and the web
@@ -1129,37 +1133,47 @@ in both halves: your `inbox reply` reports success, and the agent's `inbox
 unread` says there is nothing. That is why the walkthrough above sends from
 Deck and replies from the terminal rather than the other way round. Pairing the
 two files, at creation or on first contact, is an open design question rather
-than a setting.
+than a setting. Checked: `inbox reply quill` as `me` wrote
+`me/inbox/quill.md` and `quill`'s `inbox unread` said there was nothing.
 
-**Nothing proves that a message typed into a READY pane lands.** This is the
-coverage gap named at the end of tier 3, repeated here because this is where a
-reader looks for it. The refusals are covered from every angle, and one of them
-(`no-window`, described above) is exercised on every rig run, with the exact
-wording recorded in the report - it declines before a pane is ever inspected,
-since the walkthrough's recipient is you rather than an agent. The other outcome, where the
-gate decides the pane is ready and types, has no test behind it anywhere: the
+**No automated test proves that a message typed into a READY pane lands.** This
+is the coverage gap named at the end of tier 3, repeated here because this is
+where a reader looks for it. By hand it has been seen working: on WSL 2 with
+Ubuntu 24.04, on 2026-09-27, a message sent from Deck reached a live agent, and
+the agent replied within about ten seconds. That was one run, by a person, and
+the rig has not measured it. The refusals are covered from every angle, and one
+of them (`no-window`, described above) is exercised on every rig run, with the
+exact wording recorded in the report - it declines before a pane is ever
+inspected, since the walkthrough's recipient is you rather than an agent. The
+other outcome, where the gate decides the pane is ready and types, has no test
+behind it anywhere: the
 delivery suite runs its cases against pane text the test itself supplies, with
 every real keystroke suppressed, and the rig has no agent to be typed at. So
-"the message arrived in the pane, and arrived whole" is a belief. It is
-probably a correct one, since `inbox-push` sends the text and the Enter as
+"the message arrived in the pane, and arrived whole" is, to the rig, a belief.
+It is probably a correct one, since `inbox-push` sends the text and the Enter as
 separate keystrokes and then re-reads the pane to confirm the paste landed, and
 none of that is the same as having measured it.
 
 Worth knowing while you are here: that careful path is the CLI's. Typing into a
 pane from Deck's own terminal view is a different one
-(`packages/deck/app/routes/api.tmux-send.tsx` into `sendKeysToWindow`), whose
-gates are the window name and the live window list, with no idle check and no
-read-back. It was written for a person watching the pane they are typing into.
+(`packages/deck/app/routes/api.tmux-send.tsx` into `sendKeysToWindow`). It
+checks the window name and the live window list, refuses to type when the
+composer is not clean, and after the Enter re-reads the pane and reports
+"sent, could not confirm" rather than success when it cannot see the message
+leave the composer. That check was added in #43, and unit tests cover it with
+supplied pane text, so it has the same limit as the rest of this entry.
 
 Closing the gap means a stub agent that can be started in a pane, typed at, and
-asked what it received. That is a named follow-up and deliberately not part of
-this phase, because it wants the container and process-supervision groundwork
-recorded in `rig/container-image-note.md` first.
+asked what it received. That is a named follow-up (`rig/README.md` still lists
+the stage as not built) and deliberately not part of this phase, because it
+wants the container and process-supervision groundwork recorded in
+`rig/container-image-note.md` first.
 
 **The browser test suite is not a guarantee.** `pnpm -C packages/deck e2e`
 runs Playwright journeys that have real, currently un-diagnosed flakes. It is
 not in CI. Treat a green e2e run as encouraging and a red one as worth
-reading, and rely on `pnpm test` for the claim that the tree is sound.
+reading, and rely on `pnpm test` for the claim that the tree is sound. Checked:
+`.github/workflows/ci.yml` has no e2e step.
 
 **`boot-agents.sh` always uses a tmux session named `agents`.** The session
 name is not configurable in the launcher, while the application reads
@@ -1169,20 +1183,43 @@ existing session rather than starting its own. There is no flag for this yet;
 until there is, either rename your session (`tmux rename-session`) or run Deck
 on a machine or user account that does not have one. Pointing Deck at a
 differently-named session with `MC_TMUX_SESSION` works for the application,
-but the launcher will not follow it.
+but the launcher will not follow it. Checked: the name is fixed at
+`packages/base/bin/boot-agents.sh:57`.
 
 **Typography needs the internet at runtime.** The page links a stylesheet for
 three fonts from Google Fonts, so a browser with no route to it renders in
 fallback fonts with no explanation. That is the browser's connection, not the
 server's. Until #32 was fixed the fonts never loaded even when online, because
 the `@import` that was meant to fetch them was dropped; if you see fallback
-fonts on a connected browser now, that is a regression worth reporting. Nothing
-else about the application depends on egress.
+fonts on a connected browser now, that is a regression worth reporting. With the
+optional subsystems below switched off and nobody subscribed to browser
+notifications, nothing else in Deck itself depends on egress. The agents' model
+CLIs still need their provider, as tier 3 says. With the optional subsystems
+on, image descriptions call Google's API and voice connects to Deepgram; web
+push, once a browser has subscribed, sends to that browser's push service.
+Checked: the stylesheet is still linked from Google Fonts in
+`packages/deck/app/root.tsx`.
 
-**Optional subsystems are unverified here.** Voice dictation (Deepgram),
-image descriptions (Gemini) and web push all need keys, are off without them,
-and are not exercised by the rig. They degrade rather than fail: the voice
-proxy starts without a key and tells the client it has none.
+**Optional subsystems are unverified here.** Voice dictation (Deepgram) and
+image descriptions (Gemini) need keys, are off without them, and are not
+exercised by the rig. As of 2026-10-12 no one has run them by hand for this
+list either; only the no-key path of the voice proxy was read, in
+`packages/deck/server/voice-proxy.mjs`. They degrade rather than fail: the
+voice proxy starts without a key and tells the client it has none.
+
+**Web push needs no operator key; a subscription switches it on.** Deck makes
+its own VAPID keypair: the first request to `/api/push-subscribe` (a plain GET
+is enough) writes `vapid-keys.json` under the data root
+(`getVapidKeys` in `packages/deck/app/lib/push.server.ts`). Nothing is sent
+until a browser subscribes, which stores its endpoint in
+`push-subscriptions.json`. From then on, while the production launcher's
+`push-watcher.mjs` is running, newly appended messages from a non-user sender
+in threads the watcher has already baselined are posted to each stored
+endpoint, which is the push service of that browser's
+vendor, so those hosts must be reachable from the server. With no
+subscription the watcher polls the inbox files and sends nothing. Like the
+others it has not been run for this list; this entry was read from
+`push.server.ts` and `push-watcher.mjs` on 2026-10-15.
 
 Voice is a SECOND listener, on its own port, and a few of its settings are not
 the app's. See [Voice dictation](#voice-dictation-optional) for the working
@@ -1192,28 +1229,42 @@ enough; anywhere else the proxy needs `VOICE_ALLOWED_ORIGINS` and
 three documented in `.env.example`. A rejected upgrade is logged by the proxy
 and looks, in the browser, like a microphone that does nothing.
 
-**Everything here has only ever been measured as root.** The rig's containers
-run as root, and not by oversight that could be fixed in passing: the
-Dockerfiles it generates carry no `USER`, `docker run` is called with no
-`--user`, and the tier-3 stage records `id -un` in its own evidence, where it
-reads `root`. So every directory this document creates, the four roots and the
-agent homes included, has been created root-owned on every run anyone has
-measured. Nothing in Deck needs root, and nothing here has been measured
-without it either, which is a different sentence from "it works fine as a
-normal user" and is the honest one. Following this document on your own desktop
-already puts you outside what has been measured, in the direction that is
-almost certainly fine. The case where it stops being fine is a container with a
-bind-mounted state directory handing you back files you do not own, and that is
-worked through in `rig/container-image-note.md`.
+**The rig has only ever run as root.** The rig's containers run as root, and
+not by oversight that could be fixed in passing: the Dockerfiles it generates
+carry no `USER`, `docker run` is called with no `--user`, and the tier-3 stage
+records `id -un` in its own evidence, where it reads `root`. So every directory
+the rig creates, the four roots and the agent homes included, has been created
+root-owned on every run it has made. By hand, a non-root run has been completed
+once: on WSL 2 with Ubuntu 24.04, on 2026-09-27. Nothing in Deck needs root. The
+case where a non-root user can still go wrong is a container with a bind-mounted
+state directory handing you back files you do not own, and that is worked
+through in `rig/container-image-note.md`.
 
-**macOS and Windows are unverified.** The rig runs Linux containers. The
-Ubuntu path in this document is executed on every run, apart from the
-`sh-manual` blocks in Keep it running; the macOS block is not. The Windows
-section follows Microsoft's WSL documentation. Nobody, neither the rig nor a
-person, has followed it from start to finish on a Windows machine.
+**Only Linux is measured by the rig; Windows has run by hand under WSL 2 and
+macOS is unverified.** The rig runs Linux containers. The Ubuntu path in this
+document is executed on every run, apart from the `sh-manual` blocks in Keep it
+running and in the Windows section (user creation, the CLI path check, the
+`/etc/wsl.conf` edits), which no rig run executes. By hand, WSL 2 with Ubuntu 24.04 was run end to end on 2026-09-27, before the
+Windows section existed; nobody has followed that section as written from start
+to finish. Native Windows (outside WSL) is not supported, because tier 3 needs
+tmux. The macOS block is not run by anyone.
+
+**A fresh agent needs a person at its first boot.** `boot-agents.sh` starts the
+session but cannot answer the runtime's own setup prompts (folder trust, the
+resume picker, the fullscreen offer). It reports a launch as ready only when it
+has seen the composer, exits `3` while that is pending, and does not arm an
+opted-in monitor on a launch that was not ready. See tier 3 for the exact steps.
+Checked: `boot-agents.sh:642` waits up to `BOOT_READY_SECS` (default 45) per fresh
+launch.
+
+**Starting Deck on boot has not been checked.** The systemd user service in
+Keep it running restarts Deck if it crashes and, once enabled, is meant to start
+it with your user manager, but as of 2026-10-12 neither the rig nor a person
+has rebooted a machine to confirm that.
 
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
-only a display name: it is a filename in your inbox root.
+only a display name: it is a filename in your inbox root. Checked: `mcUser` in
+`packages/deck/app/lib/instance.server.ts` returns `alex` when it is unset.
 
 ## Where to go next
 
