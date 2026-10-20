@@ -66,7 +66,7 @@
  */
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useFetcher } from "react-router";
-import { FileImage, FileText, Mic, MicOff, Paperclip, Settings2, X } from "lucide-react";
+import { FileImage, FileText, Loader2, Mic, MicOff, Paperclip, Settings2, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import type { BatchPrefs, HoldIndicator } from "~/lib/batch-prefs";
@@ -189,6 +189,7 @@ interface ComposeProps {
 
 type VoiceState =
   | { status: "idle" }
+  | { status: "connecting" }
   | { status: "active"; interim: string }
   | { status: "unavailable" };
 
@@ -237,6 +238,14 @@ function useVoice(
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // One session at a time. liveRef is true from the first click until the
+  // session is released, so a click while connecting (status still idle in
+  // the render that handled it) cancels instead of starting a second session.
+  // sessionIdRef is bumped on every release; an in-flight start compares its
+  // own id after each await and gives up if it has been superseded.
+  const liveRef = useRef(false);
+  const sessionIdRef = useRef(0);
+
   // Fix layer 1: the WS message listener is registered ONCE per
   // session, so a direct closure over onFinalText goes stale the moment the
   // parent re-renders (its captured draft froze at session start - that was
@@ -262,7 +271,11 @@ function useVoice(
     [onDebugEvent]
   );
 
-  const stopVoice = useCallback(() => {
+  // Tear down whatever session the refs hold, without touching React state.
+  const releaseSession = useCallback(() => {
+    liveRef.current = false;
+    sessionIdRef.current += 1;
+
     if (silenceTimerRef.current !== null) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
@@ -293,9 +306,12 @@ function useVoice(
 
     frameCountRef.current = 0;
     frameBytesRef.current = 0;
-
-    setVoiceState({ status: "idle" });
   }, []);
+
+  const stopVoice = useCallback(() => {
+    releaseSession();
+    setVoiceState({ status: "idle" });
+  }, [releaseSession]);
 
   // Stop on unmount - no hot mic after component dies.
   useEffect(() => {
@@ -318,7 +334,9 @@ function useVoice(
   }, [emit, stopVoice]);
 
   const toggleMic = useCallback(async () => {
-    if (voiceState.status === "active") {
+    // Connecting or active: a click stops (or cancels) the current session.
+    if (liveRef.current) {
+      emit("state", "stopped by click");
       stopVoice();
       return;
     }
@@ -334,6 +352,13 @@ function useVoice(
       return;
     }
 
+    // Release any leftover session before claiming the refs for a new one.
+    releaseSession();
+    liveRef.current = true;
+    const sessionId = sessionIdRef.current;
+    const isCurrent = () => sessionIdRef.current === sessionId;
+    setVoiceState({ status: "connecting" });
+
     emit("state", "getUserMedia requested");
 
     let stream: MediaStream;
@@ -341,9 +366,18 @@ function useVoice(
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       emit("state", "getUserMedia granted");
     } catch (err) {
+      if (!isCurrent()) return;
       const name = err instanceof Error ? err.name : "unknown";
       emit("error", `getUserMedia denied: ${name}`);
+      releaseSession();
       setVoiceState({ status: "unavailable" });
+      return;
+    }
+
+    // Cancelled while the permission prompt was open: drop this stream.
+    if (!isCurrent()) {
+      stream.getTracks().forEach((t) => t.stop());
+      emit("state", "start cancelled");
       return;
     }
 
@@ -355,7 +389,11 @@ function useVoice(
     wsRef.current = ws;
     emit("ws", "connecting");
 
+    // Every listener below belongs to THIS socket's session. Events from a
+    // socket that is no longer wsRef.current are dropped, so a superseded
+    // session can neither insert text nor stop the live one.
     ws.addEventListener("open", () => {
+      if (wsRef.current !== ws) return;
       emit("ws", "open");
 
       // If debug mode is on, opt in to dg_raw mirroring.
@@ -404,6 +442,7 @@ function useVoice(
     });
 
     ws.addEventListener("message", (e) => {
+      if (wsRef.current !== ws) return;
       if (typeof e.data !== "string") return;
 
       // Emit the raw message (truncated to 300 chars) before parsing.
@@ -480,25 +519,28 @@ function useVoice(
 
     ws.addEventListener("close", (e) => {
       emit("ws", `close code=${e.code} reason=${e.reason || "(none)"}`);
-      // If we didn't initiate the close ourselves, flip to unavailable.
-      if (wsRef.current !== null) {
+      // If we didn't initiate the close ourselves (stopVoice nulls wsRef
+      // first), and this is still the current socket, flip to unavailable.
+      if (wsRef.current === ws) {
         stopVoice();
         setVoiceState({ status: "unavailable" });
       }
     });
 
     ws.addEventListener("error", () => {
+      if (wsRef.current !== ws) return;
       emit("error", "ws error");
       stopVoice();
       setVoiceState({ status: "unavailable" });
     });
-  }, [voiceState.status, proxyUrl, stopVoice, emit, debug, resetSilenceTimer]);
+  }, [proxyUrl, stopVoice, releaseSession, emit, debug, resetSilenceTimer]);
 
   const micAvailable = voiceState.status !== "unavailable";
   const isActive = voiceState.status === "active";
+  const isConnecting = voiceState.status === "connecting";
   const interimText = voiceState.status === "active" ? voiceState.interim : "";
 
-  return { voiceState, micAvailable, isActive, interimText, toggleMic, stopVoice };
+  return { voiceState, micAvailable, isActive, isConnecting, interimText, toggleMic, stopVoice };
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +773,7 @@ export function Compose({
     currentTextRef.current = latestComposeText;
   }, [latestComposeText]);
 
-  const { micAvailable, isActive, interimText, toggleMic, stopVoice } =
+  const { micAvailable, isActive, isConnecting, interimText, toggleMic, stopVoice } =
     useVoice(
       voiceProxyUrl,
       handleFinalText,
@@ -746,7 +788,9 @@ export function Compose({
       ? "Voice unavailable"
       : isActive
         ? "Stop voice recording"
-        : "Start voice recording";
+        : isConnecting
+          ? "Connecting voice, click to cancel"
+          : "Start voice recording";
 
   // Capture the anchor at the voice-session activation edge; clear on end so
   // the next session re-anchors at the then-current cursor. Deliberately NOT
@@ -1204,13 +1248,16 @@ export function Compose({
                   title={micLabel}
                   className="relative h-9 w-9 p-0 min-h-0 min-w-0 text-muted-foreground"
                   onClick={toggleMic}
+                  aria-busy={isConnecting || undefined}
                   data-testid="mic-button"
                 >
                   {/* Pulse indicator while active */}
                   {isActive ? (
                     <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary animate-pulse" />
                   ) : null}
-                  {voiceEnabled ? (
+                  {voiceEnabled && isConnecting ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : voiceEnabled ? (
                     <Mic className={cn("h-5 w-5", isActive ? "text-primary" : "")} />
                   ) : (
                     <MicOff className="h-5 w-5" />
