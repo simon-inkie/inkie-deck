@@ -86,13 +86,8 @@ function confinedWrite(filePath: string, content: string): void {
 // VAPID keys - lazy self-provision
 // ---------------------------------------------------------------------------
 
-/**
- * Return the instance's VAPID keypair, generating + persisting one on first
- * call. Generation is idempotent-enough for the single-daemon case (the
- * worst concurrent-boot race rewrites the file with a fresh valid pair
- * before any subscription exists).
- */
-export function getVapidKeys(): VapidKeys {
+/** Read the persisted keypair without provisioning or replacing it. */
+export function readVapidKeys(): VapidKeys | null {
   const file = dataPath("vapid-keys.json");
   try {
     const parsed = VapidKeysSchema.safeParse(
@@ -100,10 +95,17 @@ export function getVapidKeys(): VapidKeys {
     );
     if (parsed.success) return parsed.data;
   } catch {
-    // Missing or malformed - fall through to generate.
+    // Status reads must never provision or replace keys.
   }
+  return null;
+}
+
+/** Return the instance's keypair, generating and persisting it on first use. */
+export function getVapidKeys(): VapidKeys {
+  const existing = readVapidKeys();
+  if (existing) return existing;
   const fresh = webpush.generateVAPIDKeys();
-  confinedWrite(file, JSON.stringify(fresh, null, 2) + "\n");
+  confinedWrite(dataPath("vapid-keys.json"), JSON.stringify(fresh, null, 2) + "\n");
   return fresh;
 }
 
@@ -132,6 +134,20 @@ function saveState(state: SubscriptionState): void {
 /** List all stored subscriptions for this instance. */
 export function listSubscriptions(): StoredSubscription[] {
   return loadState().subscriptions;
+}
+
+/** Confirm both the browser key and the complete subscription, without writes. */
+export function isSubscriptionSynced(
+  sub: z.infer<typeof PushSubscriptionSchema>,
+  applicationServerKey: string
+): boolean {
+  const keys = readVapidKeys();
+  if (!keys || applicationServerKey !== keys.publicKey) return false;
+  return listSubscriptions().some((stored) =>
+    stored.endpoint === sub.endpoint &&
+    stored.keys.p256dh === sub.keys.p256dh &&
+    stored.keys.auth === sub.keys.auth
+  );
 }
 
 /** Add (or refresh) a subscription, deduped by endpoint. */
