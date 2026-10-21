@@ -15,6 +15,10 @@ describe("push toggle sync decision", () => {
     expect(pushSyncState(true, false)).toBe("out-of-sync");
   });
 
+  it("stays neutral when the status route could not be reached", () => {
+    expect(pushSyncState(true, null)).toBe("off");
+  });
+
   it("encodes the browser key as unpadded base64url", () => {
     expect(applicationServerKeyString(new Uint8Array([251, 255]).buffer)).toBe("-_8");
     expect(applicationServerKeyString(null)).toBeNull();

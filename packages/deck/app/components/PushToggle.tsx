@@ -5,7 +5,8 @@
  *   - unsupported: no serviceWorker/PushManager/Notification -> render nothing
  *   - denied: the browser has push blocked -> inert hint
  *   - subscribed: tap to turn off (unsubscribe + tell the server)
- *   - out-of-sync: browser subscription is unconfirmed, tap to repair
+ *   - out-of-sync: the server says the subscription is not confirmed; tap to repair or turn off
+ *     (an unreachable status route shows the neutral "off" state instead)
  *   - off: tap to enable (register SW -> permission -> subscribe -> POST)
  *
  * The VAPID public key is fetched from /api/push-subscribe on demand - no
@@ -23,7 +24,8 @@ import { applicationServerKeyString, pushSyncState } from "~/lib/push-sync";
 
 type PushState = "unsupported" | "denied" | "subscribed" | "out-of-sync" | "off" | "busy";
 
-async function confirmSubscription(sub: PushSubscription): Promise<boolean> {
+/** true/false from the server, null when it could not be asked. */
+async function confirmSubscription(sub: PushSubscription): Promise<boolean | null> {
   const response = await fetch("/api/push-subscribe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -33,7 +35,7 @@ async function confirmSubscription(sub: PushSubscription): Promise<boolean> {
       applicationServerKey: applicationServerKeyString(sub.options.applicationServerKey),
     }),
   });
-  if (!response.ok) return false;
+  if (!response.ok) return null;
   const result = await response.json() as { synced?: boolean };
   return result.synced === true;
 }
@@ -69,10 +71,10 @@ export function PushToggle() {
         const reg = await navigator.serviceWorker.getRegistration("/");
         const sub = reg ? await reg.pushManager.getSubscription() : null;
         hasSubscription = !!sub;
-        const confirmed = sub ? await confirmSubscription(sub) : false;
+        const confirmed = sub ? await confirmSubscription(sub) : null;
         if (!cancelled) setState(pushSyncState(hasSubscription, confirmed));
       } catch {
-        if (!cancelled) setState(pushSyncState(hasSubscription, false));
+        if (!cancelled) setState(pushSyncState(hasSubscription, null));
       }
     })();
     return () => {
@@ -112,9 +114,10 @@ export function PushToggle() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ intent: "subscribe", subscription: sub.toJSON() }),
       });
-      setState(pushSyncState(true, res.ok && await confirmSubscription(sub)));
+      setState(pushSyncState(true, res.ok ? await confirmSubscription(sub) : false));
     } catch {
-      setState("out-of-sync");
+      // Key fetch or subscribe failed: nothing is known to be out of sync.
+      setState("off");
     }
   }
 
@@ -138,6 +141,30 @@ export function PushToggle() {
   }
 
   if (state === "unsupported") return null;
+
+  if (state === "out-of-sync") {
+    return (
+      <div data-testid="push-toggle" data-push-state="out-of-sync" className="flex flex-col">
+        <button
+          type="button"
+          onClick={enable}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-foreground/80 hover:bg-muted"
+        >
+          <Bell className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>Notifications out of sync - re-enable on this device</span>
+        </button>
+        <button
+          type="button"
+          data-testid="push-toggle-off"
+          onClick={disable}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted"
+        >
+          <BellOff className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>Turn notifications off for this device</span>
+        </button>
+      </div>
+    );
+  }
 
   if (state === "denied") {
     return (
@@ -178,9 +205,7 @@ export function PushToggle() {
     >
       <Bell className="size-3.5 shrink-0" aria-hidden="true" />
       <span>
-        {state === "busy" ? "Setting up..." : state === "out-of-sync"
-          ? "Notifications out of sync - re-enable on this device"
-          : "Enable notifications on this device"}
+        {state === "busy" ? "Setting up..." : "Enable notifications on this device"}
       </span>
     </button>
   );

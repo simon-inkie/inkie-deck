@@ -1,16 +1,18 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   checkIdentity, checkRoot, checkStatePath, checkBriefs, checkPush,
-  checkPort, checkVoiceOrigin, checkStart, isInside, parseListeningPorts,
+  checkPort, checkVoiceOrigin, isInside, parseListeningPorts, pushFacts,
 } from "../scripts/preflight.mjs";
 
 const access = { directory: true, readable: true, writable: true, searchable: true };
 
 describe("production preflight decisions", () => {
-  it("warns about the default identity and rejects users missing from the operator list", () => {
+  it("warns about the default identity and passes when MC_USER is set", () => {
     expect(checkIdentity({}).status).toBe("WARN");
-    expect(checkIdentity({ MC_USER: "alex", MC_OPERATOR_USERS: "quill" }).status).toBe("FAIL");
-    expect(checkIdentity({ MC_USER: " alex ", MC_OPERATOR_USERS: "quill, alex" }).status).toBe("PASS");
+    expect(checkIdentity({ MC_USER: " alex " }).status).toBe("PASS");
   });
 
   it("requires absolute, existing roots with read/write/traversal access", () => {
@@ -21,15 +23,11 @@ describe("production preflight decisions", () => {
     expect(checkRoot("DATA_ROOT", "/srv/deck/data", access).status).toBe("PASS");
   });
 
-  it("requires explicit confined state paths and respects the realpath observation", () => {
-    const facts = { inside: true, accessible: true };
-    const check = (value: string, observed = facts) => checkStatePath("FILE_PINS_PATH", value, "/srv/deck/data", observed, "/srv/deck");
-    expect(check("").status).toBe("FAIL");
-    expect(check("data/file-pins.json").status).toBe("PASS");
-    expect(check("data/../file-pins.json").status).toBe("FAIL");
-    expect(check("data-other/file-pins.json").status).toBe("FAIL");
-    expect(check("data/file-pins.json", { ...facts, inside: false }).status).toBe("FAIL");
-    expect(check("data/file-pins.json", { ...facts, accessible: false }).status).toBe("FAIL");
+  it("warns when state paths are unset and fails only when a set path is inaccessible", () => {
+    expect(checkStatePath("FILE_PINS_PATH", "", {}).status).toBe("WARN");
+    expect(checkStatePath("FILE_PINS_PATH", undefined, {}).status).toBe("WARN");
+    expect(checkStatePath("FILE_PINS_PATH", "/elsewhere/pins.json", { accessible: true }).status).toBe("PASS");
+    expect(checkStatePath("FILE_PINS_PATH", "/elsewhere/pins.json", { accessible: false }).status).toBe("FAIL");
     expect(isInside("/srv/deck/data", "/srv/deck/data")).toBe(false);
   });
 
@@ -39,16 +37,53 @@ describe("production preflight decisions", () => {
     expect(checkBriefs({ MC_BRIEFS_AGENT: "../quill" }).status).toBe("FAIL");
   });
 
-  it("requires both push files, matching keys, confinement and a valid store", () => {
-    const facts = { keysPresent: true, storePresent: true, confined: true, validKeys: true, validStore: true, linked: true, mismatched: false };
-    expect(checkPush(facts).status).toBe("PASS");
-    expect(checkPush({ ...facts, keysPresent: false }).status).toBe("WARN");
-    expect(checkPush({ ...facts, storePresent: false }).status).toBe("WARN");
-    expect(checkPush({ ...facts, confined: false }).status).toBe("FAIL");
-    expect(checkPush({ ...facts, validKeys: false }).status).toBe("FAIL");
-    expect(checkPush({ ...facts, validStore: false }).status).toBe("FAIL");
-    expect(checkPush({ ...facts, linked: false }).status).toBe("WARN");
-    expect(checkPush({ ...facts, mismatched: true }).status).toBe("FAIL");
+  describe("push files", () => {
+    const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "deck-preflight-"));
+    const sub = { endpoint: "https://push.example.test/abc", keys: { p256dh: "p", auth: "a" }, addedAt: "2026-01-01T00:00:00Z" };
+    const write = (dir: string, keys: unknown, store: unknown) => {
+      if (keys !== undefined) fs.writeFileSync(path.join(dir, "vapid-keys.json"), typeof keys === "string" ? keys : JSON.stringify(keys));
+      if (store !== undefined) fs.writeFileSync(path.join(dir, "push-subscriptions.json"), typeof store === "string" ? store : JSON.stringify(store));
+    };
+    const run = (dir: string) => checkPush(pushFacts(dir, dir));
+    const goodKeys = { publicKey: "pub", privateKey: "priv" };
+
+    it("warns when files are absent and writes nothing", () => {
+      const dir = tmp();
+      expect(run(dir).status).toBe("WARN");
+      expect(fs.readdirSync(dir)).toEqual([]);
+      write(dir, goodKeys, undefined);
+      expect(run(dir).status).toBe("WARN");
+    });
+
+    it("warns honestly, with a count, when real files parse; never passes", () => {
+      const dir = tmp();
+      write(dir, goodKeys, { version: 1, subscriptions: [sub, { ...sub, endpoint: "https://push.example.test/def" }] });
+      const check = run(dir);
+      expect(check.status).toBe("WARN");
+      expect(check.message).toContain("2 stored subscription(s)");
+      expect(check.message).toContain("cannot be verified offline");
+    });
+
+    it("fails on unparsable or wrongly shaped files", () => {
+      let dir = tmp();
+      write(dir, "not json", { version: 1, subscriptions: [] });
+      expect(run(dir).status).toBe("FAIL");
+      dir = tmp();
+      write(dir, goodKeys, { version: 2, subscriptions: [] });
+      expect(run(dir).status).toBe("FAIL");
+      dir = tmp();
+      write(dir, goodKeys, { version: 1, subscriptions: [{ ...sub, endpoint: "nope" }] });
+      expect(run(dir).status).toBe("FAIL");
+    });
+
+    it("fails when a file escapes DATA_ROOT through a symlink", () => {
+      const dir = tmp();
+      const outside = tmp();
+      write(outside, goodKeys, { version: 1, subscriptions: [] });
+      fs.symlinkSync(path.join(outside, "vapid-keys.json"), path.join(dir, "vapid-keys.json"));
+      fs.symlinkSync(path.join(outside, "push-subscriptions.json"), path.join(dir, "push-subscriptions.json"));
+      expect(run(dir).status).toBe("FAIL");
+    });
   });
 
   it("checks listener snapshots and validates port numbers", () => {
@@ -70,21 +105,14 @@ describe("production preflight decisions", () => {
     expect(checkVoiceOrigin({}, "invalid").status).toBe("FAIL");
   });
 
-  it("rejects bare serving and recognises the production launcher", () => {
-    expect(checkStart("react-router-serve ./build/server/index.js").status).toBe("FAIL");
-    expect(checkStart("node scripts/start-production.mjs").status).toBe("PASS");
-    expect(checkStart(undefined).status).toBe("FAIL");
-  });
-
   it("never includes configured values in diagnostic output", () => {
     const secret = "private-value-never-print";
     const diagnostics = [
-      checkIdentity({ MC_USER: secret, MC_OPERATOR_USERS: "alex" }),
+      checkIdentity({ MC_USER: secret }),
       checkRoot("DATA_ROOT", secret, access),
       checkBriefs({ MC_BRIEFS_AGENT: secret }),
       checkPort("PORT", secret, []),
       checkVoiceOrigin({}, secret),
-      checkStart(secret),
     ];
     expect(JSON.stringify(diagnostics)).not.toContain(secret);
   });

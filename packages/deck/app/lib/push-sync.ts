@@ -1,9 +1,10 @@
 /** A browser subscription alone does not prove this instance can deliver. */
 export function pushSyncState(
   hasSubscription: boolean,
-  serverConfirmed: boolean
+  serverConfirmed: boolean | null
 ): "off" | "out-of-sync" | "subscribed" {
-  if (!hasSubscription) return "off";
+  // null means the status route could not be reached: unknown, so neutral.
+  if (!hasSubscription || serverConfirmed === null) return "off";
   return serverConfirmed ? "subscribed" : "out-of-sync";
 }
 
