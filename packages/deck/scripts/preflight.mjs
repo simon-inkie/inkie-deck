@@ -6,7 +6,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { resolveAllowedOrigins } from "../server/voice-relay.mjs";
 
 const result = (name, status, message) => ({ name, status, message });
@@ -144,9 +144,9 @@ export function pushFacts(dataRoot, cwd) {
 }
 
 /** CLI IO boundary: exactly the launcher's .env precedence, no .env.production. */
-export function runPreflight({ cwd = process.cwd(), origin, root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..") } = {}) {
-  // The launcher reads .env from the package directory, not the working directory.
-  const envFile = path.join(root, ".env");
+export function runPreflight({ cwd = process.cwd(), origin } = {}) {
+  // The .env is read from the current working directory, as the launcher does, so run preflight from the same directory the service uses.
+  const envFile = path.join(cwd, ".env");
   if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
   const env = process.env;
   const checks = [checkIdentity(env)];

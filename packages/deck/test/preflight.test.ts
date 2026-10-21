@@ -1,13 +1,18 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   checkIdentity, checkRoot, checkStatePath, checkBriefs, checkPush,
-  checkPort, checkVoiceOrigin, isInside, parseListeningPorts, pushFacts,
+  checkPort, checkVoiceOrigin, isInside, parseListeningPorts, pushFacts, runPreflight,
 } from "../scripts/preflight.mjs";
 
 const access = { directory: true, readable: true, writable: true, searchable: true };
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 describe("production preflight decisions", () => {
   it("warns about the default identity and passes when MC_USER is set", () => {
@@ -38,7 +43,11 @@ describe("production preflight decisions", () => {
   });
 
   describe("push files", () => {
-    const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "deck-preflight-"));
+    const tmp = () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deck-preflight-"));
+      dirs.push(dir);
+      return dir;
+    };
     const sub = { endpoint: "https://push.example.test/abc", keys: { p256dh: "p", auth: "a" }, addedAt: "2026-01-01T00:00:00Z" };
     const write = (dir: string, keys: unknown, store: unknown) => {
       if (keys !== undefined) fs.writeFileSync(path.join(dir, "vapid-keys.json"), typeof keys === "string" ? keys : JSON.stringify(keys));
@@ -115,5 +124,22 @@ describe("production preflight decisions", () => {
       checkVoiceOrigin({}, secret),
     ];
     expect(JSON.stringify(diagnostics)).not.toContain(secret);
+  });
+
+  it("runPreflight loads .env from the given working directory only", () => {
+    const withEnv = fs.mkdtempSync(path.join(os.tmpdir(), "deck-preflight-"));
+    const without = fs.mkdtempSync(path.join(os.tmpdir(), "deck-preflight-"));
+    dirs.push(withEnv, without);
+    fs.writeFileSync(path.join(withEnv, ".env"), "MC_USER=from-cwd-env\n");
+    const saved = process.env.MC_USER;
+    delete process.env.MC_USER;
+    try {
+      runPreflight({ cwd: without });
+      expect(process.env.MC_USER).toBeUndefined();
+      runPreflight({ cwd: withEnv });
+      expect(process.env.MC_USER).toBe("from-cwd-env");
+    } finally {
+      if (saved === undefined) delete process.env.MC_USER; else process.env.MC_USER = saved;
+    }
   });
 });
