@@ -5,6 +5,7 @@
  *          self-provisioned - the client needs it for PushManager.subscribe)
  * POST -> intent=subscribe   body: subscription JSON (endpoint + keys)
  *         intent=unsubscribe body: endpoint
+ *         intent=status      body: subscription JSON + applicationServerKey
  *
  * Subscriptions persist in the instance's data root via push.server.ts
  * (per-instance = per-user). The watcher (server/push-watcher.mjs) reads
@@ -19,6 +20,7 @@ import {
   addSubscription,
   removeSubscription,
   PushSubscriptionSchema,
+  isSubscriptionSynced,
 } from "~/lib/push.server";
 
 function json(payload: unknown, status: number): Response {
@@ -36,6 +38,11 @@ export async function loader(_args: Route.LoaderArgs) {
 }
 
 const BodySchema = z.discriminatedUnion("intent", [
+  z.object({
+    intent: z.literal("status"),
+    subscription: PushSubscriptionSchema,
+    applicationServerKey: z.string().min(1).nullable(),
+  }),
   z.object({
     intent: z.literal("subscribe"),
     subscription: PushSubscriptionSchema,
@@ -62,6 +69,16 @@ export async function action({ request }: Route.ActionArgs) {
       { ok: false, error: parsed.error.issues[0]?.message ?? "invalid body" },
       400
     );
+  }
+
+  if (parsed.data.intent === "status") {
+    return json({
+      ok: true,
+      synced: parsed.data.applicationServerKey !== null && isSubscriptionSynced(
+        parsed.data.subscription,
+        parsed.data.applicationServerKey
+      ),
+    }, 200);
   }
 
   if (parsed.data.intent === "subscribe") {

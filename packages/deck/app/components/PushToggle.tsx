@@ -1,10 +1,12 @@
 /**
  * PushToggle.tsx - "enable notifications on this device" affordance.
  *
- * Lives in the bell dropdown (the notification surface). Four states:
+ * Lives in the bell dropdown (the notification surface). States:
  *   - unsupported: no serviceWorker/PushManager/Notification -> render nothing
  *   - denied: the browser has push blocked -> inert hint
  *   - subscribed: tap to turn off (unsubscribe + tell the server)
+ *   - out-of-sync: the server says the subscription is not confirmed; tap to repair or turn off
+ *     (an unreachable status route shows the neutral "off" state instead)
  *   - off: tap to enable (register SW -> permission -> subscribe -> POST)
  *
  * The VAPID public key is fetched from /api/push-subscribe on demand - no
@@ -18,8 +20,25 @@
  */
 import { useEffect, useState } from "react";
 import { Bell, BellOff, BellRing } from "lucide-react";
+import { applicationServerKeyString, pushSyncState } from "~/lib/push-sync";
 
-type PushState = "unsupported" | "denied" | "subscribed" | "off" | "busy";
+type PushState = "unsupported" | "denied" | "subscribed" | "out-of-sync" | "off" | "busy";
+
+/** true/false from the server, null when it could not be asked. */
+async function confirmSubscription(sub: PushSubscription): Promise<boolean | null> {
+  const response = await fetch("/api/push-subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      intent: "status",
+      subscription: sub.toJSON(),
+      applicationServerKey: applicationServerKeyString(sub.options.applicationServerKey),
+    }),
+  });
+  if (!response.ok) return null;
+  const result = await response.json() as { synced?: boolean };
+  return result.synced === true;
+}
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
@@ -47,12 +66,15 @@ export function PushToggle() {
     }
     let cancelled = false;
     void (async () => {
+      let hasSubscription = false;
       try {
         const reg = await navigator.serviceWorker.getRegistration("/");
         const sub = reg ? await reg.pushManager.getSubscription() : null;
-        if (!cancelled) setState(sub ? "subscribed" : "off");
+        hasSubscription = !!sub;
+        const confirmed = sub ? await confirmSubscription(sub) : null;
+        if (!cancelled) setState(pushSyncState(hasSubscription, confirmed));
       } catch {
-        if (!cancelled) setState("off");
+        if (!cancelled) setState(pushSyncState(hasSubscription, null));
       }
     })();
     return () => {
@@ -70,8 +92,20 @@ export function PushToggle() {
         return;
       }
       const keyRes = await fetch("/api/push-subscribe");
+      if (!keyRes.ok) throw new Error("Could not load push configuration");
       const { publicKey } = (await keyRes.json()) as { publicKey: string };
-      const sub = await reg.pushManager.subscribe({
+      let sub = await reg.pushManager.getSubscription();
+      if (sub && applicationServerKeyString(sub.options.applicationServerKey) !== publicKey) {
+        const oldEndpoint = sub.endpoint;
+        if (!await sub.unsubscribe()) throw new Error("Could not replace subscription");
+        await fetch("/api/push-subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ intent: "unsubscribe", endpoint: oldEndpoint }),
+        });
+        sub = null;
+      }
+      sub ??= await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
       });
@@ -80,8 +114,9 @@ export function PushToggle() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ intent: "subscribe", subscription: sub.toJSON() }),
       });
-      setState(res.ok ? "subscribed" : "off");
+      setState(pushSyncState(true, res.ok ? await confirmSubscription(sub) : false));
     } catch {
+      // Key fetch or subscribe failed: nothing is known to be out of sync.
       setState("off");
     }
   }
@@ -106,6 +141,30 @@ export function PushToggle() {
   }
 
   if (state === "unsupported") return null;
+
+  if (state === "out-of-sync") {
+    return (
+      <div data-testid="push-toggle" data-push-state="out-of-sync" className="flex flex-col">
+        <button
+          type="button"
+          onClick={enable}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-foreground/80 hover:bg-muted"
+        >
+          <Bell className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>Notifications out of sync - re-enable on this device</span>
+        </button>
+        <button
+          type="button"
+          data-testid="push-toggle-off"
+          onClick={disable}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted"
+        >
+          <BellOff className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>Turn notifications off for this device</span>
+        </button>
+      </div>
+    );
+  }
 
   if (state === "denied") {
     return (
