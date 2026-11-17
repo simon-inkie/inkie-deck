@@ -1217,7 +1217,7 @@ export function Compose({
                 }
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                className="min-h-10 max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 pr-[5rem] pb-10 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background disabled:opacity-50"
+                className="mc-composer-textarea max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 pr-[5rem] pb-10 text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background disabled:opacity-50"
               />
 
               {/* Attach + Mic live inside the textarea border, bottom-right corner */}
