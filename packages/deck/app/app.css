@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+/* Per-area typography tokens; rem sizes follow the root font size. */
+:root {
+  --mc-chat-font-size: 1.0625rem;
+  --mc-chat-leading: 1.45;
+  --mc-review-pane-font-size: 0.875rem;
+  --mc-review-h2-font-size: 1.25em;
+  --mc-review-h3-font-size: 1em;
+  --mc-nav-font-size: 0.9375rem;
+  --mc-decision-card-font-size: 1rem;
+  --mc-decision-card-leading: 1.5;
+  --mc-composer-font-size: 0.9375rem;
+  --mc-composer-min-height: 3.25rem;
+  --mc-composer-padding-top: 0.55rem;
+}
+
 /*
  * Inkie Deck theme - the canonical Inkie design language (retro2, teal-led).
  * The custom properties below are the source of truth for it: there is no
@@ -130,7 +145,7 @@
   }
   .prose-mc p {
     margin: 0.5em 0;
-    line-height: 1.6;
+    line-height: var(--mc-chat-leading);
   }
   .prose-mc ul,
   .prose-mc ol {
@@ -366,6 +381,41 @@
   .mc-pop {
     animation: mc-pop-in 120ms ease-out;
   }
+}
+
+.mc-composer-textarea {
+  min-height: var(--mc-composer-min-height);
+  padding-top: var(--mc-composer-padding-top);
+  font-size: var(--mc-composer-font-size);
+}
+
+.mc-chat-message-copy {
+  font-size: var(--mc-chat-font-size);
+}
+
+.mc-review-pane-copy {
+  font-size: var(--mc-review-pane-font-size);
+}
+
+.mc-review-pane-copy.prose-mc h2 {
+  font-size: var(--mc-review-h2-font-size);
+}
+
+.mc-review-pane-copy.prose-mc h3 {
+  font-size: var(--mc-review-h3-font-size);
+}
+
+.mc-sidebar-agent-name {
+  font-size: var(--mc-nav-font-size);
+}
+
+.mc-decision-card-copy {
+  font-size: var(--mc-decision-card-font-size);
+  line-height: var(--mc-decision-card-leading);
+}
+
+.mc-decision-card-copy.prose-mc p {
+  line-height: var(--mc-decision-card-leading);
 }
 
 @keyframes mc-pop-in {

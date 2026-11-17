@@ -87,7 +87,7 @@ export function Sidebar({ agents }: { agents: SidebarAgent[] }) {
                       let a long name give way, `shrink-0` keeps the dots and
                       the pill their own size whatever the name does. */}
                   <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate font-display text-sm font-bold uppercase tracking-tight text-foreground">
+                    <span className="mc-sidebar-agent-name truncate font-display font-bold uppercase tracking-tight text-foreground">
                       {a.name}
                     </span>
                     {a.hasUnread ? (

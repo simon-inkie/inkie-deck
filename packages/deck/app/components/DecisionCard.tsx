@@ -202,7 +202,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
                 setExpanded(true);
               }}
             >
-              <div className="prose-mc line-clamp-2 text-sm text-foreground/70">
+              <div className="mc-decision-card-copy prose-mc line-clamp-2 text-foreground/70">
                 <Markdown onOpenDoc={onOpenDoc}>{block.body}</Markdown>
               </div>
               <span className="mt-1 flex items-center justify-end gap-0.5 label-mono text-[10px] text-muted-foreground">
@@ -214,7 +214,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
         ) : (
           <div className="p-4">
             {block.body ? (
-              <div className="prose-mc mb-4 text-sm text-foreground/80">
+              <div className="mc-decision-card-copy prose-mc mb-4 text-foreground/80">
                 <Markdown onOpenDoc={onOpenDoc}>{block.body}</Markdown>
               </div>
             ) : null}
@@ -304,7 +304,7 @@ export function DecisionCard({ block, now, onWriteOwn, draftCustomAnswer, onOpen
 
         {/* Card body (agent-authored, sanitized via Markdown) */}
         {block.body ? (
-          <div className="prose-mc mb-4 text-sm text-foreground/80">
+          <div className="mc-decision-card-copy prose-mc mb-4 text-foreground/80">
             <Markdown onOpenDoc={onOpenDoc}>{block.body}</Markdown>
           </div>
         ) : null}

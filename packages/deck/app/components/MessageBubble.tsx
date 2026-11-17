@@ -173,7 +173,7 @@ export function MessageBubble({ own, block, now, onOpenDoc, threadAgent, superse
           </Badge>
         ) : null}
       </div>
-      <div className={`prose-mc max-w-prose px-4 py-2.5 ${bubbleClass}`}>
+      <div className={`mc-chat-message-copy prose-mc max-w-prose px-4 py-2.5 ${bubbleClass}`}>
         <Markdown onOpenDoc={onOpenDoc}>{block.body}</Markdown>
       </div>
       <div className="mt-1 flex items-center gap-1 px-1">
