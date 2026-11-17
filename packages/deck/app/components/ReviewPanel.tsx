@@ -363,7 +363,7 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
               </div>
             )
             : (
-              <div className="prose-mc text-sm">
+              <div className="mc-review-pane-copy prose-mc">
                 <Markdown
                   onOpenDoc={onOpenDoc}
                   reviewDocBasePath={basePath}
