@@ -77,7 +77,6 @@ import {
   SILENCE_AUTO_STOP_MS,
 } from "~/lib/voice-insert";
 import { buildOutgoingBody, extractPasteFiles } from "~/lib/compose-attach";
-import { cn } from "~/lib/utils";
 
 interface ComposeProps {
   /**
@@ -1202,6 +1201,9 @@ export function Compose({
                 disabled={busy || uploading}
                 placeholder={isCustomMode ? "Write your answer..." : "Write a reply..."}
                 data-testid="compose-textarea"
+                // Fixed-pixel clearance for the two 36px controls, their 2px gap
+                // and 6px offsets, with room between the text and the controls.
+                style={{ paddingRight: 84, paddingBottom: 44 }}
                 value={currentDraft}
                 onChange={
                   isCustomMode && onChange
@@ -1217,11 +1219,12 @@ export function Compose({
                 }
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                className="min-h-10 max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 pr-[5rem] pb-10 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background disabled:opacity-50"
+                className="min-h-10 max-h-[40vh] w-full resize-none overflow-y-auto rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background disabled:opacity-50"
               />
 
-              {/* Attach + Mic live inside the textarea border, bottom-right corner */}
-              <div className="absolute bottom-1.5 right-1.5 flex items-center gap-0.5">
+              {/* Attach + Mic live inside the textarea border, bottom-right corner.
+                  Fixed px (36px box, 20px glyph) so they do not shrink with the root font size. */}
+              <div className="absolute bottom-[6px] right-[6px] flex items-center gap-[2px]" data-testid="compose-controls">
                 {/* Paperclip - wired to file picker */}
                 <Button
                   type="button"
@@ -1230,11 +1233,11 @@ export function Compose({
                   disabled={uploading}
                   aria-label={uploading ? "Uploading..." : "Attach a file"}
                   title={uploading ? "Uploading..." : "Attach a file"}
-                  className="h-9 w-9 p-0 min-h-0 min-w-0 text-muted-foreground"
+                  className="size-[36px] p-0 min-h-0 min-w-0 text-muted-foreground [&_svg]:size-[20px]"
                   onClick={handlePaperclipClick}
                   data-testid="attach-button"
                 >
-                  <Paperclip className={cn("h-5 w-5", uploading ? "animate-pulse" : "")} />
+                  <Paperclip className={uploading ? "animate-pulse" : undefined} />
                 </Button>
 
                 {/* Mic button - live when voiceProxyUrl present and mic available;
@@ -1246,7 +1249,7 @@ export function Compose({
                   disabled={!voiceEnabled || !micAvailable}
                   aria-label={micLabel}
                   title={micLabel}
-                  className="relative h-9 w-9 p-0 min-h-0 min-w-0 text-muted-foreground"
+                  className="relative size-[36px] p-0 min-h-0 min-w-0 text-muted-foreground [&_svg]:size-[20px]"
                   onClick={toggleMic}
                   aria-busy={isConnecting || undefined}
                   data-testid="mic-button"
@@ -1256,11 +1259,11 @@ export function Compose({
                     <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary animate-pulse" />
                   ) : null}
                   {voiceEnabled && isConnecting ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <Loader2 className="animate-spin" />
                   ) : voiceEnabled ? (
-                    <Mic className={cn("h-5 w-5", isActive ? "text-primary" : "")} />
+                    <Mic className={isActive ? "text-primary" : undefined} />
                   ) : (
-                    <MicOff className="h-5 w-5" />
+                    <MicOff />
                   )}
                 </Button>
               </div>

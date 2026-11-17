@@ -1,6 +1,6 @@
 # Keep composer controls and text clearance fixed in pixels
 
-Status: planned, reviewed final source reapplication and fresh committed verification pending.
+Status: pixel geometry implemented; focused/browser checks, build and compiler pass. Full workspace and all-ref privacy gates remain failed; clean candidate verification is pending.
 Base: current OSS main.
 
 ## Problem and result
@@ -18,3 +18,17 @@ Only Compose.tsx, its focused composer sizing regression and this SPEC. Keep 36p
 3. Check rendered geometry and text clearance at small/default/large root font sizes using an existing real browser where available. Otherwise report browser acceptance NOT RUN; jsdom classes do not prove geometry.
 4. Run focused and required workspace tests, build, boundaries, leak self-test/full/history/message checks, licence, package version and ASCII gates. Run one final authoritative typecheck, serially with all other compilers. Preserve failures and limitations.
 5. Freeze source/receipts, then main reviews, signs and opens a separate PR with fresh exact review and plain-English suitability/test note. No running-build, visibility or deployment change.
+
+## Work log
+
+### 2026-11-17: Implementation pickup
+Current main has rem-sized controls and text reserve. Port only the two final pixel geometry behaviours and the sizing regression. Voice, draft, paste, upload and caller semantics remain untouched; typography belongs to a separate review unit. Fixed geometry is generic OSS UI behaviour and requires no installation-specific setting. No root font-size environment hook exists on current main.
+
+### 2026-11-17: Implementation and verification
+The first constituent behaviour fixes attach/mic button and glyph sizes plus group offsets/gap after Tailwind merging. The second adds fixed text clearance. Both are generic, reusable OSS UI behaviour. Intermediate merge comments and conflicting rem reserve utilities were removed only in the selected textarea seam. Current main typography, voice, upload, paste, draft and caller logic remain unchanged.
+
+The sizing test checks idle, disabled voice, connecting spinner and upload pulse through actual component rendering. Three negative controls remove button size, glyph size or text reserve; each fails all four cases at the intended assertion. Exact source restoration passes all 43 focused tests. These jsdom checks prove DOM overrides, not rendered geometry.
+
+An isolated Chromium harness rendered the actual component with candidate build CSS and local route/media doubles. All 12 state/root cases passed at 12px, 16px and 24px roots: 36px boxes, 20px glyphs, 6px offsets, 2px gap, 84px/44px reserve, and measured text-content clearance of 5px horizontally and 3px vertically. Native installation and full application E2E acceptance are not claimed.
+
+Build and one serial authoritative workspace compiler passed. Boundaries, working-tree privacy, leak self-test, licence, library version and dash checks passed. Workspace tests passed 85 base tests and 2267 Deck tests, skipped 11 and failed 74 Deck tests. The failures are clean-tree assertions on the required unstaged delta and read-only home fixture creation. All-ref history and message scans failed with 345 and 69 findings; these are retained failures and need fresh clean candidate verification plus scoped history review. Touched source is ASCII; unrelated non-ASCII bytes are unchanged. Source remains unstaged with no commit, external review or publication acceptance.
