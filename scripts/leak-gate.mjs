@@ -56,6 +56,16 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+// Intentional copyright attribution is permitted only as this complete notice.
+// Keep the holder split, just like the denylist; this file is scanned too.
+const COPYRIGHT_NOTICE = ["   Copyright 2026 ", "Si", "mon Di", "xon"].join("");
+
+/** @param {string} relative @param {string} label @param {string} lineText */
+function isCopyrightNotice(relative, label, lineText) {
+  return relative === "LICENSE" && label === "principal-first-name" &&
+    lineText === COPYRIGHT_NOTICE;
+}
+
 /**
  * Fixed cut-off for the history-exempt rules: the default-branch commit that was
  * current when those rules were added. Blobs reachable from it are legacy and
@@ -108,7 +118,7 @@ const RULES = [
   // no realistic false positives, so they get the stronger form.
   rule({
     label: "principal-first-name",
-    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment). EXEMPT IN MESSAGE SCOPE ONLY (see messageExempt below): this person is the repository's maintainer and the author and committer fields of every commit here carry his full name and address, by a deliberate decision that is not being revisited. Denying in a commit body what the header of that same commit states outright is theatre, and a rule kept only by being ignored is worse than no rule. It stays fully enforced over file content, where there is no such decision and no such header.",
+    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment). EXEMPT IN MESSAGE SCOPE ONLY (see messageExempt below): this person is the repository's maintainer and the author and committer fields of every commit here carry his full name and address, by a deliberate decision that is not being revisited. Denying in a commit body what the header of that same commit states outright is theatre, and a rule kept only by being ignored is worse than no rule. File content permits only the exact intentional root copyright notice and the canonical clone URL; other name content remains denied.",
     pattern: ["si", "mon"],
     sample: ["si", "mon"],
     messageExempt: true,
@@ -446,9 +456,11 @@ const BINARY_SNIFF_BYTES = 8000;
  * or a commit id; the scanning itself never touches the filesystem.
  *
  * @param {string} display @param {Buffer} buffer
+ * @param {string} relative Explicit repo-relative path; never derived from display.
+ * @param {boolean} legacyBlob
  * @returns {{ file: string, line: number, label: string, why: string }[]}
  */
-function scanBuffer(display, buffer, legacyBlob = false) {
+function scanBuffer(display, buffer, relative = "", legacyBlob = false) {
   if (buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
     return []; // binary file (NUL in the first 8000 bytes, matching git's own heuristic)
   }
@@ -457,6 +469,7 @@ function scanBuffer(display, buffer, legacyBlob = false) {
   for (const [index, lineText] of lines.entries()) {
     for (const { label, why, re, contentExemptRe, historyExempt } of RULES) {
       if (legacyBlob && historyExempt) continue;
+      if (isCopyrightNotice(relative, label, lineText)) continue;
       const tested = contentExemptRe ? lineText.replace(contentExemptRe, "") : lineText;
       if (re.test(tested)) {
         findings.push({ file: display, line: index + 1, label, why });
@@ -468,7 +481,7 @@ function scanBuffer(display, buffer, legacyBlob = false) {
 
 /** @param {string} filePath @returns {{ file: string, line: number, label: string, why: string }[]} */
 function scanFile(filePath) {
-  return scanBuffer(filePath, fs.readFileSync(filePath));
+  return scanBuffer(filePath, fs.readFileSync(filePath), path.relative(REPO_ROOT, filePath));
 }
 
 /**
@@ -508,6 +521,20 @@ function git(args) {
   });
 }
 
+/** Find all actual paths before allowing a blob first reported as LICENSE. */
+function copyrightBlobPaths(repo, blob) {
+  const run = (args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
+  const paths = new Set();
+  for (const commit of run(["rev-list", "--all"]).split("\n").filter(Boolean)) {
+    for (const entry of run(["ls-tree", "-r", "-z", "--full-tree", commit]).split("\0").filter(Boolean)) {
+      const tab = entry.indexOf("\t");
+      if (entry.slice(0, tab).split(" ")[2] === blob) paths.add(entry.slice(tab + 1));
+    }
+  }
+  // Unknown tree context cannot authorise an exception.
+  return paths.size > 0 ? [...paths] : [""];
+}
+
 /**
  * --history: scan every BLOB reachable from any ref, not every tree.
  *
@@ -518,7 +545,8 @@ function git(args) {
  * regardless of how many trees point at it. So the unit is the blob, and each
  * one is read once.
  *
- * A blob is reported with one of the paths it is stored under, which is enough
+ * Root licence blobs also scan every historical path before permitting a notice.
+ * Other blobs are reported with one of the paths they are stored under, enough
  * to find it; `git log --all --find-object=<sha>` gives the commits if needed.
  * Paths are scanned too, for the same reason the working-tree mode scans them:
  * a denied string can live in a name with no trace in any content.
@@ -569,7 +597,17 @@ function scanHistory(repo = REPO_ROOT, cutoff = LEGACY_CUTOFF) {
     const buffer = execFileSync("git", ["-C", repo, "cat-file", "blob", sha], {
       maxBuffer: 512 * 1024 * 1024,
     });
-    findings.push(...scanBuffer(`${sha.slice(0, 10)} (${objectPath})`, buffer, legacy.has(sha)));
+    // rev-list keeps only one path per object. Before granting a root notice
+    // exception, find every path for that blob, including copies later deleted.
+    // Ordinary blobs retain the existing single-read, single-scan behaviour.
+    const contentPaths = objectPath === "LICENSE" ? copyrightBlobPaths(repo, sha) : [objectPath];
+    for (const relative of contentPaths) {
+      if (!seenPath.has(relative)) {
+        seenPath.add(relative);
+        findings.push(...scanName(relative));
+      }
+      findings.push(...scanBuffer(`${sha.slice(0, 10)} (${relative})`, buffer, relative, legacy.has(sha)));
+    }
   }
   return { findings, scanned, paths: seenPath.size };
 }
@@ -664,6 +702,79 @@ function selfTest() {
   const file = path.join(dir, "sample.txt");
   try {
     fs.writeFileSync(file, RULES.map((r) => r.sample).join("\n") + "\n", "utf8");
+    // Exact notice accommodation, pinned through the production scanning path.
+    const noticeName = ["Si", "mon"].join("");
+    const noticeCases = [
+      ["LICENSE", COPYRIGHT_NOTICE, false, "exact root notice"],
+      ["other.txt", COPYRIGHT_NOTICE, true, "notice in another file"],
+      ["nested/LICENSE", COPYRIGHT_NOTICE, true, "nested licence"],
+      ["LICENSE", `${COPYRIGHT_NOTICE} ${noticeName}`, true, "added name on notice line"],
+      ["LICENSE", `${COPYRIGHT_NOTICE} extra`, true, "added text on notice line"],
+      ["LICENSE", `// ${COPYRIGHT_NOTICE}`, true, "commented notice"],
+      ["LICENSE", `${COPYRIGHT_NOTICE}\n${noticeName}`, true, "bare name elsewhere in licence"],
+      ["LICENSE", COPYRIGHT_NOTICE.replace("2026", "2025"), true, "another year"],
+      ["LICENSE", COPYRIGHT_NOTICE.toLowerCase(), true, "changed case"],
+      ["LICENSE", `${COPYRIGHT_NOTICE}\r`, true, "changed line ending"],
+    ];
+    for (const [relative, text, denied, reason] of noticeCases) {
+      const hits = scanBuffer("notice-case", Buffer.from(`${text}\n`), relative);
+      if (hits.some((f) => f.label === "principal-first-name") !== denied) {
+        console.error(`leak-gate self-test: copyright notice failed: ${reason}`);
+        process.exit(1);
+      }
+    }
+    for (const label of ["private-key-block", "absolute-home-path", "second-principal-first-name"]) {
+      const sampleRule = RULES.find((r) => r.label === label);
+      if (!sampleRule) throw new Error(`Missing privacy rule ${label}`);
+      for (const separator of ["\n", " "]) {
+        const text = `${COPYRIGHT_NOTICE}${separator}${sampleRule.sample}\n`;
+        const hits = scanBuffer("privacy-case", Buffer.from(text), "LICENSE");
+        if (!hits.some((f) => f.label === label)) {
+          console.error(`leak-gate self-test: copyright notice suppressed ${label}`);
+          process.exit(1);
+        }
+      }
+    }
+    // A reporting string is not authority, even when it looks like a licence.
+    for (const display of ["LICENSE", "abcdef (LICENSE)"]) {
+      if (!scanBuffer(display, Buffer.from(COPYRIGHT_NOTICE)).some((f) => f.label === "principal-first-name")) {
+        throw new Error("Copyright exception trusted display instead of explicit path");
+      }
+    }
+    if (scanFile(path.join(REPO_ROOT, "LICENSE")).some((f) => f.label === "principal-first-name")) {
+      throw new Error("Working-file scanner lost the root licence context");
+    }
+    // Two commits prove the modern root notice; two more pin a deleted copy.
+    const noticeRepo = path.join(dir, "notice-history");
+    fs.mkdirSync(noticeRepo);
+    const noticeGit = (...args) => execFileSync("git", ["-C", noticeRepo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
+    noticeGit("init", "-q");
+    fs.writeFileSync(path.join(noticeRepo, "seed.txt"), "clean\n");
+    noticeGit("add", "seed.txt");
+    noticeGit("commit", "-q", "-m", "seed");
+    const noticeCutoff = noticeGit("rev-parse", "HEAD").trim();
+    fs.writeFileSync(path.join(noticeRepo, "LICENSE"), `${COPYRIGHT_NOTICE}\n`);
+    noticeGit("add", "LICENSE");
+    noticeGit("commit", "-q", "-m", "notice");
+    const rootHistory = scanHistory(noticeRepo, noticeCutoff);
+    if (rootHistory.findings.length > 0 || rootHistory.scanned !== 2) {
+      throw new Error("Modern history rejected the exact root copyright notice");
+    }
+    fs.mkdirSync(path.join(noticeRepo, "nested"));
+    fs.copyFileSync(path.join(noticeRepo, "LICENSE"), path.join(noticeRepo, "nested", "LICENSE"));
+    noticeGit("add", "nested/LICENSE");
+    noticeGit("commit", "-q", "-m", "copy");
+    fs.unlinkSync(path.join(noticeRepo, "nested", "LICENSE"));
+    noticeGit("add", "nested/LICENSE");
+    noticeGit("commit", "-q", "-m", "remove copy");
+    const copiedHistory = scanHistory(noticeRepo, noticeCutoff);
+    const noticeHits = copiedHistory.findings.filter((f) => f.label === "principal-first-name");
+    if (!noticeHits.some((f) => f.file.endsWith("(nested/LICENSE)")) ||
+        noticeHits.some((f) => f.file.endsWith("(LICENSE)"))) {
+      throw new Error("History failed to distinguish a deleted identical nested notice");
+    }
+    console.log("leak-gate self-test: exact root copyright notice allowed; other contexts and privacy rules denied");
+
     const findings = scanFile(file);
     const missed = RULES.filter((r) => !findings.some((f) => f.label === r.label));
     if (missed.length > 0) {
@@ -727,11 +838,11 @@ function selfTest() {
       execFileSync("git", ["-C", repoDir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
     run("init", "-q");
     exemptRules.forEach((r, i) => fs.writeFileSync(path.join(repoDir, `legacy-${i}.txt`), `${r.sample}\n`));
-    run("add", "-A");
+    run("add", ...exemptRules.map((_, i) => `legacy-${i}.txt`));
     run("commit", "-q", "-m", "legacy");
     const cutoff = run("rev-parse", "HEAD").trim();
     exemptRules.forEach((r, i) => fs.writeFileSync(path.join(repoDir, `newer-${i}.txt`), `${r.sample} new\n`));
-    run("add", "-A");
+    run("add", ...exemptRules.map((_, i) => `newer-${i}.txt`));
     run("commit", "-q", "-m", "newer");
     const found = scanHistory(repoDir, cutoff);
     for (const [i, r] of exemptRules.entries()) {
