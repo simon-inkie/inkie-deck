@@ -4,18 +4,32 @@ A web control plane for a fleet of AI agents: inboxes, decision cards, briefs,
 projects, tmux-backed agent sessions, and the file-based message protocol that
 ties them together.
 
-**To run it, see [INSTALL.md](INSTALL.md)**: after the prerequisites and a
-clone, `scripts/setup.sh` does the whole install in one command (see "Quick
-setup" there), or follow the three tiers by hand, from a five-minute
-sandbox on fixture data through a real production install to live agents in
-tmux. Its shell blocks are extracted from the document and executed on every
-rig run, so what it tells you to type is what was measured. To add another
-agent once you are running, see
-[docs/adding-an-agent.md](docs/adding-an-agent.md).
+## Quick install
 
-**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup, the agent scaffold and the persona check support [Claude Code](https://github.com/anthropics/claude-code) today. [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) panes can be booted and sent inbox messages by the base, but their persona files and verification are not yet supported.
+**Before you start:** Node `^22.13.0 || >=24.0.0`, pnpm `10.34.5` via Corepack, and the Claude Code CLI installed and signed in. See [prerequisites](INSTALL.md#1-prerequisites) for system packages.
 
-The rest of this file is about the repository itself.
+Run as your own user, not as root:
+
+```sh
+git clone https://github.com/simon-inkie/inkie-deck.git && cd inkie-deck
+scripts/setup.sh
+```
+
+**On Windows:** Follow the [WSL2 setup notes](INSTALL.md#windows-via-wsl) first.
+Keep the clone in your Linux home (for example, `~/inkie-deck`), not on `C:` (`/mnt/c`).
+
+Open the URL setup prints in your browser (default: `http://127.0.0.1:4242/`).
+If setup stops for first-run prompts, answer them in Deck and run `scripts/setup.sh` again.
+Once the assistant starts, its first message asks what you do and what you would like help with first. Reply in its thread.
+
+**Full instructions: [INSTALL.md](INSTALL.md).** The three manual tiers cover a
+five-minute sandbox with fixture data, a production install, and live agents in
+tmux. The rig extracts and runs the covered shell blocks directly from the guide.
+
+Quick setup, the scaffold and persona verification support Claude Code. The
+base can start Codex and Antigravity panes and send them inbox messages, but
+does not yet support their persona files or verification. To add another agent,
+see [docs/adding-an-agent.md](docs/adding-an-agent.md).
 
 ## How this repository got its code
 
