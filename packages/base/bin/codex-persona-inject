@@ -24,7 +24,7 @@ What goes into the context, in this order:
 
 IDENTITY.md comes first among the files because the boot phrase that
 create-agent.sh verifies is written at its end, and a cap must never be what
-removes it. The total is capped (CAP, below the limit hooks.json declares). A
+removes it. The total is capped (CAP is in UTF-8 bytes; the limit in hooks.json is in approximate tokens, and 9000 bytes sits well under it). A
 file that does not fit is cut, and the cut is SAID in the context, with the
 path to read instead: a silently dropped persona is the exact failure the
 verification exists to catch.
