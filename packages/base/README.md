@@ -273,6 +273,15 @@ was no runtime to ask, which is not a pass). An empty reply with a zero exit
 status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 `create-agent.sh --help` has the rest.
 
+Three flags support a first-run setup: `--kind assistant|platform` writes
+`<agent home>/.kind` (Deck pins the assistant) and stamps a short role brief
+into `CLAUDE.md`; `--peer <name>` names the other agent in that brief and is
+saved as `.peer`; `--check-name <name>` validates a name and that both homes
+are free, and writes nothing. `bin/first-run.sh` wraps them: it asks for an
+assistant and a platform agent name, checks both before creating either, skips
+a kind that already exists, and exits with the worst verdict. The boot phrase
+proves the persona loaded, not that the role brief is right.
+
 There is nothing magic in it. If you would rather do it by hand, the templates
 are just files, and the two things easiest to miss doing it that way are the
 inbox directory (an agent your launcher can see but your control plane cannot)

@@ -1366,3 +1366,96 @@ echo "boot phrase: $(grep -oE 'boot-[0-9a-f]{16}' IDENTITY.md | head -n1)"`,
     expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
   });
 });
+
+describe("--kind, --peer and --check-name", () => {
+  it("refuses an unknown --kind and creates nothing", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--kind", "wizard", "--no-verify"]);
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readdirSync(box.agentsHome)).toEqual([]);
+    expect(fs.readdirSync(box.inboxRoot)).toEqual([]);
+  });
+
+  it("stamps the role brief and the peer into CLAUDE.md and writes .kind and .peer", () => {
+    const box = sandbox();
+    run(box, ["ada", "--kind", "platform", "--peer", "forge", "--no-verify"]);
+    const home = path.join(box.agentsHome, "ada");
+    expect(fs.readFileSync(path.join(home, ".kind"), "utf8")).toBe("platform");
+    expect(fs.readFileSync(path.join(home, ".peer"), "utf8")).toBe("forge");
+    const claude = fs.readFileSync(path.join(home, "CLAUDE.md"), "utf8");
+    expect(claude).toContain("You are the platform agent, the brain surgeon");
+    expect(claude).toContain("**forge**");
+    expect(claude).toContain(path.join(PACKAGE_ROOT, "bin", "create-agent.sh"));
+    expect(claude).toContain("Ask before changing anything outside the agents folder and Deck's own");
+    expect(claude).not.toContain("<peer>");
+    // The persona chain is still intact.
+    expect(claude).toContain("@IDENTITY.md");
+  });
+
+  it("--check-name writes nothing, and refuses a bad or taken name", () => {
+    const box = sandbox();
+    expect(run(box, ["--check-name", "wren"]).status).toBe(0);
+    expect(fs.readdirSync(box.agentsHome)).toEqual([]);
+    expect(fs.readdirSync(box.inboxRoot)).toEqual([]);
+    expect(fs.readdirSync(box.home)).toEqual([]);
+
+    expect(run(box, ["--check-name", "Bad Name"]).status).toBe(EXIT.SCAFFOLD_ERROR);
+    run(box, ["wren", "--no-verify"]);
+    expect(run(box, ["--check-name", "wren"]).status).toBe(EXIT.SCAFFOLD_ERROR);
+  });
+
+  it("rejects a flag-shaped --check-name value instead of parsing it as an option", () => {
+    const box1 = sandbox();
+    const r = run(box1, ["--check-name", "--help"]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(r.output).not.toContain("Usage:");
+  });
+
+  it("refuses to write .peer through a symlink", () => {
+    const box1 = sandbox();
+    const outside = path.join(box1.home, "outside");
+    fs.writeFileSync(outside, "untouched");
+    fs.mkdirSync(path.join(box1.agentsHome, "wren"));
+    fs.symlinkSync(outside, path.join(box1.agentsHome, "wren", ".peer"));
+    const r = run(box1, ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readFileSync(outside, "utf8")).toBe("untouched");
+    // .peer is written first, so a refused .peer leaves no completeness marker.
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", ".kind"))).toBe(false);
+  });
+
+  it("a directory at .kind is refused up front: no .peer, no persona files", () => {
+    const box1 = sandbox();
+    fs.mkdirSync(path.join(box1.agentsHome, "wren", ".kind"), { recursive: true });
+    const r = run(box1, ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", ".peer"))).toBe(false);
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", "SOUL.md"))).toBe(false);
+  });
+
+  it("rejects an empty --check-name value instead of prompting", () => {
+    const box1 = sandbox();
+    const r = run(box1, ["--check-name", ""]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(r.output).toContain("cannot be an agent name");
+  });
+
+  it("checks marker destinations before creating anything, so a retry works", () => {
+    const box1 = sandbox();
+    const marker = path.join(box1.agentsHome, "wren", ".peer");
+    fs.mkdirSync(marker, { recursive: true });
+    const args = ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"];
+    expect(run(box1, args).status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", "SOUL.md"))).toBe(false);
+    expect(fs.readdirSync(box1.inboxRoot)).toEqual([]);
+
+    fs.rmdirSync(marker);
+    expect(run(box1, args).status).toBe(EXIT.CANNOT_VERIFY);
+    expect(fs.readFileSync(path.join(box1.agentsHome, "wren", ".kind"), "utf8")).toBe("assistant");
+  });
+
+  it("rejects --check-name after a positional name instead of overwriting it", () => {
+    const box1 = sandbox();
+    expect(run(box1, ["wren", "--check-name", "fern"]).status).toBe(EXIT.SCAFFOLD_ERROR);
+  });
+});

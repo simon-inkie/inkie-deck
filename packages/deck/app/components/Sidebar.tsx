@@ -45,26 +45,25 @@ export interface SidebarAgent {
    * by the row below for the same reason - see the pill.
    */
   status?: ActivityStatus;
+  /**
+   * The starter assistant (its .kind marker says so). Pinned rows render
+   * above the "Agents" label. Absent means an ordinary row.
+   */
+  pinned?: boolean;
 }
 
 export function Sidebar({ agents }: { agents: SidebarAgent[] }) {
   const params = useParams();
   const active = params.agent;
+  const pinned = agents.filter((a) => a.pinned === true);
+  const rest = agents.filter((a) => a.pinned !== true);
+  const label = (
+    <div className="px-2 pb-1 pt-3">
+      <span className="label-mono text-muted-foreground">Agents</span>
+    </div>
+  );
 
-  return (
-    // The ResizablePanel owns the width now - w-72 would fight the drag.
-    <nav className="flex h-full w-full flex-col border-r border-border bg-card/40">
-      <div className="px-4 py-3">
-        <span className="label-mono text-muted-foreground">Agents</span>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-2 pb-3">
-        {agents.length === 0 ? (
-          <p className="px-2 py-6 text-sm text-muted-foreground">
-            No agents yet. They appear here once they write to your inbox.
-          </p>
-        ) : (
-          agents.map((a) => (
+  const renderRow = (a: SidebarAgent) => (
             <Link
               key={a.name}
               to={`/threads/${a.name}`}
@@ -121,7 +120,28 @@ export function Sidebar({ agents }: { agents: SidebarAgent[] }) {
                 </p>
               </div>
             </Link>
-          ))
+  );
+
+  return (
+    // The ResizablePanel owns the width now - w-72 would fight the drag.
+    <nav className="flex h-full w-full flex-col border-r border-border bg-card/40">
+      {pinned.length === 0 ? (
+        <div className="px-4 py-3">
+          <span className="label-mono text-muted-foreground">Agents</span>
+        </div>
+      ) : null}
+
+      <div className="flex-1 overflow-y-auto px-2 pb-3">
+        {agents.length === 0 ? (
+          <p className="px-2 py-6 text-sm text-muted-foreground">
+            No agents yet. Run packages/base/bin/first-run.sh to create your assistant, or they appear here once they write to your inbox.
+          </p>
+        ) : (
+          <>
+            {pinned.map(renderRow)}
+            {pinned.length > 0 ? label : null}
+            {rest.map(renderRow)}
+          </>
         )}
       </div>
     </nav>

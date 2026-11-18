@@ -38,12 +38,24 @@
 #                              [--agents-home <path>] [--no-install-path]
 #                              [--memory-root <path> | --no-memory]
 #   bin/create-agent.sh --verify-only <name>
+#   bin/create-agent.sh --check-name <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
 #   --model <id>                 write <agent home>/.model, which boot-agents.sh
 #                                and workspace.sh pass as `--model <id>`. Without
 #                                it the agent uses the runtime's own default,
 #                                which may be a costlier model on a paid plan.
+#   --kind assistant|platform    write <agent home>/.kind (read by Deck to pin the
+#                                assistant first) and stamp a short role brief
+#                                from templates/kinds/<kind>.md into CLAUDE.md.
+#                                bin/first-run.sh uses this; it is optional.
+#   --peer <name>                the other shipped agent's name, stamped into the
+#                                role brief so each knows who to hand work to. Also
+#                                saved as <agent home>/.peer, so a re-run of
+#                                first-run.sh binds to it rather than to new input.
+#   --check-name <name>          validate the name and that both homes are free,
+#                                print the usual complaint if not, write nothing.
+#                                Exit 0 (usable) or 1 (not).
 #   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
 #                                makes `inbox` resolve as a bare command name.
 #   --memory-root <path>         checkout of the memory layer (default:
@@ -147,6 +159,10 @@ const name = process.env.CA_NAME;
 const role = process.env.CA_ROLE;
 const nonce = process.env.CA_NONCE;
 const inboxCli = process.env.CA_INBOX_CLI;
+const kindFile = process.env.CA_KIND_FILE;
+const peer = process.env.CA_PEER;
+const agentsHome = process.env.CA_AGENTS_HOME;
+const createCli = process.env.CA_CREATE_CLI;
 
 const identityPath = path.join(home, "IDENTITY.md");
 let identity = fs.readFileSync(identityPath, "utf8");
@@ -169,6 +185,17 @@ claude = claude.replace(
   "# <Name>, <role tagline>",
   role ? `# ${name}, ${role}` : `# ${name}`,
 );
+// The role brief, when this agent was created with --kind. Appended after the
+// imports so the persona chain is unchanged; the placeholders are per-agent for
+// the same reason the inbox CLI path is.
+if (kindFile) {
+  const brief = fs
+    .readFileSync(kindFile, "utf8")
+    .replaceAll("<peer>", peer || "the other agent")
+    .replaceAll("<agents-home>", agentsHome)
+    .replaceAll("<create-agent-cli>", createCli);
+  claude = claude.replace(/\n*$/, "\n\n") + brief.replace(/\n*$/, "\n");
+}
 fs.writeFileSync(claudePath, claude);
 
 // The inbox section of TOOLS.md. Stamped rather than shipped verbatim because
@@ -769,6 +796,9 @@ INSTALL_PATH=1
 MEMORY_ROOT_ARG=""
 NO_MEMORY=0
 MODEL=""
+KIND=""
+PEER=""
+CHECK_NAME=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -778,6 +808,13 @@ while [[ $# -gt 0 ]]; do
     --model)        [[ $# -ge 2 ]] || die_scaffold "--model needs a value";        MODEL="$2";           shift 2 ;;
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
+    --kind)         [[ $# -ge 2 ]] || die_scaffold "--kind needs a value";         KIND="$2";            shift 2 ;;
+    --peer)         [[ $# -ge 2 ]] || die_scaffold "--peer needs a value";         PEER="$2";            shift 2 ;;
+    --check-name)   [[ $# -ge 2 ]] || die_scaffold "--check-name needs a name"
+                    [[ -n "$2" ]] || die_scaffold "\"\" cannot be an agent name" "a name is lowercase letters, digits and hyphens"
+                    [[ "$2" != -* ]] || die_scaffold "\"$2\" cannot be an agent name" "a name does not start with a hyphen"
+                    [[ -z "$NAME" ]] || die_scaffold "more than one name given: '$NAME' and '$2'"
+                    CHECK_NAME=1; NAME="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
     --memory-root)  [[ $# -ge 2 ]] || die_scaffold "--memory-root needs a value"; MEMORY_ROOT_ARG="$2";  shift 2 ;;
     --no-memory)    NO_MEMORY=1; shift ;;
@@ -923,21 +960,21 @@ fi
 MODEL_ARGS=()
 [[ -n "$MODEL" ]] && MODEL_ARGS=(--model "$MODEL")
 
+case "$KIND" in
+  ""|assistant|platform) ;;
+  *) die_scaffold "--kind '$KIND' is not a kind" "use assistant or platform" ;;
+esac
+if [[ -n "$PEER" && ! "$PEER" =~ $NAME_RE ]]; then
+  die_scaffold "--peer '$PEER' cannot be an agent name" \
+    "a name is lowercase letters, digits and hyphens"
+fi
+[[ -z "$PEER" || "$PEER" != "$NAME" ]] || die_scaffold "--peer is the other agent, not '$NAME' itself"
+
 # ---------------------------------------------------------------------------
 # create
 # ---------------------------------------------------------------------------
 
-NONCE=""
-
-if [[ "$VERIFY_ONLY" -eq 1 ]]; then
-  [[ -d "$AGENT_HOME" ]] || die_scaffold "no agent home at $AGENT_HOME" \
-    "--verify-only checks an agent that already exists"
-  NONCE="$(grep -oE 'boot-[0-9a-f]{16}' "$AGENT_HOME/IDENTITY.md" 2>/dev/null | head -n1)"
-  [[ -n "$NONCE" ]] || die_scaffold \
-    "no boot phrase found in $AGENT_HOME/IDENTITY.md" \
-    "the boot phrase is written at creation; an agent scaffolded by hand has none," \
-    "and there is no way to verify one without it."
-else
+refuse_if_occupied() {
   # Refuse to overwrite, and name BOTH paths when either is occupied. Whoever
   # hits this knows about one of the two directories, almost never both.
   #
@@ -970,11 +1007,56 @@ else
     } >&2
     exit "$EXIT_SCAFFOLD_ERROR"
   fi
+}
+
+# --check-name: everything a creation would refuse on, and nothing written.
+if [[ $CHECK_NAME -eq 1 ]]; then
+  [[ -n "$NAME" ]] || die_scaffold "--check-name needs a name"
+  refuse_if_occupied
+  say "create-agent: \"$NAME\" is a usable name and both homes are free"
+  exit "$EXIT_VERIFIED"
+fi
+
+# Write a marker without following a symlink already at that path: refuse it,
+# otherwise write a temp file beside it and rename.
+write_marker() {
+  local target="$1" value="$2" tmp
+  [[ ! -L "$target" ]] || die_scaffold "$target is a symlink; refusing to write through it"
+  [[ ! -d "$target" ]] || die_scaffold "$target is a directory; refusing to replace it"
+  tmp="$(mktemp "$target.XXXXXX")" || die_scaffold "could not write $target"
+  printf '%s' "$value" > "$tmp" && mv -f -- "$tmp" "$target" \
+    || { rm -f -- "$tmp"; die_scaffold "could not write $target"; }
+}
+
+NONCE=""
+
+if [[ "$VERIFY_ONLY" -eq 1 ]]; then
+  [[ -d "$AGENT_HOME" ]] || die_scaffold "no agent home at $AGENT_HOME" \
+    "--verify-only checks an agent that already exists"
+  NONCE="$(grep -oE 'boot-[0-9a-f]{16}' "$AGENT_HOME/IDENTITY.md" 2>/dev/null | head -n1)"
+  [[ -n "$NONCE" ]] || die_scaffold \
+    "no boot phrase found in $AGENT_HOME/IDENTITY.md" \
+    "the boot phrase is written at creation; an agent scaffolded by hand has none," \
+    "and there is no way to verify one without it."
+else
+  refuse_if_occupied
 
   for template in "${PERSONA_FILES[@]}"; do
     [[ -f "$TEMPLATES_DIR/$template" ]] || die_scaffold \
       "template not found: $TEMPLATES_DIR/$template" \
       "expected the templates/ directory alongside bin/ in this package"
+  done
+
+  if [[ -n "$KIND" && ! -f "$TEMPLATES_DIR/kinds/$KIND.md" ]]; then
+    die_scaffold "template not found: $TEMPLATES_DIR/kinds/$KIND.md"
+  fi
+
+  # The marker destinations are checked BEFORE anything is created, so a refusal
+  # leaves nothing behind and a retry works.
+  for marker in ${KIND:+.kind} ${PEER:+.peer}; do
+    if [[ -L "$AGENT_HOME/$marker" || -d "$AGENT_HOME/$marker" ]]; then
+      die_scaffold "$AGENT_HOME/$marker is a symlink or a directory" "remove it, then run again"
+    fi
   done
 
   settings_is_contained || die_scaffold "refusing to write settings outside the agent's own directory:" "  $AGENT_HOME, its .claude or its settings.json is a symlink, or resolves" "  somewhere other than $AGENTS_HOME/$NAME. The settings are written in place," "  so they could land in a global file. Remove the link, or choose another name."
@@ -988,7 +1070,9 @@ else
   [[ -n "$NONCE" ]] || die_scaffold "could not generate a boot phrase"
 
   CA_HOME="$AGENT_HOME" CA_NAME="$NAME" CA_ROLE="$ROLE" CA_NONCE="$NONCE" \
-    CA_INBOX_CLI="$SCRIPT_DIR/inbox" stamp_templates \
+    CA_INBOX_CLI="$SCRIPT_DIR/inbox" CA_PEER="$PEER" CA_AGENTS_HOME="$AGENTS_HOME" \
+    CA_CREATE_CLI="$SCRIPT_DIR/create-agent.sh" \
+    CA_KIND_FILE="${KIND:+$TEMPLATES_DIR/kinds/$KIND.md}" stamp_templates \
     || die_scaffold "could not write the persona files in $AGENT_HOME"
 
   # .runtime is written explicitly even though the launcher defaults it. The
@@ -1009,6 +1093,14 @@ else
 
   mkdir -p "$AGENT_INBOX" || die_scaffold "could not create $AGENT_INBOX"
 
+  # .kind and .peer go LAST, once both homes exist. first-run.sh reads .kind as
+  # "this agent is complete", so writing it earlier would let a scaffold that
+  # failed part way be reported as already done on the next run.
+  # .peer first, .kind last: .kind is the completeness marker, so a stop
+  # between the two leaves an agent that first-run.sh does not count as done.
+  [[ -z "$PEER" ]] || write_marker "$AGENT_HOME/.peer" "$PEER"
+  [[ -z "$KIND" ]] || write_marker "$AGENT_HOME/.kind" "$KIND"
+
   if [[ $INSTALL_PATH -eq 1 ]]; then
     install_inbox_on_path
   else
@@ -1022,6 +1114,7 @@ else
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
   say "  runtime        $RUNTIME"
+  [[ -z "$KIND" ]] || say "  kind           $KIND"
   if [[ $NO_MEMORY -eq 1 ]]; then
     say "  memory         off (--no-memory)"
   elif [[ -z "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}" ]]; then
