@@ -9,7 +9,7 @@
  * files from disk, reports a triumphant green over an empty set on the day
  * its glob stops matching.
  *
- * Stages 05 to 08 measure INSTALL.md, and they measure it by EXECUTING IT:
+ * Stages 05 to 09 measure INSTALL.md, and they measure it by EXECUTING IT:
  * the document's fenced blocks are extracted and run, in order, unmodified, in
  * fresh containers built from a base that has none of the tools the document
  * tells a reader to install. No stage here reimplements an instruction in its
@@ -36,6 +36,7 @@ import installDoc from "./05-install-doc.mjs";
 import installTryIt from "./06-install-try-it.mjs";
 import installRunIt from "./07-install-run-it.mjs";
 import installAgents from "./08-install-agents.mjs";
+import installSetup from "./09-install-setup.mjs";
 
 export const STAGES = [
   baseAttestation,
@@ -47,4 +48,5 @@ export const STAGES = [
   installTryIt,
   installRunIt,
   installAgents,
+  installSetup,
 ];

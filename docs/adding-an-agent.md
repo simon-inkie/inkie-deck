@@ -11,7 +11,9 @@ New install with no agents yet? Run `packages/base/bin/first-run.sh` instead
 ([INSTALL.md](../INSTALL.md), "Name your assistant"): it creates an assistant
 and a platform agent in one go. This guide is for adding more afterwards. The
 platform agent can also do it for you, since its brief carries the path to
-`create-agent.sh`.
+`create-agent.sh`: it checks a name with `create-agent.sh --status <name>`
+(`absent`, `incomplete` or `complete`), creates only an absent one, and reports
+an `incomplete` one for you to remove by hand (see "Removing an agent" below).
 
 ## What you are making
 
