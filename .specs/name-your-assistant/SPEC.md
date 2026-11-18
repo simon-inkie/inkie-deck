@@ -184,6 +184,8 @@ Core behaviour only.
   they do and has the platform agent create agents to match. It belongs with
   the clean-machine setup flow and is not built here.
 - `rename-agent.sh` and `remove-agent.sh`.
+- Deferred from review: the check-then-read race on a FIFO `.kind` in
+  `agent-kind.server.ts` (open, then `fstat` the descriptor, would close it).
 - Deferred from review: a lock against overlapping `first-run.sh` runs, and a
   root path ending in a literal `$&` in the stamped role brief.
 - Deck reads `AGENTS_ROOT` and the scripts read `AGENTS_HOME`; when they
@@ -237,5 +239,15 @@ Core behaviour only.
   message is public-safe.
 - Why: review findings. Deferred, not built: overlapping-run lock and `$&` in
   a root path (see Follow-ups).
+- Supersedes: nothing, additive.
+- Commits: see `git log` on the branch.
+
+### 2026-11-18: review fixes, round 3
+- What changed: marker destinations (`.peer`, `.kind`) are checked before any
+  file or inbox is created, so a refusal leaves nothing behind. An explicit
+  empty `--assistant` or `--platform` is invalid. `--check-name` rejects a
+  second name. The refused-name replay in `first-run.sh` cannot exit early
+  under `bash -e`.
+- Why: review findings; the FIFO race is deferred (see Follow-ups).
 - Supersedes: nothing, additive.
 - Commits: see `git log` on the branch.

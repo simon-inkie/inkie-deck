@@ -52,8 +52,8 @@ fail() { printf 'first-run: %s\n' "$*" >&2; exit 1; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)     usage; exit 0 ;;
-    --assistant)   [[ $# -ge 2 ]] || fail "--assistant needs a value";   ASSISTANT="$2";       shift 2 ;;
-    --platform)    [[ $# -ge 2 ]] || fail "--platform needs a value";    PLATFORM="$2";        shift 2 ;;
+    --assistant)   [[ $# -ge 2 && -n "$2" ]] || fail "--assistant needs a name";   ASSISTANT="$2";       shift 2 ;;
+    --platform)    [[ $# -ge 2 && -n "$2" ]] || fail "--platform needs a name";     PLATFORM="$2";        shift 2 ;;
     --model)       [[ $# -ge 2 ]] || fail "--model needs a value";       MODEL="$2";           shift 2 ;;
     --agents-home) [[ $# -ge 2 ]] || fail "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --inbox-root)  [[ $# -ge 2 ]] || fail "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
@@ -165,8 +165,9 @@ if [[ $CHECKS_OK -eq 0 ]]; then
   [[ $NEED_ASSISTANT -eq 1 ]] && REFUSED+=("$ASSISTANT")
   [[ $NEED_PLATFORM -eq 1 ]] && REFUSED+=("$PLATFORM")
   for name in "${REFUSED[@]}"; do
-    "$CREATE" --check-name "$name" ${COMMON[@]+"${COMMON[@]}"} >/dev/null || \
-      "$CREATE" --check-name "$name" ${COMMON[@]+"${COMMON[@]}"} 2>&1 >/dev/null | sed 's/^/  /' >&2
+    if ! complaint="$("$CREATE" --check-name "$name" ${COMMON[@]+"${COMMON[@]}"} 2>&1 >/dev/null)"; then
+      printf '%s\n' "$complaint" | sed 's/^/  /' >&2
+    fi
   done
   fail "a name was refused. Nothing was created."
 fi

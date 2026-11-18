@@ -813,6 +813,7 @@ while [[ $# -gt 0 ]]; do
     --check-name)   [[ $# -ge 2 ]] || die_scaffold "--check-name needs a name"
                     [[ -n "$2" ]] || die_scaffold "\"\" cannot be an agent name" "a name is lowercase letters, digits and hyphens"
                     [[ "$2" != -* ]] || die_scaffold "\"$2\" cannot be an agent name" "a name does not start with a hyphen"
+                    [[ -z "$NAME" ]] || die_scaffold "more than one name given: '$NAME' and '$2'"
                     CHECK_NAME=1; NAME="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
     --memory-root)  [[ $# -ge 2 ]] || die_scaffold "--memory-root needs a value"; MEMORY_ROOT_ARG="$2";  shift 2 ;;
@@ -1049,6 +1050,14 @@ else
   if [[ -n "$KIND" && ! -f "$TEMPLATES_DIR/kinds/$KIND.md" ]]; then
     die_scaffold "template not found: $TEMPLATES_DIR/kinds/$KIND.md"
   fi
+
+  # The marker destinations are checked BEFORE anything is created, so a refusal
+  # leaves nothing behind and a retry works.
+  for marker in ${KIND:+.kind} ${PEER:+.peer}; do
+    if [[ -L "$AGENT_HOME/$marker" || -d "$AGENT_HOME/$marker" ]]; then
+      die_scaffold "$AGENT_HOME/$marker is a symlink or a directory" "remove it, then run again"
+    fi
+  done
 
   settings_is_contained || die_scaffold "refusing to write settings outside the agent's own directory:" "  $AGENT_HOME, its .claude or its settings.json is a symlink, or resolves" "  somewhere other than $AGENTS_HOME/$NAME. The settings are written in place," "  so they could land in a global file. Remove the link, or choose another name."
   mkdir -p "$AGENT_HOME" || die_scaffold "could not create $AGENT_HOME"

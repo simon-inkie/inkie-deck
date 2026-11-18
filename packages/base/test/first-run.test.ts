@@ -170,6 +170,13 @@ describe("first-run", () => {
     expect(second.output).not.toContain("Nothing to do");
   });
 
+  it("treats an explicit empty name as invalid, not omitted", () => {
+    const b = box();
+    const r = run(b, ["--assistant", "", "--platform", "forge"], false);
+    expect(r.status).toBe(1);
+    expect(agents(b)).toEqual([]);
+  });
+
   it("rejects a flag-shaped name and creates nothing", () => {
     const b = box();
     const r = run(b, ["--assistant", "ada", "--platform", "--help"], false);

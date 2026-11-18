@@ -1424,13 +1424,13 @@ describe("--kind, --peer and --check-name", () => {
     expect(fs.existsSync(path.join(box1.agentsHome, "wren", ".kind"))).toBe(false);
   });
 
-  it("writes .peer before .kind: a refused .kind leaves .peer and no .kind file", () => {
+  it("a directory at .kind is refused up front: no .peer, no persona files", () => {
     const box1 = sandbox();
     fs.mkdirSync(path.join(box1.agentsHome, "wren", ".kind"), { recursive: true });
     const r = run(box1, ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
     expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
-    expect(fs.readFileSync(path.join(box1.agentsHome, "wren", ".peer"), "utf8")).toBe("forge");
-    expect(fs.statSync(path.join(box1.agentsHome, "wren", ".kind")).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", ".peer"))).toBe(false);
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", "SOUL.md"))).toBe(false);
   });
 
   it("rejects an empty --check-name value instead of prompting", () => {
@@ -1438,5 +1438,24 @@ describe("--kind, --peer and --check-name", () => {
     const r = run(box1, ["--check-name", ""]);
     expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
     expect(r.output).toContain("cannot be an agent name");
+  });
+
+  it("checks marker destinations before creating anything, so a retry works", () => {
+    const box1 = sandbox();
+    const marker = path.join(box1.agentsHome, "wren", ".peer");
+    fs.mkdirSync(marker, { recursive: true });
+    const args = ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"];
+    expect(run(box1, args).status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", "SOUL.md"))).toBe(false);
+    expect(fs.readdirSync(box1.inboxRoot)).toEqual([]);
+
+    fs.rmdirSync(marker);
+    expect(run(box1, args).status).toBe(EXIT.CANNOT_VERIFY);
+    expect(fs.readFileSync(path.join(box1.agentsHome, "wren", ".kind"), "utf8")).toBe("assistant");
+  });
+
+  it("rejects --check-name after a positional name instead of overwriting it", () => {
+    const box1 = sandbox();
+    expect(run(box1, ["wren", "--check-name", "fern"]).status).toBe(EXIT.SCAFFOLD_ERROR);
   });
 });
