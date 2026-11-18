@@ -1,8 +1,7 @@
 # #154: Add Agent Client Protocol support for agent sessions and events
 
 - Issue: https://github.com/simon-inkie/inkie-deck/issues/154
-- Branch: docs/node-pty-acp-spec (planning only; the build branch will be
-  `154-<slug>`)
+- Branch: `154-acp-client`
 - Started: 2026-11-18
 - Scope of this SPEC: the first slice only. Later work is planned outside
   this file and gets its own issues when it is ready.
@@ -23,6 +22,11 @@ wrong, duplicate, malformed or oversized messages. It also defines, once,
 the shared event envelope (decision, action, happened) that #153 and #155
 may use, with a bounded, typed display projection. The slice has no
 production route or UI: everything runs in the test harness.
+
+Maintainer direction, 18 November 2026: Claude is driven through the
+node-pty runner (#153) because its subscription cannot be used over ACP,
+while Codex and Antigravity (and other ACP agents) go through this ACP path.
+Real adapters and their conformance runs are later work.
 
 ## What ACP is, and is not
 
@@ -53,8 +57,8 @@ In this slice:
   official TypeScript library if it passes the licence gate).
 - A client: process ownership, `initialize`, `session/new`, prompt,
   ordered updates, permission requests, cancel, settlement, disconnect.
-- One adapter manifest for one candidate agent, selected when the version
-  is pinned, recorded with its version.
+- One generic adapter manifest for the scripted fixture, recorded with its
+  version. Real agent manifests are not part of this slice.
 - The shared event envelope and its typed display projection.
 - Private records: a raw protocol record and a display journal, with
   ownership, confinement and retention rules.
@@ -110,9 +114,9 @@ Two different endings, kept apart:
   stop reason is missing or not in the pinned set. This ends the turn
   `invalid` and is never a success.
 
-The expected stop reasons for the pinned stable version, to be confirmed
-at pinning, are `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`
-and `cancelled`.
+The pinned stable version defines `end_turn`, `max_tokens`,
+`max_turn_requests`, `refusal` and `cancelled`. A present non-string stop
+reason is a schema error, not an unknown reason.
 
 | Input | Outcome | Counts as done |
 |---|---|---|
@@ -280,7 +284,7 @@ asks for permission, ignores or honours cancel, settles with any reason
 (valid, invalid or missing), sends wrong ids, duplicates, invalid JSON and
 oversized lines, and exits mid-turn. It runs in CI.
 
-The chosen real candidate is run by hand in a scratch home as a recorded
+Any later real candidate is run by hand in a scratch home as a recorded
 conformance note for that version and platform only.
 
 ## Testing
@@ -364,6 +368,22 @@ Recommendations only.
    Recommendation: yes.
 4. Only `end_turn` is success. Recommendation: yes.
 
+## First-slice touch points
+
+- `packages/deck/app/lib/acp-session.server.ts`: process owner, generic
+  manifest, SDK connection, reducer, prompt queue and consent mapping.
+- `packages/deck/app/lib/acp-wire.server.ts`: bounded stdio framing,
+  JSON-RPC envelope checks and strict validation against the SDK schema.
+- `packages/deck/app/lib/deck-event.ts`: shared envelope and display
+  projection, independent of the ACP SDK.
+- `packages/deck/app/lib/acp-records.server.ts`: confined raw record,
+  display journal, retention and session deletion.
+- `packages/deck/test/fixtures/acp-agent.mjs` and
+  `packages/deck/test/acp-session.test.ts`: `fixture-1`, the only adapter
+  manifest, and its Linux acceptance suite in the existing Deck CI glob.
+- No route, page, notification, production registration, or dependent work
+  in #153 or #155. No real-agent conformance or non-Linux evidence yet.
+
 ## Log
 
 ### 2026-11-18: SPEC drafted
@@ -374,4 +394,65 @@ Recommendations only.
   projection and private record rules added.
 - Why: maintainer direction; the envelope is shared with #153 and #155.
 - Supersedes: nothing in this repository.
+- Commits: none yet.
+
+### 2026-11-18: First slice picked up
+- What changed: confirmed the supplied branch and locally installed SDK;
+  implementing against the fixture only, without altering dependencies.
+- Why: maintainer direction puts real adapters in later slices.
+- Supersedes: the real-candidate selection and manual conformance requirement
+  for this slice only.
+- Commits: none yet.
+
+### 2026-11-18: Fixture client and shared event envelope implemented
+- What changed: built the fixture-only owner, strict settlement and identity
+  checking, ordered projection, permission handling and private records.
+  The Linux fixture suite covers the acceptance and failure paths.
+- Why and decisions:
+  - **Protocol, library and licence:** the pre-installed Apache-2.0
+    `@agentclientprotocol/sdk` dev dependency is pinned at `1.9.0`. Its
+    installed `dist/schema/index.d.ts` declares `PROTOCOL_VERSION = 1` and
+    `dist/schema/types.gen.d.ts` confirms the five stop reasons above. The
+    version 2 draft is not used; neither dependency file was changed here.
+  - **First candidate and integration:** `fixture-1` with an executable,
+    arguments, version and optional environment names. No real adapter or
+    manual conformance run in this slice, per maintainer direction. The
+    optional capability gate checks `session/load` without implementing it.
+  - **Wire validation and settlement:** SDK `ClientApp` owns client-side
+    RPC requests and cancellation. The custom stream checks frames before
+    SDK correlation can consume them, and applies inbound updates and
+    permission requests in wire order. The SDK's JSON schema is used without
+    its default-on-error annotations. A correlated, otherwise valid unknown
+    string or absent stop reason releases the turn as `invalid`; a malformed
+    result does not. `end_turn` is the only success.
+  - **Consent and ownership:** an unanswered permission blocks settlement.
+    Explicit cancel cancels open and subsequent permission requests for the
+    cancelling turn without granting any option. Each launch has a fresh
+    generation, never auto-restarts or replays work, and owns a POSIX process
+    group. Setup has a five-second deadline and cancel a one-second default
+    deadline. Linux is the only verified platform.
+  - **Display and identifier policy:** project text chunks and stable plans
+    as excerpts, and only human-readable tool state. Unknown display enum
+    values fall back to `other` or `invalid`; wire fields still have to pass
+    schema validation. Tool and option wire ids never become display ids.
+  - **Retention and truncation:** keep whole raw log entries up to the byte
+    cap, evicting oldest entries first. An over-limit line keeps its bounded
+    raw prefix and rejection marker, not an unbounded copy. Expire raw data
+    from creation time with a live timer and sweep old raw files on the next
+    start; the display journal remains until session deletion.
+- Deviations and dead ends: real agent qualification is deferred as noted
+  above. The SDK's permissive generated decoders would silently discard bad
+  optional response fields, and the installed Zod importer does not support
+  the pinned schema's nontrivial `not` clauses; neither is used as the strict
+  ingress validator. The fixture uses byte I/O on the stdio descriptors so
+  early exit and partial EOF behave reliably in a restricted runner.
+- Verification: the 22 Linux fixture tests, typecheck, dependency boundary
+  check and diff whitespace check passed. The existing Deck suite reported
+  `spawnSync git EPERM` in existing Git guards and did not finish the
+  bounded rerun; the two TCP-listening voice suites were excluded for the
+  offline run. Base passed 77 tests and failed 8 on `spawnSync` permission
+  errors for Bash and Python. The leak gate was blocked by `spawnSync git
+  EPERM`.
+- Supersedes: the proposed real candidate in the initial slice, not the
+  later adapter plan.
 - Commits: none yet.
