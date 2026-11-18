@@ -127,6 +127,11 @@ pnpm check:licence
 CI runs exactly this list (plus gitleaks), so a green pipeline never claims
 more than a green local run.
 
+`pnpm typecheck` uses the TypeScript native preview (`tsgo`) after generating
+Deck's React Router types. The preview can report different diagnostics from
+`tsc`. Run `pnpm typecheck:tsc` to compare or to check on a platform without a
+native preview binary. CI requires the `tsgo` check.
+
 ## The codes in the comments
 
 Comments through `packages/deck` cite short codes that arrived with the code.

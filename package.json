@@ -16,6 +16,7 @@
     "build": "pnpm -C packages/deck build",
     "start": "pnpm -C packages/deck start",
     "typecheck": "pnpm -r run typecheck",
+    "typecheck:tsc": "pnpm -r run typecheck:tsc",
     "_comment:test": "One workspace at a time, deliberately. pnpm -r defaults to running package scripts in parallel, and the base suite drives bin/create-agent.sh as real subprocesses. Run alongside deck's suite, that load alone pushed a dozen of deck's 5-second per-test timeouts over the line: 64 failures, none of them a real defect, on a tree that is green when the two run in sequence. A suite that fails for load reasons is no more use than one that passes for environmental ones.",
     "test": "pnpm -r --workspace-concurrency=1 run test",
     "check:boundaries": "depcruise packages",
@@ -28,6 +29,7 @@
     "check:lib-version": "node scripts/lib-version-gate.mjs"
   },
   "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "dependency-cruiser": "^16.10.0",
     "typescript": "^5.8.0"
   }
