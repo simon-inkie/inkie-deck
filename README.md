@@ -18,9 +18,17 @@ Inkie Deck is open source under the [Apache-2.0 licence](LICENSE).
 
 *An agent thread keeps the decision, your answer and the agent's update together.*
 
+![A second agent's thread with a launch carousel slide shown inline and links to the kit label and a config file](docs/images/agent-thread-tech.png)
+
+*Agents share work as inline images and links to files, so a launch carousel arrives as something you can see, not a description.*
+
 ![Review panel with a file list of generated images and code files, and a hero image previewed beside the thread](docs/images/review-panel.png)
 
 *Files an agent produces open beside the thread: generated images, code and notes, searchable and ready to review.*
+
+![A second agent's thread with an inline carousel slide and a link to its launch config, beside the same config open as highlighted JSON](docs/images/code-preview.png)
+
+*Code opens in the same panel with syntax highlighting, so a config file an agent wrote can be read next to the conversation about it.*
 
 ![Project board with twelve cards across to do, in progress, blocked, in review and done](docs/images/project-board.png)
 

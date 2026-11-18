@@ -45,6 +45,7 @@ Out of scope: install and contributing text, any app behaviour, the logo
   normal install, corrected two script and protocol paths, aligned `CLAUDE.md`.
 - 2026-11-18: richer screenshots and demo fixtures added at the maintainer's
   request.
+- 2026-11-18: demo images replaced with two brand-style sets (a paper shop and a retro-robot tech shop, on two agents), a JSON code-preview shot and a second thread shot added; `scripts/capture-readme-screenshots.mjs` keeps the captures reproducible.
 - 2026-11-18: SPEC and issue added after the automated review pointed out their
   absence (retrospective; the work above predates this file).
 

@@ -3,22 +3,22 @@ decision-id: TASK-HERO-1
 blocking: true
 options:
   - key: A
-    label: "Notebook with the teal spine"
-    detail: "Calm, product-first, matches the shop's teal accents."
+    label: "Greeting cards on the teal and coral burst"
+    detail: "Bold and graphic, and it matches the shop's teal accents."
   - key: B
-    label: "Sage background with the rose spine"
-    detail: "Softer and more seasonal, but the product reads less clearly."
-lean: "A - the product is the hero, the flowers are the garnish."
+    label: "Notebooks and a gift box on plain cream"
+    detail: "Softer and quieter, but the products sit small in one corner."
+lean: "A - it stops the scroll; B leaves the left half empty."
 answered: A
 
 **The call:**
-Two hero images for the spring homepage: [hero A, teal spine](/attachments/echo/mc/spring-hero-a.png) and [hero B, sage and rose](/attachments/echo/mc/spring-hero-b.png).
+Two hero images for the spring homepage: [hero A, teal burst](/attachments/echo/mc/spring-hero-a.png) and [hero B, notebooks on cream](/attachments/echo/mc/spring-hero-b.png).
 Which one leads?
 
 ---
 ## 2026-06-08T10:20:00Z - from: alex - status: read - subject: Re: homepage hero image
 
-A. The teal spine looks like us.
+A. The teal looks like us.
 
 ---
 ## 2026-06-08T15:00:00Z - from: echo - status: read - subject: hero section built

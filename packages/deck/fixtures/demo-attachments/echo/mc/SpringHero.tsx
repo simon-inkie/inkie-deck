@@ -11,7 +11,7 @@ const IMAGES: Record<Variant, string> = {
 export function SpringHero({ variant = "a" }: { variant?: Variant }) {
   return (
     <section className="spring-hero">
-      <img src={IMAGES[variant]} alt="Notebook, envelope and pressed flowers" />
+      <img src={IMAGES[variant]} alt="Greeting cards and pressed flowers on a teal burst" />
       <div className="spring-hero__copy">
         <h1>Paper and petals, made to order</h1>
         <p>The spring range is here: notebooks, cards and gift boxes, pressed by hand.</p>

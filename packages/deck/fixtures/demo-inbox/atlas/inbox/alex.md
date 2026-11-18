@@ -47,3 +47,27 @@ The new checkout shows a free delivery bar. Where should the line sit?
 The delivery bar is built and on the preview site. It only needs the number.
 
 ---
+## 2026-06-09T14:30:00Z - from: atlas - status: read - subject: Spark and Relay launch page
+
+The bench-kit launch page for Spark and Relay is on its own preview site. Two hero options: [hero A, the tin robot](/attachments/atlas/mc/tech-hero-a.png) and [hero B, the bench oscilloscope](/attachments/atlas/mc/tech-hero-b.png). I've built it around A; say if you'd rather lead with B.
+
+---
+## 2026-06-09T14:45:00Z - from: alex - status: read - subject: Re: Spark and Relay launch page
+
+A. The robot is the shop.
+
+---
+## 2026-06-09T15:10:00Z - from: atlas - status: sent - subject: launch carousel
+
+Carousel for the kit launch is ready. Slide 1:
+
+![Carousel slide 1: local tools, built to last](/attachments/atlas/mc/tech-carousel-1.png)
+
+Slide 2 is [zero cloud, full control](/attachments/atlas/mc/tech-carousel-2.png). The page reads its hero, slides and kit list from [the launch config](/attachments/atlas/mc/spark-relay-launch.json), so swapping a slide is a one-line change.
+
+---
+## 2026-06-09T15:40:00Z - from: atlas - status: sent - subject: kit box label
+
+Kit box label is ready on the same 90mm stock as the gift boxes, so Briar can print both on one run: [kit box label](/attachments/atlas/mc/tech-product-label.png).
+
+---
