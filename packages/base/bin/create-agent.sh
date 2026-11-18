@@ -39,16 +39,24 @@
 #                              [--memory-root <path> | --no-memory]
 #   bin/create-agent.sh --verify-only <name>
 #   bin/create-agent.sh --check-name <name>
+#   bin/create-agent.sh --status <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
 #   --model <id>                 write <agent home>/.model, which boot-agents.sh
 #                                and workspace.sh pass as `--model <id>`. Without
 #                                it the agent uses the runtime's own default,
 #                                which may be a costlier model on a paid plan.
-#   --kind assistant|platform    write <agent home>/.kind (read by Deck to pin the
+#   --kind assistant|platform|member
+#                                write <agent home>/.kind (read by Deck to pin the
 #                                assistant first) and stamp a short role brief
 #                                from templates/kinds/<kind>.md into CLAUDE.md.
 #                                bin/first-run.sh uses this; it is optional.
+#                                `member` is for agents the platform agent creates
+#                                for the user; its brief names the assistant (give
+#                                it with --peer).
+#   --person <name>              the user's name (their MC_USER), stamped into the
+#                                role brief. Without it the assistant's "First
+#                                conversation" section is left out, with a warning.
 #   --peer <name>                the other shipped agent's name, stamped into the
 #                                role brief so each knows who to hand work to. Also
 #                                saved as <agent home>/.peer, so a re-run of
@@ -56,6 +64,16 @@
 #   --check-name <name>          validate the name and that both homes are free,
 #                                print the usual complaint if not, write nothing.
 #                                Exit 0 (usable) or 1 (not).
+#   --status <name>              print `complete`, `incomplete` or `absent` and write
+#                                nothing. absent: neither home holds anything.
+#                                complete: the kind and peer markers (written
+#                                last by a creation) AND the whole scaffold are
+#                                there: persona files, settings, boot phrase, role
+#                                brief, inbox directory. Add --kind and --peer to
+#                                require the intended ones. Anything else (a stopped
+#                                scaffold, a foreign, altered or unreadable home) is
+#                                incomplete and left alone for repair. Exit 0 for
+#                                all three, 1 for a bad name.
 #   --no-install-path            skip the $HOME/.local/bin/inbox symlink that
 #                                makes `inbox` resolve as a bare command name.
 #   --memory-root <path>         checkout of the memory layer (default:
@@ -163,6 +181,7 @@ const kindFile = process.env.CA_KIND_FILE;
 const peer = process.env.CA_PEER;
 const agentsHome = process.env.CA_AGENTS_HOME;
 const createCli = process.env.CA_CREATE_CLI;
+const person = process.env.CA_PERSON;
 
 const identityPath = path.join(home, "IDENTITY.md");
 let identity = fs.readFileSync(identityPath, "utf8");
@@ -189,8 +208,13 @@ claude = claude.replace(
 // imports so the persona chain is unchanged; the placeholders are per-agent for
 // the same reason the inbox CLI path is.
 if (kindFile) {
+  // Sections wrapped in <!-- person-only --> ... <!-- /person-only --> need the
+  // user's name: kept (markers removed) when there is one, dropped when not.
+  const personOnly = /^<!-- person-only -->\n([\s\S]*?)^<!-- \/person-only -->\n?/gm;
   const brief = fs
     .readFileSync(kindFile, "utf8")
+    .replace(personOnly, person ? "$1" : "")
+    .replaceAll("<person>", person || "your person")
     .replaceAll("<peer>", peer || "the other agent")
     .replaceAll("<agents-home>", agentsHome)
     .replaceAll("<create-agent-cli>", createCli);
@@ -798,7 +822,9 @@ NO_MEMORY=0
 MODEL=""
 KIND=""
 PEER=""
+PERSON=""
 CHECK_NAME=0
+STATUS_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -810,6 +836,12 @@ while [[ $# -gt 0 ]]; do
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --kind)         [[ $# -ge 2 ]] || die_scaffold "--kind needs a value";         KIND="$2";            shift 2 ;;
     --peer)         [[ $# -ge 2 ]] || die_scaffold "--peer needs a value";         PEER="$2";            shift 2 ;;
+    --person)       [[ $# -ge 2 ]] || die_scaffold "--person needs a value";       PERSON="$2";          shift 2 ;;
+    --status)       [[ $# -ge 2 ]] || die_scaffold "--status needs a name"
+                    [[ -n "$2" ]] || die_scaffold "\"\" cannot be an agent name" "a name is lowercase letters, digits and hyphens"
+                    [[ "$2" != -* ]] || die_scaffold "\"$2\" cannot be an agent name" "a name does not start with a hyphen"
+                    [[ -z "$NAME" ]] || die_scaffold "more than one name given: '$NAME' and '$2'"
+                    STATUS_ONLY=1; NAME="$2"; shift 2 ;;
     --check-name)   [[ $# -ge 2 ]] || die_scaffold "--check-name needs a name"
                     [[ -n "$2" ]] || die_scaffold "\"\" cannot be an agent name" "a name is lowercase letters, digits and hyphens"
                     [[ "$2" != -* ]] || die_scaffold "\"$2\" cannot be an agent name" "a name does not start with a hyphen"
@@ -961,9 +993,13 @@ MODEL_ARGS=()
 [[ -n "$MODEL" ]] && MODEL_ARGS=(--model "$MODEL")
 
 case "$KIND" in
-  ""|assistant|platform) ;;
-  *) die_scaffold "--kind '$KIND' is not a kind" "use assistant or platform" ;;
+  ""|assistant|platform|member) ;;
+  *) die_scaffold "--kind '$KIND' is not a kind" "use assistant, platform or member" ;;
 esac
+if [[ -n "$PERSON" && ! "$PERSON" =~ $NAME_RE ]]; then
+  die_scaffold "--person '$PERSON' is not a plain name" \
+    "use lowercase letters, digits and hyphens, as for MC_USER"
+fi
 if [[ -n "$PEER" && ! "$PEER" =~ $NAME_RE ]]; then
   die_scaffold "--peer '$PEER' cannot be an agent name" \
     "a name is lowercase letters, digits and hyphens"
@@ -1009,6 +1045,47 @@ refuse_if_occupied() {
   fi
 }
 
+# --status: where this agent stands, read from the homes, and nothing written.
+# FAIL CLOSED. `complete` needs all of: a regular .kind naming a known kind (the
+# one given with --kind, if any), a regular .peer naming a valid agent (the one
+# given with --peer, if any), every persona file, .runtime and
+# .claude/settings.json present as readable regular files, the boot phrase in
+# IDENTITY.md, the stamped role brief in CLAUDE.md, and the inbox directory.
+# A marker alone proves nothing: a foreign, hand-made, altered or unreadable
+# home reads `incomplete`, and is left exactly as it is for repair.
+if [[ $STATUS_ONLY -eq 1 ]]; then
+  [[ -n "$NAME" ]] || die_scaffold "--status needs a name"
+  any=0
+  for entry in "${PERSONA_FILES[@]}" .runtime .kind .peer .claude; do
+    [[ -e "$AGENT_HOME/$entry" || -L "$AGENT_HOME/$entry" ]] && any=1
+  done
+  [[ -e "$AGENT_INBOX" || -L "$AGENT_INBOX" ]] && any=1
+  if [[ $any -eq 0 ]]; then say "absent"; exit "$EXIT_VERIFIED"; fi
+
+  status_ok() {
+    local f kind peer
+    [[ -d "$AGENT_HOME" && ! -L "$AGENT_HOME" ]] || return 1
+    for f in "${PERSONA_FILES[@]}" .runtime .claude/settings.json .kind .peer; do
+      [[ -f "$AGENT_HOME/$f" && ! -L "$AGENT_HOME/$f" && -r "$AGENT_HOME/$f" ]] || return 1
+    done
+    [[ -d "$AGENT_HOME/.claude" && ! -L "$AGENT_HOME/.claude" ]] || return 1
+    for f in "${PERSONA_FILES[@]}"; do [[ -s "$AGENT_HOME/$f" ]] || return 1; done
+    [[ -d "$AGENT_INBOX" && ! -L "$AGENT_INBOX" && ! -L "$INBOX_ROOT/$NAME" ]] || return 1
+    kind="$(head -n1 "$AGENT_HOME/.kind" 2>/dev/null | tr -d '[:space:]')"
+    case "$kind" in assistant|platform|member) ;; *) return 1 ;; esac
+    [[ -z "$KIND" || "$kind" == "$KIND" ]] || return 1
+    peer="$(head -n1 "$AGENT_HOME/.peer" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$peer" =~ $NAME_RE && "$peer" != "$NAME" ]] || return 1
+    [[ -z "$PEER" || "$peer" == "$PEER" ]] || return 1
+    grep -qE 'boot-[0-9a-f]{16}' "$AGENT_HOME/IDENTITY.md" 2>/dev/null || return 1
+    grep -q '^## Your role: ' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
+    grep -qF "**$peer**" "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
+    return 0
+  }
+  if status_ok; then say "complete"; else say "incomplete"; fi
+  exit "$EXIT_VERIFIED"
+fi
+
 # --check-name: everything a creation would refuse on, and nothing written.
 if [[ $CHECK_NAME -eq 1 ]]; then
   [[ -n "$NAME" ]] || die_scaffold "--check-name needs a name"
@@ -1051,6 +1128,11 @@ else
     die_scaffold "template not found: $TEMPLATES_DIR/kinds/$KIND.md"
   fi
 
+  if [[ "$KIND" == assistant && -z "$PERSON" ]]; then
+    warn "no --person given, so the assistant's First conversation section is left out:"
+    warn "  it cannot address a user it cannot name. Pass --person <name> (your MC_USER)."
+  fi
+
   # The marker destinations are checked BEFORE anything is created, so a refusal
   # leaves nothing behind and a retry works.
   for marker in ${KIND:+.kind} ${PEER:+.peer}; do
@@ -1072,7 +1154,7 @@ else
   CA_HOME="$AGENT_HOME" CA_NAME="$NAME" CA_ROLE="$ROLE" CA_NONCE="$NONCE" \
     CA_INBOX_CLI="$SCRIPT_DIR/inbox" CA_PEER="$PEER" CA_AGENTS_HOME="$AGENTS_HOME" \
     CA_CREATE_CLI="$SCRIPT_DIR/create-agent.sh" \
-    CA_KIND_FILE="${KIND:+$TEMPLATES_DIR/kinds/$KIND.md}" stamp_templates \
+    CA_PERSON="$PERSON" CA_KIND_FILE="${KIND:+$TEMPLATES_DIR/kinds/$KIND.md}" stamp_templates \
     || die_scaffold "could not write the persona files in $AGENT_HOME"
 
   # .runtime is written explicitly even though the launcher defaults it. The
@@ -1281,15 +1363,20 @@ say
 say "create-agent: verifying $NAME ..."
 say "  one non-interactive turn, from $AGENT_HOME"
 
+# The agent's own .env.secrets is sourced inside the probe subshell only, as
+# boot-agents.sh does in the pane before launching the runtime, so the probe
+# runs with the same credentials the live agent will have and nothing leaks into
+# this script's own environment.
+#
 # cwd is load-bearing. The runtime assembles CLAUDE.md and its imports relative
 # to the directory it was launched in, and files conversation history under a
 # slug of that directory. A probe run from anywhere else verifies a different
 # project and tells you nothing about this agent.
 if command -v timeout >/dev/null 2>&1; then
-  ( cd "$AGENT_HOME" && timeout "$PROBE_TIMEOUT" claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) \
+  ( cd "$AGENT_HOME" && { [ -f .env.secrets ] && . ./.env.secrets; }; timeout "$PROBE_TIMEOUT" claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) \
     >"$PROBE_OUT" 2>"$PROBE_ERR"
 else
-  ( cd "$AGENT_HOME" && claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
+  ( cd "$AGENT_HOME" && { [ -f .env.secrets ] && . ./.env.secrets; }; claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
 fi
 PROBE_STATUS=$?
 

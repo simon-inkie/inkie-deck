@@ -170,7 +170,13 @@ claude_first_boot_prompt() {
     return 0
   fi
   : > "$home/.first-boot-done" 2>/dev/null || return 0
-  printf '%q\n' "This is your first session. Do your day-one steps from your persona files (IDENTITY.md and SOUL.md), then say hello."
+  local message="This is your first session. Do your day-one steps from your persona files (IDENTITY.md and SOUL.md), then say hello."
+  # The assistant also opens the first conversation with its person, as its role
+  # brief describes (only a brief stamped with --person has that section).
+  if [[ "$(head -n1 "$home/.kind" 2>/dev/null | tr -d '[:space:]')" == assistant ]]; then
+    message="$message After day one, start the first conversation as your role brief describes."
+  fi
+  printf '%q\n' "$message"
 }
 
 # agent_model_flag <agent_home> -- print `--model <id>` from <agent_home>/.model,

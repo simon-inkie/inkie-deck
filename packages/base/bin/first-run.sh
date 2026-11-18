@@ -7,13 +7,16 @@
 #
 # Usage:
 #   bin/first-run.sh [--assistant <name>] [--platform <name>] [--model <id>]
-#                    [--no-verify] [--agents-home <dir>] [--inbox-root <dir>]
+#                    [--no-verify] [--person <name>] [--agents-home <dir>]
+#                    [--inbox-root <dir>]
 #
 #   --assistant <name>   the agent you talk to (asked for, default "inkie")
 #   --platform <name>    the agent that changes the setup (asked for, default
 #                        "doctor")
 #   --model <id>         passed to create-agent.sh for both agents
 #   --no-verify          create without the boot phrase proof (exit 4)
+#   --person <name>      your name (your MC_USER), stamped into the role briefs
+#                        so the assistant can address you; default: $MC_USER
 #   --agents-home <dir>  where agent homes live (default: $AGENTS_HOME, then
 #                        $AGENTS_ROOT, then $HOME/agents)
 #   --inbox-root <dir>   where inboxes live (default: $INBOX_ROOT)
@@ -37,6 +40,7 @@ MODEL=""
 NO_VERIFY=0
 AGENTS_HOME_ARG=""
 INBOX_ROOT_ARG=""
+PERSON=""
 
 usage() {
   local line first=1
@@ -57,10 +61,15 @@ while [[ $# -gt 0 ]]; do
     --model)       [[ $# -ge 2 ]] || fail "--model needs a value";       MODEL="$2";           shift 2 ;;
     --agents-home) [[ $# -ge 2 ]] || fail "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --inbox-root)  [[ $# -ge 2 ]] || fail "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
+    --person)      [[ $# -ge 2 && -n "$2" ]] || fail "--person needs a name";       PERSON="$2";          shift 2 ;;
     --no-verify)   NO_VERIFY=1; shift ;;
     *)             fail "unknown argument: $1 (run with --help)" ;;
   esac
 done
+
+# The person defaults to MC_USER when that is a plain name; otherwise none is
+# stamped and create-agent.sh says the First conversation section is left out.
+if [[ -z "$PERSON" && "${MC_USER:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then PERSON="$MC_USER"; fi
 
 # Same resolution create-agent.sh uses, so both look at the same directory.
 if [[ -n "$AGENTS_HOME_ARG" ]]; then AGENTS_HOME="$AGENTS_HOME_ARG"
@@ -175,6 +184,7 @@ fi
 ARGS=(${COMMON[@]+"${COMMON[@]}"})
 [[ -n "$MODEL" ]] && ARGS+=(--model "$MODEL")
 [[ $NO_VERIFY -eq 1 ]] && ARGS+=(--no-verify)
+[[ -n "$PERSON" ]] && ARGS+=(--person "$PERSON")
 
 declare -A RC
 create_one() {
