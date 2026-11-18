@@ -35,12 +35,15 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { resolveAttachmentsRoot } from "./attachments.server.js";
+import { IDLE_PROMPT_RE, SHELL_PROMPT_RE } from "./pane-prompts.js";
 import {
   submitPaneText,
   type PaneSnapshot,
   type PaneSubmitDriver,
   type SendKeysResult as PaneSendKeysResult,
 } from "./tmux-submit.js";
+
+export { IDLE_PROMPT_RE, SHELL_PROMPT_RE } from "./pane-prompts.js";
 
 /** ROSTER agent-name convention - the pre-subprocess gate. */
 export const WINDOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
@@ -476,30 +479,6 @@ export function paneTextIsActive(viewport: string): boolean {
 }
 
 /**
- * The bare, EMPTY composer prompt: a lone prompt glyph on its own line, nothing
- * typed after it. This is the POSITIVE idle signal - the one state where a wake
- * is safe. Three glyphs are recognised: Claude Code's U+276F, Codex's U+203A,
- * and agy's ">". Everything else fails it on purpose:
- *   - dirty composer ("U+276F git checkout main" or "> git checkout main") -> text after the prompt, no match
- *   - permission dialog ("U+276F 1. Yes")           -> text after the prompt, no match
- *   - ghost / auto-suggest ("U+276F /compact")      -> text after the prompt, no match (benign skip)
- *   - exited agent at a bash shell ("user@host$")   -> no prompt glyph at all, no match
- * Multiline (`m`) so any viewport line can be the composer (the statusline +
- * separator render BELOW the prompt in this TUI).
- *
- * A bare ">" is matched here but is NOT sufficient on its own: it is a common
- * character (Bash PS2 continuation, node REPL, diffs, redirects), so the caller
- * additionally requires agy's frame border directly above it (isAgyPromptLine).
- * U+276F and U+203A are near-unique and need no such corroboration.
- *
- * NB: Codex's idle composer is almost never genuinely bare - it shows a rotating
- * hint placeholder after the glyph, which fails this bare check by design. That
- * case is handled downstream by the ANSI dim-hint disambiguation (DIM_SGR); this
- * regex only covers the truly-bare state (Claude's usual rest, Codex's rare one).
- */
-export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A>]\s*$/m;
-
-/**
  * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F,
  * Codex's U+203A, and agy / Gemini's ">". Consumers MUST gate the bare ">" on
  * agy's frame border (see isAgyPromptLine / lineHasPromptGlyph); a lone ">" is a
@@ -668,15 +647,6 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
   }
   return true;
 }
-
-/**
- * A Unix shell prompt left behind by an EXITED agent, e.g.
- * "alex@demobox:~/agents/echo$". Requires the user@host shape so a Claude
- * statusline that merely ends in a sigil (e.g. "Opus 4.8  ctx:19%") is NEVER
- * mistaken for a shell prompt - that false-negative would silently disable the
- * wake for agents with a ctx-percent statusline.
- */
-export const SHELL_PROMPT_RE = /\w+@[\w.-]+[:\s].*[$#%]\s*$/;
 
 const COMPOSER_LOWER_BORDER_RE = /^\s*[─━═╌╍┄┅]{3,}\s*$/u;
 

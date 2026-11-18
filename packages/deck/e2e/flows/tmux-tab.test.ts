@@ -19,7 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
-import { resetFixtureInbox, assertGitClean } from "./helpers";
+import { resetFixtureInbox, assertGitClean, inboxPath } from "./helpers";
 
 test.beforeEach(() => {
   resetFixtureInbox();
@@ -60,8 +60,11 @@ test("TASK-691: leftover ?window= values from old bookmarks never 500", async ({
 test("TASK-437.1: toggle flips thread to terminal mode and back; compose follows", async ({
   page,
 }) => {
+  fs.truncateSync(inboxPath("scribe"), 0);
   await page.goto("/threads/scribe");
   await expect(page.getByTestId("compose-textarea")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No messages yet" })).toBeVisible();
+  await expect(page.getByText(/appears to have exited/)).not.toBeVisible();
 
   // Flip to terminal mode.
   await page.getByTestId("thread-view-tmux").click();
