@@ -62,6 +62,11 @@ using the branch name as the folder name. Anything else the work needs
 folder is committed and merged with the code; it is the permanent record of
 why the change looks the way it does.
 
+Before an issue number exists the folder is `.specs/<slug>/`. The moment the
+issue is created, rename it with `git mv` and record the number in the SPEC
+header. A spec is never kept only outside the repository (in a chat, a ticket
+comment or a wiki), and external maintainers follow the same rule.
+
 A starting SPEC can be ten lines. Use this skeleton:
 
 ```markdown

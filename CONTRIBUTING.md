@@ -53,6 +53,10 @@ pnpm -C packages/deck check:dashes
   number, for example `39-contributor-workflow`.
 - Start from an issue. Non-trivial work keeps a SPEC at
   `.specs/<issue>-<slug>/SPEC.md`, updated in the same commits as the code.
+  Specs live in the repo: every ticket gets a `.specs/<issue>-<slug>/` folder
+  that travels in the same pull request, and a spec is never kept only in a
+  chat, a ticket comment or a wiki. See
+  [DEVELOPMENT.md](DEVELOPMENT.md) section 2.
 - Keep each PR to one change. Unrelated changes go in separate PRs.
 - Commit titles follow `type(scope): summary (#issue)`, for example
   `fix(base): anchor stuck-pane literals to the start of a rendered line (#20)`.

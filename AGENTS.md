@@ -19,6 +19,11 @@ For setting up a machine and running the checks, see [README.md](README.md)
 
 ## House rules for agents
 
+- Specs live in the repo. Every ticket (GitHub issue) gets a folder
+  `.specs/<issue-number>-<slug>/` holding its SPEC.md, ISSUE-TEXT.md if used,
+  and any design notes, in the same pull request as the code. Never keep a spec
+  only in a chat, a ticket comment or a wiki. See
+  [DEVELOPMENT.md](DEVELOPMENT.md) section 2.
 - No internal material (names, hosts, paths, ticket ids, addresses) may enter
   the repository. `pnpm check:leaks` enforces it; read the rule comments before
   extending the denylist.

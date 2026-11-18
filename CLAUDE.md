@@ -12,5 +12,10 @@ This file is a pointer. The repository's contributing rules are in
 same files every other coding-agent runtime reads, so there is exactly one copy
 of the rules and no chance of drift.
 
+**Specs live in the repo.** Every ticket (GitHub issue) gets a folder
+`.specs/<issue-number>-<slug>/` holding its SPEC.md and any design notes, in the
+same pull request as the code. Never keep a spec only in a chat, a ticket
+comment or a wiki. Detail: [DEVELOPMENT.md](DEVELOPMENT.md) section 2.
+
 The one thing worth repeating here, so a session that reads only this file is
 not blind: sign off every commit (`git commit -s`).
