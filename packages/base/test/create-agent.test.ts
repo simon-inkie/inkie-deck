@@ -1383,10 +1383,10 @@ describe("--kind, --peer and --check-name", () => {
     expect(fs.readFileSync(path.join(home, ".kind"), "utf8")).toBe("platform");
     expect(fs.readFileSync(path.join(home, ".peer"), "utf8")).toBe("forge");
     const claude = fs.readFileSync(path.join(home, "CLAUDE.md"), "utf8");
-    expect(claude).toContain("You are the platform agent");
+    expect(claude).toContain("You are the platform agent, the brain surgeon");
     expect(claude).toContain("**forge**");
     expect(claude).toContain(path.join(PACKAGE_ROOT, "bin", "create-agent.sh"));
-    expect(claude).toContain("Ask before changing anything outside the agents folder");
+    expect(claude).toContain("Ask before changing anything outside the agents folder and Deck's own");
     expect(claude).not.toContain("<peer>");
     // The persona chain is still intact.
     expect(claude).toContain("@IDENTITY.md");

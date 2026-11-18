@@ -4,7 +4,7 @@ Title: Name your assistant at first run
 
 Deck super-assistant MVP roadmap, M3 (8 November 2026), following the maintainer's
 direction to let users name their assistant and platform agent during setup.
-No original Linear ticket exists.
+No matching original Linear ticket was found in a bounded check.
 
 ## Problem
 
@@ -16,12 +16,13 @@ the others.
 
 ## Proposed behaviour
 
-- A single first-run command asks for two names: an assistant (the agent the
-  user talks to day to day, which explains how Deck works) and a platform
-  agent (which creates and changes agents when asked).
+- A single first-run command asks for two names: an assistant (the main
+  orchestrator the user talks to first) and a platform agent (the
+  "brain surgeon" that edits Deck, makes plugins and creates agents when the
+  assistant asks). The defaults are `inkie` and `doctor`, both editable.
 - Both names are checked before anything is created. Each agent is made with
-  `create-agent.sh`, so it exists in both homes and must still pass the boot
-  phrase check.
+  `create-agent.sh`, so it exists in both homes and each newly created agent
+  uses the existing boot-phrase check by default.
 - Each agent gets a short role brief and knows the other's name.
 - Deck pins the assistant to the top of the agent list.
 - The command can run without prompts (`--assistant`, `--platform`) and is
@@ -35,13 +36,14 @@ the others.
   name is only checked for an agent that is actually missing.
 - A completed matching pair run again is a no-op (exit 0, no verification
   claim). A matching partial pair resumes: only the missing agent is created,
-  under the peer name the existing agent already holds.
+  under the peer name the existing agent already holds. If a different name
+  is supplied, the saved name is used and a warning is printed.
 - Without a usable Claude CLI, or when verification is skipped, both agents
   are created and reported as not verified (exit 4), not as a pass.
 - The boot phrase proves persona loading only. The role brief and peer name
   are checked separately by test, plus a manual interactive check.
-- Deck shows the assistant first, whatever its name, when the persona and inbox
-  roots match the configured `AGENTS_ROOT` and `INBOX_ROOT`. A populated list
+- Deck shows the assistant first, whatever its name, when it is visible in Deck's existing
+  inbox roster and the persona and inbox roots match the configured `AGENTS_ROOT` and `INBOX_ROOT`. A populated list
   with no assistant keeps its alphabetical order; a missing or unreadable
   `.kind` means no pin. The empty-state copy changes to name the first-run
   command.
@@ -49,6 +51,8 @@ the others.
 ## Out of scope
 
 - An in-app setup screen, model keys, connecting mail or calendar, intake.
+- Conversational onboarding, the next issue: on first run Inkie asks the user
+  what they do and has the platform agent create agents to match.
 - Renaming or removing agents.
 - Any new permission system for the platform agent.
 - Workflows, a runs view, plugins, workspace, Brain or Vault changes, backup.

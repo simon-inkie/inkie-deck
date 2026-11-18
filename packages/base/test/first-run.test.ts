@@ -84,7 +84,7 @@ describe("first-run", () => {
     expect(fs.readFileSync(path.join(b.agentsHome, "ada", ".kind"), "utf8")).toBe("assistant");
     expect(fs.readFileSync(path.join(b.agentsHome, "forge", ".kind"), "utf8")).toBe("platform");
     // Role and peer stamps have their own checks; the boot phrase does not cover them.
-    expect(claudeOf(b, "ada")).toContain("You are the assistant");
+    expect(claudeOf(b, "ada")).toContain("You are the assistant, the main orchestrator");
     expect(claudeOf(b, "ada")).toContain("**forge**");
     expect(claudeOf(b, "forge")).toContain("You are the platform agent");
     expect(claudeOf(b, "forge")).toContain("**ada**");

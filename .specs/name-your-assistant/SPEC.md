@@ -10,8 +10,9 @@
 A new user runs one command, names two agents (an assistant they talk to and a
 platform agent that changes the setup), and opens Deck to find the assistant
 pinned at the top of the agent list. The command wraps `create-agent.sh`, so
-each agent is still created in both homes and still has to pass the boot
-phrase proof. Today every agent is created one at a time by hand, all agents
+each agent is still created in both homes, and each newly created agent uses
+the existing boot-phrase check by default (it proves the persona reached the
+probe; the role brief and peer stamp have separate checks). Today every agent is created one at a time by hand, all agents
 are siblings in alphabetical order, and nothing marks which one to start with.
 
 ## Origin
@@ -19,7 +20,7 @@ are siblings in alphabetical order, and nothing marks which one to start with.
 Deck super-assistant MVP roadmap, M3 (8 November 2026), following the maintainer's
 direction to let users name their assistant and platform agent during setup.
 The roadmap calls for both names, an assistant pinned above the other agents,
-and the existing scaffold and persona proof. No original Linear ticket exists.
+and the existing scaffold and persona proof. No matching original Linear ticket was found in a bounded check.
 
 ## Scope
 
@@ -78,8 +79,9 @@ first-run.sh
       any refused -> exit 1, nothing written
   create-agent.sh <name> --kind <kind> --peer <other> [--model ...]
       for each missing kind only
-  print a verdict line for each agent created (skipped agents are reported as
-  skipped, never as verified); exit with the worst
+  created agents get probe verdicts; existing agents are reported as skipped,
+  never as verified; preflight failures report the validation error; exit with
+  the worst
 ```
 
 - `.kind` is a single-line marker beside `.runtime` and `.model`, the same
@@ -90,7 +92,7 @@ first-run.sh
   alphabetical list as today.
 - Exit code of `first-run.sh`: 1 if either creation hit a scaffold error,
   else 3 if either verification failed, else 4 if either could not be
-  verified, else 0. Both verdict lines are always printed.
+  verified, else 0. Created agents get probe verdicts; existing agents are reported as skipped.
 - `.peer` is a second single-line marker, written by `create-agent.sh --peer`.
   It is what makes recovery bind to the surviving agent's brief.
 - Re-running is safe: existing agents are recognised first and skipped, and
@@ -108,14 +110,18 @@ first-run.sh
 - A completed matching pair run again is a no-op: nothing is created, both are
   reported as existing, exit 0, no verification claim.
 - A matching partial pair resumes: only the missing agent is created, under the
-  existing agent's saved peer name.
+  existing agent's saved peer name. When a newly typed name differs, the saved
+  name is used and a warning is printed. If no peer marker exists, the name is
+  asked for or accepted as usual.
 - Without a usable Claude CLI, or when verification is skipped, both agents
   are created and report `CANNOT VERIFY`, exit 4.
 - Deck shows the assistant first, above the "Agents" label, whatever its name
-  sorts to, when the persona and inbox roots match the configured
-  `AGENTS_ROOT` and `INBOX_ROOT`. An ordinary populated list with no assistant
+  sorts to, when the assistant is visible in Deck's existing
+  inbox roster and the persona and inbox roots match the configured
+  `AGENTS_ROOT` and `INBOX_ROOT` (an unset `AGENTS_ROOT` uses the default
+  home). An ordinary populated list with no assistant
   keeps its alphabetical order; the empty state's copy changes. A missing or
-  unreadable `.kind` means no pin.
+  unreadable `.kind` marker means no pin.
 - The role brief and peer name each have their own check: the stamped text is
   asserted in each agent's `CLAUDE.md` by test, and the manual interactive
   check below stays.
@@ -162,7 +168,10 @@ Core behaviour only.
   prompt still fires.
 - Defaults offered as editable defaults: `inkie` and `doctor`. The platform
   brief says to ask before changing anything outside the agents folder and does
-  not mention auto-mode.
+  not mention auto-mode. The assistant brief makes the assistant the main
+  orchestrator; the platform brief makes the platform agent the "brain surgeon" that
+  edits Deck, makes plugins and creates agents. The guard covers anything
+  outside the agents folder and Deck's own workspace.
 - Recovery binds to the saved peer name rather than requiring new input to
   match it: the surviving agent's brief already names its peer.
 - Both names are checked before either agent is created, so a typo in the
@@ -171,6 +180,9 @@ Core behaviour only.
 ## Follow-ups
 
 - In-app first-run screen, as part of the clean-machine setup flow.
+- Next issue: conversational onboarding. On first run Inkie asks the user what
+  they do and has the platform agent create agents to match. It belongs with
+  the clean-machine setup flow and is not built here.
 - `rename-agent.sh` and `remove-agent.sh`.
 - Deck reads `AGENTS_ROOT` and the scripts read `AGENTS_HOME`; when they
   differ the pin silently does not appear. `create-agent.sh` already warns;
