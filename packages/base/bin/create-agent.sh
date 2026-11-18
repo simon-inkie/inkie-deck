@@ -811,6 +811,7 @@ while [[ $# -gt 0 ]]; do
     --kind)         [[ $# -ge 2 ]] || die_scaffold "--kind needs a value";         KIND="$2";            shift 2 ;;
     --peer)         [[ $# -ge 2 ]] || die_scaffold "--peer needs a value";         PEER="$2";            shift 2 ;;
     --check-name)   [[ $# -ge 2 ]] || die_scaffold "--check-name needs a name"
+                    [[ -n "$2" ]] || die_scaffold "\"\" cannot be an agent name" "a name is lowercase letters, digits and hyphens"
                     [[ "$2" != -* ]] || die_scaffold "\"$2\" cannot be an agent name" "a name does not start with a hyphen"
                     CHECK_NAME=1; NAME="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
@@ -1020,6 +1021,7 @@ fi
 write_marker() {
   local target="$1" value="$2" tmp
   [[ ! -L "$target" ]] || die_scaffold "$target is a symlink; refusing to write through it"
+  [[ ! -d "$target" ]] || die_scaffold "$target is a directory; refusing to replace it"
   tmp="$(mktemp "$target.XXXXXX")" || die_scaffold "could not write $target"
   printf '%s' "$value" > "$tmp" && mv -f -- "$tmp" "$target" \
     || { rm -f -- "$tmp"; die_scaffold "could not write $target"; }
@@ -1085,8 +1087,10 @@ else
   # .kind and .peer go LAST, once both homes exist. first-run.sh reads .kind as
   # "this agent is complete", so writing it earlier would let a scaffold that
   # failed part way be reported as already done on the next run.
-  [[ -z "$KIND" ]] || write_marker "$AGENT_HOME/.kind" "$KIND"
+  # .peer first, .kind last: .kind is the completeness marker, so a stop
+  # between the two leaves an agent that first-run.sh does not count as done.
   [[ -z "$PEER" ]] || write_marker "$AGENT_HOME/.peer" "$PEER"
+  [[ -z "$KIND" ]] || write_marker "$AGENT_HOME/.kind" "$KIND"
 
   if [[ $INSTALL_PATH -eq 1 ]]; then
     install_inbox_on_path

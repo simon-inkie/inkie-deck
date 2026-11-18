@@ -184,6 +184,8 @@ Core behaviour only.
   they do and has the platform agent create agents to match. It belongs with
   the clean-machine setup flow and is not built here.
 - `rename-agent.sh` and `remove-agent.sh`.
+- Deferred from review: a lock against overlapping `first-run.sh` runs, and a
+  root path ending in a literal `$&` in the stamped role brief.
 - Deck reads `AGENTS_ROOT` and the scripts read `AGENTS_HOME`; when they
   differ the pin silently does not appear. `create-agent.sh` already warns;
   a single variable would remove the trap.
@@ -223,5 +225,17 @@ Core behaviour only.
   "Nothing to do", flag-shaped names, `.peer` symlink refused, and
   `shell-pin-loader.test.ts` for the marker-to-`pinned` mapping.
 - Why: review findings (one high, three medium, two low), all fixed.
+- Supersedes: nothing, additive.
+- Commits: see `git log` on the branch.
+
+### 2026-11-18: review fixes, round 2
+- What changed: `.peer` is written before `.kind`, and the marker write refuses
+  a directory as well as a symlink. `--check-name ""` fails with the name
+  complaint. `first-run.sh` reports refused names from a quoted array and a
+  survivor with no `.peer` no longer aborts recovery. Deck reads `.kind` only
+  if it is a regular file. Commit history was rewritten locally so every
+  message is public-safe.
+- Why: review findings. Deferred, not built: overlapping-run lock and `$&` in
+  a root path (see Follow-ups).
 - Supersedes: nothing, additive.
 - Commits: see `git log` on the branch.

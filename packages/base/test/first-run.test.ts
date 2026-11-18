@@ -99,6 +99,7 @@ describe("first-run", () => {
     expect(r.status).toBe(1);
     expect(agents(b)).toEqual([]);
     expect(fs.readdirSync(b.inboxRoot)).toEqual([]);
+    if (_label === "an invalid name") expect(r.output).toContain('"Bad Name" cannot be an agent name');
   });
 
   it("creates nothing when a name is already taken", () => {
@@ -142,6 +143,18 @@ describe("first-run", () => {
     expect(claudeOf(b, "ada")).toBe(adaBefore);
     expect(claudeOf(b, "forge")).toContain("**ada**");
     expect(claudeOf(b, "forge")).not.toContain("ghost");
+  });
+
+  it("recovers when the survivor has no .peer", () => {
+    const b = box();
+    stubAnswering(b);
+    run(b, ["--assistant", "ada", "--platform", "forge"], true);
+    fs.rmSync(path.join(b.agentsHome, "ada", ".peer"));
+    fs.rmSync(path.join(b.agentsHome, "forge"), { recursive: true });
+    fs.rmSync(path.join(b.inboxRoot, "forge"), { recursive: true });
+    const r = run(b, ["--assistant", "ada", "--platform", "forge"], true);
+    expect(r.status).toBe(0);
+    expect(claudeOf(b, "forge")).toContain("**ada**");
   });
 
   it("does not call a failed scaffold complete on the next run", () => {

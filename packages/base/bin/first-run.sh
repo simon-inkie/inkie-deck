@@ -122,7 +122,7 @@ fi
 # Interrupted-run recovery: the surviving agent already carries its peer's name
 # (.peer, written at creation). The missing agent takes that name, not whatever
 # was typed this time, so the two briefs stay consistent.
-saved_peer() { head -n1 "$AGENTS_HOME/$1/.peer" 2>/dev/null | tr -d '[:space:]'; }
+saved_peer() { head -n1 "$AGENTS_HOME/$1/.peer" 2>/dev/null | tr -d '[:space:]' || true; }
 if [[ $NEED_PLATFORM -eq 1 && $NEED_ASSISTANT -eq 0 ]]; then
   SAVED="$(saved_peer "$EXISTING_ASSISTANT")"
   if [[ -n "$SAVED" ]]; then
@@ -161,7 +161,10 @@ if [[ $NEED_PLATFORM -eq 1 ]]; then
   "$CREATE" --check-name "$PLATFORM" ${COMMON[@]+"${COMMON[@]}"} >/dev/null || CHECKS_OK=0
 fi
 if [[ $CHECKS_OK -eq 0 ]]; then
-  for name in $([[ $NEED_ASSISTANT -eq 1 ]] && echo "$ASSISTANT") $([[ $NEED_PLATFORM -eq 1 ]] && echo "$PLATFORM"); do
+  REFUSED=()
+  [[ $NEED_ASSISTANT -eq 1 ]] && REFUSED+=("$ASSISTANT")
+  [[ $NEED_PLATFORM -eq 1 ]] && REFUSED+=("$PLATFORM")
+  for name in "${REFUSED[@]}"; do
     "$CREATE" --check-name "$name" ${COMMON[@]+"${COMMON[@]}"} >/dev/null || \
       "$CREATE" --check-name "$name" ${COMMON[@]+"${COMMON[@]}"} 2>&1 >/dev/null | sed 's/^/  /' >&2
   done

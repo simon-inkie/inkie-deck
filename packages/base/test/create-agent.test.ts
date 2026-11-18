@@ -1420,5 +1420,23 @@ describe("--kind, --peer and --check-name", () => {
     const r = run(box1, ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
     expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
     expect(fs.readFileSync(outside, "utf8")).toBe("untouched");
+    // .peer is written first, so a refused .peer leaves no completeness marker.
+    expect(fs.existsSync(path.join(box1.agentsHome, "wren", ".kind"))).toBe(false);
+  });
+
+  it("writes .peer before .kind: a refused .kind leaves .peer and no .kind file", () => {
+    const box1 = sandbox();
+    fs.mkdirSync(path.join(box1.agentsHome, "wren", ".kind"), { recursive: true });
+    const r = run(box1, ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readFileSync(path.join(box1.agentsHome, "wren", ".peer"), "utf8")).toBe("forge");
+    expect(fs.statSync(path.join(box1.agentsHome, "wren", ".kind")).isDirectory()).toBe(true);
+  });
+
+  it("rejects an empty --check-name value instead of prompting", () => {
+    const box1 = sandbox();
+    const r = run(box1, ["--check-name", ""]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(r.output).toContain("cannot be an agent name");
   });
 });

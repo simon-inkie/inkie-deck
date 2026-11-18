@@ -25,6 +25,8 @@ export function readAgentKind(env: NodeJS.ProcessEnv, agent: string): AgentKind 
   if (!AGENT_NAME_RE.test(agent)) return null;
   try {
     const file = path.join(resolveAgentsRoot(env), agent, ".kind");
+    // Regular files only: opening a FIFO here would block the loader.
+    if (!fs.statSync(file).isFile()) return null;
     const line = fs.readFileSync(file, "utf8").split("\n")[0]!.trim();
     return line === "assistant" || line === "platform" ? line : null;
   } catch {

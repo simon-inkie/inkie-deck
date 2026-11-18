@@ -5,6 +5,7 @@
  * Plus the .kind reader: a missing or unknown marker means no pin, never an
  * error. ASCII only - no em-dashes.
  */
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,6 +75,10 @@ describe("readAgentKind", () => {
       expect(readAgentKind(env, "odd")).toBeNull();
       expect(readAgentKind(env, "bare")).toBeNull();
       expect(readAgentKind(env, "../x")).toBeNull();
+      // A FIFO named .kind must neither block nor pin.
+      fs.mkdirSync(path.join(dir, "fifo"));
+      execFileSync("mkfifo", [path.join(dir, "fifo", ".kind")]);
+      expect(readAgentKind(env, "fifo")).toBeNull();
       expect(readAgentKind({ AGENTS_ROOT: path.join(dir, "nope") } as NodeJS.ProcessEnv, "zed")).toBeNull();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
