@@ -35,3 +35,12 @@ a registry-backed update before CI can install the preview.
 - Why: confirm the fallback works and leave the lockfile update to a run
   with registry access.
 - Supersedes: nothing, additive.
+
+### 2026-11-18: Lockfile regenerated, tsgo verified
+- What changed: regenerated `pnpm-lock.yaml` with registry access and ran
+  `pnpm install --frozen-lockfile`. `pnpm typecheck` (tsgo) and
+  `pnpm typecheck:tsc` both exit 0 on this tree.
+- Why: closes the offline blocker and the "native diagnostics unverified"
+  note above, which are now out of date.
+- Supersedes: the two entries above on the verification state; their
+  history is kept as written.
