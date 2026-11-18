@@ -1,8 +1,42 @@
-# inkie-deck
+# Inkie Deck
 
-A web control plane for a fleet of AI agents: inboxes, decision cards, briefs,
-projects, tmux-backed agent sessions, and the file-based message protocol that
-ties them together.
+A local-first control room for your team of AI agents.
+
+Inkie Deck runs on your machine and gives you a browser interface for working
+with several agents. Talk to each agent in a chat-style inbox, then open
+**Needs you** to see which decisions and actions need your attention without
+reading every thread. Deck stores conversations in local files.
+
+Inkie Deck is open source under the [Apache-2.0 licence](LICENSE).
+[Contributions are welcome](CONTRIBUTING.md).
+
+![Needs you page listing overdue and upcoming decisions from agents, with a separate section for blocked work](docs/images/needs-you.png)
+
+*Needs you brings requests from across your agents into one view, with the most urgent items first.*
+
+![Agent thread showing an answered decision card, the user's reply and the agent's follow-up](docs/images/agent-thread.png)
+
+*An agent thread keeps the decision, your answer and the agent's update together.*
+
+## Why Deck
+
+- **Handle requests from across your agents.** Answer decision cards and mark
+  action cards done without searching through conversations.
+- **Track project work.** Move cards between stages on a project board and open
+  the details when you need context.
+- **Draft and review in the browser.** Edit Markdown drafts saved in your
+  workspace, and open linked documents in the review panel alongside the thread.
+- **Schedule recurring prompts.** Use Nudges on an operator instance to send
+  messages to agents on a schedule.
+- **Type or dictate a reply.** The compose box supports optional
+  [voice dictation](INSTALL.md#voice-dictation-optional) with an API key.
+
+## The name
+
+Deck has two sources. It is "all hands on deck": your whole team of agents,
+working together on one ship. And it is a deck of cards: agents send you decision
+cards and action cards, so you answer a question or tick off a task instead of
+reading every thread. The cards take the cognitive load off you.
 
 ## Quick install
 

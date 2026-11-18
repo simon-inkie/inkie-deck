@@ -1,37 +1,44 @@
 # inkie-deck
 
-A web control plane for a fleet of AI agents, copied in from the working
-platform and cleaned.
+A local-first control room for a team of AI agents: a chat-style inbox, decision
+and action cards, projects and drafts, backed by a file-based message protocol.
+This file is the short orientation for AI coding agents. The rules live in one
+place each, so read these before your first change:
+[CONTRIBUTING.md](CONTRIBUTING.md) (rules), [DEVELOPMENT.md](DEVELOPMENT.md)
+(workflow), [README.md](README.md) and [INSTALL.md](INSTALL.md) (setup).
 
-This file is the runtime instruction file for AI coding agents. It is a pointer,
-not a second rulebook: the contributing rules live in
-[CONTRIBUTING.md](CONTRIBUTING.md), and the full workflow lives in
-[DEVELOPMENT.md](DEVELOPMENT.md). Read both before your first change. Keeping
-the rules in one place is deliberate, so nothing here can drift out of step with
-what the other runtimes read.
+## Map
 
-If you are starting work on an issue, the `start-issue` skill does the
-mechanical part: it creates the branch and the SPEC skeleton for you. See
-[.agents/skills/start-issue/SKILL.md](.agents/skills/start-issue/SKILL.md).
+- `packages/deck`: the React Router web app, with vitest unit tests and
+  Playwright journeys.
+- `packages/base`: the agent protocol (`docs/protocol.md`), persona templates and
+  the `inbox` CLI. It never imports from `packages/deck`; `pnpm check:boundaries`
+  enforces that.
+- `.specs/<issue-number>-<slug>/`: one SPEC per ticket, written first and updated
+  as the work happens.
+- `scripts/`: the gates (`leak-gate.mjs`, licence and dash checks) and setup.
 
-For setting up a machine and running the checks, see [README.md](README.md)
-("Development") and [INSTALL.md](INSTALL.md).
+## How to work
 
-## House rules for agents
+1. Start from a GitHub issue. `start-issue`
+   ([skill](.agents/skills/start-issue/SKILL.md)) creates the branch and the SPEC
+   skeleton.
+2. Write or update the SPEC in the same pull request as the code. Never keep a
+   spec only in a chat, a ticket comment or a wiki.
+3. Keep changes small and focused, follow the patterns in the files you touch, and
+   add tests for core behaviour and for anything that can lose data or leak.
+4. Before pushing, run the checks listed in CONTRIBUTING.md ("Checks a pull
+   request must pass"). Commit first: two suites assert the tree is clean.
+5. Branch off `main`, keep each pull request to one change, and title commits
+   `type(scope): summary (#issue)`. Never push to `main`.
 
-- Specs live in the repo. Every ticket (GitHub issue) gets a folder
-  `.specs/<issue-number>-<slug>/` holding its SPEC.md, ISSUE-TEXT.md if used,
-  and any design notes, in the same pull request as the code. Never keep a spec
-  only in a chat, a ticket comment or a wiki. See
-  [DEVELOPMENT.md](DEVELOPMENT.md) section 2.
-- No internal material (names, hosts, paths, ticket ids, addresses) may enter
-  the repository. `pnpm check:leaks` enforces it; read the rule comments before
-  extending the denylist.
-- ASCII only, no em-dashes or en-dashes anywhere in the tree. This is not style:
-  U+2014 is the field separator in the message protocol, so a literal one in a
-  file is a parsing hazard. `pnpm check:dashes` enforces it.
-- Sign off every commit (`git commit -s`), as [CONTRIBUTING.md](CONTRIBUTING.md)
-  requires; an unsigned commit fails the DCO gate.
-- If you are an agent: do not push to `main`, force-push a shared branch, merge
-  your own pull request, or create a release unless a maintainer asked you to
-  in the issue or pull request.
+## House rules
+
+- No internal material (names, hosts, paths, ticket ids, addresses) in the
+  repository. `pnpm check:leaks` enforces it.
+- ASCII only, no em-dashes or en-dashes anywhere in the tree: U+2014 is the field
+  separator in the message protocol. `pnpm -C packages/deck check:dashes` enforces it.
+- Sign off every commit (`git commit -s`); an unsigned commit fails the DCO gate.
+- Agents: do not push to `main`, force-push a shared branch, merge your own pull
+  request, or create a release unless a maintainer asked you to in the issue or
+  pull request.
