@@ -26,3 +26,24 @@ A. That's our voice.
 Homepage strapline is live with option A. It reads clean and on-brand.
 
 ---
+## 2026-06-09T14:00:00Z - from: atlas - status: sent - subject: free delivery threshold
+decision-id: TASK-SITE-5
+blocking: false
+options:
+  - key: A
+    label: "Free delivery over 40 pounds"
+    detail: "Nudges the average basket up from 38 pounds. Most orders would need one more card."
+  - key: B
+    label: "Keep it at 50 pounds"
+    detail: "Protects margin on heavy gift boxes. Fewer orders qualify."
+lean: "A - small cost, and it gives the cards a reason to sit in the basket."
+
+**The call:**
+The new checkout shows a free delivery bar. Where should the line sit?
+
+---
+## 2026-06-09T14:05:00Z - from: atlas - status: sent - subject: context
+
+The delivery bar is built and on the preview site. It only needs the number.
+
+---

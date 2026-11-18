@@ -18,6 +18,14 @@ Inkie Deck is open source under the [Apache-2.0 licence](LICENSE).
 
 *An agent thread keeps the decision, your answer and the agent's update together.*
 
+![Review panel with a file list of generated images and code files, and a hero image previewed beside the thread](docs/images/review-panel.png)
+
+*Files an agent produces open beside the thread: generated images, code and notes, searchable and ready to review.*
+
+![Project board with twelve cards across to do, in progress, blocked, in review and done](docs/images/project-board.png)
+
+*The project board keeps every piece of work in one of five stages, each card showing its owner and what it is waiting on.*
+
 ## Why Deck
 
 - **Handle requests from across your agents.** Answer decision cards and mark
