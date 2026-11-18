@@ -1,8 +1,7 @@
-# #TBD: Name your assistant at first run
+# #150: Name your assistant at first run
 
-- Issue: TBD
-- Branch: feat/name-your-assistant (renamed to `<issue>-name-your-assistant`
-  once the issue exists)
+- Issue: #150 (https://github.com/simon-inkie/inkie-deck/issues/150)
+- Branch: feat/name-your-assistant
 - Started: 2026-11-18
 
 ## TL;DR
