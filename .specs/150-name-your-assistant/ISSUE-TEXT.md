@@ -1,5 +1,4 @@
-Title: Name your assistant at first run
-
+<!-- Copy of the published body of GitHub issue #150 (title: Name your assistant at first run). -->
 ## Origin
 
 Deck super-assistant MVP roadmap, M3 (8 November 2026), following the maintainer's
@@ -66,4 +65,9 @@ the others.
   what they do and has the platform agent create agents to match.
 - Renaming or removing agents.
 - Any new permission system for the platform agent.
-- Workflows, a runs view, plugins, workspace, Brain or Vault changes, backup.
+- Workflows, a runs view, plugins, workspace, Brain changes, backup.
+
+## Implementation
+
+Tracked in [PR #147](https://github.com/simon-inkie/inkie-deck/pull/147). Issue creation records the agreed work; it does not establish merge or installation acceptance.
+
