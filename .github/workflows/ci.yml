@@ -51,8 +51,8 @@ jobs:
       # Installed explicitly rather than relied on: the runner image happens
       # to carry PyYAML today, and a suite that is green because of what an
       # image happens to include is measuring the image.
-      - name: Install ripgrep, jq and PyYAML
-        run: sudo apt-get update && sudo apt-get install -y ripgrep jq python3-yaml
+      - name: Install ripgrep, jq, PyYAML and tmux
+        run: sudo apt-get update && sudo apt-get install -y ripgrep jq python3-yaml tmux
 
       - name: Typecheck
         run: pnpm typecheck

@@ -63,5 +63,8 @@
   "description": "Web control plane for a fleet of AI agents speaking the inkie-agents-base protocol: inboxes, decision cards, briefs, projects and tmux-backed agent sessions",
   "engines": {
     "node": "^22.13.0 || >=24.0.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "1.1.0"
   }
 }

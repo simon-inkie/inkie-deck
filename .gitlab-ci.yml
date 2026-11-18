@@ -47,7 +47,7 @@ stages:
     # runs and not only for whatever follows it in one script.
     LANG: C.UTF-8
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends ripgrep xxd jq python3-yaml
+    - apt-get update && apt-get install -y --no-install-recommends ripgrep xxd jq python3-yaml tmux
     - corepack enable
     - corepack prepare --activate
   script:

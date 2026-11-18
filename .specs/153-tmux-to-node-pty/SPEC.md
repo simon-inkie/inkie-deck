@@ -1,8 +1,7 @@
 # #153: Replace tmux with a cross-platform node-pty runner
 
 - Issue: https://github.com/simon-inkie/inkie-deck/issues/153
-- Branch: docs/node-pty-acp-spec (planning only; the build branch will be
-  `153-<slug>`)
+- Branch: `153-node-pty-runner`
 - Started: 2026-11-18
 - Scope of this SPEC: the first slice only. Later work is planned outside
   this file and gets its own issues when it is ready.
@@ -144,23 +143,27 @@ that platform. That note is evidence for that version and platform only.
 
 ## Touch-point inventory
 
-Deliverable of this slice: a table in this SPEC listing every place a later
-live change would touch, what it reads or writes today, and whether a
-later change would replace, guard or retire it. Starting list:
+Paths beginning with `bin/` are in `packages/base`; `app/`, `scripts/` and
+`deploy/` below are in `packages/deck`. Nothing in this table changes in
+this slice.
 
-- Delivery: `packages/base/bin/inbox-push`; `packages/deck/app/routes/api.tmux-send.tsx`;
-  the wake and push paths in `packages/deck/app/lib/tmux.server.ts`;
-  `app/lib/tmux-submit.ts`.
-- Stuck detection: `packages/base/bin/stuck-pane-sweep.sh`,
-  `packages/base/bin/pane-idle`.
-- Metrics and activity: `packages/base/bin/activity-sweep.sh`,
-  `app/lib/activity.shared.ts` and the activity panel, context and quota
-  readers.
-- Streaming and view: `app/components/TmuxPane.tsx`, `app/routes/tmux.tsx`
-  and their polling.
-- Boot and lifecycle: `packages/base/bin/boot-agents.sh`, `workspace.sh`,
-  `claude-session.sh`.
-- Scheduling: `app/lib/cron.server.ts`.
+| Touch point | Reads or writes today | Later action |
+| --- | --- | --- |
+| `bin/inbox-push` | Reads inbox and pane state; sends messages and Enter to an exact live pane. | Guard admission and replace tmux dispatch for migrated agents. Keep persisted messages. |
+| `app/routes/threads.$agent.tsx`, `app/components/MessageBubble.tsx` | The route persists messages before wake/push, serves terminal snapshots and sends pane fingerprints to the chat view. The bubble uses changes as a working hint. | Guard dispatch and replace capture and the working hint for migrated agents, not persistence. |
+| `app/routes/api.tmux-send.tsx`, `app/lib/instance.server.ts` | Guard browser text and named-key submission; read the instance feature flag and agent/window identity. | Guard by ownership and input permission; retire the legacy endpoint only after tmux callers are gone. |
+| `app/lib/tmux.server.ts`, `app/lib/tmux-submit.ts` | List windows, capture rendered output, classify panes, wake/push and verify text and Enter against viewport samples. | Replace dispatch and capture; guard the tmux-only heuristics for legacy panes and retire them after cutover. |
+| `bin/stuck-pane-sweep.sh`, `bin/pane-idle` | Read pane state and terminal prompts; report stuck agents or send an escalation to a routing pane. `pane-idle` provides the shared shell classification. | Guard against acting on migrated agents, replace the state source and escalation dispatch, then retire the scrape-specific rules. |
+| `bin/activity-sweep.sh`, `app/lib/activity.server.ts`, `app/lib/activity.shared.ts` | Sweep panes and other signals into activity snapshots including busy/idle, context and recent work. Deck reads and interprets the snapshots. | Replace pane-derived fields at the producer; preserve the snapshot contract or migrate its readers together. |
+| `bin/activity`, `app/components/ActivityPanel.tsx`, `app/routes/tmux.tsx`, `app/routes/shell.tsx` | Read the activity view for agent status, context and escalations. The Team route joins it against tmux window names. | Replace the tmux window join; preserve non-pane context and stale/offline semantics, including for CLI readers. |
+| `app/lib/codex-quota-display.server.ts`, `app/lib/codex-quota-observer.server.ts`, `app/lib/codex-quota-store.server.ts`, `app/components/CodexQuotaStatus.tsx` | Read and store quota observations separately from terminal text; the layout surfaces the result. | Guard that runner changes preserve this independent source; do not replace it with terminal scraping. |
+| `app/components/TmuxPane.tsx`, `app/routes/tmux.tsx`, `app/routes/threads.$agent.tsx` | Poll loaders for viewport snapshots, display the panes and post terminal input to the tmux route. | Replace presentation and polling only with an authorised terminal transport; guard old input. |
+| `app/routes.ts`, `app/components/AppShell.tsx` | Register and link the Team and per-thread terminal surfaces. | Guard availability and retire tmux-specific links/routes once unused. |
+| `bin/boot-agents.sh`, `bin/workspace.sh`, `bin/claude-session.sh`, `bin/claude-binary-check.sh` | Own tmux workspace/agent start and resume; validate the CLI expected to run in a pane. | Guard single ownership during draining; replace migrated launch and resume paths. |
+| `bin/codex-provider-switch` | Reads pane identity, working directory and quiescence; interrupts, launches and checks the selected CLI in that pane. | Guard against operating on a migrated agent; replace only with equivalent ownership and rollback checks. |
+| `bin/create-agent.sh`, `app/lib/agent-model.server.ts`, `app/routes/api.agent-model.tsx`, `app/components/ModelSelector.tsx` | Create agent configuration or persist the next-launch model; do not switch an active pane through the model selector. | Preserve provisioning and persist-only behaviour; guard backend-specific identity assumptions. |
+| `app/lib/cron.server.ts`, `app/lib/cron-validate.ts`, `app/routes/scheduler.tsx`, `app/routes/api.cron.tsx` | Validate and store schedules; generated agent-mode jobs load a tmux buffer, paste and press Enter. Script-mode jobs are separate. | Replace agent-mode jobs and guard already-installed jobs during drain; leave script mode alone. |
+| `scripts/dev.mjs`, `deploy/deck.service`, setup and operator docs | Configure or describe tmux prerequisites and runtime assumptions. | Guard legacy setup while tmux is supported; retire its prerequisite and update the docs when it is removed. |
 
 ## Drained cutover rule
 
@@ -226,3 +229,51 @@ Recommendations only.
   for first-slice public specs with the fixture fenced from live agents.
 - Supersedes: nothing in this repository.
 - Commits: none yet.
+
+### 2026-11-18: Implementation picked up
+- What changed: picked up the first slice on the implementation branch with
+  the optional dependency and lockfile already prepared.
+- Why: prove the contract before changing any live path. The installed package
+  has no loadable Linux binding; try an offline build in scratch for validation.
+- Supersedes: nothing, additive.
+- Commits: pending maintainer commit.
+
+### 2026-11-18: Fixture contract implemented
+- What changed: added both adapters, the fixture program and registry, and
+  shared contract and import-graph tests. Filled the live touch-point table;
+  the drained-cutover rule is unchanged. Added tmux to Linux CI and node-pty
+  to the workspace build-script allowlist. The installed node-pty manifest
+  declares MIT; the licence gate checks the repository licence only and
+  needs no configuration change.
+- Decisions: accepted fixture-only selection, test-only `TmuxRunner`, and
+  optional lazy loading. **Placement:** all new modules live under
+  `packages/deck/test/runner`. **Launch:** single-use runner, fixed fixture
+  executable and scenarios, explicit readiness marker with a deadline,
+  typed `start-failed` or `unavailable`. **Capabilities:** no terminal attach,
+  delivery acknowledgement or state events. **I/O:** one byte stream;
+  tmux control output on a private socket, reusing the production key
+  allowlist, send arguments and shell-prompt check without changing them.
+  **Isolation:** canonical temporary registry path, separate fresh home per
+  runner, fixed environment, no shell fallback. The fixture emits a shell
+  prompt as data, never a command interpreter. **Lifecycle:** input closes
+  before stop; graceful uses SIGTERM with a short SIGKILL deadline, kill
+  uses SIGKILL, and natural exit also kills the process group. Linux tests
+  verify that live descendants disappear; already-dead zombies are left to
+  the OS reaper. **Platform evidence:** Linux only; no evidence or support
+  claim for other platforms in this slice.
+- Deviations and limits: no production changes or scope deviations. Local
+  Linux validation uses an offline scratch build of the pinned native addon
+  because the installed copy has no binding. The sandbox blocks the Unix
+  socket needed by tmux; CI must prove that half of the contract. No real CLI
+  conformance run or install was attempted. The production build, server
+  entry and gated send action work with node-pty resolution denied, without
+  opening a listener.
+- Local verification: typecheck, dependency boundaries, licence and diff
+  checks passed. Ten new PTY and isolation tests passed; seven tmux contract
+  cases could not use their private socket. The existing suites were attempted
+  but did not pass in the sandbox, including blocked subprocesses in base
+  and blocked subprocesses or loopback sockets in Deck. Deck did not reach
+  a summary; a bounded retry excluding the socket suites also timed out. The
+  leak gate stopped before scanning with `spawnSync git EPERM`.
+- Supersedes: nothing, additive.
+- Commits: pending maintainer commit.
