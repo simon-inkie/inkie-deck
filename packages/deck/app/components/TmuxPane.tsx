@@ -14,10 +14,12 @@
  * No .server imports (the useFetcher POST does the server work).
  * ASCII only - no em-dashes.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useFetcher } from "react-router";
 import { EmptyState } from "./EmptyState";
+import { TerminalHint } from "./PaneHintBanner";
 import { TerminalSquare, CornerDownLeft } from "lucide-react";
+import type { PaneHintId } from "~/lib/pane-hints";
 
 const NAVIGATION_KEYS = [
   "Up",
@@ -38,7 +40,8 @@ type SendData =
  * SETTLES ok, so a failed send keeps the typed text for a retry. Navigation
  * keys use the same seam and never clear a draft.
  */
-function TmuxCompose({ sendTarget }: { sendTarget: string }) {
+function TmuxCompose({ sendTarget, hint }: { sendTarget: string; hint: PaneHintId | null }) {
+  const hintDescriptionId = useId();
   const fetcher = useFetcher<SendData>();
   const [text, setText] = useState("");
   const prevState = useRef(fetcher.state);
@@ -83,10 +86,12 @@ function TmuxCompose({ sendTarget }: { sendTarget: string }) {
 
   return (
     <div className="mt-2 shrink-0">
+      <TerminalHint hint={hint} descriptionId={hintDescriptionId} />
       <div
         className="mb-2 flex flex-wrap gap-2"
         role="group"
         aria-label="Pane navigation"
+        aria-describedby={hint !== null ? hintDescriptionId : undefined}
       >
         {NAVIGATION_KEYS.map((key) => (
           <button
@@ -142,6 +147,7 @@ export function TmuxPane({
   pane,
   windowName,
   sendTarget,
+  hint = null,
 }: {
   /** Captured pane text; undefined renders the unavailable state. */
   pane: string | undefined;
@@ -152,6 +158,7 @@ export function TmuxPane({
    * Omit for a read-only pane - that omission IS the read-only fallback.
    */
   sendTarget?: string;
+  hint?: PaneHintId | null;
 }) {
   // Follow-bottom: the pane now carries scrollback history (server captures
   // -S -1000), so it lands on the LATEST line and follows new output - unless
@@ -182,7 +189,7 @@ export function TmuxPane({
   // send path carries its own allowlist gate and surfaces an inline error if
   // the window really is gone.
   const compose =
-    sendTarget !== undefined ? <TmuxCompose sendTarget={sendTarget} /> : null;
+    sendTarget !== undefined ? <TmuxCompose sendTarget={sendTarget} hint={pane === undefined ? null : hint} /> : null;
 
   if (pane === undefined) {
     return (

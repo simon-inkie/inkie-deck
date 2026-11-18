@@ -1,0 +1,12 @@
+{
+  "trust": "Do you trust the files in this folder?\n  1. Yes\n\u276f 2. No (default)\nEnter to confirm\n",
+  "keyApproval": "Detected a custom API key in your environment\n\n Do you want to use this API key?\n\n\u276f 1. Yes\n  2. No (recommended)\n",
+  "resume": "Resume a conversation\n\u276f demo\n",
+  "fullscreen": "Try the fullscreen renderer?\n\u276f Yes\n",
+  "login": "\u2502 Select login method\u00a0\u2502\n\u2502 \u203a 1. Subscription \u2502\n\u2502   2. API account  \u2502\n",
+  "theme": "Choose the text style\n\u276f 1. Dark\n  2. Light\n",
+  "shell": "Session ended\nuser@example:~/agent$\n\n",
+  "busy": "Working on a reply...\nThinking (esc to interrupt)\n",
+  "idle": "\u2500\u2500\u2500\n\u276f\u00a0\n\u2500\u2500\u2500\nReady\n",
+  "unknown": "An unfamiliar first-run prompt\n\u276f Proceed\n"
+}

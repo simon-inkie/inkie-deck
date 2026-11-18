@@ -56,7 +56,7 @@ import { ActionCard } from "~/components/ActionCard";
 import { Compose } from "~/components/Compose";
 import { PendingBubble } from "~/components/PendingBubble";
 import { PendingStatusLine } from "~/components/PendingStatusLine";
-import { EmptyState } from "~/components/EmptyState";
+import { PaneHintBanner } from "~/components/PaneHintBanner";
 import {
   usePendingBatch,
   buildBatchBody,
@@ -75,8 +75,8 @@ import { FilesPanel } from "~/components/FilesPanel";
 import { isNearBottom, shouldFollow } from "~/lib/scroll-follow";
 import { avatarUrl } from "~/lib/avatars.server";
 import { captureTmuxPane, wakeIdleAgent, pushMessageToIdleAgent } from "~/lib/tmux.server";
+import { classifyPaneHint } from "~/lib/pane-hints";
 import { TmuxPane } from "~/components/TmuxPane";
-import { MessageSquare } from "lucide-react";
 import { formatDayDivider, londonDayKey } from "~/lib/time";
 
 /**
@@ -267,22 +267,15 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     if (url !== undefined) avatarUrls[from] = url;
   }
 
-  // Capture the agent's live pane only in tmux view.
-  const tmux = tmuxView
-    ? { pane: captureTmuxPane(process.env, agent) }
-    : undefined;
-
-  // Working indicator (option A): when the operator's last message is
-  // unanswered, fingerprint the agent's live tmux pane so the client can show a
-  // "working" indicator while the pane keeps stirring. Guarded to the pending
-  // case so we never spawn a tmux subprocess per poll on an already-answered
-  // thread (or in tmux view, which captures the pane itself). Only the HASH
-  // leaves the server here - no pane text crosses into the chat payload.
   const latestBlock = blocks[blocks.length - 1];
-  const awaitingAgent = !tmuxView && latestBlock?.header.from === user;
-  const agentPaneHash = awaitingAgent
-    ? hashPane(captureTmuxPane(process.env, agent))
-    : null;
+  const awaitingAgent = !tmuxView && startIndex + blocks.length === totalCount &&
+    latestBlock?.header.from === user;
+  const pane = tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent)
+    ? captureTmuxPane(process.env, agent)
+    : undefined;
+  const hint = pane === undefined ? null : classifyPaneHint(pane);
+  const tmux = tmuxView ? { pane } : undefined;
+  const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
 
   return {
     agent,
@@ -296,6 +289,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     ticketColumns,
     avatarUrls,
     tmux,
+    tmuxOn,
+    hint,
     agentPaneHash,
     user,
   };
@@ -723,6 +718,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
     ticketColumns,
     avatarUrls,
     tmux,
+    tmuxOn,
+    hint,
     agentPaneHash,
     user,
   } = loaderData;
@@ -1438,7 +1435,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
             the compose row to send-keys into this agent's live session. */}
         {tmux !== undefined ? (
           <div className="flex min-h-0 flex-1 flex-col px-6 py-4" data-testid="thread-tmux-view">
-            <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={agent} />
+            <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={agent} hint={hint} />
             <p className="label-mono mt-2 shrink-0 text-[10px] text-muted-foreground">
               Live terminal for {agent} - refreshes automatically; the box types
               into their session.
@@ -1450,17 +1447,15 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          role="region"
+          aria-label="Message history"
+          tabIndex={-1}
           data-testid="thread-scroll"
           className="flex-1 overflow-y-auto px-6 pt-6 pb-28"
         >
           <div className="mx-auto max-w-2xl">
-            {totalCount === 0 ? (
-              <EmptyState
-                icon={MessageSquare}
-                title="No messages in this thread"
-                body="Send the first reply below."
-              />
-            ) : (
+            <PaneHintBanner hint={hint ?? (totalCount === 0 ? "H6" : null)} agent={agent} tmuxOn={tmuxOn} focusFallback={scrollRef} />
+            {totalCount > 0 ? (
               <div className="flex flex-col">
                 {/* Top sentinel - scrolling it into view lazy-loads
                     the previous chunk of history. Doubles as the affordance. */}
@@ -1575,7 +1570,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                   );
                 })}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
 
