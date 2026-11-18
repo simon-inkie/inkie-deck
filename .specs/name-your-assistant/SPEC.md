@@ -88,7 +88,8 @@ first-run.sh
   contract Deck already reads for the model selector. No env var, no new
   config file, and it travels with the agent.
 - Deck sorts and pins only; it never writes `.kind`. A missing or unreadable
-  `AGENTS_ROOT` means no pin, never an error, and the list is the same
+  resolved agents directory (an unset `AGENTS_ROOT` resolves to the
+  default, `~/agents`) means no pin, never an error, and the list is the same
   alphabetical list as today.
 - Exit code of `first-run.sh`: 1 if either creation hit a scaffold error,
   else 3 if either verification failed, else 4 if either could not be
@@ -104,13 +105,17 @@ first-run.sh
 
 - `first-run.sh --assistant ada --platform forge` on a machine with a working
   Claude CLI ends with two agents, each in both homes, each `VERIFIED`, with
-  `.kind` set and the other agent's name in its brief.
+  `.kind` set and the other agent's name stamped into its brief.
 - An invalid name, two identical names, or a taken name for a missing agent
   stops the run with the existing name complaint, and nothing is created.
-- A completed matching pair run again is a no-op: nothing is created, both are
-  reported as existing, exit 0, no verification claim.
-- A matching partial pair resumes: only the missing agent is created, under the
-  existing agent's saved peer name. When a newly typed name differs, the saved
+- A rerun detects the existing assistant and platform role markers (`.kind`)
+  and skips those agents without probing them. It does not match a pair
+  against supplied names, and it does not revalidate the peer relationship or
+  the rest of the scaffold (`.kind` is written last, so it models completion
+  of a fresh scaffold, not legacy or hand-edited state). Both present:
+  nothing is created, both are reported as existing, exit 0, no verification
+  claim. One present: only the missing agent is created, under the existing
+  agent's saved peer name. When a newly typed name differs, the saved
   name is used and a warning is printed. If no peer marker exists, the name is
   asked for or accepted as usual.
 - Without a usable Claude CLI, or when verification is skipped, both agents
@@ -119,7 +124,7 @@ first-run.sh
   sorts to, when the assistant is visible in Deck's existing
   inbox roster and the persona and inbox roots match the configured
   `AGENTS_ROOT` and `INBOX_ROOT` (an unset `AGENTS_ROOT` uses the default
-  home). An ordinary populated list with no assistant
+  home, `~/agents`; Deck has no default `INBOX_ROOT`). An ordinary populated list with no assistant
   keeps its alphabetical order; the empty state's copy changes. A missing or
   unreadable `.kind` marker means no pin.
 - The role brief and peer name each have their own check: the stamped text is
@@ -167,8 +172,9 @@ Core behaviour only.
   self-authored files keep their day-one placeholders and the first-boot
   prompt still fires.
 - Defaults offered as editable defaults: `inkie` and `doctor`. The platform
-  brief says to ask before changing anything outside the agents folder and does
-  not mention auto-mode. The assistant brief makes the assistant the main
+  brief says to ask before changing anything outside the agents folder and
+  Deck's own workspace, and does not mention auto-mode. This is role guidance
+  in the brief, not an enforced permission. The assistant brief makes the assistant the main
   orchestrator; the platform brief makes the platform agent the "brain surgeon" that
   edits Deck, makes plugins and creates agents. The guard covers anything
   outside the agents folder and Deck's own workspace.
