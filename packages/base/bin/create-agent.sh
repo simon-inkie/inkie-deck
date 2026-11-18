@@ -32,8 +32,9 @@
 # actually delivered that file to the model.
 #
 # Usage:
-#   bin/create-agent.sh <name> [--role "<tagline>"] [--runtime <runtime>]
+#   bin/create-agent.sh <name> [--role "<tagline>"] [--runtime claude|codex|agy]
 #                              [--model <id>] [--verify | --no-verify]
+#                              [--live-probe]
 #                              [--inbox-root <path>]
 #                              [--agents-home <path>] [--no-install-path]
 #                              [--memory-root <path> | --no-memory]
@@ -42,6 +43,28 @@
 #   bin/create-agent.sh --status <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
 #
+#   --runtime claude|codex|agy   which agent CLI runs this agent (default claude),
+#                                written to <agent home>/.runtime for the
+#                                launchers. Every runtime gets the shared persona
+#                                files (IDENTITY.md, SOUL.md, TOOLS.md, USER.md,
+#                                CLAUDE.md). On top of those:
+#                                  codex  AGENTS.md, which Codex reads, and
+#                                         .codex/hooks.json, whose SessionStart
+#                                         hook injects the persona files (Codex
+#                                         has no @-import) and whose per-prompt
+#                                         hook mentions unread messages;
+#                                  agy    GEMINI.md, with the persona files
+#                                         inlined by sync-gemini-includes.sh
+#                                         (Antigravity has no @-import either).
+#                                For codex and agy, .inbox-root records the inbox
+#                                root, which the launchers pass as INBOX_ROOT.
+#   --live-probe                 for codex and agy, also run the live probe (one
+#                                `codex exec` or `agy -p` turn, which uses your
+#                                plan or API credit). Off by default for those
+#                                two: without it they get the local checks only
+#                                (see "Verification per runtime" below). Also
+#                                on when CREATE_AGENT_LIVE_PROBE=1. Claude Code
+#                                agents are probed by default, as before.
 #   --model <id>                 write <agent home>/.model, which boot-agents.sh
 #                                and workspace.sh pass as `--model <id>`. Without
 #                                it the agent uses the runtime's own default,
@@ -102,6 +125,25 @@
 # There is deliberately no exit code meaning "created, assume verified", and
 # "created" and "verified" are always separate words in the output. An empty
 # reply with a zero exit status is FAILED, never a pass.
+#
+# Verification per runtime. Only a model's answer proves the persona arrived,
+# so only the live probe can report VERIFIED. What runs before it:
+#
+#   claude  the CLAUDE.md import chain resolves (a scaffold error if not); the
+#           live probe (`claude -p`) runs by default.
+#   codex   AGENTS.md is present; .codex/hooks.json is valid JSON whose hook
+#           commands exist and are executable; and the SessionStart hook, run
+#           here exactly as Codex would run it, prints valid hook output that
+#           carries the boot phrase. The live probe (`codex exec`) runs only
+#           with --live-probe.
+#   agy     GEMINI.md is present, its fences sync cleanly from their sources,
+#           and the synced text carries the boot phrase. The live probe
+#           (`agy -p`) runs only with --live-probe.
+#
+# Local checks call no model. A missing or malformed file is a SCAFFOLD ERROR
+# (1); a hook or GEMINI.md that would deliver a persona without the boot phrase
+# is FAILED (3); all checks passing without the live probe is CANNOT VERIFY
+# (4), because passing local checks is not the persona reaching a model.
 
 set -uo pipefail
 
@@ -182,6 +224,9 @@ const peer = process.env.CA_PEER;
 const agentsHome = process.env.CA_AGENTS_HOME;
 const createCli = process.env.CA_CREATE_CLI;
 const person = process.env.CA_PERSON;
+const runtime = process.env.CA_RUNTIME || "claude";
+const binDir = process.env.CA_BIN_DIR;
+const hooksTemplate = process.env.CA_HOOKS_TEMPLATE;
 
 const identityPath = path.join(home, "IDENTITY.md");
 let identity = fs.readFileSync(identityPath, "utf8");
@@ -207,11 +252,12 @@ claude = claude.replace(
 // The role brief, when this agent was created with --kind. Appended after the
 // imports so the persona chain is unchanged; the placeholders are per-agent for
 // the same reason the inbox CLI path is.
+let brief = "";
 if (kindFile) {
   // Sections wrapped in <!-- person-only --> ... <!-- /person-only --> need the
   // user's name: kept (markers removed) when there is one, dropped when not.
   const personOnly = /^<!-- person-only -->\n([\s\S]*?)^<!-- \/person-only -->\n?/gm;
-  const brief = fs
+  brief = fs
     .readFileSync(kindFile, "utf8")
     .replace(personOnly, person ? "$1" : "")
     .replaceAll("<person>", person || "your person")
@@ -221,6 +267,42 @@ if (kindFile) {
   claude = claude.replace(/\n*$/, "\n\n") + brief.replace(/\n*$/, "\n");
 }
 fs.writeFileSync(claudePath, claude);
+
+// The runtime's own persona file, for runtimes that do not read CLAUDE.md. Same
+// title and the same role brief, so the agent reads the same thing whichever
+// CLI runs it.
+const runtimeFile = { codex: "AGENTS.md", agy: "GEMINI.md" }[runtime];
+if (runtimeFile) {
+  const runtimePath = path.join(home, runtimeFile);
+  let text = fs.readFileSync(runtimePath, "utf8");
+  text = text.replace("# <Name>, <role tagline>", role ? `# ${name}, ${role}` : `# ${name}`);
+  text = text
+    .replaceAll("<sync-gemini-cli>", path.join(binDir, "sync-gemini-includes.sh"))
+    .replaceAll("<gemini-path>", runtimePath);
+  if (brief) text = text.replace(/\n*$/, "\n\n") + brief.replace(/\n*$/, "\n");
+  fs.writeFileSync(runtimePath, text);
+}
+
+// Codex hooks. Commands are absolute and shell-quoted: Codex runs them through
+// a shell from the session's directory, and either path may contain spaces.
+if (runtime === "codex") {
+  const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
+  const commands = {
+    "<codex-persona-inject-command>":
+      `${quote(path.join(binDir, "codex-persona-inject"))} --agent-home ${quote(home)}`,
+    "<codex-user-prompt-submit-command>": quote(path.join(binDir, "codex-user-prompt-submit")),
+  };
+  const hooks = JSON.parse(fs.readFileSync(hooksTemplate, "utf8"));
+  for (const groups of Object.values(hooks.hooks)) {
+    for (const group of groups) {
+      for (const hook of group.hooks) {
+        if (hook.command in commands) hook.command = commands[hook.command];
+      }
+    }
+  }
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".codex", "hooks.json"), JSON.stringify(hooks, null, 2) + "\n");
+}
 
 // The inbox section of TOOLS.md. Stamped rather than shipped verbatim because
 // every line of it is per-agent: the CLI lives at an absolute path that depends
@@ -251,7 +333,9 @@ tools = tools.replace(
     "```",
     "",
     "`AGENT_NAME` says who you are and `INBOX_ROOT` says where the messages live.",
-    "Both are set for you in `.claude/settings.json`; the CLI hard-errors without",
+    runtime === "claude"
+      ? "Both are set for you in `.claude/settings.json`; the CLI hard-errors without"
+      : "Both are set for you by the launcher (`boot-agents.sh`, `workspace.sh`); the CLI hard-errors without",
     "them rather than guessing.",
   ].join("\n"),
 );
@@ -690,6 +774,9 @@ wire_memory() {
   local root="$1" installer status
   installer="$root/scripts/install.sh"
 
+  if [[ "$RUNTIME" != claude ]]; then
+    MEMORY_REPORT="off (memory hooks are Claude Code only; not wired for $RUNTIME)"; return
+  fi
   if [[ $NO_MEMORY -eq 1 ]]; then
     MEMORY_REPORT="off (--no-memory)"; return
   fi
@@ -820,6 +907,8 @@ INSTALL_PATH=1
 MEMORY_ROOT_ARG=""
 NO_MEMORY=0
 MODEL=""
+LIVE_PROBE="${CREATE_AGENT_LIVE_PROBE:-0}"
+RUNTIME_GIVEN=0
 KIND=""
 PEER=""
 PERSON=""
@@ -830,7 +919,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)      usage; exit 0 ;;
     --role)         [[ $# -ge 2 ]] || die_scaffold "--role needs a value";        ROLE="$2";            shift 2 ;;
-    --runtime)      [[ $# -ge 2 ]] || die_scaffold "--runtime needs a value";     RUNTIME="$2";         shift 2 ;;
+    --runtime)      [[ $# -ge 2 ]] || die_scaffold "--runtime needs a value";     RUNTIME="$2"; RUNTIME_GIVEN=1; shift 2 ;;
+    --live-probe)   LIVE_PROBE=1; shift ;;
     --model)        [[ $# -ge 2 ]] || die_scaffold "--model needs a value";        MODEL="$2";           shift 2 ;;
     --inbox-root)   [[ $# -ge 2 ]] || die_scaffold "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
@@ -992,6 +1082,26 @@ fi
 MODEL_ARGS=()
 [[ -n "$MODEL" ]] && MODEL_ARGS=(--model "$MODEL")
 
+# --verify-only checks the agent as it was made, so its own .runtime decides,
+# not the default. A --runtime given alongside it must agree.
+if [[ "$VERIFY_ONLY" -eq 1 && -f "$AGENT_HOME/.runtime" ]]; then
+  ON_DISK_RUNTIME="$(tr -d '[:space:]' < "$AGENT_HOME/.runtime")"
+  if [[ "$RUNTIME_GIVEN" -eq 1 && "$RUNTIME" != "$ON_DISK_RUNTIME" ]]; then
+    die_scaffold "--runtime $RUNTIME does not match $AGENT_HOME/.runtime ($ON_DISK_RUNTIME)"
+  fi
+  RUNTIME="${ON_DISK_RUNTIME:-claude}"
+fi
+case "$RUNTIME" in
+  claude|codex|agy) ;;
+  *) die_scaffold "--runtime '$RUNTIME' is not a supported runtime" "use claude, codex or agy" ;;
+esac
+# The persona file each runtime reads, on top of the shared ones.
+RUNTIME_FILE=""
+case "$RUNTIME" in
+  codex) RUNTIME_FILE="AGENTS.md" ;;
+  agy)   RUNTIME_FILE="GEMINI.md" ;;
+esac
+
 case "$KIND" in
   ""|assistant|platform|member) ;;
   *) die_scaffold "--kind '$KIND' is not a kind" "use assistant, platform or member" ;;
@@ -1023,6 +1133,7 @@ refuse_if_occupied() {
     [[ -e "$AGENT_HOME/$template" ]] && PERSONA_PRESENT=1
   done
   [[ -e "$AGENT_HOME/.runtime" ]] && PERSONA_PRESENT=1
+  [[ -e "$AGENT_HOME/AGENTS.md" || -e "$AGENT_HOME/GEMINI.md" ]] && PERSONA_PRESENT=1
   INBOX_PRESENT=0
   [[ -e "$AGENT_INBOX" ]] && INBOX_PRESENT=1
 
@@ -1149,6 +1260,13 @@ else
       "expected the templates/ directory alongside bin/ in this package"
   done
 
+  if [[ -n "$RUNTIME_FILE" && ! -f "$TEMPLATES_DIR/$RUNTIME_FILE" ]]; then
+    die_scaffold "template not found: $TEMPLATES_DIR/$RUNTIME_FILE"
+  fi
+  if [[ "$RUNTIME" == codex && ! -f "$TEMPLATES_DIR/codex/hooks.json" ]]; then
+    die_scaffold "template not found: $TEMPLATES_DIR/codex/hooks.json"
+  fi
+
   if [[ -n "$KIND" && ! -f "$TEMPLATES_DIR/kinds/$KIND.md" ]]; then
     die_scaffold "template not found: $TEMPLATES_DIR/kinds/$KIND.md"
   fi
@@ -1173,14 +1291,27 @@ else
       || die_scaffold "could not copy $template into $AGENT_HOME"
   done
 
+  if [[ -n "$RUNTIME_FILE" ]]; then
+    cp "$TEMPLATES_DIR/$RUNTIME_FILE" "$AGENT_HOME/$RUNTIME_FILE" \
+      || die_scaffold "could not copy $RUNTIME_FILE into $AGENT_HOME"
+  fi
+
   NONCE="$(gen_nonce)" || die_scaffold "could not generate a boot phrase (is node on PATH?)"
   [[ -n "$NONCE" ]] || die_scaffold "could not generate a boot phrase"
 
   CA_HOME="$AGENT_HOME" CA_NAME="$NAME" CA_ROLE="$ROLE" CA_NONCE="$NONCE" \
     CA_INBOX_CLI="$SCRIPT_DIR/inbox" CA_PEER="$PEER" CA_AGENTS_HOME="$AGENTS_HOME" \
-    CA_CREATE_CLI="$SCRIPT_DIR/create-agent.sh" \
+    CA_CREATE_CLI="$SCRIPT_DIR/create-agent.sh" CA_RUNTIME="$RUNTIME" CA_BIN_DIR="$SCRIPT_DIR" \
+    CA_HOOKS_TEMPLATE="$TEMPLATES_DIR/codex/hooks.json" \
     CA_PERSON="$PERSON" CA_KIND_FILE="${KIND:+$TEMPLATES_DIR/kinds/$KIND.md}" stamp_templates \
     || die_scaffold "could not write the persona files in $AGENT_HOME"
+
+  # agy: copy the stamped persona files into GEMINI.md now, so the agent is
+  # whole before its first launch (the launchers also re-sync before each one).
+  if [[ "$RUNTIME" == agy ]]; then
+    bash "$SCRIPT_DIR/sync-gemini-includes.sh" "$AGENT_HOME/GEMINI.md" >/dev/null \
+      || die_scaffold "could not inline the persona files into $AGENT_HOME/GEMINI.md"
+  fi
 
   # .runtime is written explicitly even though the launcher defaults it. The
   # default is the launcher's business and can change; what this agent runs on
@@ -1191,6 +1322,13 @@ else
   if [[ -n "$MODEL" ]]; then
     printf '%s' "$MODEL" > "$AGENT_HOME/.model" \
       || die_scaffold "could not write $AGENT_HOME/.model"
+  fi
+
+  # Codex and Antigravity never read .claude/settings.json, where a Claude Code
+  # agent gets INBOX_ROOT. The launchers read this marker instead and put the
+  # value on the runtime's process environment (runtime-launch.sh).
+  if [[ "$RUNTIME" != claude ]]; then
+    write_marker "$AGENT_HOME/.inbox-root" "$INBOX_ROOT"
   fi
 
   mkdir -p "$AGENT_HOME/.claude" || die_scaffold "could not create $AGENT_HOME/.claude"
@@ -1220,9 +1358,11 @@ else
   say "  inbox          $AGENT_INBOX"
   say "  inbox root     $INBOX_ROOT  [$INBOX_ROOT_SOURCE]"
   say "  inbox CLI      $PATH_INSTALL_REPORT"
-  say "  runtime        $RUNTIME"
+  say "  runtime        $RUNTIME${RUNTIME_FILE:+  (reads $RUNTIME_FILE)}"
   [[ -z "$KIND" ]] || say "  kind           $KIND"
-  if [[ $NO_MEMORY -eq 1 ]]; then
+  if [[ "$RUNTIME" != claude ]]; then
+    say "  memory         off (memory hooks are Claude Code only)"
+  elif [[ $NO_MEMORY -eq 1 ]]; then
     say "  memory         off (--no-memory)"
   elif [[ -z "${MEMORY_ROOT_ARG:-${MEMORY_LAYER_ROOT:-}}" ]]; then
     say "  memory         off (MEMORY_LAYER_ROOT not set)"
@@ -1284,16 +1424,189 @@ report_cannot_verify() {
     done
   fi
   printf '\n'
-  printf '  What IS true: the files are in place, and every file CLAUDE.md imports\n'
-  printf '  exists, is non-empty and is readable.\n'
+  if [[ "$RUNTIME" == claude ]]; then
+    printf '  What IS true: the files are in place, and every file CLAUDE.md imports\n'
+    printf '  exists, is non-empty and is readable.\n'
+  else
+    printf '  What IS true: the files are in place, and the local checks for %s\n' "$RUNTIME"
+    printf '  passed:\n'
+    local check
+    for check in ${LOCAL_PASSED[@]+"${LOCAL_PASSED[@]}"}; do printf '    - %s\n' "$check"; done
+  fi
   printf '\n'
   printf '  What is NOT true: this has NOT verified that the persona reaches the\n'
   printf '  model. Every way this breaks leaves the files exactly where they are,\n'
   printf '  so the check above cannot tell a working agent from a broken one.\n'
   printf '\n'
   printf '  Run this once a runtime is available and signed in:\n'
-  printf '      %s --verify-only %s\n' "$0" "$NAME"
+  if [[ "$RUNTIME" == claude ]]; then
+    printf '      %s --verify-only %s\n' "$0" "$NAME"
+  else
+    printf '      %s --verify-only %s --live-probe\n' "$0" "$NAME"
+    printf '  The live probe is one model turn, which uses your plan or API credit.\n'
+  fi
   exit "$EXIT_CANNOT_VERIFY"
+}
+
+# ---------------------------------------------------------------------------
+# local checks for codex and agy
+#
+# Everything that can be established about a Codex or Antigravity persona
+# without asking a model. Necessary, never sufficient, and never reported as
+# VERIFIED: see "Verification per runtime" in the header.
+# ---------------------------------------------------------------------------
+
+LOCAL_PASSED=()
+
+local_checks() {
+  CA_HOME="$AGENT_HOME" CA_RUNTIME="$RUNTIME" CA_NAME="$NAME" CA_NONCE="$NONCE" \
+    CA_INBOX_ROOT="$INBOX_ROOT" CA_SYNC="$SCRIPT_DIR/sync-gemini-includes.sh" node_run <<'JS'
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { spawnSync } from "node:child_process";
+
+const { CA_HOME: home, CA_RUNTIME: runtime, CA_NAME: name, CA_NONCE: nonce } = process.env;
+const passed = [];
+const scaffold = [];
+const failed = [];
+const done = () => {
+  process.stdout.write(JSON.stringify({ passed, scaffold, failed }));
+  process.exit(0);
+};
+const nonEmpty = (file) => {
+  try {
+    const st = fs.statSync(file);
+    return st.isFile() && st.size > 0;
+  } catch {
+    return false;
+  }
+};
+
+if (runtime === "codex") {
+  if (!nonEmpty(path.join(home, "AGENTS.md"))) scaffold.push("AGENTS.md is missing or empty");
+  else passed.push("AGENTS.md is present");
+
+  const hooksFile = path.join(home, ".codex", "hooks.json");
+  let hooks;
+  try {
+    hooks = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
+  } catch (err) {
+    scaffold.push(`.codex/hooks.json is missing or not valid JSON (${err.message})`);
+    done();
+  }
+  // Every hook command must start with an executable that exists. The first
+  // word is single-quoted by create-agent.sh; a hand-edited bare word works too.
+  const firstWord = (cmd) => {
+    const quoted = /^'((?:[^']|'\\'')*)'/.exec(cmd);
+    return quoted ? quoted[1].replaceAll("'\\''", "'") : cmd.split(/\s+/)[0];
+  };
+  const commandsFor = (event) =>
+    (Array.isArray(hooks?.hooks?.[event]) ? hooks.hooks[event] : [])
+      .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
+      .filter((hook) => hook?.type === "command" && typeof hook.command === "string")
+      .map((hook) => hook.command);
+  const start = commandsFor("SessionStart");
+  if (start.length === 0) scaffold.push(".codex/hooks.json has no SessionStart command hook");
+  for (const cmd of [...start, ...commandsFor("UserPromptSubmit")]) {
+    const bin = firstWord(cmd);
+    try {
+      fs.accessSync(bin, fs.constants.X_OK);
+    } catch {
+      scaffold.push(`hook command is not an executable file: ${bin}`);
+    }
+  }
+  if (scaffold.length > 0) done();
+  passed.push(".codex/hooks.json is valid and every hook command is executable");
+
+  // Run the SessionStart hook the way Codex does: through a shell, from the
+  // agent home, with the hook payload on stdin and the launcher's environment.
+  const injector = start.find((cmd) => cmd.includes("codex-persona-inject")) ?? start[0];
+  const run = spawnSync("bash", ["-c", injector], {
+    cwd: home,
+    input: JSON.stringify({ hook_event_name: "SessionStart", source: "startup", cwd: home }),
+    env: { ...process.env, AGENT_NAME: name, INBOX_ROOT: process.env.CA_INBOX_ROOT },
+    encoding: "utf8",
+    timeout: 20000,
+  });
+  let out;
+  try {
+    out = JSON.parse(run.stdout);
+  } catch {
+    failed.push(`the SessionStart hook did not print hook JSON (exit ${run.status}): ${String(run.stdout || run.stderr).slice(0, 300)}`);
+    done();
+  }
+  const ctx = out?.hookSpecificOutput?.additionalContext;
+  if (out?.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof ctx !== "string") {
+    failed.push("the SessionStart hook's JSON is not SessionStart output with additionalContext");
+  } else if (!ctx.includes(nonce)) {
+    failed.push("the SessionStart hook ran, and its context does NOT carry the boot phrase");
+  } else {
+    passed.push("the SessionStart hook ran and its context carries the boot phrase");
+  }
+  done();
+}
+
+if (runtime === "agy") {
+  const gemini = path.join(home, "GEMINI.md");
+  if (!nonEmpty(gemini)) {
+    scaffold.push("GEMINI.md is missing or empty");
+    done();
+  }
+  passed.push("GEMINI.md is present");
+  // Sync a copy beside it, so relative fence paths resolve the same way, and
+  // check the result rather than the file as it stands.
+  const copy = path.join(home, `.GEMINI.verify-${process.pid}.md`);
+  fs.copyFileSync(gemini, copy);
+  const sync = spawnSync("bash", [process.env.CA_SYNC, copy], { encoding: "utf8", timeout: 20000 });
+  const synced = sync.status === 0 ? fs.readFileSync(copy, "utf8") : null;
+  fs.rmSync(copy, { force: true });
+  const original = fs.readFileSync(gemini, "utf8");
+  if (synced === null) {
+    scaffold.push(`GEMINI.md's inlined sections cannot be synced: ${String(sync.stderr).trim().slice(0, 300)}`);
+    done();
+  }
+  // Behind its sources is not a failure: the launchers re-sync before every
+  // start, so what the model will read is the synced text, and that is what
+  // the boot phrase is looked for in.
+  if (synced !== original) {
+    passed.push(`GEMINI.md's inlined sections are behind their sources; the launcher re-syncs before every start (or run ${process.env.CA_SYNC} ${gemini})`);
+  } else {
+    passed.push("GEMINI.md's inlined sections match their sources");
+  }
+  if (!synced.includes(nonce)) failed.push("GEMINI.md, once synced, does NOT carry the boot phrase (is IDENTITY.md inlined between fences?)");
+  else passed.push("GEMINI.md carries the boot phrase");
+  done();
+}
+done();
+JS
+}
+
+run_local_checks() {
+  local json kind line
+  json="$(local_checks)" || die_scaffold "could not run the local checks for $RUNTIME (is node on PATH?)"
+  while IFS= read -r line || [[ -n "$line" ]]; do [[ -n "$line" ]] && LOCAL_PASSED+=("$line"); done < <(
+    CA_JSON="$json" node_run <<'JS'
+process.stdout.write(JSON.parse(process.env.CA_JSON).passed.join("\n"));
+JS
+  )
+  for kind in scaffold failed; do
+    local problems
+    problems="$(CA_JSON="$json" CA_KIND="$kind" node_run <<'JS'
+process.stdout.write(JSON.parse(process.env.CA_JSON)[process.env.CA_KIND].join("\n"));
+JS
+)"
+    [[ -n "$problems" ]] || continue
+    if [[ "$kind" == scaffold ]]; then
+      die_scaffold "the $RUNTIME persona files are not usable:" "$problems"
+    fi
+    printf '\n'
+    printf 'create-agent: FAILED %s\n' "$NAME"
+    printf '  A local check for %s failed, so the persona would not reach the model\n' "$RUNTIME"
+    printf '  with its boot phrase. No model was asked; none needed to be.\n'
+    printf '\n'
+    while IFS= read -r line; do printf '    - %s\n' "$line"; done <<< "$problems"
+    exit "$EXIT_FAILED"
+  done
 }
 
 # Memory is wired on the way out, AFTER the probe below. The probe runs the
@@ -1365,19 +1678,30 @@ trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
 
+# Codex and Antigravity: the local checks always run, before any verdict, since
+# they cost nothing and catch the breakage that is cheapest to fix.
+[[ "$RUNTIME" == claude ]] || run_local_checks
+
 if [[ "$VERIFY" == "no" ]]; then
   report_cannot_verify "Verification was skipped (--no-verify)."
 fi
 
-if ! command -v claude >/dev/null 2>&1; then
-  report_cannot_verify "No \`claude\` on PATH, so there was nothing to ask." \
-    "A supported agent CLI must be installed and signed in. Verification supports:" \
-    "  Claude Code   https://github.com/anthropics/claude-code" \
-    "Codex and Antigravity agents are not yet verified by this check."
+if [[ "$RUNTIME" != claude && "$LIVE_PROBE" != 1 ]]; then
+  report_cannot_verify "The live probe for $RUNTIME is off by default, and was not asked for (--live-probe)."
 fi
 
-. "$SCRIPT_DIR/claude-binary-check.sh"
-warn_if_foreign_claude
+if ! command -v "$RUNTIME" >/dev/null 2>&1; then
+  report_cannot_verify "No \`$RUNTIME\` on PATH, so there was nothing to ask." \
+    "A supported agent CLI must be installed and signed in. Verification supports:" \
+    "  Claude Code   https://github.com/anthropics/claude-code" \
+    "  Codex         https://github.com/openai/codex (live probe opt-in, --live-probe)" \
+    "  Antigravity   https://antigravity.google/docs/install?tab=cli (live probe opt-in, --live-probe)"
+fi
+
+if [[ "$RUNTIME" == claude ]]; then
+  . "$SCRIPT_DIR/claude-binary-check.sh"
+  warn_if_foreign_claude
+fi
 
 PROBE_PROMPT="Answer from your own context, not by reading any files, and reply with exactly two lines and nothing else:
 name: <your name>
@@ -1400,12 +1724,24 @@ say "  one non-interactive turn, from $AGENT_HOME"
 # to the directory it was launched in, and files conversation history under a
 # slug of that directory. A probe run from anywhere else verifies a different
 # project and tells you nothing about this agent.
-if command -v timeout >/dev/null 2>&1; then
-  ( cd "$AGENT_HOME" && { [ -f .env.secrets ] && . ./.env.secrets; }; timeout "$PROBE_TIMEOUT" claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) \
-    >"$PROBE_OUT" 2>"$PROBE_ERR"
-else
-  ( cd "$AGENT_HOME" && { [ -f .env.secrets ] && . ./.env.secrets; }; claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT" ) >"$PROBE_OUT" 2>"$PROBE_ERR"
-fi
+#
+# Per runtime: `claude -p` reads CLAUDE.md and its imports; `codex exec` reads
+# AGENTS.md and runs the SessionStart hook (once Codex trusts it), and needs
+# --skip-git-repo-check because an agent home is not a repository; `agy -p`
+# reads GEMINI.md. Codex and Antigravity read no settings file of ours, so
+# AGENT_NAME and INBOX_ROOT are set the way the launchers set them.
+PROBE_ENV=()
+case "$RUNTIME" in
+  claude) PROBE_CMD=(claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT"); PROBE_LABEL="claude -p" ;;
+  codex)  PROBE_CMD=(codex exec --skip-git-repo-check ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} "$PROBE_PROMPT"); PROBE_LABEL="codex exec" ;;
+  agy)    PROBE_CMD=(agy ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT"); PROBE_LABEL="agy -p" ;;
+esac
+[[ "$RUNTIME" == claude ]] || PROBE_ENV=(env "AGENT_NAME=$NAME" "INBOX_ROOT=$INBOX_ROOT")
+PROBE_TIMEOUT_CMD=()
+command -v timeout >/dev/null 2>&1 && PROBE_TIMEOUT_CMD=(timeout "$PROBE_TIMEOUT")
+( cd "$AGENT_HOME" && { [ -f .env.secrets ] && . ./.env.secrets; }; \
+  ${PROBE_ENV[@]+"${PROBE_ENV[@]}"} ${PROBE_TIMEOUT_CMD[@]+"${PROBE_TIMEOUT_CMD[@]}"} "${PROBE_CMD[@]}" ) \
+  >"$PROBE_OUT" 2>"$PROBE_ERR"
 PROBE_STATUS=$?
 
 # Raw runtime output is printed below as the diagnostic, and a failing CLI can
@@ -1449,7 +1785,7 @@ if [[ $PROBE_STATUS -ne 0 ]]; then
   lines=("The runtime did not answer ($detail).")
   [[ -n "$PROBE_STDERR" ]] && lines+=("" "It said:" "$PROBE_STDERR_SHOWN")
   memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
-  report_cannot_verify "Ran \`claude -p\` from the agent home and got no usable reply." "${lines[@]}"
+  report_cannot_verify "Ran \`$PROBE_LABEL\` from the agent home and got no usable reply." "${lines[@]}"
 fi
 
 # Exit zero and nothing to show for it. This is a FAILURE, not a pass. It is
@@ -1501,7 +1837,17 @@ if [[ -n "$PROBE_STDERR" ]]; then
 fi
 printf '\n'
 printf '  Worth checking, in this order:\n'
-printf '    - does %s/CLAUDE.md still import IDENTITY.md?\n' "$AGENT_HOME"
+case "$RUNTIME" in
+  claude)
+    printf '    - does %s/CLAUDE.md still import IDENTITY.md?\n' "$AGENT_HOME" ;;
+  codex)
+    printf '    - has Codex been told to trust this folder and its hooks? It runs a\n'
+    printf '      project hook only once that is answered: launch the agent once with\n'
+    printf '      boot-agents.sh, attach, approve the hooks, then verify again.\n'
+    printf '    - does %s/.codex/hooks.json still run codex-persona-inject?\n' "$AGENT_HOME" ;;
+  agy)
+    printf '    - does %s/GEMINI.md still inline IDENTITY.md between its fences?\n' "$AGENT_HOME" ;;
+esac
 printf '    - is anything assembling context with a size cap that silently drops\n'
 printf '      the persona when it is exceeded, rather than truncating and saying so?\n'
 printf '    - is a hook meant to inject this context installed, and did it run?\n'

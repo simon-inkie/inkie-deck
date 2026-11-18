@@ -273,6 +273,16 @@ was no runtime to ask, which is not a pass). An empty reply with a zero exit
 status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 `create-agent.sh --help` has the rest.
 
+`--runtime claude|codex|agy` picks the agent CLI (Claude Code by default). A
+Codex agent also gets `AGENTS.md` and a `.codex/hooks.json` whose SessionStart
+hook (`bin/codex-persona-inject`) injects the persona files, since Codex has no
+`@` import; an Antigravity agent gets `GEMINI.md` with the persona files
+inlined by `bin/sync-gemini-includes.sh`, which the launchers re-run before
+every start. For those two the checks above run locally, without a model, and
+end in `CANNOT VERIFY` unless `--live-probe` asks the model as well.
+`boot-agents.sh` and `workspace.sh` launch and resume all three from the shared
+constructors in `bin/runtime-launch.sh`.
+
 Five flags support a first-run setup: `--kind assistant|platform|member` writes
 `<agent home>/.kind` (Deck pins the assistant) and stamps a short role brief
 into `CLAUDE.md`; `--peer <name>` names the other agent in that brief and is

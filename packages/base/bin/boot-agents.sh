@@ -14,12 +14,16 @@
 # $AGENTS_HOME/<name>/.session-id, and a first boot pins a new, named one
 # (claude_session_args, in claude-session.sh beside this file). A
 # codex agent resumes the newest session belonging to its own workspace
-# (codex_latest_session_for_workspace, below) with `codex resume <id>`.
+# (codex_latest_session_for_workspace, in runtime-launch.sh) with `codex resume <id>`.
 # Without that, a codex agent starts genuinely fresh on every relaunch -- a
 # crash, a manual restart, or an incidental relaunch as a side effect of some
 # other agent's boot -- and silently loses its whole conversation. A genuine
 # first boot, where no session exists for the workspace yet, starts fresh on
-# every runtime, as it should.
+# every runtime, as it should. An agy (Antigravity) agent resumes the newest
+# conversation recorded for its own workspace in the CLI's history file
+# (agy_latest_conversation_for_workspace, in runtime-launch.sh beside this
+# file) with `agy --conversation <id>`, and its GEMINI.md is re-synced from its
+# sources before every launch (agy_sync_includes, same file).
 #
 # A codex resume is VERIFIED after sending (codex_verify_resume_or_fallback,
 # below). A session id that was selected successfully is not a promise that
@@ -102,11 +106,16 @@ fi
 # Pinned claude session ids, shared with workspace.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
+# Per-runtime launch constructors and session lookups, shared with workspace.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-launch.sh"
 
-# Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime).
+# Per-agent runtime (claude default; override via $AGENTS_HOME/<name>/.runtime,
+# which holds claude, codex or agy). Whitespace is trimmed so a hand-written
+# file with a trailing newline still selects the right branch.
 get_runtime() {
-  local a="$1"
-  [[ -f "$AGENTS_HOME/$a/.runtime" ]] && cat "$AGENTS_HOME/$a/.runtime" || echo "claude"
+  local a="$1" r=""
+  [[ -f "$AGENTS_HOME/$a/.runtime" ]] && r="$(tr -d '[:space:]' < "$AGENTS_HOME/$a/.runtime")"
+  printf '%s\n' "${r:-claude}"
 }
 
 # ---------------------------------------------------------------------------
@@ -115,64 +124,6 @@ get_runtime() {
 # pure functions, so the test suite can source this file and exercise them
 # without a live tmux session or a live codex process.
 # ---------------------------------------------------------------------------
-
-# codex_latest_session_for_workspace <agent> -- print the id of the most recent
-# Codex session belonging to this agent's own workspace, or nothing if there is
-# none. Silent on every failure mode (missing sessions directory, unreadable
-# file, malformed first line, no match): a lookup that cannot answer must never
-# block a boot.
-#
-# MECHANISM. Sessions live at
-# $CODEX_SESSIONS_DIR/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl, and line 1
-# is a single-line `session_meta` record whose payload carries cwd, id,
-# session_id, originator and thread_source. Nothing else in the file is needed,
-# so only the first line of each candidate is ever read. File mtime tracks live
-# session activity, so an mtime-descending scan answers "most recent real
-# conversation" directly. Codex also keeps a session index file, but it is not
-# reliably maintained and must not be used for this.
-#
-# THREE FILTERS, ALL LOAD-BEARING:
-#   - originator == "codex-tui" excludes non-interactive `codex exec` runs,
-#     which land in the same directory and are often the newest file there.
-#   - thread_source == "user" excludes subagent threads spawned inside a
-#     session, which are not the conversation anyone wants resumed.
-#   - cwd == "$AGENTS_HOME/<agent>", matched THROUGH the closing quote, so a
-#     shorter agent name can never match a longer one that starts with it
-#     (agent "inkie" must not resume a session belonging to "inkie-scratch").
-#
-# The id comes from the parsed payload, not from string-stripping the filename,
-# so a change to Codex's filename format cannot quietly start yielding wrong
-# ids. The filename is still load-bearing for the mtime scan itself, so the
-# parsed id is cross-checked against the uuid suffix of the file it came from;
-# a mismatch is treated as a malformed line and skipped like any other parse
-# failure.
-#
-# CODEX_SESSIONS_DIR is the test seam: the suite points it at fixture
-# directories instead of the real sessions directory.
-codex_latest_session_for_workspace() {
-  local a="$1" dir="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
-  local want_cwd="\"cwd\":\"$AGENTS_HOME/$a\""
-  [[ -d "$dir" ]] || return 0
-  local f line sid fname
-  while IFS= read -r f; do
-    [[ -n "$f" && -r "$f" ]] || continue
-    line=$(head -n 1 -- "$f" 2>/dev/null) || continue
-    [[ -n "$line" ]] || continue
-    printf '%s' "$line" | grep -qF '"originator":"codex-tui"' || continue
-    printf '%s' "$line" | grep -qF '"thread_source":"user"' || continue
-    printf '%s' "$line" | grep -qF "$want_cwd" || continue
-    sid=$(printf '%s' "$line" | grep -oE '"id":"[^"]+"' | head -1 | sed 's/^"id":"//;s/"$//')
-    [[ -n "$sid" ]] || continue
-    fname="$(basename -- "$f")"
-    case "$fname" in
-      *"-${sid}.jsonl") ;;   # parsed id agrees with the filename's own uuid
-      *) continue ;;         # mismatch: treat as malformed and skip
-    esac
-    printf '%s\n' "$sid"
-    return 0
-  done < <(find "$dir" -type f -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null \
-            | sort -rn | cut -d' ' -f2-)
-}
 
 # Indirection point so the test suite can stub the pane check without a live
 # tmux target.
@@ -293,41 +244,6 @@ codex_dismiss_update_dialog_if_present() {
   echo "boot-agents: codex update-available dialog detected on $target -- selecting 'Skip until next version' (3)" >&2
   tmux send-keys -t "$target" "3"
   return 0
-}
-
-# Resolve the sessions directory for a given CODEX_HOME (or default).
-# Empty argument = default ~/.codex/sessions.
-codex_sessions_dir_for_home() {
-  local home="${1:-}"
-  if [[ -n "$home" ]]; then
-    echo "$home/sessions"
-  else
-    echo "${HOME}/.codex/sessions"
-  fi
-}
-
-# Construct the canonical codex launch command for an agent, preserving its
-# complete provider envelope across both initial launch and crash-fallback.
-# Arguments: agent_name role codex_home [session_id] [model_flag]
-codex_launch_command() {
-  local a="$1" role="${2:-}" codex_home="${3:-}" sid="${4:-}" model_flag="${5:-}"
-  local q_a q_role q_home q_secrets
-  q_a=$(printf '%q' "$a")
-  q_role=$(printf '%q' "$role")
-  q_secrets=$(printf '%q' "$AGENTS_HOME/$a/.env.secrets")
-  local command="printf '\\033]0;%s\\007' $q_a; [ -f $q_secrets ] && . $q_secrets; env AGENT_NAME=$q_a AGENT_ROLE=$q_role"
-  if [[ -n "$codex_home" ]]; then
-    q_home=$(printf '%q' "$codex_home")
-    command="$command CODEX_HOME=$q_home"
-  fi
-  command="$command codex"
-  [[ -n "$model_flag" ]] && command="$command $model_flag"
-  if [[ -n "$sid" ]]; then
-    local q_sid
-    q_sid=$(printf '%q' "$sid")
-    command="$command resume $q_sid"
-  fi
-  printf '%s\n' "$command"
 }
 
 # codex_verify_resume_or_fallback <target> <agent> <sid> <launch_flags> --
@@ -657,51 +573,6 @@ wait_for_readiness() {
   return 1
 }
 
-# codex_home_for_agent <agent>
-# Provider state is written by bin/codex-provider-switch. A committed rollback
-# must survive the next boot even though the dormant Azure home remains on disk.
-# Backwards compatibility is deliberate: agents without provider state retain
-# the pre-switch behaviour where the presence of .codex-home selects it.
-codex_home_for_agent() {
-  local a="$1" agent_home azure_home provider_file provider=""
-  agent_home="$AGENTS_HOME/$a"
-  azure_home="$agent_home/.codex-home"
-  provider_file="${PROVIDER_SWITCH_STATE_ROOT:-$HOME/.the-vault/agents}/$a/provider-switch/provider.json"
-  if [[ -e "$provider_file" ]]; then
-    [[ -r "$provider_file" ]] || {
-      echo "boot-agents: $a provider state exists but is unreadable" >&2
-      return 1
-    }
-    command -v python3 >/dev/null 2>&1 || {
-      echo "boot-agents: python3 is required to read $a provider state" >&2
-      return 1
-    }
-    provider=$(python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); provider=value.get("provider"); assert provider in ("plus", "azure"); print(provider)' "$provider_file" 2>/dev/null) || {
-      echo "boot-agents: $a provider state is malformed; refusing to guess" >&2
-      return 1
-    }
-  fi
-  case "$provider" in
-    plus) printf '\n'; return 0 ;;
-    azure)
-      [[ -f "$azure_home/config.toml" ]] || {
-        echo "boot-agents: $a provider state says azure but $azure_home/config.toml is missing" >&2
-        return 1
-      }
-      printf '%s\n' "$azure_home"
-      return 0
-      ;;
-    '')
-      [[ -f "$azure_home/config.toml" ]] && printf '%s\n' "$azure_home" || printf '\n'
-      return 0
-      ;;
-    *)
-      echo "boot-agents: $a has invalid provider state '$provider'; refusing to guess" >&2
-      return 1
-      ;;
-  esac
-}
-
 # --- library boundary: the test suite sources this file with
 # BOOT_AGENTS_LIB_ONLY=1 to reach the functions above without running any of
 # the live tmux work below. Nothing past this point executes in that mode.
@@ -733,7 +604,7 @@ launch_agent() {
   if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
     tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
   fi
-  if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node)$'; then
+  if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then
     echo "skipped"; return
   fi
   if [[ "$runtime" == "claude" ]]; then
@@ -761,7 +632,7 @@ launch_agent() {
   elif [[ "$runtime" == "codex" ]]; then
     # codex (Codex CLI runtime). AGENT_NAME/AGENT_ROLE must
     # be REAL OS-level env vars set before the codex process starts.
-    local role=""; [[ -f "$AGENTS_HOME/$a/.role" ]] && role="$(cat "$AGENTS_HOME/$a/.role")"
+    local role; role="$(agent_role "$a")"
     local codex_home=""
     codex_home="$(codex_home_for_agent "$a")" || {
       echo "boot-agents: refusing to launch $a because provider selection failed" >&2
@@ -779,6 +650,19 @@ launch_agent() {
     # above). The same call dismisses Codex's update-available dialog, which
     # is deliberately not gated on $sid so a first boot gets it too.
     codex_verify_resume_or_fallback "$target" "$a" "$sid" "$role" "$codex_home" "$model_flag" || return 1
+  elif [[ "$runtime" == "agy" ]]; then
+    # agy (Antigravity CLI). AGENT_NAME, AGENT_ROLE and INBOX_ROOT go on the
+    # process environment (agy_launch_command, in runtime-launch.sh), because
+    # agy reads no settings file of ours. Resume the newest conversation of
+    # THIS workspace, never `--continue`, which is global across directories.
+    # GEMINI.md is re-synced first: agy has no @-import, so the persona is
+    # inlined and would otherwise drift from its sources.
+    local role cid agy_cmd
+    role="$(agent_role "$a")"
+    cid="$(agy_latest_conversation_for_workspace "$a")"
+    agy_sync_includes "$a"
+    agy_cmd="$(agy_launch_command "$a" "$role" "$cid" "$model_flag")"
+    tmux send-keys -t "$target" "$agy_cmd" Enter || return 1
   else
     # Any other runtime: launch it plainly. If it needs env vars set before
     # the process starts rather than after, set them here explicitly -- some

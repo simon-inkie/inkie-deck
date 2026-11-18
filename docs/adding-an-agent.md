@@ -64,6 +64,34 @@ it has to survive all three. `Quill`, `quill_2` and `my agent` are refused, and
 the message suggests a fix (`Try "bad-name"`). A name that already exists is
 also refused, and nothing is changed.
 
+### Choosing a runtime
+
+`quill` above runs on Claude Code, the default. To run an agent on Codex or
+Antigravity instead, add `--runtime`:
+
+```text
+packages/base/bin/create-agent.sh quill --role "drafts the weekly summary" --runtime codex
+packages/base/bin/create-agent.sh quill --role "drafts the weekly summary" --runtime agy
+```
+
+Everything else in this guide is the same. The differences:
+
+| | Claude Code | Codex | Antigravity (`agy`) |
+| --- | --- | --- | --- |
+| Persona file it reads | `CLAUDE.md`, which imports the others | `AGENTS.md`, plus a start-up hook in `.codex/hooks.json` that injects the persona files | `GEMINI.md`, with the persona files copied in |
+| After you edit `SOUL.md` | read on the next start | injected on the next start | copied in on the next start by the launcher |
+| `create-agent.sh` result | `VERIFIED` when the model quotes the phrase | `CANNOT VERIFY` (4) after local checks pass | `CANNOT VERIFY` (4) after local checks pass |
+| Ask the model too | always | add `--live-probe` | add `--live-probe` |
+| First message on day one | yes | no: say hello to it yourself | no: say hello to it yourself |
+
+The local checks for Codex and Antigravity call no model: they prove the
+files are right and that the boot phrase is in what the CLI will read. To
+prove it reached the model, run
+`packages/base/bin/create-agent.sh --verify-only quill --live-probe`, which
+uses one turn of your plan or API credit. For Codex, start the agent once
+first (step 3) and approve its hooks when Codex asks, because Codex does not
+run a folder's hooks until you do; until then it reads only `AGENTS.md`.
+
 ## 2. See it in Deck
 
 Reload Deck. The agent is there, and nothing needs restarting: Deck's agent
@@ -155,8 +183,14 @@ Run `boot-agents.sh` again and choose Yes this time.
 first launch can use it up. Exit the agent's tool, delete
 `$AGENTS_HOME/quill/.first-boot-done`, and run `boot-agents.sh` again.
 
-**It says `CANNOT VERIFY` (exit 4).** There is no model tool on this machine.
-Install and sign in to it, then run
-`packages/base/bin/create-agent.sh --verify-only quill`.
+**It says `CANNOT VERIFY` (exit 4).** For a Claude Code agent, there is no
+model tool on this machine. Install and sign in to it, then run
+`packages/base/bin/create-agent.sh --verify-only quill`. For a Codex or
+Antigravity agent, 4 is the normal result: the local checks passed and no
+model was asked. Add `--live-probe` to ask one.
+
+**A Codex agent does not know who it is.** Codex has not been told to trust
+the agent's hooks yet. Attach with `tmux attach -t agents:quill`, approve the
+hooks when Codex asks, then restart the agent.
 
 For the full option list, see [packages/base/README.md](../packages/base/README.md).

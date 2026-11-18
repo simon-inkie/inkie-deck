@@ -324,7 +324,7 @@ Deck needs Node on a current LTS line, pnpm (via corepack), and a **git
 clone**. A downloaded ZIP or a release tarball is not enough: two of the test
 suites and the leak gate shell out to git against the repository root.
 
-**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup, the agent scaffold and the persona check support [Claude Code](https://github.com/anthropics/claude-code) today. [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) panes can be booted and sent inbox messages by the base, but their persona files and verification are not yet supported.
+**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup uses [Claude Code](https://github.com/anthropics/claude-code). The agent scaffold, the launchers and the persona check also support [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) (`agy`), per agent, with `create-agent.sh --runtime codex` or `--runtime agy`; see "Codex and Antigravity agents" below for what differs.
 
 Four more tools matter for one thing each, and are easy to miss because every
 machine that has run this so far already had them:
@@ -923,6 +923,50 @@ create-agent: CANNOT VERIFY inkie
   No `claude` on PATH, so there was nothing to ask.
 ```
 
+#### Codex and Antigravity agents
+
+`--runtime` picks the agent CLI per agent: `claude` (the default), `codex` or
+`agy`. The shared persona files are the same for all three; what differs is
+the file each CLI reads, because neither Codex nor Antigravity follows the `@`
+imports in `CLAUDE.md`:
+
+```text
+packages/base/bin/create-agent.sh quill --runtime codex --model gpt-5.5
+packages/base/bin/create-agent.sh fern --runtime agy
+```
+
+- **Codex** gets `AGENTS.md`, which Codex reads on its own, and
+  `.codex/hooks.json`. Its SessionStart hook (`bin/codex-persona-inject`) puts
+  `IDENTITY.md`, `SOUL.md`, `USER.md` and `TOOLS.md` into the session at every
+  start, resume and compaction, with a count of unread messages; its
+  per-prompt hook (`bin/codex-user-prompt-submit`) mentions new unread
+  messages. Codex runs a folder's hooks only after you trust them: on the
+  agent's first launch, attach and approve them.
+- **Antigravity** gets `GEMINI.md`, with the persona files copied into it
+  between generated fences by `bin/sync-gemini-includes.sh`. The launchers run
+  the sync before every start, so edit the source files, never the fences.
+- Both get `.inbox-root`, which the launchers pass to the CLI as
+  `INBOX_ROOT`, since neither reads `.claude/settings.json`.
+
+The proof is different too. For these two, `create-agent.sh` runs local checks
+that call no model: for Codex, that the hooks file is valid and the hook,
+run as Codex would run it, emits the boot phrase; for Antigravity, that
+`GEMINI.md` syncs cleanly and carries it. Passing them still exits 4, because
+no model was asked. Asking one costs a turn of your plan or API credit, so it
+is opt-in: add `--live-probe` (or set `CREATE_AGENT_LIVE_PROBE=1`) to run
+`codex exec` or `agy -p` from the agent's home. For Codex, approve the hooks
+on a first interactive launch before the live probe, or it reports FAILED.
+Memory hooks are Claude Code only and stay off for the other two.
+
+| | Claude Code | Codex | Antigravity |
+| --- | --- | --- | --- |
+| Persona file it reads | `CLAUDE.md` with imports | `AGENTS.md` plus a SessionStart hook | `GEMINI.md`, persona inlined |
+| Resume on relaunch | pinned session id | newest session for its home | newest conversation for its home |
+| Check without a model | imports resolve | hook emits the boot phrase | `GEMINI.md` carries it |
+| Live proof | default | `--live-probe` | `--live-probe` |
+| Memory hooks | when configured | no | no |
+| Day-one first message | yes | no | no |
+
 Exit 4 means created but unproven, and it is not a pass. Once you have a model
 CLI installed and signed in, `packages/base/bin/create-agent.sh --verify-only
 inkie` re-runs only the proof. It exits 0 only if the phrase comes back, which
@@ -1062,6 +1106,12 @@ before starting any pane, which stops Claude Code showing its focus-events
 hint. It is a tmux server option with no per-session form, so it applies to
 the whole tmux server, including any other sessions on it. Add
 `tmux set -g focus-events off` after a boot if you want it off.
+
+Each agent runs the CLI named in its `.runtime`. A Codex agent resumes the
+newest session started in its own home, and a fresh one if that resume fails;
+an Antigravity agent resumes the newest conversation started in its own home
+(`agy --conversation <id>`, never the global `--continue`), after its
+`GEMINI.md` is re-synced. Neither has its own approval prompts switched off.
 
 On first boot, attach to the session and answer any runtime setup prompts
 manually. Folder trust defaults to No: do not press Enter while No is

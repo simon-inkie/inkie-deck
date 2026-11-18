@@ -9,6 +9,19 @@
 # Assumes the persona layout from templates/: each agent's home is
 # $AGENTS_HOME/<name>/ and holds a SOUL.md. Override AGENTS_HOME if yours
 # lives somewhere else.
+#
+# Each agent runs the runtime named in $AGENTS_HOME/<name>/.runtime (claude,
+# codex or agy; claude when absent), or the one given with --runtime. The
+# launch commands are the same ones boot-agents.sh sends (runtime-launch.sh),
+# so a Codex or Antigravity agent resumes its own workspace's newest session
+# here too. Unlike boot-agents.sh this does not verify a Codex resume or wait
+# for readiness: you are attached and can see the pane.
+#
+# WORKSPACE_DRY_RUN=1 prints each agent's launch command instead of starting
+# tmux, which is how the tests check runtime selection without a pane. It
+# still pins a session id for a new Claude Code agent (the next real launch
+# uses it) and still re-syncs an agy agent's GEMINI.md, but it leaves out the
+# day-one first message, whose marker would otherwise be used up.
 
 set -euo pipefail
 
@@ -50,21 +63,24 @@ fi
 # Pinned claude session ids, shared with boot-agents.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-session.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-binary-check.sh"
+# Per-runtime launch constructors, shared with boot-agents.sh.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-launch.sh"
 
 get_runtime() {
   local agent="$1"
   if [[ -n "$RUNTIME_OVERRIDE" ]]; then
     echo "$RUNTIME_OVERRIDE"
   elif [[ -f "$AGENTS_HOME/$agent/.runtime" ]]; then
-    cat "$AGENTS_HOME/$agent/.runtime"
+    local r; r="$(tr -d '[:space:]' < "$AGENTS_HOME/$agent/.runtime")"
+    printf '%s\n' "${r:-claude}"
   else
     echo "claude"
   fi
 }
 
-start_agent() {
+# launch_command <agent> -- print the pane-shell command that starts <agent>.
+launch_command() {
   local agent="$1"
-  local target="$SESSION:$agent"
   local runtime model_flag=""
   runtime=$(get_runtime "$agent")
   # Per-agent model override (selector): $AGENTS_HOME/<agent>/.model -> --model.
@@ -86,16 +102,57 @@ start_agent() {
       echo "workspace: could not pin a session id for $agent; launching an unpinned session" >&2
       session_args="-n $(printf '%q' "$agent")"
     }
-    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag $(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$agent")" Enter
+    # The dry run leaves the day-one message out: deciding it writes the marker
+    # that stops it being sent twice, which would use it up without a launch.
+    local first_prompt=""
+    [[ "${WORKSPACE_DRY_RUN:-0}" == "1" ]] || first_prompt="$(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$agent")"
+    printf '%s\n' "printf '\\033]0;${agent}\\007'; [ -f $AGENTS_HOME/$agent/.env.secrets ] && . $AGENTS_HOME/$agent/.env.secrets; claude $session_args $model_flag $first_prompt"
+  elif [[ "$runtime" == "codex" ]]; then
+    # Same envelope as boot-agents.sh (codex_launch_command): identity on the
+    # process environment, the provider home it selects, and a resume of this
+    # workspace's newest interactive session.
+    local role codex_home CODEX_SESSIONS_DIR sid
+    role="$(agent_role "$agent")"
+    codex_home="$(codex_home_for_agent "$agent")" || {
+      echo "workspace: not launching $agent because its Codex provider selection failed" >&2
+      return 1
+    }
+    CODEX_SESSIONS_DIR="$(codex_sessions_dir_for_home "$codex_home")"
+    sid="$(codex_latest_session_for_workspace "$agent")"
+    codex_launch_command "$agent" "$role" "$codex_home" "$sid" "$model_flag"
+  elif [[ "$runtime" == "agy" ]]; then
+    # Same envelope as boot-agents.sh (agy_launch_command), after the GEMINI.md
+    # include sync, resuming this workspace's newest conversation.
+    local role cid
+    role="$(agent_role "$agent")"
+    cid="$(agy_latest_conversation_for_workspace "$agent")"
+    agy_sync_includes "$agent"
+    agy_launch_command "$agent" "$role" "$cid" "$model_flag"
   else
     # Any other runtime: launch it plainly and let its own config (hooks,
     # AGENT_NAME wiring) do the rest. Add a branch here if a given runtime
     # needs env vars set before the process starts rather than after -- some
     # runtimes only apply hook-declared env to their own shell tool calls, not
     # to the process itself, so a hook-only approach can silently under-scope.
-    tmux send-keys -t "$target" "printf '\\033]0;${agent}\\007'; AGENT_NAME=$agent $runtime $model_flag" Enter
+    printf '%s\n' "printf '\\033]0;${agent}\\007'; AGENT_NAME=$agent $runtime $model_flag"
   fi
 }
+
+start_agent() {
+  local agent="$1" command
+  command="$(launch_command "$agent")" || return 0
+  tmux send-keys -t "$SESSION:$agent" "$command" Enter
+}
+
+# Dry run: print what would be sent to each agent's pane, start nothing.
+if [[ "${WORKSPACE_DRY_RUN:-0}" == "1" ]]; then
+  for agent in "${AGENTS[@]}"; do
+    if command="$(launch_command "$agent")"; then
+      printf '%s\t%s\n' "$agent" "$command"
+    fi
+  done
+  exit 0
+fi
 
 # Optional rate-limit / crash auto-recovery companion script, if you have one.
 # Set WATCHER_ENABLED=0 to disable. Default: enabled if the script exists.
