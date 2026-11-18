@@ -35,6 +35,9 @@ pnpm check:lib-version
 pnpm -C packages/deck check:dashes
 ```
 
+- `pnpm typecheck` runs the TypeScript native preview (`tsgo`). Use
+  `pnpm typecheck:tsc` to compare diagnostics with `tsc`, not as a substitute
+  for the required CI check.
 - `check:leaks` scans the tree for material that must not be published.
   `check:leaks:history` and `check:leaks:messages` extend that to git history
   and commit messages.

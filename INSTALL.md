@@ -566,9 +566,9 @@ pnpm install
 One warning is expected and harmless:
 `Ignored build scripts: esbuild@0.27.7, esbuild@0.28.0`.
 
-If you want to run the checks the project runs on itself (`pnpm typecheck`,
-`pnpm test` and the three gates), the README covers them. They are not needed
-to run Deck.
+The README covers the project's checks, including `pnpm typecheck` (native
+TypeScript), `pnpm typecheck:tsc` (the `tsc` fallback), and `pnpm test`.
+They are not needed to run Deck.
 
 ## 3. Try it
 

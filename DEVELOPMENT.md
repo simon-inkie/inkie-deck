@@ -168,6 +168,9 @@ Before opening:
   pnpm check:lib-version
   ```
 
+  `pnpm typecheck` uses `tsgo`; run `pnpm typecheck:tsc` to compare diagnostics
+  with `tsc` when investigating a discrepancy.
+
   The dash check lives in the deck package rather than the root, so run it
   from there: `pnpm -C packages/deck check:dashes`.
 
