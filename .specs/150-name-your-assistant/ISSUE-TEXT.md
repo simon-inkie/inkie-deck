@@ -70,4 +70,3 @@ the others.
 ## Implementation
 
 Tracked in [PR #147](https://github.com/simon-inkie/inkie-deck/pull/147). Issue creation records the agreed work; it does not establish merge or installation acceptance.
-
