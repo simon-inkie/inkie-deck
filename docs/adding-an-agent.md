@@ -7,6 +7,12 @@ below was run on a clean machine and the output shown is what came back.
 The examples use `quill`, an agent that drafts a weekly summary. Use your own
 name wherever you see it.
 
+New install with no agents yet? Run `packages/base/bin/first-run.sh` instead
+([INSTALL.md](../INSTALL.md), "Name your assistant"): it creates an assistant
+and a platform agent in one go. This guide is for adding more afterwards. The
+platform agent can also do it for you, since its brief carries the path to
+`create-agent.sh`.
+
 ## What you are making
 
 An agent lives in two places, and they have to agree:

@@ -733,6 +733,30 @@ The tooling here is deliberately built so that the boundary is visible rather
 than assumed: everything below runs and reports honestly on a machine with no
 model CLI at all, and the step that requires one refuses to claim success.
 
+### Name your assistant (first run)
+
+On a new install, start here. One command asks for two names, an assistant you
+talk to (default `inkie`) and a platform agent that changes the setup (default
+`doctor`), and creates both with `create-agent.sh`:
+
+```sh
+export AGENTS_HOME=$HOME/agents
+export INBOX_ROOT=$HOME/deck/inbox
+packages/base/bin/first-run.sh
+```
+
+For no prompts, pass `--assistant <name> --platform <name>`; `--model <id>` and
+`--no-verify` go through to `create-agent.sh`. Both names are checked before
+either agent is created. Each agent is told its role and the other's name, and
+Deck pins the assistant above the agent list. Re-running is safe: an agent that
+already exists is skipped, and a run that stopped after one agent creates the
+other under the peer name the first one already holds.
+
+Verification is as below: with a working `claude` CLI each agent is `VERIFIED`;
+without one, or with `--no-verify`, both are created and report
+`CANNOT VERIFY` (exit 4). The proof shows the persona loaded, not that the role
+brief is right, so ask each agent what its job is once.
+
 ### Create an agent
 
 An agent lives in two places that have to agree: a home directory holding its
