@@ -12,7 +12,8 @@ promise different things.
 | [2. Run it for real](#2-run-it-for-real) | Deck over your own files, production build | four directories and a `.env` |
 | [3. Bring your agents to life](#3-bring-your-agents-to-life) | actual agents in tmux sessions | a model CLI that you install, sign in to and pay for |
 
-On Windows, start with [Windows (via WSL)](#windows-via-wsl).
+On Windows, start with [Windows (via WSL)](#windows-via-wsl). For one command
+instead of the steps below, see [Quick setup](#quick-setup).
 
 Tiers 1 and 2 are executed from this document on every rig run (see
 [How this document is tested](#how-this-document-is-tested)). Tier 3 is
@@ -323,13 +324,15 @@ Deck needs Node on a current LTS line, pnpm (via corepack), and a **git
 clone**. A downloaded ZIP or a release tarball is not enough: two of the test
 suites and the leak gate shell out to git against the repository root.
 
+**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup, the agent scaffold and the persona check support [Claude Code](https://github.com/anthropics/claude-code) today. [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) panes can be booted and sent inbox messages by the base, but their persona files and verification are not yet supported.
+
 Four more tools matter for one thing each, and are easy to miss because every
 machine that has run this so far already had them:
 
 | tool | needed for | without it |
 | --- | --- | --- |
 | ripgrep (`rg`) | `pnpm check:dashes`, and the test suite | four test failures, which do at least name ripgrep |
-| python3 | the `inbox` CLI, which is how an agent replies | Deck runs fine; your agents cannot answer |
+| python3 | the `inbox` CLI, which is how an agent replies (PyYAML, `python3-yaml`, for decision cards) | Deck runs fine; your agents cannot answer, or cannot send a card |
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
 | xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
 
@@ -340,7 +343,7 @@ The block is:
 
 ```sh
 apt-get update
-apt-get install -y ca-certificates curl git ripgrep python3 tmux xxd
+apt-get install -y ca-certificates curl git ripgrep python3 python3-yaml tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
@@ -408,6 +411,129 @@ PowerShell. Delete this paragraph once the repository is public.
 This block is the one exception to "executed from this document": the rig
 copies the tree into its container instead of cloning it, so it is declared
 as skipped in `rig/install-plan.mjs`, with the reason.
+
+## Quick setup
+
+With section 1 done and the clone in place, one command does sections 2 to 5
+for you. Run it as your own user, not as root (it refuses root), from the root
+of your clone:
+
+```sh
+scripts/setup.sh
+```
+
+It checks everything first and writes nothing until the checks pass. Then it
+installs, makes the four roots and `packages/deck/.env` (only if there is none),
+builds, creates the two starter agents through `first-run.sh` (an assistant,
+default `inkie`, and a platform agent, default `doctor`), optionally stores a
+model API key, verifies both agents, starts Deck on loopback in a tmux session
+called `deck`, and starts the two agents only if both verified. It asks for the
+two names and whether you want to use an API key; both questions come before
+anything is installed.
+
+It does not install system packages (it names what is missing and points at
+section 1, and never runs `sudo`), does not install, sign in to or pay for your
+model CLI, and never answers that CLI's own prompts (sign-in, folder trust, key
+approval). Those stay with you. It does not connect mail or a calendar, and it
+does not install the memory loop (see [Optional: give the agent a memory
+loop](#optional-give-the-agent-a-memory-loop)). On Windows, finish the [WSL
+prerequisites](#windows-via-wsl) first; setup adds nothing Windows-specific.
+
+For no prompts, accept the defaults and skip the key:
+
+```sh
+scripts/setup.sh --yes --no-key
+```
+
+On a machine with no model CLI that command exits 4: your roots, `.env` and
+both agents exist, Deck is running at `http://127.0.0.1:4242`, and the agents
+are not started. Install and sign in to the model CLI, then run it again. That
+is also the rig's measured case (see [How this document is
+tested](#how-this-document-is-tested)).
+
+The flags are `--yes`, `--deck-home <dir>` (default `$HOME/deck`),
+`--agents-home <dir>` (default `$HOME/agents`), `--assistant <name>`,
+`--platform <name>`, `--model <id>`, `--no-key`, `--key-stdin`, `--replace-key`,
+`--no-install`, `--no-build` and `--no-start`; `scripts/setup.sh --help` has
+the rest. With no terminal on stdin it needs names (`--yes`, or both name flags)
+and a key choice (`--no-key` or `--key-stdin`), and otherwise exits 2 before
+writing anything.
+
+Exit codes, in order of precedence when more than one applies:
+
+| code | meaning |
+| --- | --- |
+| 2 | a flag is missing for an unattended run; nothing was done |
+| 1 | failed: a check, the configuration, the scaffold, a key write, Deck, or the agent launch |
+| 3 | a starter agent's persona check failed; the agents were not started |
+| 4 | no usable model CLI, or verification could not run; Deck is running, the agents are not started |
+| 5 | the agents are started and are waiting on you at their own prompts |
+| 0 | Deck is running on loopback, both agents verified and started |
+
+### What setup checks first
+
+It resolves each setting the way Deck's launcher does: your environment first,
+then an existing `packages/deck/.env`. It refuses a `HOST` that is not
+loopback (and tells you whether it came from the environment or the file), a
+port something else is listening on, a root that is missing from an existing
+`.env`, and an `MC_USER` that is not a plain name. It never edits an existing
+`.env`. Deck is started with `HOST=127.0.0.1` in its own environment, which
+wins over the file, because Deck has no authentication (see the warning at the
+top of this document).
+
+### Model keys
+
+A sign-in belongs to your model CLI, and setup only checks the CLI is there. A
+key is optional. If you want one, setup reads it without echo (or one line from
+stdin with `--key-stdin`), checks it contains only letters, digits, hyphens and
+underscores, and stores it as an `export ANTHROPIC_API_KEY=` line in each
+starter agent's `.env.secrets` (mode 0600), which is where the agent's terminal
+and its persona check read it. It is never an argument and never printed.
+
+A stored `ANTHROPIC_API_KEY` takes precedence over a subscription sign-in even
+when you are signed in, and each agent's terminal asks you once to approve it.
+Setup does not answer that question. An existing key is never replaced by a
+rerun, with or without `--yes`; `--replace-key` (with a terminal or
+`--key-stdin`) changes it.
+
+Two files cannot be renamed as one step, so setup records the pair in
+`.setup-key-pending` in the agents home first, works through private (0600)
+staging and backup copies in the two agent homes, and removes the marker and the
+copies when both are done. If a write fails it puts the first file back. If that
+fails too, or setup is interrupted, the marker stays: the next run compares the
+two stored keys without printing them, clears the marker if they match, and
+otherwise stops with "mixed key state" before it verifies or starts anything, so
+you run it again with `--replace-key` and enter the key once more. A lock directory (`.setup-key-lock`, same place) keeps two setup runs from writing keys at once; a run killed mid-write can leave it behind, and the message says to remove it. Setup refuses to store a key if the agents home, an agent's folder or its `.env.secrets` is a symlink, or if the agents home is inside a git work tree.
+
+### The first conversation
+
+When the agents start, the assistant's first message asks what you do and what
+you would like help with first. It happens in the assistant's existing thread in
+Deck, with no new page or endpoint: it writes with the `inbox` CLI and you answer
+in the composer. It then asks the platform agent for a proposal of up to three
+agents that fit, and puts that to you as a decision card (approve, change or
+skip) before anything is created. The platform agent then checks each approved
+name with `create-agent.sh --status` and creates only the ones that are absent,
+as `member` agents that name the assistant. It starts only the ones that are
+complete, and reports what was created and what was launched as two separate
+lists.
+
+The card and the cap of three are guidance in the agents' role briefs, not a lock
+in code, and the agents' own runtime permission prompts still apply. Each new
+agent stops at its own first-run prompt (folder trust) in its terminal view in
+Deck, where only you should answer it. The decision card needs PyYAML for the
+`inbox` CLI, which is why `python3-yaml` is in section 1's package line.
+
+### Running it again
+
+A healthy rerun repeats the checks, `pnpm install` and `pnpm build`, and skips
+everything else: the `.env`, the roots, the agents, any stored key, a running
+`deck` session and any running agent pane. If an earlier run ended at 3 or 4,
+running it again is the repair: the agents are verified again and, if both now
+pass, started. A half-created pair is completed by `first-run.sh`'s own recovery.
+
+The manual path is sections 2 to 5 below, which are also the reference for
+every step setup takes.
 
 ## 2. Install the dependencies
 
@@ -1289,6 +1415,36 @@ has rebooted a machine to confirm that.
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
 only a display name: it is a filename in your inbox root. Checked: `mcUser` in
 `packages/deck/app/lib/instance.server.ts` returns `alex` when it is unset.
+
+**Quick setup's approval, cap and status check are instructions, not locks.**
+Whether the platform agent waits for your approval on the decision card, keeps
+to three agents and calls `create-agent.sh --status` before creating anything
+is written in its role brief and followed by the model. Nothing in code stops
+it. The status check itself is deterministic (it reads the agent's files and
+fails closed: anything short of the whole scaffold, including an empty home, reads `incomplete` (`absent` means no home or inbox entry at all), and an
+incomplete home is reported for you to repair, never recreated or deleted). The
+agents' own runtime permission prompts still apply. Not measured by the rig.
+
+**Quick setup's key pair is protected by a marker, not by atomicity.** Two
+renames cannot be one step. Setup records a pending marker, and a run that finds
+two different stored keys stops before it verifies or starts anything. Starting
+agents by hand with `boot-agents.sh` does not read the marker, so doing that
+while `.setup-key-pending` exists can start an agent with a mixed pair. Setup
+also holds the key only in its own memory and in the two files; it cannot stop
+you putting `ANTHROPIC_API_KEY` in your own environment, which every program
+you start would then inherit.
+
+**Quick setup's first-run prompts are yours.** Setup and the platform agent
+answer none of the model CLI's prompts. Each agent, including each one the
+platform agent creates, stops at its own folder-trust prompt (and key approval,
+if a key is stored) in its terminal view in Deck. Quick setup exits 5 only when
+the boot output reports recognised prompts and nothing else is waiting; answer
+them in Deck, then run it again. The rig measures it up to the model CLI only
+(exit 4); acceptance with a signed-in CLI on Linux and WSL is pending.
+
+**The model selector is hidden after a Quick setup.** It, and the cron admin,
+are gated on Deck's default `MC_USER`, and setup sets `MC_USER` to your login
+name. Change an agent's model by editing `$AGENTS_HOME/<name>/.model`.
 
 ## Where to go next
 

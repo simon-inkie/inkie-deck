@@ -273,11 +273,18 @@ was no runtime to ask, which is not a pass). An empty reply with a zero exit
 status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 `create-agent.sh --help` has the rest.
 
-Three flags support a first-run setup: `--kind assistant|platform` writes
+Five flags support a first-run setup: `--kind assistant|platform|member` writes
 `<agent home>/.kind` (Deck pins the assistant) and stamps a short role brief
 into `CLAUDE.md`; `--peer <name>` names the other agent in that brief and is
 saved as `.peer`; `--check-name <name>` validates a name and that both homes
-are free, and writes nothing. `bin/first-run.sh` wraps them: it asks for an
+are free, and writes nothing; `--person <name>` stamps your `MC_USER` into the
+role brief (without it the assistant's "First conversation" section is left
+out); `--status <name>` prints `complete`, `incomplete` or `absent` and writes
+nothing (`complete` needs the kind and peer markers and the whole scaffold,
+and any foreign or altered home reads `incomplete`; add `--kind` and `--peer`
+to require the intended ones). `member` is for agents the platform agent
+creates, with a brief that names the assistant. The persona check sources the
+agent's own `.env.secrets` in its subshell, as the launcher does. `bin/first-run.sh` wraps them: it asks for an
 assistant and a platform agent name, checks both before creating either, skips
 a kind that already exists, and exits with the worst verdict. The boot phrase
 proves the persona loaded, not that the role brief is right.

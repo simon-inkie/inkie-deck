@@ -1459,3 +1459,178 @@ describe("--kind, --peer and --check-name", () => {
     expect(run(box1, ["wren", "--check-name", "fern"]).status).toBe(EXIT.SCAFFOLD_ERROR);
   });
 });
+
+describe("secrets, person, member kind and --status", () => {
+  it("redacts shell-assigned values (quotes, comments), leaves short ones, and judges the raw reply", () => {
+    const b = sandbox();
+    run(b, ["wren", "--no-verify"]);
+    const nonce = bootPhraseOf(b, "wren");
+    fs.writeFileSync(
+      path.join(b.agentsHome, "wren", ".env.secrets"),
+      `export QUOTED="quoted secret value" # why\nexport PLAIN=plainvalue123 # note\nexport SHORT=abc12\nexport SAME=${nonce}\n`,
+    );
+    stubRuntime(b, `echo "got $QUOTED and $PLAIN and $SHORT" >&2; exit 1`);
+    const failed = run(b, ["--verify-only", "wren"], { stub: true });
+    expect(failed.output).not.toContain("quoted secret value");
+    expect(failed.output).not.toContain("plainvalue123");
+    expect(failed.output).toContain("abc12");
+    // A configured value equal to the boot phrase must not turn a right answer into a failure.
+    stubRuntime(b, `echo "boot phrase: ${nonce}"`);
+    expect(run(b, ["--verify-only", "wren"], { stub: true }).status).toBe(EXIT.VERIFIED);
+  });
+
+  it("never prints the credential a failing CLI echoes, on stderr or stdout", () => {
+    const b = sandbox();
+    run(b, ["wren", "--no-verify"]);
+    const secret = "plainsecretvalue987654";
+    fs.writeFileSync(path.join(b.agentsHome, "wren", ".env.secrets"), `export SOME_TOKEN=${secret}\nexport ANTHROPIC_API_KEY=sk-ant-echoed-0123456789\n`);
+    stubRuntime(b, `echo "auth failed for $SOME_TOKEN $ANTHROPIC_API_KEY" >&2; exit 1`);
+    const failed = run(b, ["--verify-only", "wren"], { stub: true });
+    expect(failed.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(failed.output).toContain("[redacted]");
+    expect(failed.output).not.toContain(secret);
+    expect(failed.output).not.toContain("sk-ant-echoed");
+    stubRuntime(b, `echo "my token is $SOME_TOKEN and $ANTHROPIC_API_KEY"`);
+    const fluent = run(b, ["--verify-only", "wren"], { stub: true });
+    expect(fluent.status).toBe(EXIT.FAILED);
+    expect(fluent.output).not.toContain(secret);
+    expect(fluent.output).not.toContain("sk-ant-echoed");
+  });
+
+  it("the probe sees an exported variable set only in the agent's .env.secrets", () => {
+    const box1 = sandbox();
+    run(box1, ["wren", "--no-verify"]);
+    fs.writeFileSync(path.join(box1.agentsHome, "wren", ".env.secrets"), "export PROBE_SECRET=from-secrets\n");
+    stubRuntime(box1, `[ "$PROBE_SECRET" = from-secrets ] && echo "boot phrase: $(grep -oE 'boot-[0-9a-f]{16}' IDENTITY.md | head -n1)"`);
+    // Answers only if the variable reached it, so VERIFIED proves the probe saw it.
+    expect(run(box1, ["--verify-only", "wren"], { stub: true }).status).toBe(EXIT.VERIFIED);
+    fs.rmSync(path.join(box1.agentsHome, "wren", ".env.secrets"));
+    expect(run(box1, ["--verify-only", "wren"], { stub: true }).status).not.toBe(EXIT.VERIFIED);
+  });
+
+  it("--person is stamped into the assistant's brief, and the section is left out without it", () => {
+    const box1 = sandbox();
+    run(box1, ["ada", "--kind", "assistant", "--peer", "forge", "--person", "sam", "--no-verify"]);
+    const claude = fs.readFileSync(path.join(box1.agentsHome, "ada", "CLAUDE.md"), "utf8");
+    expect(claude).toContain("## First conversation");
+    expect(claude).toContain("**sam**");
+    expect(claude).not.toContain("person-only");
+
+    const r = run(box1, ["bea", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
+    expect(r.output).toContain("no --person given");
+    expect(fs.readFileSync(path.join(box1.agentsHome, "bea", "CLAUDE.md"), "utf8")).not.toContain("First conversation");
+  });
+
+  it("--kind member stamps the member brief naming the assistant", () => {
+    const box1 = sandbox();
+    run(box1, ["scribe", "--kind", "member", "--peer", "ada", "--no-verify"]);
+    expect(fs.readFileSync(path.join(box1.agentsHome, "scribe", ".kind"), "utf8")).toBe("member");
+    const claude = fs.readFileSync(path.join(box1.agentsHome, "scribe", "CLAUDE.md"), "utf8");
+    expect(claude).toContain("## Your role: a member");
+    expect(claude).toContain("**ada**");
+  });
+
+  describe("--status", () => {
+    const status = (b: Sandbox, args: string[] = []) => run(b, ["--status", "scribe", ...args]);
+    const created = () => {
+      const b = sandbox();
+      run(b, ["scribe", "--kind", "member", "--peer", "ada", "--no-verify"]);
+      return b;
+    };
+    const home = (b: Sandbox) => path.join(b.agentsHome, "scribe");
+    const snapshot = (b: Sandbox) =>
+      fs.readdirSync(home(b), { recursive: true }).map(String).sort().join("\n");
+
+    it("an empty or foreign home, or an inbox alone, is incomplete, never absent", () => {
+      const empty = sandbox();
+      fs.mkdirSync(home(empty), { recursive: true });
+      expect(status(empty).stdout.trim()).toBe("incomplete");
+      const foreign = sandbox();
+      fs.mkdirSync(home(foreign), { recursive: true });
+      fs.writeFileSync(path.join(home(foreign), "notes.txt"), "mine");
+      expect(status(foreign).stdout.trim()).toBe("incomplete");
+      const inboxOnly = sandbox();
+      fs.mkdirSync(path.join(inboxOnly.inboxRoot, "scribe", "inbox"), { recursive: true });
+      expect(status(inboxOnly).stdout.trim()).toBe("incomplete");
+      expect(fs.readdirSync(home(empty))).toEqual([]);
+    });
+
+    it("reads absent, incomplete and complete, and writes nothing", () => {
+      const b = sandbox();
+      expect(status(b).stdout.trim()).toBe("absent");
+      expect(status(b).status).toBe(0);
+      expect(fs.readdirSync(b.agentsHome)).toEqual([]);
+
+      const c = created();
+      const kind = fs.readFileSync(path.join(home(c), ".kind"));
+      fs.rmSync(path.join(home(c), ".kind"));
+      const before = snapshot(c);
+      expect(status(c).stdout.trim()).toBe("incomplete");
+      expect(snapshot(c)).toBe(before);
+      fs.writeFileSync(path.join(home(c), ".kind"), kind);
+      expect(status(c, ["--kind", "member", "--peer", "ada"]).stdout.trim()).toBe("complete");
+    });
+
+    it("a lone .kind marker is never complete", () => {
+      const b = sandbox();
+      fs.mkdirSync(home(b), { recursive: true });
+      fs.writeFileSync(path.join(home(b), ".kind"), "member");
+      expect(status(b).stdout.trim()).toBe("incomplete");
+    });
+
+    it.each([
+      ["a different kind than intended", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".kind"), "platform")],
+      ["an unknown kind", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".kind"), "intruder")],
+      ["a different peer than intended", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".peer"), "other")],
+      ["a malformed peer", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".peer"), "Not A Name")],
+      ["a missing persona file", (b: Sandbox) => fs.rmSync(path.join(home(b), "SOUL.md"))],
+      ["a missing settings file", (b: Sandbox) => fs.rmSync(path.join(home(b), ".claude", "settings.json"))],
+      ["a missing inbox directory", (b: Sandbox) => fs.rmSync(path.join(b.inboxRoot, "scribe"), { recursive: true })],
+      ["no boot phrase", (b: Sandbox) => fs.writeFileSync(path.join(home(b), "IDENTITY.md"), "hand made\n")],
+      ["a foreign brief", (b: Sandbox) => fs.writeFileSync(path.join(home(b), "CLAUDE.md"), "# mine\n")],
+      ["settings that are not JSON", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".claude", "settings.json"), "{")],
+      ["an empty .runtime", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".runtime"), "")],
+      ["a symlinked .kind", (b: Sandbox) => {
+        fs.rmSync(path.join(home(b), ".kind"));
+        fs.writeFileSync(path.join(b.home, "elsewhere"), "member");
+        fs.symlinkSync(path.join(b.home, "elsewhere"), path.join(home(b), ".kind"));
+      }],
+    ])("reads incomplete, never complete, for %s", (_label, damage) => {
+      const b = created();
+      expect(status(b, ["--kind", "member", "--peer", "ada"]).stdout.trim()).toBe("complete");
+      damage(b);
+      const before = snapshot(b);
+      const r = status(b, ["--kind", "member", "--peer", "ada"]);
+      expect(r.stdout.trim()).toBe("incomplete");
+      expect(snapshot(b)).toBe(before);
+    });
+
+    it("the role brief must be the kind's own, not a quote of it elsewhere", () => {
+      const b = created();
+      expect(status(b, ["--peer", "ada"]).stdout.trim()).toBe("complete");
+      // .kind says assistant and the peer is mentioned, but the brief is the platform one,
+      // with the assistant's sentence merely quoted in a note.
+      fs.writeFileSync(path.join(home(b), ".kind"), "assistant");
+      fs.writeFileSync(
+        path.join(home(b), "CLAUDE.md"),
+        "# x\n\n## Your role: the platform agent\n\nYou are the platform agent. **ada** asks.\n\nNote: You are the assistant, the main orchestrator\n",
+      );
+      expect(status(b, ["--peer", "ada"]).stdout.trim()).toBe("incomplete");
+      expect(status(b).stdout.trim()).toBe("incomplete");
+    });
+
+    it("a dangling agent-home symlink reads incomplete, not absent", () => {
+      const b = sandbox();
+      fs.symlinkSync(path.join(b.home, "nowhere"), home(b));
+      expect(status(b).stdout.trim()).toBe("incomplete");
+    });
+
+    it("an unreadable file reads incomplete", () => {
+      if (process.getuid?.() === 0) return;
+      const b = created();
+      fs.chmodSync(path.join(home(b), "SOUL.md"), 0o000);
+      expect(status(b).stdout.trim()).toBe("incomplete");
+      fs.chmodSync(path.join(home(b), "SOUL.md"), 0o644);
+    });
+  });
+});

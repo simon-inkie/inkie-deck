@@ -56,6 +56,13 @@ const AGENTS = [
   "send-a-message-and-answer-it-as-the-agent/sh#3",
 ];
 
+/**
+ * Quick setup's unattended block, the only one of its section that can run in a
+ * container (the other needs a terminal). It runs as an ordinary user: setup
+ * refuses root, and the document says to run it as your own user.
+ */
+const QUICK_SETUP = ["quick-setup/sh#2"];
+
 export const RUNS = {
   /** Tier 1. The dev sandbox, from a machine with no toolchain at all. */
   "try-it": [...PREREQUISITES, ...DEPENDENCIES, ...TRY_IT],
@@ -81,6 +88,12 @@ export const RUNS = {
     ...PUBLISH_BIND,
     ...BUILD_AND_START,
   ],
+  /**
+   * Quick setup, from a bare machine: the prerequisites, then
+   * `scripts/setup.sh --yes --no-key`, which on a machine with no model CLI
+   * must exit 4 with Deck running and the agents not started.
+   */
+  "quick-setup": [...PREREQUISITES, ...QUICK_SETUP],
   /** The whole document in one container, tier 3 included. */
   "run-it-and-agents": [
     ...PREREQUISITES,
@@ -107,6 +120,8 @@ export const RUNS = {
  */
 export const SKIPPED = {
   "1-prerequisites/sh#4": "git clone of the real URL: no credentials in the container, and the rig copies the tree in instead",
+  "name-your-assistant-first-run/sh#1": "creates the default agent names inkie and doctor, which the create-an-agent block after it also creates, so the one-container run of the whole document cannot include both; first-run.sh itself is executed by the quick-setup run",
+  "quick-setup/sh#1": "the interactive form: it asks for names and a key choice, and a container run has no terminal to answer; the unattended block beside it is executed",
 };
 
 /**
@@ -138,6 +153,7 @@ export const LONG_RUNNING = {
  */
 export const EXPECTED_EXITS = {
   "create-an-agent/sh#1": { code: 4, prose: /exits 4/ },
+  "quick-setup/sh#2": { code: 4, prose: /that command exits 4/ },
 };
 
 /**

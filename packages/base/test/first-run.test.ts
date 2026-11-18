@@ -90,6 +90,13 @@ describe("first-run", () => {
     expect(claudeOf(b, "forge")).toContain("**ada**");
   });
 
+  it("passes --person through, and defaults it to a plain MC_USER", () => {
+    const b = box();
+    expect(run(b, ["--assistant", "ada", "--platform", "forge", "--person", "sam", "--no-verify"], false).status).toBe(4);
+    expect(claudeOf(b, "ada")).toContain("## First conversation");
+    expect(claudeOf(b, "ada")).toContain("**sam**");
+  });
+
   it.each([
     ["an invalid name", ["--assistant", "Bad Name", "--platform", "forge"]],
     ["identical names", ["--assistant", "ada", "--platform", "ada"]],
@@ -110,6 +117,16 @@ describe("first-run", () => {
     expect(r.status).toBe(1);
     expect(agents(b)).toEqual(["forge"]);
     expect(fs.readdirSync(b.inboxRoot)).toEqual([]);
+  });
+
+  it("a bare .kind marker over a partial home does not count as an existing agent", () => {
+    const b = box();
+    fs.mkdirSync(path.join(b.agentsHome, "ada"));
+    fs.writeFileSync(path.join(b.agentsHome, "ada", "SOUL.md"), "x");
+    fs.writeFileSync(path.join(b.agentsHome, "ada", ".kind"), "assistant");
+    const r = run(b, ["--assistant", "ada", "--platform", "forge", "--no-verify"], false);
+    expect(r.status).toBe(1);
+    expect(agents(b)).toEqual(["ada"]);
   });
 
   it("a same-name rerun is a clean no-op", () => {

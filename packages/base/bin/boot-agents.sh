@@ -610,6 +610,8 @@ manual_prompt_reason() {
     echo "folder trust: attach and choose Yes manually if you trust the folder; do not press Enter, No is preselected"
   elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Resume a conversation|Select a conversation|Resume picker)([[:space:]?:]|$)'; then
     echo "resume picker: choose a conversation manually"
+  elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(.[[:space:]]*)?Do you want to use this API key'; then
+    echo "API key approval: attach and choose manually whether to use the stored key"
   elif printf '%s\n' "$pane" | grep -qiE '^[[:space:]]*(Try|Use|Enable|Switch to) (the )?full.?screen (renderer|mode)'; then
     echo "fullscreen offer: answer manually"
   else
@@ -800,6 +802,12 @@ ALREADY_UP=0
 WAITING=0
 FAILED=0
 ARMED=0
+# Of the waiting agents, how many wait at a dialog only a person can answer
+# (folder trust, a picker, an approval) and how many are simply not ready (the
+# runtime is not running, an unrecognised screen). Callers that treat pending as
+# "waiting on you" need the difference.
+PROMPT_WAITING=0
+OTHER_WAITING=0
 # Once for the whole boot, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 for a in "${AGENTS[@]}"; do
@@ -825,6 +833,10 @@ for a in "${AGENTS[@]}"; do
       fi
     else
       WAITING=$((WAITING + 1))
+      case "$reason" in
+        *manually*) PROMPT_WAITING=$((PROMPT_WAITING + 1)) ;;
+        *) OTHER_WAITING=$((OTHER_WAITING + 1)) ;;
+      esac
       echo "boot-agents: $a waiting: $reason" >&2
     fi
   else
@@ -851,12 +863,12 @@ for a in "${FRESH[@]}"; do
     continue
   fi
   target="$SESSION:$a"
-  confirmed=0
+  confirmed=0; monitor_reason=""
   monitor_pattern='^[^[:alnum:]]*(Monitor\(|Monitor started([[:space:]]|$))'
   baseline=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
   # Send once: repeated prompts can create duplicate watchers. Poll only.
-  if ! reason=$(wait_for_readiness "$target" "$(get_runtime "$a")"); then
-    echo "boot-agents: $a monitor waiting: $reason" >&2
+  if ! monitor_reason=$(wait_for_readiness "$target" "$(get_runtime "$a")"); then
+    echo "boot-agents: $a monitor waiting: $monitor_reason" >&2
   elif tmux send-keys -t "$target" "arm your monitor" && sleep 0.7 && tmux send-keys -t "$target" Enter; then
     for poll in 1 2 3 4; do
       sleep 8
@@ -872,6 +884,10 @@ for a in "${FRESH[@]}"; do
     echo "boot-agents: $a monitor armed (pane confirmation)"
   else
     WAITING=$((WAITING + 1))
+    case "$monitor_reason" in
+      *manually*) PROMPT_WAITING=$((PROMPT_WAITING + 1)) ;;
+      *) OTHER_WAITING=$((OTHER_WAITING + 1)) ;;
+    esac
     echo "boot-agents: $a monitor unconfirmed" >&2
   fi
 done
@@ -883,6 +899,8 @@ tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
 tmux set -g allow-passthrough on 2>/dev/null || true
 
 echo "boot-agents: $LAUNCHED launched and ready, $ARMED monitors armed, $ALREADY_UP already up and ready, $WAITING waiting, $FAILED failed"
+
+echo "boot-agents: waiting-detail: prompts=$PROMPT_WAITING other=$OTHER_WAITING"
 
 BOOT_RC=0
 [[ "$WAITING" -eq 0 ]] || BOOT_RC=3
