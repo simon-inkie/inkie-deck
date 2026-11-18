@@ -125,4 +125,3 @@ thread.
 ## Implementation
 
 Tracked in [PR #148](https://github.com/simon-inkie/inkie-deck/pull/148), which builds on [PR #147](https://github.com/simon-inkie/inkie-deck/pull/147). The acceptance above states the intended behaviour. Signed-in Linux and WSL verification remains pending; issue creation is not acceptance of the implementation.
-
