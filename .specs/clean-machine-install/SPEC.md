@@ -478,8 +478,9 @@ For the maintainer (recommendation first):
   stacked base, is declared skipped with a reason (it would collide with the
   create-an-agent block in the one-container run); first-run itself is
   executed by the quick-setup run. `setup.sh` accepts a `SETUP_BOOT_AGENTS`
-  override, used by the tests. The rig's `EXPECTED_TESTS` base figures were
-  stale on the base and are re-measured here.
+  override, used by the tests. The rig's `EXPECTED_TESTS` and the README's published test
+  counts were already stale on the base (deck 2023 against 2346 measured) and
+  are left for their own change.
 - Why: the plan's round-2 steps and the revision review.
 - Supersedes: nothing.
 - Commits: see the branch log.
