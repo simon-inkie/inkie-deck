@@ -10,6 +10,7 @@ vi.mock("react-router", async (importOriginal) => ({
 import { MemoryRouter, useFetcher } from "react-router";
 import { PaneHintBanner } from "~/components/PaneHintBanner";
 import { TmuxPane } from "~/components/TmuxPane";
+import type { PaneHintId } from "~/lib/pane-hints";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
@@ -93,44 +94,80 @@ describe("shared pane navigation", () => {
 });
 
 describe("first-run hint rendering", () => {
-  it.each([
-    ["H1", "asking whether to trust", "Folder trust question"],
-    ["H2", "needs a one-time sign-in", "Sign-in step"],
-    ["H3", "found an API key", "API key question"],
-    ["H4", "is waiting on a setup screen", "Setup screen"],
-    ["H5", "appears to have exited to a shell", "appears to be at a shell prompt"],
-  ] as const)("renders %s without submitting keys", (hint, chatCopy, terminalCopy) => {
+  function renderBanner(hint: PaneHintId | "H6" | null, tmuxOn = true) {
     act(() => root.render(
       <MemoryRouter initialEntries={["/threads/demo"]}>
-        <PaneHintBanner hint={hint} agent="demo" tmuxOn />
+        <ChatHints hint={hint} tmuxOn={tmuxOn} />
       </MemoryRouter>,
     ));
+  }
+
+  function ChatHints({ hint, tmuxOn }: { hint: PaneHintId | "H6" | null; tmuxOn: boolean }) {
+    const history = React.useRef<HTMLDivElement>(null);
+    return (
+      <div ref={history} tabIndex={-1} aria-label="Message history">
+        <PaneHintBanner hint={hint} agent="demo" tmuxOn={tmuxOn} focusFallback={history} />
+      </div>
+    );
+  }
+
+  it.each([
+    ["H1", "asking whether to trust", "Folder trust question"],
+    ["H2", "need a one-time sign-in", "Sign-in step"],
+    ["H3", "found an API key", "API key question"],
+    ["H4", "waiting on a setup screen", "Setup screen"],
+    ["H5", "appears to have exited to a shell", "appears to be at a shell prompt"],
+  ] as const)("renders %s without submitting keys", (hint, chatCopy, terminalCopy) => {
+    renderBanner(hint);
     expect(container.querySelector('[role="status"]')?.textContent).toContain(chatCopy);
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/threads/demo?view=tmux");
 
-    act(() => root.render(<TmuxPane pane="captured" windowName="demo" sendTarget="demo" hint={hint} />));
+    act(() => root.render(<TmuxPane pane="captured" windowName="demo" sendTarget="demo" hint={null} />));
     const status = container.querySelector('[role="status"]');
+    expect(status?.textContent).toBe("");
+    act(() => root.render(<TmuxPane pane="captured" windowName="demo" sendTarget="demo" hint={hint} />));
     const keys = container.querySelector('[aria-label="Pane navigation"]');
+    expect(container.querySelector('[role="status"]')).toBe(status);
     expect(status?.textContent).toContain(terminalCopy);
+    if (hint !== "H5") expect(status?.textContent).toContain("Check the terminal before choosing");
     expect(keys?.getAttribute("aria-describedby")).toBe(status?.id);
     expect(keys?.previousElementSibling).toBe(status);
     expect(submit).not.toHaveBeenCalled();
 
     act(() => root.render(<TmuxPane pane="idle" windowName="demo" sendTarget="demo" hint={null} />));
-    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')).toBe(status);
+    expect(status?.textContent).toBe("");
     expect(keys?.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it.each([true, false])("renders H6 with the appropriate terminal guidance (enabled: %s)", (tmuxOn) => {
-    act(() => root.render(
-      <MemoryRouter initialEntries={["/threads/demo"]}>
-        <PaneHintBanner hint="H6" agent="demo" tmuxOn={tmuxOn} />
-      </MemoryRouter>,
-    ));
+    renderBanner("H6", tmuxOn);
     expect(container.querySelector("h2")?.textContent).toBe("No messages yet");
     expect(container.textContent).toContain("A new agent writes first after its first start.");
     expect(container.textContent?.includes("one-time question")).toBe(tmuxOn);
     expect(container.querySelector("a") !== null).toBe(tmuxOn);
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("updates the same chat live region and preserves or restores link focus", () => {
+    renderBanner(null);
+    const status = container.querySelector('[role="status"]');
+    expect(status?.textContent).toBe("");
+
+    renderBanner("H1");
+    const link = container.querySelector("a")!;
+    link.focus();
+    for (const hint of ["H2", "H6"] as const) {
+      renderBanner(hint);
+      expect(container.querySelector('[role="status"]')).toBe(status);
+      expect(container.querySelector("a")).toBe(link);
+      expect(document.activeElement).toBe(link);
+    }
+
+    renderBanner(null);
+    expect(container.querySelector('[role="status"]')).toBe(status);
+    expect(status?.textContent).toBe("");
+    expect(container.querySelector("a")).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Message history"]'));
   });
 });

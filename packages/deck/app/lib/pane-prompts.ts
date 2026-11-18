@@ -2,3 +2,4 @@
 export const IDLE_PROMPT_RE = /^\s*[\u276F\u203A>]\s*$/m;
 /** Require a user@host prefix so a status line ending in a sigil does not match. */
 export const SHELL_PROMPT_RE = /\w+@[\w.-]+[:\s].*[$#%]\s*$/;
+export const HINT_SHELL_PROMPT_RE = new RegExp(`^\\s*${SHELL_PROMPT_RE.source}`);

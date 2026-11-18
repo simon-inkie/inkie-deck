@@ -17,7 +17,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useFetcher } from "react-router";
 import { EmptyState } from "./EmptyState";
-import { PaneHintBanner } from "./PaneHintBanner";
+import { TerminalHint } from "./PaneHintBanner";
 import { TerminalSquare, CornerDownLeft } from "lucide-react";
 import type { PaneHintId } from "~/lib/pane-hints";
 
@@ -86,7 +86,7 @@ function TmuxCompose({ sendTarget, hint }: { sendTarget: string; hint: PaneHintI
 
   return (
     <div className="mt-2 shrink-0">
-      {hint !== null ? <PaneHintBanner key={hint} hint={hint} descriptionId={hintDescriptionId} /> : null}
+      <TerminalHint hint={hint} descriptionId={hintDescriptionId} />
       <div
         className="mb-2 flex flex-wrap gap-2"
         role="group"

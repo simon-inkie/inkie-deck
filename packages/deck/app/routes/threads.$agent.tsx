@@ -1447,13 +1447,14 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          role="region"
+          aria-label="Message history"
+          tabIndex={-1}
           data-testid="thread-scroll"
           className="flex-1 overflow-y-auto px-6 pt-6 pb-28"
         >
           <div className="mx-auto max-w-2xl">
-            {hint !== null || totalCount === 0 ? (
-              <PaneHintBanner key={hint ?? "H6"} hint={hint ?? "H6"} agent={agent} tmuxOn={tmuxOn} />
-            ) : null}
+            <PaneHintBanner hint={hint ?? (totalCount === 0 ? "H6" : null)} agent={agent} tmuxOn={tmuxOn} focusFallback={scrollRef} />
             {totalCount > 0 ? (
               <div className="flex flex-col">
                 {/* Top sentinel - scrolling it into view lazy-loads

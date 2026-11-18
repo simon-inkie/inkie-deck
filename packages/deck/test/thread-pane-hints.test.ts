@@ -55,6 +55,13 @@ describe("thread pane hint payload", () => {
     expect(capture).toHaveBeenCalledTimes(2);
   });
 
+  it("clears the chat hint on the next poll even when the old menu is still visible", async () => {
+    capture.mockReturnValueOnce(panes.trust).mockReturnValueOnce(`${panes.trust}${panes.busy}`);
+    expect(await load()).toMatchObject({ hint: "H1", tmux: undefined });
+    expect(await load()).toMatchObject({ hint: null, tmux: undefined });
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["", "?view=tmux"])("returns no hint for an unavailable pane (%j)", async (search) => {
     expect((await load(search)).hint).toBeNull();
     expect(capture).toHaveBeenCalledTimes(1);

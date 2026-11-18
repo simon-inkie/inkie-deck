@@ -51,45 +51,43 @@ alone does not identify which prompt is showing.
 ## Hint catalogue
 
 One hint at a time, priority H1 to H6. Copy never claims which option is
-preselected.
+preselected. H1 to H4 ask users to check the terminal before choosing.
 
 H1 Folder trust
 - Trigger: the pane tail is the trust dialog (see Detection).
-- Chat view: "<agent> is waiting for you in its terminal. Its CLI is asking
-  whether to trust this agent's folder, once. Open the terminal to answer."
+- Chat view: the CLI appears to be asking whether to trust the agent's folder.
   Button: "Open terminal" (a link to `?view=tmux`, not a key send).
-- Terminal view: "Folder trust question. If you trust this folder, select
-  'Yes, I trust this folder' with Up or Down, then press Enter."
+- Terminal view: check the terminal, then, if you trust the folder, select
+  'Yes, I trust this folder' with Up or Down and press Enter.
 - Cleared: automatically, when the dialog is gone from the pane.
 
 H2 Sign-in needed
 - Trigger: the pane tail is the CLI's login method menu. Error-only forms
   (a "/login" instruction or an invalid-key error, with no menu) are out of
   this slice: they need their own evidence rule and copy, and fall back to H6.
-- Chat: "<agent>'s CLI needs a one-time sign-in. Open the terminal and follow
-  its steps." Button: "Open terminal".
-- Terminal: "Sign-in step. Use Up, Down and Enter to choose; a browser link
-  may appear in the pane." Cleared automatically.
+- Chat: the CLI appears to need a one-time sign-in. Button: "Open terminal".
+- Terminal: check the sign-in step before choosing with Up, Down and Enter;
+  a browser link may appear in the pane. Cleared automatically.
 
 H3 API key approval
 - Trigger: the pane tail is the CLI's menu asking whether to use a key found
   in the environment (set by hand today; the planned #151 setup may write one).
-- Chat: "<agent>'s CLI found an API key and is asking whether to use it. Open
-  the terminal to answer." Button: "Open terminal".
-- Terminal: "API key question. Choose with Up or Down, then press Enter. A key
-  in the environment takes precedence over a subscription sign-in." Cleared
-  automatically.
+- Chat: the CLI appears to have found an API key and asks whether to use it.
+  Button: "Open terminal".
+- Terminal: check the API key question before choosing with Up, Down and
+  Enter. A key in the environment takes precedence over a subscription
+  sign-in. Cleared automatically.
 
 H4 Other one-time screen (theme picker, resume picker, fullscreen offer)
 - Trigger: one of the base classifier's other anchored dialogs, plus the
   first-launch theme picker.
-- Chat: "<agent> is waiting on a setup screen in its terminal." Button.
-- Terminal: "Setup screen. Use Up, Down and Enter to choose." Cleared
-  automatically.
+- Chat: the agent appears to be waiting on a setup screen. Button.
+- Terminal: check the setup screen before choosing with Up, Down and Enter.
+  Cleared automatically.
 
 H5 Agent exited to a shell
 - Trigger: positive evidence only. A capture succeeded and its tail ends at a
-  shell prompt (`SHELL_PROMPT_RE`). Nothing else triggers it in this slice.
+  shell prompt (`HINT_SHELL_PROMPT_RE`). Nothing else triggers it in this slice.
   An undefined capture is never H5: `captureTmuxPane` and
   `listTmuxWindows` fold a missing window, a missing session, a timeout and a
   tmux error into the same result, so it proves nothing about the agent.
@@ -135,13 +133,12 @@ Rules, all of which must hold for H1 to H4 (menu dialogs only):
 - Anchored lines: each phrase starts a rendered line after optional
   whitespace and border glyphs, as in `manual_prompt_reason` in
   `packages/base/bin/boot-agents.sh`.
-- Two signals per dialog: a heading or option line AND a structural line
-  (an option line led by the selection glyph U+276F or U+203A, numbered or
-  not, or the "Enter to confirm" footer). One phrase alone never matches.
-  Error-only text has no menu structure, so it is not classified here.
-- Nothing below it: no empty composer (`IDLE_PROMPT_RE`) and no shell prompt
-  (`SHELL_PROMPT_RE`) after the matched dialog, so a stale frame above a live
-  composer does not match.
+- Two signals in the same menu: a heading or option line AND, within the
+  next six menu rows, a selected option or the "Enter to confirm" footer.
+  Allow one blank after the phrase, then only contiguous option rows and an
+  optional final footer. H1 does not accept unnumbered selections.
+- Nothing below it: nonblank output after the block invalidates the match,
+  including busy output, an empty composer, a shell prompt, or another menu.
 - Case-insensitive, non-breaking spaces normalised. Patterns live in one
   table, each entry naming the CLI version its fixture came from.
 
@@ -153,7 +150,8 @@ Candidate phrases, to be confirmed against real captures before merge
 - H3: "Detected a custom API key", "Do you want to use this API key".
 - H4: the base classifier's resume and fullscreen forms, "Choose the text
   style".
-- H5: `SHELL_PROMPT_RE` on the last line only.
+- H5: `HINT_SHELL_PROMPT_RE` must match from the start of the last line.
+  The shell pattern used by wake detection is unchanged.
 
 The fallback is to show nothing. Any parse doubt, an unknown dialog, an
 unsupported variant, an undefined capture or a tmux-disabled instance returns
@@ -197,8 +195,9 @@ Failure modes:
 
 ## Accessibility
 
-- The banner is `role="status"` with `aria-live="polite"`, keyed on the hint
-  id so a poll re-render does not re-announce the same hint.
+- The chat and terminal status regions stay mounted and update their text
+  only when it changes. The terminal link keeps focus if still shown; if it
+  disappears while focused, focus moves to the message history.
 - Text-labelled links and buttons, 44px targets, keyboard reachable, existing
   colour tokens, no meaning by colour alone. The terminal hint is linked to
   the key group with `aria-describedby`.
@@ -275,3 +274,6 @@ sanitising real fixtures from a clean CLI is the main unknown.
   no Hide, no Provider badge change, no H5 command, and no sidebar marker.
   No real captures were supplied or retained in the worktree, so use existing
   base test inputs and clearly labelled synthetic cases for local verification.
+- 2026-11-18: picked up review of the first build. Tighten evidence to the
+  current menu block, anchor H5 without changing wake detection, and keep
+  announcements and keyboard focus stable across polls.
