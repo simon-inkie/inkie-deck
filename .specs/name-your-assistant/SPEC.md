@@ -210,3 +210,18 @@ Core behaviour only.
 - Supersedes: the earlier Design flow that required both names to be free,
   which would have failed a same-name rerun.
 - Commits: see `git log` on the branch.
+
+### 2026-11-18: review fixes
+- What changed: `.kind` and `.peer` are now written last, after both homes
+  exist, through a refuse-symlink temp-file-and-rename write, so a failed
+  scaffold is never read as a finished agent. A recovery run stamps the
+  surviving agent's actual name into the new agent's brief. `--check-name`
+  takes its value as an argument and rejects a leading hyphen, so a flag-shaped
+  name never reaches option parsing. `first-run.sh` captures child exit
+  statuses so `bash -e` cannot skip the second agent or the summary. New tests:
+  dirty partial recovery with differing typed names, failed scaffold not
+  "Nothing to do", flag-shaped names, `.peer` symlink refused, and
+  `shell-pin-loader.test.ts` for the marker-to-`pinned` mapping.
+- Why: review findings (one high, three medium, two low), all fixed.
+- Supersedes: nothing, additive.
+- Commits: see `git log` on the branch.

@@ -810,7 +810,9 @@ while [[ $# -gt 0 ]]; do
     --agents-home)  [[ $# -ge 2 ]] || die_scaffold "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --kind)         [[ $# -ge 2 ]] || die_scaffold "--kind needs a value";         KIND="$2";            shift 2 ;;
     --peer)         [[ $# -ge 2 ]] || die_scaffold "--peer needs a value";         PEER="$2";            shift 2 ;;
-    --check-name)   CHECK_NAME=1; shift ;;
+    --check-name)   [[ $# -ge 2 ]] || die_scaffold "--check-name needs a name"
+                    [[ "$2" != -* ]] || die_scaffold "\"$2\" cannot be an agent name" "a name does not start with a hyphen"
+                    CHECK_NAME=1; NAME="$2"; shift 2 ;;
     --no-install-path) INSTALL_PATH=0; shift ;;
     --memory-root)  [[ $# -ge 2 ]] || die_scaffold "--memory-root needs a value"; MEMORY_ROOT_ARG="$2";  shift 2 ;;
     --no-memory)    NO_MEMORY=1; shift ;;
@@ -1013,6 +1015,16 @@ if [[ $CHECK_NAME -eq 1 ]]; then
   exit "$EXIT_VERIFIED"
 fi
 
+# Write a marker without following a symlink already at that path: refuse it,
+# otherwise write a temp file beside it and rename.
+write_marker() {
+  local target="$1" value="$2" tmp
+  [[ ! -L "$target" ]] || die_scaffold "$target is a symlink; refusing to write through it"
+  tmp="$(mktemp "$target.XXXXXX")" || die_scaffold "could not write $target"
+  printf '%s' "$value" > "$tmp" && mv -f -- "$tmp" "$target" \
+    || { rm -f -- "$tmp"; die_scaffold "could not write $target"; }
+}
+
 NONCE=""
 
 if [[ "$VERIFY_ONLY" -eq 1 ]]; then
@@ -1058,16 +1070,6 @@ else
   printf '%s' "$RUNTIME" > "$AGENT_HOME/.runtime" \
     || die_scaffold "could not write $AGENT_HOME/.runtime"
 
-  if [[ -n "$KIND" ]]; then
-    printf '%s' "$KIND" > "$AGENT_HOME/.kind" \
-      || die_scaffold "could not write $AGENT_HOME/.kind"
-  fi
-
-  if [[ -n "$PEER" ]]; then
-    printf '%s' "$PEER" > "$AGENT_HOME/.peer" \
-      || die_scaffold "could not write $AGENT_HOME/.peer"
-  fi
-
   if [[ -n "$MODEL" ]]; then
     printf '%s' "$MODEL" > "$AGENT_HOME/.model" \
       || die_scaffold "could not write $AGENT_HOME/.model"
@@ -1079,6 +1081,12 @@ else
     || die_scaffold "could not write $AGENT_HOME/.claude/settings.json"
 
   mkdir -p "$AGENT_INBOX" || die_scaffold "could not create $AGENT_INBOX"
+
+  # .kind and .peer go LAST, once both homes exist. first-run.sh reads .kind as
+  # "this agent is complete", so writing it earlier would let a scaffold that
+  # failed part way be reported as already done on the next run.
+  [[ -z "$KIND" ]] || write_marker "$AGENT_HOME/.kind" "$KIND"
+  [[ -z "$PEER" ]] || write_marker "$AGENT_HOME/.peer" "$PEER"
 
   if [[ $INSTALL_PATH -eq 1 ]]; then
     install_inbox_on_path

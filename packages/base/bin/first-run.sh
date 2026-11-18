@@ -175,12 +175,17 @@ ARGS=(${COMMON[@]+"${COMMON[@]}"})
 declare -A RC
 create_one() {
   local kind="$1" name="$2" peer="$3"
-  "$CREATE" "$name" --kind "$kind" --peer "$peer" "${ARGS[@]}"
-  RC[$kind]=$?
+  # if/else so a non-zero exit is captured, not fatal, even under `bash -e`.
+  if "$CREATE" "$name" --kind "$kind" --peer "$peer" "${ARGS[@]}"; then
+    RC[$kind]=0
+  else
+    RC[$kind]=$?
+  fi
 }
 
-ASSISTANT_PEER="${PLATFORM:-$EXISTING_PLATFORM}"
-PLATFORM_PEER="${ASSISTANT:-$EXISTING_ASSISTANT}"
+# The peer is the surviving agent's ACTUAL name, never a newly typed one.
+ASSISTANT_PEER="${EXISTING_PLATFORM:-$PLATFORM}"
+PLATFORM_PEER="${EXISTING_ASSISTANT:-$ASSISTANT}"
 [[ $NEED_ASSISTANT -eq 1 ]] && create_one assistant "$ASSISTANT" "$ASSISTANT_PEER"
 [[ $NEED_PLATFORM -eq 1 ]] && create_one platform "$PLATFORM" "$PLATFORM_PEER"
 

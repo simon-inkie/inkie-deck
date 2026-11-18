@@ -1403,4 +1403,22 @@ describe("--kind, --peer and --check-name", () => {
     run(box, ["wren", "--no-verify"]);
     expect(run(box, ["--check-name", "wren"]).status).toBe(EXIT.SCAFFOLD_ERROR);
   });
+
+  it("rejects a flag-shaped --check-name value instead of parsing it as an option", () => {
+    const box1 = sandbox();
+    const r = run(box1, ["--check-name", "--help"]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(r.output).not.toContain("Usage:");
+  });
+
+  it("refuses to write .peer through a symlink", () => {
+    const box1 = sandbox();
+    const outside = path.join(box1.home, "outside");
+    fs.writeFileSync(outside, "untouched");
+    fs.mkdirSync(path.join(box1.agentsHome, "wren"));
+    fs.symlinkSync(outside, path.join(box1.agentsHome, "wren", ".peer"));
+    const r = run(box1, ["wren", "--kind", "assistant", "--peer", "forge", "--no-verify"]);
+    expect(r.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readFileSync(outside, "utf8")).toBe("untouched");
+  });
 });

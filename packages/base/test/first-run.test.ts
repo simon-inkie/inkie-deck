@@ -123,20 +123,45 @@ describe("first-run", () => {
     expect(agents(b)).toEqual(["ada", "forge"]);
   });
 
-  it("after one agent exists, creates only the other and keeps the saved peer name", () => {
+  it("after one agent exists, creates only the other and stamps the survivor's actual name", () => {
     const b = box();
     stubAnswering(b);
     run(b, ["--assistant", "ada", "--platform", "forge"], true);
+    // A dirty partial: the platform agent's persona and inbox are gone, but its
+    // home is not empty (a stray .claude directory is left behind).
     fs.rmSync(path.join(b.agentsHome, "forge"), { recursive: true });
+    fs.mkdirSync(path.join(b.agentsHome, "forge", ".claude"), { recursive: true });
     fs.rmSync(path.join(b.inboxRoot, "forge"), { recursive: true });
     const adaBefore = claudeOf(b, "ada");
 
-    // A different platform name is typed this time: the saved one wins.
-    const r = run(b, ["--assistant", "ada", "--platform", "other"], true);
+    // Different names are typed this time: the saved and surviving ones win.
+    const r = run(b, ["--assistant", "ghost", "--platform", "other"], true);
     expect(r.status).toBe(0);
+    expect(r.output).toContain("using that");
     expect(agents(b)).toEqual(["ada", "forge"]);
     expect(claudeOf(b, "ada")).toBe(adaBefore);
     expect(claudeOf(b, "forge")).toContain("**ada**");
+    expect(claudeOf(b, "forge")).not.toContain("ghost");
+  });
+
+  it("does not call a failed scaffold complete on the next run", () => {
+    const b = box();
+    // The platform agent's inbox directory cannot be made: its parent is a file.
+    fs.writeFileSync(path.join(b.inboxRoot, "forge"), "in the way");
+    const first = run(b, ["--assistant", "ada", "--platform", "forge", "--no-verify"], false);
+    expect(first.status).toBe(1);
+    expect(fs.existsSync(path.join(b.agentsHome, "forge", ".kind"))).toBe(false);
+
+    const second = run(b, ["--assistant", "ada", "--platform", "forge", "--no-verify"], false);
+    expect(second.status).toBe(1);
+    expect(second.output).not.toContain("Nothing to do");
+  });
+
+  it("rejects a flag-shaped name and creates nothing", () => {
+    const b = box();
+    const r = run(b, ["--assistant", "ada", "--platform", "--help"], false);
+    expect(r.status).toBe(1);
+    expect(agents(b)).toEqual([]);
   });
 
   it("with no runtime, creates both and exits 4", () => {
