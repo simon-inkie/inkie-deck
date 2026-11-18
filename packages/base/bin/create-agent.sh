@@ -1090,11 +1090,17 @@ JS
       [[ -z "$PEER" || "$peer" == "$PEER" ]] || return 1
     fi
     grep -qE 'boot-[0-9a-f]{16}' "$AGENT_HOME/IDENTITY.md" 2>/dev/null || return 1
+    # The brief must be the one for THIS kind: exactly one role heading, and it
+    # (with its opening sentence) is the kind's own, at the start of a line.
+    local want_heading want_line
     case "$kind" in
-      assistant) grep -qF 'You are the assistant, the main orchestrator' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1 ;;
-      platform)  grep -qF 'You are the platform agent' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1 ;;
-      member)    grep -qF '## Your role: a member' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1 ;;
+      assistant) want_heading='## Your role: the assistant'; want_line='You are the assistant, the main orchestrator' ;;
+      platform)  want_heading='## Your role: the platform agent'; want_line='You are the platform agent' ;;
+      member)    want_heading='## Your role: a member'; want_line='You are one of your person' ;;
     esac
+    [[ "$(grep -c '^## Your role: ' "$AGENT_HOME/CLAUDE.md" 2>/dev/null)" == 1 ]] || return 1
+    grep -qxF "$want_heading" "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
+    grep -q "^$want_line" "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
     [[ -z "$peer" ]] || grep -qF "**$peer**" "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
     return 0
   }
@@ -1397,22 +1403,36 @@ fi
 PROBE_STATUS=$?
 
 # Raw runtime output is printed below as the diagnostic, and a failing CLI can
-# echo the credential it was given. Redact every value in the agent's own
-# .env.secrets, and anything shaped like an API key, before it can be shown.
+# echo the credential it was given. The VERDICT is decided on the raw reply, and
+# only what is printed is redacted: every value the agent's own .env.secrets
+# assigns (read by sourcing it the way the runtime does, so export, quotes and
+# trailing comments resolve exactly as they did for the probe), and anything
+# shaped like an API key. A value shorter than 8 characters, or one that is the
+# boot phrase or part of it, is left alone: redacting it would mask ordinary
+# words or change the verdict.
+secret_values() {
+  local f="$AGENT_HOME/.env.secrets"
+  [[ -f "$f" && -r "$f" ]] || return 0
+  env -i bash -c 'before=" $(compgen -v | tr "\n" " ") "; . "$1" >/dev/null 2>&1
+    for n in $(compgen -v); do
+      case "$before" in *" $n "*) continue ;; esac
+      case "$n" in before|n|v) continue ;; esac
+      v="${!n-}"; printf "%s\0" "$v"
+    done' _ "$f" 2>/dev/null
+}
 redact_secrets() {
-  local text="$1" f="$AGENT_HOME/.env.secrets" line v
-  if [[ -f "$f" && -r "$f" ]]; then
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(.*)$ ]]; then
-        v="${BASH_REMATCH[2]}"; v="${v#[\"\']}"; v="${v%[\"\']}"
-        [[ ${#v} -ge 6 ]] && text="${text//"$v"/[redacted]}"
-      fi
-    done < "$f"
-  fi
+  local text="$1" v
+  while IFS= read -r -d '' v; do
+    [[ ${#v} -ge 8 ]] || continue
+    [[ "$NONCE" == *"$v"* || "$v" == *"$NONCE"* ]] && continue
+    text="${text//"$v"/[redacted]}"
+  done < <(secret_values)
   printf '%s' "$text" | sed -E 's/sk-[A-Za-z0-9_-]{8,}/[redacted]/g'
 }
-REPLY="$(redact_secrets "$(cat "$PROBE_OUT")")"
-PROBE_STDERR="$(redact_secrets "$(cat "$PROBE_ERR")")"
+REPLY="$(cat "$PROBE_OUT")"
+PROBE_STDERR="$(cat "$PROBE_ERR")"
+REPLY_SHOWN="$(redact_secrets "$REPLY")"
+PROBE_STDERR_SHOWN="$(redact_secrets "$PROBE_STDERR")"
 
 # A non-zero exit means we never got an answer: no runtime, not signed in, rate
 # limited, timed out. That is CANNOT VERIFY, and it is NEVER read from empty
@@ -1421,7 +1441,7 @@ if [[ $PROBE_STATUS -ne 0 ]]; then
   detail="exit status $PROBE_STATUS"
   [[ $PROBE_STATUS -eq 124 ]] && detail="timed out after ${PROBE_TIMEOUT}s"
   lines=("The runtime did not answer ($detail).")
-  [[ -n "$PROBE_STDERR" ]] && lines+=("" "It said:" "$PROBE_STDERR")
+  [[ -n "$PROBE_STDERR" ]] && lines+=("" "It said:" "$PROBE_STDERR_SHOWN")
   memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
   report_cannot_verify "Ran \`claude -p\` from the agent home and got no usable reply." "${lines[@]}"
 fi
@@ -1466,12 +1486,12 @@ printf '  session. A file-existence check would have called this a success.\n'
 printf '\n'
 printf '  What it said, which is the diagnostic:\n'
 printf '\n'
-while IFS= read -r line; do printf '  | %s\n' "$line"; done <<< "$REPLY"
+while IFS= read -r line; do printf '  | %s\n' "$line"; done <<< "$REPLY_SHOWN"
 if [[ -n "$PROBE_STDERR" ]]; then
   printf '\n'
   printf '  On stderr:\n'
   printf '\n'
-  while IFS= read -r line; do printf '  | %s\n' "$line"; done <<< "$PROBE_STDERR"
+  while IFS= read -r line; do printf '  | %s\n' "$line"; done <<< "$PROBE_STDERR_SHOWN"
 fi
 printf '\n'
 printf '  Worth checking, in this order:\n'

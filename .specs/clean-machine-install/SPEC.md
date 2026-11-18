@@ -511,3 +511,25 @@ For the maintainer (recommendation first):
 - Supersedes: nothing.
 - Commits: see the branch log.
 
+### 2026-11-18: review round 2
+- What changed: setup re-reads the key and marker state under the lock before
+  deciding to write or clear, so a decision taken before another run finished
+  is never applied; destination checks compare the real path with its spelling
+  (a trailing `/.`, a symlinked parent or home all refuse), run again after the
+  lock and again before staging and renaming, and Git is asked with discovery
+  limits removed, where only "not a git repository" counts as safe; the
+  persona probe decides its verdict on the raw reply and redacts only what it
+  prints, reading `.env.secrets` as shell assignments and leaving values under
+  8 characters or equal to the boot phrase alone; `--status` requires exactly
+  one role heading and it must be the kind's own; boot classifies the API key
+  approval prompt as a prompt, and a monitor wait whose reason is a prompt
+  counts as one; `HOST` strips a trailing comment as Deck's loader does; the
+  stale-lock message names the lock and the safe manual step.
+- Not tested: a monitor-recheck wait that ends on a prompt (the code counts it
+  as a prompt; the boot fixtures only cover the launch-time wait); a SIGKILL
+  mid-write (the lock is released on normal exit, INT and TERM, and a stale one
+  is explained, never removed automatically).
+- Why: delta review of the first hardening commit.
+- Supersedes: nothing.
+- Commits: see the branch log.
+

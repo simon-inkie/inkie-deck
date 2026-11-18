@@ -1097,6 +1097,7 @@ boot_fixture() {
             existing-fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
             existing-approval) printf "Would you like to run the following command?\n\n  $ ls\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n" ;;
             trust|existing) printf "Do you trust the files in this folder?\n  1. Yes\n❯ 2. No (default)\nEnter to confirm\n" ;;
+            apikey) printf "Detected a custom API key in your environment\n\n Do you want to use this API key?\n\n❯ 1. Yes\n  2. No (recommended)\n" ;;
             resume) printf "Resume a conversation\n❯ demo\n" ;;
             fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
             unknown) printf "An unfamiliar first-run prompt\n❯ Proceed\n" ;;
@@ -1138,7 +1139,7 @@ boot_fixture() {
     fail "full boot: $scenario" "rc=$rc expected=$expected output=$output"
   fi
   case "$scenario" in
-    trust|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
+    trust|apikey|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
       if grep -q 'arm your monitor' "$BOOT_BOX/log"; then fail "full boot: $scenario never arms"; else pass "full boot: $scenario never arms"; fi ;;
   esac
   if [[ "$scenario" == monitor-timeout || "$scenario" == scroll-monitor ]]; then
@@ -1192,6 +1193,8 @@ boot_fixture busy 3 'demo waiting: runtime busy'
 boot_fixture staged 3 'demo waiting: composer contains text or menu selection'
 boot_fixture missing-runtime 3 'demo waiting: runtime not running'
 boot_fixture trust 3 'waiting-detail: prompts=1 other=0'
+boot_fixture apikey 3 'demo waiting: API key approval'
+boot_fixture apikey 3 'waiting-detail: prompts=1 other=0'
 boot_fixture missing-runtime 3 'waiting-detail: prompts=0 other=1'
 boot_fixture session-fail 1 'session creation failed'
 boot_fixture window-fail 1 'demo launch failed'

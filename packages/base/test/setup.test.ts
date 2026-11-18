@@ -12,7 +12,7 @@
  * tiny server on the chosen port when it is created), a boot-agents that records
  * its arguments and environment, and, where a case needs it, a failing `mv`.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -121,7 +121,10 @@ env > "${root}/boot.env"
 exit "$(cat "${root}/boot.rc" 2>/dev/null || echo 0)"
 `,
   );
-  write(path.join(b.stubBin, "pnpm"), `#!/bin/sh\necho "$@" >> "${root}/pnpm.log"\n`);
+  write(
+    path.join(b.stubBin, "pnpm"),
+    `#!/bin/sh\necho "$@" >> "${root}/pnpm.log"\nwhile [ -e "${root}/pnpm.hold" ]; do sleep 0.2; done\n`,
+  );
   return b;
 }
 
@@ -156,6 +159,28 @@ function setup(b: Box, args: string[], opts: { input?: string; env?: Record<stri
     },
   });
   return { status: r.status ?? -1, output: (r.stdout ?? "") + (r.stderr ?? "") };
+}
+
+/** The same as setup(), without blocking, so a second run can happen while it waits. */
+function setupAsync(b: Box, args: string[], input = ""): Promise<Run> {
+  const nodeBin = path.join(b.root, "node-only");
+  return new Promise((resolve) => {
+    const child = spawn("bash", [b.setup, ...args], {
+      env: {
+        HOME: b.home,
+        PATH: [b.stubBin, nodeBin, "/usr/bin", "/bin"].join(path.delimiter),
+        PORT: String(b.port),
+        MC_USER: "sam",
+        SETUP_BOOT_AGENTS: path.join(b.root, "boot"),
+        SETUP_DECK_WAIT: "10",
+      },
+    });
+    let output = "";
+    child.stdout.on("data", (d) => (output += d));
+    child.stderr.on("data", (d) => (output += d));
+    child.on("close", (code) => resolve({ status: code ?? -1, output }));
+    child.stdin.end(input);
+  });
 }
 
 const FRESH = (b: Box) => ["--yes", "--no-key", "--no-install", "--no-build", "--deck-home", b.deck, "--agents-home", b.agents];
@@ -482,6 +507,16 @@ describe("hardening", () => {
     expect(fs.existsSync(b.agents)).toBe(false);
   });
 
+  it("HOST=127.0.0.1#local is valid loopback, as Deck's loader reads it", () => {
+    const b = box();
+    runtime(b);
+    fs.writeFileSync(
+      envFile(b),
+      `INBOX_ROOT=${b.deck}/i\nATTACHMENTS_ROOT=${b.deck}/a\nPROJECTS_ROOT=${b.deck}/p\nDATA_ROOT=${b.deck}/d\nAGENTS_ROOT=${b.agents}\nMC_USER=sam\nHOST=127.0.0.1#local\n`,
+    );
+    expect(setup(b, FRESH(b)).status).toBe(0);
+  });
+
   it("an invalid --model stops before any write", () => {
     const b = box();
     const r = setup(b, [...FRESH(b), "--model", "bad model; x"]);
@@ -511,6 +546,69 @@ describe("hardening", () => {
     expect(r.output).toContain("git work tree");
     expect(fs.existsSync(inside)).toBe(false);
     expect(r.output).not.toContain(KEY);
+  });
+
+  it("a run that decided to write before another run stored a key does not overwrite it", async () => {
+    const b = box();
+    runtime(b);
+    expect(setup(b, FRESH(b)).status).toBe(0);
+    // Run two reads the state (no key yet), then sits in `pnpm install`.
+    fs.writeFileSync(path.join(b.root, "pnpm.hold"), "");
+    const second = setupAsync(b, KEYRUN(b).filter((a) => a !== "--no-install"), `${KEY2}\n`);
+    for (let i = 0; i < 100 && !fs.existsSync(path.join(b.root, "pnpm.log")); i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    // Run one stores a key meanwhile.
+    expect(setup(b, KEYRUN(b), { input: `${KEY}\n` }).status).toBe(0);
+    fs.rmSync(path.join(b.root, "pnpm.hold"));
+    const r = await second;
+    expect(r.status, r.output).toBe(0);
+    expect(r.output).toContain("stored by another run");
+    for (const n of ["inkie", "doctor"]) {
+      const text = fs.readFileSync(secrets(b, n), "utf8");
+      expect(text).toContain(KEY);
+      expect(text).not.toContain(KEY2);
+    }
+  });
+
+  it("a stale lock is explained, not removed", () => {
+    const b = box();
+    runtime(b);
+    expect(setup(b, FRESH(b)).status).toBe(0);
+    fs.mkdirSync(path.join(b.agents, ".setup-key-lock"));
+    const r = setup(b, FRESH(b));
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("rmdir");
+    expect(r.output).toContain(".setup-key-lock");
+    expect(fs.existsSync(path.join(b.agents, ".setup-key-lock"))).toBe(true);
+  });
+
+  it("refuses a key through a symlinked parent, and an agents home Git can see despite a ceiling", () => {
+    const b = box();
+    runtime(b);
+    const real = path.join(b.root, "real");
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, path.join(b.root, "parent"));
+    const viaParent = path.join(b.root, "parent", "agents");
+    const args = (home: string) => ["--yes", "--key-stdin", "--no-install", "--no-build", "--deck-home", b.deck, "--agents-home", home];
+    expect(setup(b, ["--yes", "--no-key", "--no-install", "--no-build", "--deck-home", b.deck, "--agents-home", viaParent]).status).toBe(0);
+    const r = setup(b, args(viaParent), { input: `${KEY}\n` });
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("symlink");
+    expect(allFiles(real).filter((f) => fs.readFileSync(f).includes(KEY))).toEqual([]);
+
+    const g = box();
+    const repo = path.join(g.root, "checkout");
+    fs.mkdirSync(path.join(repo, "sub"), { recursive: true });
+    spawnSync("git", ["init", "-q", repo]);
+    const hidden = setup(
+      g,
+      ["--yes", "--key-stdin", "--no-install", "--no-build", "--deck-home", g.deck, "--agents-home", path.join(repo, "sub", "agents")],
+      { input: `${KEY}\n`, env: { GIT_CEILING_DIRECTORIES: repo } },
+    );
+    expect(hidden.status).toBe(1);
+    expect(hidden.output).toContain("git work tree");
+    expect(fs.existsSync(path.join(repo, "sub", "agents"))).toBe(false);
   });
 
   it("refuses a second run while the key lock is held, writing nothing", () => {

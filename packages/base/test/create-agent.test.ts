@@ -1461,6 +1461,24 @@ describe("--kind, --peer and --check-name", () => {
 });
 
 describe("secrets, person, member kind and --status", () => {
+  it("redacts shell-assigned values (quotes, comments), leaves short ones, and judges the raw reply", () => {
+    const b = sandbox();
+    run(b, ["wren", "--no-verify"]);
+    const nonce = bootPhraseOf(b, "wren");
+    fs.writeFileSync(
+      path.join(b.agentsHome, "wren", ".env.secrets"),
+      `export QUOTED="quoted secret value" # why\nexport PLAIN=plainvalue123 # note\nexport SHORT=abc12\nexport SAME=${nonce}\n`,
+    );
+    stubRuntime(b, `echo "got $QUOTED and $PLAIN and $SHORT" >&2; exit 1`);
+    const failed = run(b, ["--verify-only", "wren"], { stub: true });
+    expect(failed.output).not.toContain("quoted secret value");
+    expect(failed.output).not.toContain("plainvalue123");
+    expect(failed.output).toContain("abc12");
+    // A configured value equal to the boot phrase must not turn a right answer into a failure.
+    stubRuntime(b, `echo "boot phrase: ${nonce}"`);
+    expect(run(b, ["--verify-only", "wren"], { stub: true }).status).toBe(EXIT.VERIFIED);
+  });
+
   it("never prints the credential a failing CLI echoes, on stderr or stdout", () => {
     const b = sandbox();
     run(b, ["wren", "--no-verify"]);
@@ -1558,10 +1576,6 @@ describe("secrets, person, member kind and --status", () => {
       ["a foreign brief", (b: Sandbox) => fs.writeFileSync(path.join(home(b), "CLAUDE.md"), "# mine\n")],
       ["settings that are not JSON", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".claude", "settings.json"), "{")],
       ["an empty .runtime", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".runtime"), "")],
-      ["a role brief for a different kind", (b: Sandbox) => {
-        fs.writeFileSync(path.join(home(b), ".kind"), "assistant");
-        fs.writeFileSync(path.join(home(b), "CLAUDE.md"), "# x\n\nYou are the platform agent\n**ada**\n");
-      }],
       ["a symlinked .kind", (b: Sandbox) => {
         fs.rmSync(path.join(home(b), ".kind"));
         fs.writeFileSync(path.join(b.home, "elsewhere"), "member");
@@ -1575,6 +1589,20 @@ describe("secrets, person, member kind and --status", () => {
       const r = status(b, ["--kind", "member", "--peer", "ada"]);
       expect(r.stdout.trim()).toBe("incomplete");
       expect(snapshot(b)).toBe(before);
+    });
+
+    it("the role brief must be the kind's own, not a quote of it elsewhere", () => {
+      const b = created();
+      expect(status(b, ["--peer", "ada"]).stdout.trim()).toBe("complete");
+      // .kind says assistant and the peer is mentioned, but the brief is the platform one,
+      // with the assistant's sentence merely quoted in a note.
+      fs.writeFileSync(path.join(home(b), ".kind"), "assistant");
+      fs.writeFileSync(
+        path.join(home(b), "CLAUDE.md"),
+        "# x\n\n## Your role: the platform agent\n\nYou are the platform agent. **ada** asks.\n\nNote: You are the assistant, the main orchestrator\n",
+      );
+      expect(status(b, ["--peer", "ada"]).stdout.trim()).toBe("incomplete");
+      expect(status(b).stdout.trim()).toBe("incomplete");
     });
 
     it("a dangling agent-home symlink reads incomplete, not absent", () => {

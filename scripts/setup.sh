@@ -162,7 +162,7 @@ dotenv_get() {
       if [[ "$value" =~ ^\"([^\"]*)\" ]]; then value="${BASH_REMATCH[1]}"
       elif [[ "$value" =~ ^\'([^\']*)\' ]]; then value="${BASH_REMATCH[1]}"
       else
-        value="${value%%[[:space:]]#*}"
+        value="${value%%#*}"
         value="${value%"${value##*[![:space:]]}"}"
       fi
     fi
@@ -348,13 +348,62 @@ check_secrets_file() {
   (( (8#$mode & 8#022) == 0 )) || fail "$f is writable by group or others (mode $mode); chmod 600 it, then run again"
 }
 
-# No component of a credential path under the agents home may be a symlink: the
-# key would be written wherever it points.
+# The spelling of a directory with trailing slashes, "." segments and doubled
+# slashes removed (no ".." allowed: it cannot be normalised without resolving
+# symlinks, and a credential path has no reason to contain one).
+lexical_path() {
+  local p="$1" out="" part IFS=/
+  for part in $p; do
+    case "$part" in
+      ""|.) ;;
+      ..) printf '%s' "$p"; return 1 ;;
+      *) out="$out/$part" ;;
+    esac
+  done
+  printf '%s' "${out:-/}"
+}
+
+# A directory must be what it is spelled as: no symlink anywhere in its path.
+# Compared by the physical path (the shell's `pwd -P`), so a trailing "/.", a
+# symlinked parent or a symlinked final component all show up.
+assert_real_dir() {  # <dir that exists>
+  local dir="$1" lex phys
+  lex="$(lexical_path "$dir")" || fail "$dir contains a \"..\" component; give the agents home as a plain absolute path. Nothing was written."
+  phys="$(cd -P -- "$dir" 2>/dev/null && pwd -P)" || fail "cannot resolve $dir"
+  [[ "$lex" == "$phys" ]] || fail "$dir resolves through a symlink to $phys; refusing to store a key through it. Pass the real path with --agents-home. Nothing was written."
+}
+
+# Every part of a credential path, checked against the real filesystem. Run
+# again after the lock is taken and again before the files are staged and
+# renamed, because a directory can be swapped between a check and its use.
 check_key_path() {  # <agent name>
-  local dir="$AGENTS_HOME/$1"
-  [[ ! -L "$AGENTS_HOME" ]] || fail "$AGENTS_HOME is a symlink; refusing to store a key through it"
-  [[ ! -L "$dir" ]] || fail "$dir is a symlink; refusing to store a key through it"
+  local dir="$AGENTS_HOME/$1" probe="$AGENTS_HOME"
+  # The nearest directory that exists must be real; so must the home itself
+  # and the agent's folder once they exist.
+  while [[ ! -e "$probe" && ! -L "$probe" && "$probe" != / ]]; do probe="$(dirname "$probe")"; done
+  [[ ! -L "$probe" ]] || fail "$probe is a symlink; refusing to store a key through it. Nothing was written."
+  assert_real_dir "$probe"
+  if [[ -e "$dir" || -L "$dir" ]]; then
+    [[ ! -L "$dir" ]] || fail "$dir is a symlink; refusing to store a key through it"
+    assert_real_dir "$dir"
+  fi
   [[ ! -L "$dir/.env.secrets" ]] || fail "$dir/.env.secrets is a symlink; refusing to store a key through it"
+}
+
+# Credentials must not land in a checkout. Git is asked with its discovery
+# limits removed (a ceiling variable could hide the repository); "not a git
+# repository" is the only answer that counts as safe, and any other failure
+# refuses.
+assert_outside_git() {
+  local probe="$AGENTS_HOME" out rc
+  while [[ ! -d "$probe" && "$probe" != / ]]; do probe="$(dirname "$probe")"; done
+  out="$(env -u GIT_CEILING_DIRECTORIES -u GIT_DIR -u GIT_WORK_TREE GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
+    git -C "$probe" rev-parse --show-toplevel 2>&1)"; rc=$?
+  if [[ $rc -eq 0 ]]; then
+    fail "$AGENTS_HOME is inside the git work tree at $out, and a stored API key could end up committed. Choose an --agents-home outside any repository. Nothing was written."
+  fi
+  [[ "$out" == *"not a git repository"* ]] \
+    || fail "could not tell whether $AGENTS_HOME is inside a git work tree (git said: $out). Refusing to store a key. Nothing was written."
 }
 
 LOCK="$AGENTS_HOME/.setup-key-lock"
@@ -363,11 +412,23 @@ release_lock() { [[ $LOCK_HELD -eq 0 ]] || { rmdir -- "$LOCK" 2>/dev/null; LOCK_
 trap release_lock EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-[[ ! -e "$LOCK" ]] || fail "another setup run is writing the key files (or one was killed): $LOCK exists. Wait for it, or remove that directory if no setup is running."
+lock_message() {
+  printf '%s\n' "another setup run is writing the key files, or one was killed while it did: the lock directory $LOCK exists." \
+    "If setup is still running in another terminal, wait for it. If nothing is running, it is a stale lock: check that no setup process is active, then remove it with: rmdir '$LOCK'" \
+    "Leave $MARKER in place if it exists: the next run reconciles it. Nothing was written."
+}
+[[ ! -e "$LOCK" ]] || { lock_message >&2; exit 1; }
 
 CLEAR_MARKER=0; MIXED_MARKER=0
 MARKER_A=""; MARKER_P=""
-if [[ -e "$MARKER" || -L "$MARKER" ]]; then
+
+# Read the pending marker and the two key states it names, and decide: nothing
+# pending, resolved (the same key in both, or none), or mixed. Called before any
+# write and again under the lock, so a decision is never made on a stale read.
+reconcile_marker() {
+  local mf_a mf_p ka kp ka_found kp_found
+  CLEAR_MARKER=0; MIXED_MARKER=0; MARKER_A=""; MARKER_P=""
+  [[ -e "$MARKER" || -L "$MARKER" ]] || return 0
   [[ -f "$MARKER" && ! -L "$MARKER" && -r "$MARKER" ]] || fail "mixed key state: $MARKER is unreadable. Resolve it by hand, then run again."
   { IFS= read -r MARKER_A; IFS= read -r MARKER_P; } < "$MARKER"
   [[ "$MARKER_A" =~ $NAME_RE && "$MARKER_P" =~ $NAME_RE ]] \
@@ -387,8 +448,8 @@ if [[ -e "$MARKER" || -L "$MARKER" ]]; then
   else
     fail "mixed key state: the key in $MARKER_A and $MARKER_P differs, so a key write was interrupted. Nothing was verified or launched. Run again with --replace-key and enter the key again."
   fi
-  unset ka kp ka_found kp_found
-fi
+}
+reconcile_marker
 
 HAVE_KEY=0
 for n in "$EXISTING_A" "$EXISTING_P"; do
@@ -445,14 +506,7 @@ if [[ $MIXED_MARKER -eq 1 && $WRITE_KEY -eq 0 ]]; then
   fail "mixed key state is unresolved and no new key was given. Nothing was verified or launched."
 fi
 if [[ $WRITE_KEY -eq 1 ]]; then
-  # Credentials must not land in a checkout: refuse an agents home inside a git
-  # work tree rather than reason about ignore rules.
-  probe_dir="$AGENTS_HOME"
-  while [[ ! -d "$probe_dir" && "$probe_dir" != / ]]; do probe_dir="$(dirname "$probe_dir")"; done
-  if git -C "$probe_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    KEY_VALUE=""
-    fail "$AGENTS_HOME is inside a git work tree, and a stored API key could end up committed. Choose an --agents-home outside any repository. Nothing was written."
-  fi
+  assert_outside_git
   [[ "$KEY_VALUE" =~ $KEY_RE ]] || { KEY_VALUE=""; fail "the API key is not valid: letters, digits, hyphens and underscores only, 8 to 256 characters. Nothing was written."; }
   note "a stored ANTHROPIC_API_KEY takes precedence over a subscription sign-in even when you are signed in, and each agent pane asks once to approve it. Setup answers none of those prompts."
 fi
@@ -520,6 +574,28 @@ if [[ $CLEAR_MARKER -eq 1 || $WRITE_KEY -eq 1 ]]; then
   LOCK_HELD=1
 fi
 
+if [[ $LOCK_HELD -eq 1 ]]; then
+  # Decisions made before the lock may be stale: another run can have finished
+  # a key write, or left a marker, since. Read the state again, now that nobody
+  # else can change it, and only then decide to write or to clear.
+  check_key_path "$A_NAME"; check_key_path "$P_NAME"
+  reconcile_marker
+  if [[ $WRITE_KEY -eq 1 && $REPLACE_KEY -eq 0 ]]; then
+    for n in "$A_NAME" "$P_NAME"; do
+      read_stored_key "$AGENTS_HOME/$n/.env.secrets" || fail "$AGENTS_HOME/$n/.env.secrets is unreadable"
+      if [[ $KEY_FOUND -eq 1 ]]; then
+        note "a key was stored by another run in the meantime; keeping it (--replace-key changes it)."
+        WRITE_KEY=0; KEY_VALUE=""
+        break
+      fi
+    done
+  fi
+  if [[ $MIXED_MARKER -eq 1 && $WRITE_KEY -eq 0 ]]; then
+    fail "mixed key state is unresolved and no new key was given. Nothing was verified or launched."
+  fi
+  [[ $WRITE_KEY -eq 0 ]] || assert_outside_git
+fi
+
 if [[ $CLEAR_MARKER -eq 1 ]]; then
   clean_key_scratch "$MARKER_A" "$MARKER_P"
   rm -f -- "$MARKER" || fail "could not remove $MARKER"
@@ -534,6 +610,8 @@ fi
 commit_key() {
   local d1="$AGENTS_HOME/$A_NAME" d2="$AGENTS_HOME/$P_NAME" f1 f2 st1 st2 bk1="" bk2=""
   f1="$d1/.env.secrets"; f2="$d2/.env.secrets"
+  # Checked again here, immediately before anything is staged.
+  check_key_path "$A_NAME"; check_key_path "$P_NAME"; assert_outside_git
   clean_key_scratch "$A_NAME" "$P_NAME"
   (umask 077; printf '%s\n%s\n' "$A_NAME" "$P_NAME" > "$MARKER") || fail "could not write $MARKER"
 
@@ -565,6 +643,7 @@ commit_key() {
   stage_one "$d2" "$f2" || abandon "could not stage the key file for $P_NAME."
   st2="$STAGED"; bk2="$BACKUP"
 
+  ( check_key_path "$A_NAME"; check_key_path "$P_NAME" ) >/dev/null 2>&1 || abandon "the path to a key file changed under setup."
   mv -f -- "$st1" "$f1" 2>/dev/null || abandon "could not write the key file for $A_NAME."
   if ! mv -f -- "$st2" "$f2" 2>/dev/null; then
     local restored=1
