@@ -484,3 +484,30 @@ For the maintainer (recommendation first):
 - Why: the plan's round-2 steps and the revision review.
 - Supersedes: nothing.
 - Commits: see the branch log.
+
+### 2026-11-18: review round 1
+- What changed: `--replace-key` now needs a key source even with `--yes`
+  (usage error 2 otherwise) and an unresolved marker always stops before
+  verification; the key transaction takes a `.setup-key-lock` directory lock
+  and a second run refuses while it is held; the persona probe redacts every
+  value in the agent's `.env.secrets` and anything shaped like a key from the
+  runtime output it prints; setup refuses to store a key through a symlinked
+  agents home, agent folder or `.env.secrets`, or into an agents home inside a
+  git work tree; `HOST` and the other settings are parsed like dotenv (spaces,
+  quotes, `export`, trailing comment); `--status` parses settings as JSON,
+  requires non-empty `.runtime` and settings, checks the role brief matches
+  the kind and reads a dangling home symlink as `incomplete`; `first-run.sh`
+  and `setup.sh` decide that an agent exists by `--status` complete, not a
+  bare `.kind`; `boot-agents.sh` prints a `waiting-detail: prompts=N other=M`
+  line and setup exits 5 only when every waiting agent is at a prompt (else
+  1); `--model` is validated before any write; `--no-start` no longer reports
+  Deck as running; the tmux stub test asserts the loopback and root
+  environment passed to Deck.
+- Deviation: `.peer` is required by `--status` only when the caller names the
+  intended `--peer` (an agent made before `.peer` existed is still whole, and
+  first-run's recovery relies on that); if present it must be valid.
+- Not covered by tests: the hidden-prompt paths (they need a terminal).
+- Why: review of the first build.
+- Supersedes: nothing.
+- Commits: see the branch log.
+

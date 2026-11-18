@@ -1461,6 +1461,24 @@ describe("--kind, --peer and --check-name", () => {
 });
 
 describe("secrets, person, member kind and --status", () => {
+  it("never prints the credential a failing CLI echoes, on stderr or stdout", () => {
+    const b = sandbox();
+    run(b, ["wren", "--no-verify"]);
+    const secret = "plainsecretvalue987654";
+    fs.writeFileSync(path.join(b.agentsHome, "wren", ".env.secrets"), `export SOME_TOKEN=${secret}\nexport ANTHROPIC_API_KEY=sk-ant-echoed-0123456789\n`);
+    stubRuntime(b, `echo "auth failed for $SOME_TOKEN $ANTHROPIC_API_KEY" >&2; exit 1`);
+    const failed = run(b, ["--verify-only", "wren"], { stub: true });
+    expect(failed.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(failed.output).toContain("[redacted]");
+    expect(failed.output).not.toContain(secret);
+    expect(failed.output).not.toContain("sk-ant-echoed");
+    stubRuntime(b, `echo "my token is $SOME_TOKEN and $ANTHROPIC_API_KEY"`);
+    const fluent = run(b, ["--verify-only", "wren"], { stub: true });
+    expect(fluent.status).toBe(EXIT.FAILED);
+    expect(fluent.output).not.toContain(secret);
+    expect(fluent.output).not.toContain("sk-ant-echoed");
+  });
+
   it("the probe sees an exported variable set only in the agent's .env.secrets", () => {
     const box1 = sandbox();
     run(box1, ["wren", "--no-verify"]);
@@ -1538,6 +1556,12 @@ describe("secrets, person, member kind and --status", () => {
       ["a missing inbox directory", (b: Sandbox) => fs.rmSync(path.join(b.inboxRoot, "scribe"), { recursive: true })],
       ["no boot phrase", (b: Sandbox) => fs.writeFileSync(path.join(home(b), "IDENTITY.md"), "hand made\n")],
       ["a foreign brief", (b: Sandbox) => fs.writeFileSync(path.join(home(b), "CLAUDE.md"), "# mine\n")],
+      ["settings that are not JSON", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".claude", "settings.json"), "{")],
+      ["an empty .runtime", (b: Sandbox) => fs.writeFileSync(path.join(home(b), ".runtime"), "")],
+      ["a role brief for a different kind", (b: Sandbox) => {
+        fs.writeFileSync(path.join(home(b), ".kind"), "assistant");
+        fs.writeFileSync(path.join(home(b), "CLAUDE.md"), "# x\n\nYou are the platform agent\n**ada**\n");
+      }],
       ["a symlinked .kind", (b: Sandbox) => {
         fs.rmSync(path.join(home(b), ".kind"));
         fs.writeFileSync(path.join(b.home, "elsewhere"), "member");
@@ -1551,6 +1575,12 @@ describe("secrets, person, member kind and --status", () => {
       const r = status(b, ["--kind", "member", "--peer", "ada"]);
       expect(r.stdout.trim()).toBe("incomplete");
       expect(snapshot(b)).toBe(before);
+    });
+
+    it("a dangling agent-home symlink reads incomplete, not absent", () => {
+      const b = sandbox();
+      fs.symlinkSync(path.join(b.home, "nowhere"), home(b));
+      expect(status(b).stdout.trim()).toBe("incomplete");
     });
 
     it("an unreadable file reads incomplete", () => {

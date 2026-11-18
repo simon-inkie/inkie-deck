@@ -800,6 +800,12 @@ ALREADY_UP=0
 WAITING=0
 FAILED=0
 ARMED=0
+# Of the waiting agents, how many wait at a dialog only a person can answer
+# (folder trust, a picker, an approval) and how many are simply not ready (the
+# runtime is not running, an unrecognised screen). Callers that treat pending as
+# "waiting on you" need the difference.
+PROMPT_WAITING=0
+OTHER_WAITING=0
 # Once for the whole boot, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 for a in "${AGENTS[@]}"; do
@@ -825,6 +831,10 @@ for a in "${AGENTS[@]}"; do
       fi
     else
       WAITING=$((WAITING + 1))
+      case "$reason" in
+        *manually*) PROMPT_WAITING=$((PROMPT_WAITING + 1)) ;;
+        *) OTHER_WAITING=$((OTHER_WAITING + 1)) ;;
+      esac
       echo "boot-agents: $a waiting: $reason" >&2
     fi
   else
@@ -872,6 +882,7 @@ for a in "${FRESH[@]}"; do
     echo "boot-agents: $a monitor armed (pane confirmation)"
   else
     WAITING=$((WAITING + 1))
+    OTHER_WAITING=$((OTHER_WAITING + 1))
     echo "boot-agents: $a monitor unconfirmed" >&2
   fi
 done
@@ -883,6 +894,8 @@ tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
 tmux set -g allow-passthrough on 2>/dev/null || true
 
 echo "boot-agents: $LAUNCHED launched and ready, $ARMED monitors armed, $ALREADY_UP already up and ready, $WAITING waiting, $FAILED failed"
+
+echo "boot-agents: waiting-detail: prompts=$PROMPT_WAITING other=$OTHER_WAITING"
 
 BOOT_RC=0
 [[ "$WAITING" -eq 0 ]] || BOOT_RC=3

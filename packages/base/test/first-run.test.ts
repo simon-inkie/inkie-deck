@@ -119,6 +119,16 @@ describe("first-run", () => {
     expect(fs.readdirSync(b.inboxRoot)).toEqual([]);
   });
 
+  it("a bare .kind marker over a partial home does not count as an existing agent", () => {
+    const b = box();
+    fs.mkdirSync(path.join(b.agentsHome, "ada"));
+    fs.writeFileSync(path.join(b.agentsHome, "ada", "SOUL.md"), "x");
+    fs.writeFileSync(path.join(b.agentsHome, "ada", ".kind"), "assistant");
+    const r = run(b, ["--assistant", "ada", "--platform", "forge", "--no-verify"], false);
+    expect(r.status).toBe(1);
+    expect(agents(b)).toEqual(["ada"]);
+  });
+
   it("a same-name rerun is a clean no-op", () => {
     const b = box();
     stubAnswering(b);

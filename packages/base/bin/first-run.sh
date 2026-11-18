@@ -84,12 +84,16 @@ COMMON=()
 
 # The name of an existing agent of this kind, from its .kind marker.
 existing_of_kind() {
-  local kind="$1" marker
+  local kind="$1" marker name
   for marker in "$AGENTS_HOME"/*/.kind; do
     [[ -f "$marker" ]] || continue
     if [[ "$(head -n1 "$marker" | tr -d '[:space:]')" == "$kind" ]]; then
-      basename "$(dirname "$marker")"
-      return
+      # A bare .kind proves nothing: only a whole scaffold counts as existing.
+      name="$(basename "$(dirname "$marker")")"
+      if [[ "$("$CREATE" --status "$name" --kind "$kind" ${COMMON[@]+"${COMMON[@]}"} 2>/dev/null)" == complete ]]; then
+        printf '%s\n' "$name"
+        return
+      fi
     fi
   done
 }

@@ -1047,8 +1047,8 @@ refuse_if_occupied() {
 
 # --status: where this agent stands, read from the homes, and nothing written.
 # FAIL CLOSED. `complete` needs all of: a regular .kind naming a known kind (the
-# one given with --kind, if any), a regular .peer naming a valid agent (the one
-# given with --peer, if any), every persona file, .runtime and
+# one given with --kind, if any), a .peer naming a valid agent (required, and
+# equal, when --peer is given), every persona file, .runtime and
 # .claude/settings.json present as readable regular files, the boot phrase in
 # IDENTITY.md, the stamped role brief in CLAUDE.md, and the inbox directory.
 # A marker alone proves nothing: a foreign, hand-made, altered or unreadable
@@ -1056,6 +1056,7 @@ refuse_if_occupied() {
 if [[ $STATUS_ONLY -eq 1 ]]; then
   [[ -n "$NAME" ]] || die_scaffold "--status needs a name"
   any=0
+  [[ -L "$AGENT_HOME" ]] && any=1
   for entry in "${PERSONA_FILES[@]}" .runtime .kind .peer .claude; do
     [[ -e "$AGENT_HOME/$entry" || -L "$AGENT_HOME/$entry" ]] && any=1
   done
@@ -1065,21 +1066,36 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   status_ok() {
     local f kind peer
     [[ -d "$AGENT_HOME" && ! -L "$AGENT_HOME" ]] || return 1
-    for f in "${PERSONA_FILES[@]}" .runtime .claude/settings.json .kind .peer; do
+    for f in "${PERSONA_FILES[@]}" .runtime .claude/settings.json .kind; do
       [[ -f "$AGENT_HOME/$f" && ! -L "$AGENT_HOME/$f" && -r "$AGENT_HOME/$f" ]] || return 1
     done
     [[ -d "$AGENT_HOME/.claude" && ! -L "$AGENT_HOME/.claude" ]] || return 1
-    for f in "${PERSONA_FILES[@]}"; do [[ -s "$AGENT_HOME/$f" ]] || return 1; done
+    for f in "${PERSONA_FILES[@]}" .runtime .claude/settings.json; do [[ -s "$AGENT_HOME/$f" ]] || return 1; done
+    CA_FILE="$AGENT_HOME/.claude/settings.json" node_run <<'JS' >/dev/null 2>&1 || return 1
+import * as fs from "node:fs";
+const parsed = JSON.parse(fs.readFileSync(process.env.CA_FILE, "utf8"));
+if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) process.exit(1);
+JS
     [[ -d "$AGENT_INBOX" && ! -L "$AGENT_INBOX" && ! -L "$INBOX_ROOT/$NAME" ]] || return 1
     kind="$(head -n1 "$AGENT_HOME/.kind" 2>/dev/null | tr -d '[:space:]')"
     case "$kind" in assistant|platform|member) ;; *) return 1 ;; esac
     [[ -z "$KIND" || "$kind" == "$KIND" ]] || return 1
-    peer="$(head -n1 "$AGENT_HOME/.peer" 2>/dev/null | tr -d '[:space:]')"
-    [[ "$peer" =~ $NAME_RE && "$peer" != "$NAME" ]] || return 1
-    [[ -z "$PEER" || "$peer" == "$PEER" ]] || return 1
+    # .peer is required when the caller names the intended peer; an agent made
+    # before .peer existed has none, and is still whole. If present it must be sane.
+    peer=""
+    if [[ -e "$AGENT_HOME/.peer" || -L "$AGENT_HOME/.peer" || -n "$PEER" ]]; then
+      [[ -f "$AGENT_HOME/.peer" && ! -L "$AGENT_HOME/.peer" && -r "$AGENT_HOME/.peer" ]] || return 1
+      peer="$(head -n1 "$AGENT_HOME/.peer" 2>/dev/null | tr -d '[:space:]')"
+      [[ "$peer" =~ $NAME_RE && "$peer" != "$NAME" ]] || return 1
+      [[ -z "$PEER" || "$peer" == "$PEER" ]] || return 1
+    fi
     grep -qE 'boot-[0-9a-f]{16}' "$AGENT_HOME/IDENTITY.md" 2>/dev/null || return 1
-    grep -q '^## Your role: ' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
-    grep -qF "**$peer**" "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
+    case "$kind" in
+      assistant) grep -qF 'You are the assistant, the main orchestrator' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1 ;;
+      platform)  grep -qF 'You are the platform agent' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1 ;;
+      member)    grep -qF '## Your role: a member' "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1 ;;
+    esac
+    [[ -z "$peer" ]] || grep -qF "**$peer**" "$AGENT_HOME/CLAUDE.md" 2>/dev/null || return 1
     return 0
   }
   if status_ok; then say "complete"; else say "incomplete"; fi
@@ -1380,8 +1396,23 @@ else
 fi
 PROBE_STATUS=$?
 
-REPLY="$(cat "$PROBE_OUT")"
-PROBE_STDERR="$(cat "$PROBE_ERR")"
+# Raw runtime output is printed below as the diagnostic, and a failing CLI can
+# echo the credential it was given. Redact every value in the agent's own
+# .env.secrets, and anything shaped like an API key, before it can be shown.
+redact_secrets() {
+  local text="$1" f="$AGENT_HOME/.env.secrets" line v
+  if [[ -f "$f" && -r "$f" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=(.*)$ ]]; then
+        v="${BASH_REMATCH[2]}"; v="${v#[\"\']}"; v="${v%[\"\']}"
+        [[ ${#v} -ge 6 ]] && text="${text//"$v"/[redacted]}"
+      fi
+    done < "$f"
+  fi
+  printf '%s' "$text" | sed -E 's/sk-[A-Za-z0-9_-]{8,}/[redacted]/g'
+}
+REPLY="$(redact_secrets "$(cat "$PROBE_OUT")")"
+PROBE_STDERR="$(redact_secrets "$(cat "$PROBE_ERR")")"
 
 # A non-zero exit means we never got an answer: no runtime, not signed in, rate
 # limited, timed out. That is CANNOT VERIFY, and it is NEVER read from empty

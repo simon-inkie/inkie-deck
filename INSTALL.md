@@ -501,7 +501,7 @@ copies when both are done. If a write fails it puts the first file back. If that
 fails too, or setup is interrupted, the marker stays: the next run compares the
 two stored keys without printing them, clears the marker if they match, and
 otherwise stops with "mixed key state" before it verifies or starts anything, so
-you run it again with `--replace-key` and enter the key once more.
+you run it again with `--replace-key` and enter the key once more. A lock directory (`.setup-key-lock`, same place) keeps two setup runs from writing keys at once; a run killed mid-write can leave it behind, and the message says to remove it. Setup refuses to store a key if the agents home, an agent's folder or its `.env.secrets` is a symlink, or if the agents home is inside a git work tree.
 
 ### The first conversation
 

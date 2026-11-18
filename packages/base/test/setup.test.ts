@@ -117,6 +117,7 @@ exec /bin/mv "$@"
     `#!/usr/bin/env bash
 echo "$@" >> "${root}/boot.args"
 env > "${root}/boot.env"
+[ -f "${root}/boot.out" ] && cat "${root}/boot.out"
 exit "$(cat "${root}/boot.rc" 2>/dev/null || echo 0)"
 `,
   );
@@ -372,6 +373,13 @@ describe("the API key", () => {
       expect(bootArgs(b)).toBe("");
       expect(fs.existsSync(path.join(b.root, "claude.keyseen"))).toBe(false);
 
+      // --replace-key needs a key source even with --yes: without one it is a
+      // usage error, the marker stays, and nothing is verified.
+      const noSource = setup(b, [...FRESH(b).filter((a) => a !== "--no-key"), "--replace-key"]);
+      expect(noSource.status).toBe(2);
+      expect(fs.existsSync(marker(b))).toBe(true);
+      expect(bootArgs(b)).toBe("");
+
       const fixed = setup(b, [...KEYRUN(b), "--replace-key"], { input: `${KEY2}\n` });
       expect(fixed.status, fixed.output).toBe(0);
       expect(fs.existsSync(marker(b))).toBe(false);
@@ -407,11 +415,17 @@ describe("exit codes and boot", () => {
     expect(bootArgs(b)).toBe("");
   });
 
-  it("boot pending is 5, boot failing is 1", () => {
+  it("boot pending is 5 only when every waiting agent is at a prompt; boot failing is 1", () => {
     const b = box();
     runtime(b);
     fs.writeFileSync(path.join(b.root, "boot.rc"), "3");
+    fs.writeFileSync(path.join(b.root, "boot.out"), "boot-agents: waiting-detail: prompts=2 other=0\n");
     expect(setup(b, FRESH(b)).status).toBe(5);
+    fs.writeFileSync(path.join(b.root, "boot.out"), "boot-agents: waiting-detail: prompts=1 other=1\n");
+    expect(setup(b, FRESH(b)).status).toBe(1);
+    fs.writeFileSync(path.join(b.root, "boot.out"), "boot-agents: no detail line\n");
+    expect(setup(b, FRESH(b)).status).toBe(1);
+    fs.rmSync(path.join(b.root, "boot.out"));
     fs.writeFileSync(path.join(b.root, "boot.rc"), "1");
     expect(setup(b, FRESH(b)).status).toBe(1);
   });
@@ -423,5 +437,100 @@ describe("exit codes and boot", () => {
     expect(r.status, r.output).toBe(0);
     expect(fs.existsSync(path.join(b.root, "deck-up"))).toBe(false);
     expect(bootArgs(b)).toBe("");
+    expect(r.output).not.toContain("Deck is running");
+    expect(r.output).toContain("were not started (--no-start)");
+  });
+
+  it("starts Deck pinned to loopback with every effective root in its own environment", () => {
+    const b = box();
+    runtime(b);
+    expect(setup(b, FRESH(b), { env: { HOST: "localhost" } }).status).toBe(0);
+    const log = fs.readFileSync(path.join(b.root, "tmux.log"), "utf8");
+    const cmd = log.split("\n").find((l) => l.startsWith("new-session")) ?? "";
+    for (const want of [
+      "HOST=127.0.0.1",
+      `PORT=${b.port}`,
+      `INBOX_ROOT=${b.deck}/inbox`,
+      `ATTACHMENTS_ROOT=${b.deck}/attachments`,
+      `PROJECTS_ROOT=${b.deck}/projects`,
+      `DATA_ROOT=${b.deck}/data`,
+      `AGENTS_ROOT=${b.agents}`,
+      "MC_USER=sam",
+    ]) expect(cmd).toContain(want);
+  });
+
+  it("a bare .kind over a partial home is not an existing agent", () => {
+    const b = box();
+    fs.mkdirSync(path.join(b.agents, "inkie"), { recursive: true });
+    fs.writeFileSync(path.join(b.agents, "inkie", "SOUL.md"), "x");
+    fs.writeFileSync(path.join(b.agents, "inkie", ".kind"), "assistant");
+    const r = setup(b, FRESH(b));
+    expect(r.status).toBe(1);
+    expect(r.output).not.toContain("already exist");
+    expect(bootArgs(b)).toBe("");
+  });
+});
+
+describe("hardening", () => {
+  it("HOST written with spaces around = is still refused", () => {
+    const b = box();
+    const content = `INBOX_ROOT=${b.deck}/i\nATTACHMENTS_ROOT=${b.deck}/a\nPROJECTS_ROOT=${b.deck}/p\nDATA_ROOT=${b.deck}/d\nAGENTS_ROOT=${b.agents}\nMC_USER=sam\nexport HOST = "0.0.0.0" # open\n`;
+    fs.writeFileSync(envFile(b), content);
+    const r = setup(b, FRESH(b));
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("HOST=0.0.0.0");
+    expect(fs.existsSync(b.agents)).toBe(false);
+  });
+
+  it("an invalid --model stops before any write", () => {
+    const b = box();
+    const r = setup(b, [...FRESH(b), "--model", "bad model; x"]);
+    expect(r.status).toBe(2);
+    nothingWritten(b);
+  });
+
+  it("refuses a key when the agents home is a symlink, or inside a git work tree", () => {
+    const b = box();
+    runtime(b);
+    const real = path.join(b.root, "real-agents");
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, b.agents);
+    expect(setup(b, FRESH(b)).status).toBe(0);
+    const linked = setup(b, KEYRUN(b), { input: `${KEY}\n` });
+    expect(linked.status).toBe(1);
+    expect(linked.output).toContain("symlink");
+    expect(allFiles(real).filter((f) => fs.readFileSync(f).includes(KEY))).toEqual([]);
+
+    const g = box();
+    const repo = path.join(g.root, "checkout");
+    fs.mkdirSync(repo);
+    spawnSync("git", ["init", "-q", repo]);
+    const inside = path.join(repo, "agents");
+    const r = setup(g, ["--yes", "--key-stdin", "--no-install", "--no-build", "--deck-home", g.deck, "--agents-home", inside], { input: `${KEY}\n` });
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("git work tree");
+    expect(fs.existsSync(inside)).toBe(false);
+    expect(r.output).not.toContain(KEY);
+  });
+
+  it("refuses a second run while the key lock is held, writing nothing", () => {
+    const b = box();
+    runtime(b);
+    expect(setup(b, FRESH(b)).status).toBe(0);
+    fs.writeFileSync(secrets(b, "inkie"), "OTHER=1\n", { mode: 0o600 });
+    fs.mkdirSync(path.join(b.agents, ".setup-key-lock"));
+    const r = setup(b, KEYRUN(b), { input: `${KEY}\n` });
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("another setup run");
+    expect(fs.readFileSync(secrets(b, "inkie"), "utf8")).toBe("OTHER=1\n");
+    expect(fs.existsSync(path.join(b.agents, ".setup-key-pending"))).toBe(false);
+  });
+
+  it("releases the lock after a key write", () => {
+    const b = box();
+    runtime(b);
+    expect(setup(b, FRESH(b)).status).toBe(0);
+    expect(setup(b, KEYRUN(b), { input: `${KEY}\n` }).status).toBe(0);
+    expect(fs.existsSync(path.join(b.agents, ".setup-key-lock"))).toBe(false);
   });
 });

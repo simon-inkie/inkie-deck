@@ -127,6 +127,10 @@ if [[ $TTY -eq 0 ]]; then
   fi
 fi
 
+if [[ -n "$MODEL" && ! "$MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
+  usage_error "--model '$MODEL' is not a plain model id (letters, digits, dots, colons and hyphens)"
+fi
+
 [[ "$(id -u)" != 0 ]] || fail "refusing to run as root: Deck and the agents would run as root. Run it as your own user."
 git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   || fail "$REPO is not inside a git work tree. Setup needs a git clone, not a downloaded archive (INSTALL.md section 1)."
@@ -150,13 +154,17 @@ fi
 # Read KEY from a dotenv-style file: last assignment wins, `export ` and one
 # pair of surrounding quotes tolerated. Prints nothing if absent.
 dotenv_get() {
-  local file="$1" key="$2" line value="" re="^[[:space:]]*(export[[:space:]]+)?${2}=(.*)$"
+  local file="$1" key="$2" line value="" re="^[[:space:]]*(export[[:space:]]+)?${2}[[:space:]]*=[[:space:]]*(.*)$"
   [[ -r "$file" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ $re ]]; then
       value="${BASH_REMATCH[2]}"
-      value="${value%"${value##*[![:space:]]}"}"
-      if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then value="${BASH_REMATCH[1]}"; fi
+      if [[ "$value" =~ ^\"([^\"]*)\" ]]; then value="${BASH_REMATCH[1]}"
+      elif [[ "$value" =~ ^\'([^\']*)\' ]]; then value="${BASH_REMATCH[1]}"
+      else
+        value="${value%%[[:space:]]#*}"
+        value="${value%"${value##*[![:space:]]}"}"
+      fi
     fi
   done < "$file"
   printf '%s' "$value"
@@ -243,19 +251,24 @@ INBOX_ROOT_VALUE="${ROOT[INBOX_ROOT]}"
 
 # ---- starter names -----------------------------------------------------------
 
+CREATE_COMMON=(--agents-home "$AGENTS_HOME" --inbox-root "$INBOX_ROOT_VALUE")
+
 existing_of_kind() {
-  local kind="$1" marker
+  local kind="$1" marker name
   for marker in "$AGENTS_HOME"/*/.kind; do
     [[ -f "$marker" ]] || continue
     if [[ "$(head -n1 "$marker" | tr -d '[:space:]')" == "$kind" ]]; then
-      basename "$(dirname "$marker")"
-      return
+      # A bare .kind proves nothing: only a whole scaffold counts as existing.
+      name="$(basename "$(dirname "$marker")")"
+      if [[ "$("$CREATE" --status "$name" --kind "$kind" "${CREATE_COMMON[@]}" 2>/dev/null)" == complete ]]; then
+        printf '%s\n' "$name"
+        return
+      fi
     fi
   done
 }
 saved_peer() { head -n1 "$AGENTS_HOME/$1/.peer" 2>/dev/null | tr -d '[:space:]' || true; }
 
-CREATE_COMMON=(--agents-home "$AGENTS_HOME" --inbox-root "$INBOX_ROOT_VALUE")
 EXISTING_A="$(existing_of_kind assistant)"; EXISTING_P="$(existing_of_kind platform)"
 A_NAME="$EXISTING_A"; P_NAME="$EXISTING_P"
 
@@ -335,7 +348,24 @@ check_secrets_file() {
   (( (8#$mode & 8#022) == 0 )) || fail "$f is writable by group or others (mode $mode); chmod 600 it, then run again"
 }
 
-CLEAR_MARKER=0
+# No component of a credential path under the agents home may be a symlink: the
+# key would be written wherever it points.
+check_key_path() {  # <agent name>
+  local dir="$AGENTS_HOME/$1"
+  [[ ! -L "$AGENTS_HOME" ]] || fail "$AGENTS_HOME is a symlink; refusing to store a key through it"
+  [[ ! -L "$dir" ]] || fail "$dir is a symlink; refusing to store a key through it"
+  [[ ! -L "$dir/.env.secrets" ]] || fail "$dir/.env.secrets is a symlink; refusing to store a key through it"
+}
+
+LOCK="$AGENTS_HOME/.setup-key-lock"
+LOCK_HELD=0
+release_lock() { [[ $LOCK_HELD -eq 0 ]] || { rmdir -- "$LOCK" 2>/dev/null; LOCK_HELD=0; }; }
+trap release_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+[[ ! -e "$LOCK" ]] || fail "another setup run is writing the key files (or one was killed): $LOCK exists. Wait for it, or remove that directory if no setup is running."
+
+CLEAR_MARKER=0; MIXED_MARKER=0
 MARKER_A=""; MARKER_P=""
 if [[ -e "$MARKER" || -L "$MARKER" ]]; then
   [[ -f "$MARKER" && ! -L "$MARKER" && -r "$MARKER" ]] || fail "mixed key state: $MARKER is unreadable. Resolve it by hand, then run again."
@@ -343,6 +373,7 @@ if [[ -e "$MARKER" || -L "$MARKER" ]]; then
   [[ "$MARKER_A" =~ $NAME_RE && "$MARKER_P" =~ $NAME_RE ]] \
     || fail "mixed key state: $MARKER does not name two agents. Resolve it by hand, then run again."
   mf_a="$AGENTS_HOME/$MARKER_A/.env.secrets"; mf_p="$AGENTS_HOME/$MARKER_P/.env.secrets"
+  check_key_path "$MARKER_A"; check_key_path "$MARKER_P"
   check_secrets_file "$mf_a"; check_secrets_file "$mf_p"
   read_stored_key "$mf_a" || fail "mixed key state: $mf_a is unreadable. Resolve it by hand, then run again."
   ka_found=$KEY_FOUND; ka="$KEY_OF"
@@ -351,6 +382,7 @@ if [[ -e "$MARKER" || -L "$MARKER" ]]; then
   if [[ $ka_found -eq $kp_found && "$ka" == "$kp" ]]; then
     CLEAR_MARKER=1
   elif [[ $REPLACE_KEY -eq 1 ]]; then
+    MIXED_MARKER=1
     note "mixed key state in $MARKER_A and $MARKER_P: --replace-key was given, so the new key will replace both."
   else
     fail "mixed key state: the key in $MARKER_A and $MARKER_P differs, so a key write was interrupted. Nothing was verified or launched. Run again with --replace-key and enter the key again."
@@ -362,6 +394,7 @@ HAVE_KEY=0
 for n in "$EXISTING_A" "$EXISTING_P"; do
   [[ -n "$n" ]] || continue
   f="$AGENTS_HOME/$n/.env.secrets"
+  check_key_path "$n"
   check_secrets_file "$f"
   read_stored_key "$f" || fail "$f is unreadable"
   [[ $KEY_FOUND -eq 0 ]] || HAVE_KEY=1
@@ -388,7 +421,7 @@ elif [[ $KEY_STDIN -eq 1 ]]; then
   read_key_line "API key: "
   [[ -n "$KEY_VALUE" ]] || fail "--key-stdin: no key was read from stdin"
   WRITE_KEY=1
-elif [[ $TTY -eq 1 && $YES -eq 0 ]]; then
+elif [[ $TTY -eq 1 && ( $YES -eq 0 || $REPLACE_KEY -eq 1 ) ]]; then
   if [[ $REPLACE_KEY -eq 1 ]]; then
     read_key_line "New Anthropic API key (hidden): "
     [[ -n "$KEY_VALUE" ]] || fail "no key entered"
@@ -405,7 +438,21 @@ elif [[ $TTY -eq 1 && $YES -eq 0 ]]; then
 else
   note "no API key will be stored (--yes never chooses one); agents use your model CLI sign-in."
 fi
+if [[ $REPLACE_KEY -eq 1 && $WRITE_KEY -eq 0 ]]; then
+  usage_error "--replace-key needs a new key: type it at the prompt, or pass --key-stdin"
+fi
+if [[ $MIXED_MARKER -eq 1 && $WRITE_KEY -eq 0 ]]; then
+  fail "mixed key state is unresolved and no new key was given. Nothing was verified or launched."
+fi
 if [[ $WRITE_KEY -eq 1 ]]; then
+  # Credentials must not land in a checkout: refuse an agents home inside a git
+  # work tree rather than reason about ignore rules.
+  probe_dir="$AGENTS_HOME"
+  while [[ ! -d "$probe_dir" && "$probe_dir" != / ]]; do probe_dir="$(dirname "$probe_dir")"; done
+  if git -C "$probe_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    KEY_VALUE=""
+    fail "$AGENTS_HOME is inside a git work tree, and a stored API key could end up committed. Choose an --agents-home outside any repository. Nothing was written."
+  fi
   [[ "$KEY_VALUE" =~ $KEY_RE ]] || { KEY_VALUE=""; fail "the API key is not valid: letters, digits, hyphens and underscores only, 8 to 256 characters. Nothing was written."; }
   note "a stored ANTHROPIC_API_KEY takes precedence over a subscription sign-in even when you are signed in, and each agent pane asks once to approve it. Setup answers none of those prompts."
 fi
@@ -467,6 +514,11 @@ clean_key_scratch() {
     rm -f -- "$d"/.setup-key-stage.* "$d"/.setup-key-bak.* 2>/dev/null
   done
 }
+
+if [[ $CLEAR_MARKER -eq 1 || $WRITE_KEY -eq 1 ]]; then
+  mkdir -- "$LOCK" 2>/dev/null || fail "another setup run holds $LOCK. Wait for it, then run again."
+  LOCK_HELD=1
+fi
 
 if [[ $CLEAR_MARKER -eq 1 ]]; then
   clean_key_scratch "$MARKER_A" "$MARKER_P"
@@ -531,12 +583,17 @@ commit_key() {
 }
 
 if [[ $WRITE_KEY -eq 1 ]]; then
+  check_key_path "$A_NAME"; check_key_path "$P_NAME"
   check_secrets_file "$AGENTS_HOME/$A_NAME/.env.secrets"
   check_secrets_file "$AGENTS_HOME/$P_NAME/.env.secrets"
   commit_key
   KEY_VALUE=""
 fi
 unset KEY_VALUE
+release_lock
+
+# A marker still present here means the pair is unresolved: never verify or launch.
+[[ ! -e "$MARKER" ]] || fail "mixed key state: $MARKER is still present. Nothing was verified or launched."
 
 # Verify both starters (never reached while a key marker is pending: B stopped).
 verify_one() {
@@ -595,11 +652,16 @@ FINAL=$VCODE
 if [[ $DECK_RUNNING -eq 1 && $VCODE -eq 0 ]]; then
   # Exactly the two starters, by name: with no names the launcher starts every
   # agent in the folder.
-  env "${child_env[@]}" "$BOOT" "$A_NAME" "$P_NAME"
+  BOOT_OUT="$(env "${child_env[@]}" "$BOOT" "$A_NAME" "$P_NAME" 2>&1)"
   br=$?
+  printf '%s\n' "$BOOT_OUT"
   case "$br" in
     0) FINAL=0 ;;
-    3) FINAL=5 ;;
+    3)
+      # Pending means "waiting on you" only when every waiting agent is at a
+      # dialog a person has to answer; a runtime that is not running is a failure.
+      if [[ "$BOOT_OUT" =~ waiting-detail:\ prompts=([0-9]+)\ other=([0-9]+) ]] \
+         && (( BASH_REMATCH[1] > 0 && BASH_REMATCH[2] == 0 )); then FINAL=5; else FINAL=1; fi ;;
     *) FINAL=1 ;;
   esac
 fi
@@ -609,14 +671,19 @@ fi
 # ---------------------------------------------------------------------------
 
 say ""
-case "$FINAL" in
-  0) say "Setup is done. Deck is running at $URL and $A_NAME and $P_NAME are started and ready." ;;
-  5) say "Deck is running at $URL. $A_NAME and $P_NAME are started and waiting on you at their own prompts (folder trust, and key approval if you stored a key). Answer them in Deck's terminal view for each agent; setup answered none. Run setup again afterwards to check." ;;
-  4) say "Deck is running at $URL. Your agents exist but were not started: install and sign in to the model CLI, then run setup again." ;;
-  3) say "Deck is running at $URL. A starter agent failed its persona check, so the agents were not started. See the output above, then run setup again." ;;
-  1) say "Setup failed while starting the agents. Deck is running at $URL. See the output above, then run setup again." ;;
-esac
-if [[ $NO_START -eq 1 && $FINAL -eq 0 ]]; then
-  say "Setup is done up to the start. Run it again without --no-start to start Deck and the agents."
+if [[ $NO_START -eq 1 ]]; then
+  case "$FINAL" in
+    0) say "Both agents verified. Deck and the agents were not started (--no-start): run setup again without it." ;;
+    4) say "Both agents exist but could not be verified (install and sign in to the model CLI). Deck and the agents were not started (--no-start)." ;;
+    3) say "A starter agent failed its persona check. Deck and the agents were not started (--no-start). See the output above." ;;
+  esac
+else
+  case "$FINAL" in
+    0) say "Setup is done. Deck is running at $URL and $A_NAME and $P_NAME are started and ready." ;;
+    5) say "Deck is running at $URL. $A_NAME and $P_NAME are started and waiting on you at their own prompts (folder trust, and key approval if you stored a key). Answer them in Deck's terminal view for each agent; setup answered none. Run setup again afterwards to check." ;;
+    4) say "Deck is running at $URL. Your agents exist but were not started: install and sign in to the model CLI, then run setup again." ;;
+    3) say "Deck is running at $URL. A starter agent failed its persona check, so the agents were not started. See the output above, then run setup again." ;;
+    1) say "Setup failed while starting the agents. Deck is running at $URL. See the output above, then run setup again." ;;
+  esac
 fi
 exit "$FINAL"
