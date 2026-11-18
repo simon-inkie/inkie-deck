@@ -1366,3 +1366,41 @@ echo "boot phrase: $(grep -oE 'boot-[0-9a-f]{16}' IDENTITY.md | head -n1)"`,
     expect(settingsOf(box, "wren").env.USER_NAME).toBeUndefined();
   });
 });
+
+describe("--kind, --peer and --check-name", () => {
+  it("refuses an unknown --kind and creates nothing", () => {
+    const box = sandbox();
+    const result = run(box, ["wren", "--kind", "wizard", "--no-verify"]);
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(fs.readdirSync(box.agentsHome)).toEqual([]);
+    expect(fs.readdirSync(box.inboxRoot)).toEqual([]);
+  });
+
+  it("stamps the role brief and the peer into CLAUDE.md and writes .kind and .peer", () => {
+    const box = sandbox();
+    run(box, ["ada", "--kind", "platform", "--peer", "forge", "--no-verify"]);
+    const home = path.join(box.agentsHome, "ada");
+    expect(fs.readFileSync(path.join(home, ".kind"), "utf8")).toBe("platform");
+    expect(fs.readFileSync(path.join(home, ".peer"), "utf8")).toBe("forge");
+    const claude = fs.readFileSync(path.join(home, "CLAUDE.md"), "utf8");
+    expect(claude).toContain("You are the platform agent");
+    expect(claude).toContain("**forge**");
+    expect(claude).toContain(path.join(PACKAGE_ROOT, "bin", "create-agent.sh"));
+    expect(claude).toContain("Ask before changing anything outside the agents folder");
+    expect(claude).not.toContain("<peer>");
+    // The persona chain is still intact.
+    expect(claude).toContain("@IDENTITY.md");
+  });
+
+  it("--check-name writes nothing, and refuses a bad or taken name", () => {
+    const box = sandbox();
+    expect(run(box, ["--check-name", "wren"]).status).toBe(0);
+    expect(fs.readdirSync(box.agentsHome)).toEqual([]);
+    expect(fs.readdirSync(box.inboxRoot)).toEqual([]);
+    expect(fs.readdirSync(box.home)).toEqual([]);
+
+    expect(run(box, ["--check-name", "Bad Name"]).status).toBe(EXIT.SCAFFOLD_ERROR);
+    run(box, ["wren", "--no-verify"]);
+    expect(run(box, ["--check-name", "wren"]).status).toBe(EXIT.SCAFFOLD_ERROR);
+  });
+});
