@@ -93,7 +93,7 @@ export default {
           "echo '###SESSIONS'",
           "tmux list-sessions -F '#{session_name}' 2>&1",
           "echo '###AGENTS-SESSION'",
-          "tmux has-session -t agents 2>&1 && echo present || echo absent",
+          "tmux has-session -t agents >/dev/null 2>&1 && echo present || echo absent",
         ].join("\n"),
       );
     } finally {
