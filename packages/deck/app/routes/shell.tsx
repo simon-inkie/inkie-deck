@@ -23,6 +23,7 @@ import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled, instanceLabel, filterCardsForInstance, modelSelectorEnabled, cronAdminEnabled, activityEnabled } from "~/lib/instance.server";
 import { draftsEnabled } from "~/lib/drafts.server";
 import { getAgentModelInfo } from "~/lib/agent-model.server";
+import { readAgentKind } from "~/lib/agent-kind.server";
 import { readActivity, resolveEscalationThresholdMs } from "~/lib/activity.server";
 import { escalatedAgents, type ActivityStatus, type EscalatedAgent } from "~/lib/activity.shared";
 import { loadCodexQuotaDisplay } from "~/lib/codex-quota-display.server";
@@ -171,9 +172,15 @@ export async function loader({ params, request }: Route.LoaderArgs) {
         hasUnread,
         avatarUrl: avatarUrl(name),
         status: statuses.get(name),
+        // Pinned only by the .kind marker (see agent-kind.server.ts); an agent
+        // with no marker is an ordinary row.
+        pinned: readAgentKind(process.env, name) === "assistant",
       };
     })
   );
+  // Assistant first. Array.sort is stable, so every other agent keeps the
+  // order the inbox gave it, and with no marker anywhere nothing moves.
+  agents.sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true));
 
   // Blocked kanban cards join the bell exactly as they join home; projects
   // root may be unset - degrade gracefully (same guard as home.tsx).
