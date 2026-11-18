@@ -22,3 +22,11 @@ or cap daily orders and let the backlog clear gracefully?
 Current backlog is fine, under ten parcels. This is purely launch-week insurance, not a live problem.
 
 ---
+## 2026-06-09T12:00:00Z - from: briar - status: sent - subject: sign the courier renewal
+action-id: TASK-PACK-4
+priority: urgent
+ticket: SHOP-9
+
+The courier contract renews on Friday and needs your signature, not mine. Same rate as last year; the PDF is in your email from them.
+
+---
