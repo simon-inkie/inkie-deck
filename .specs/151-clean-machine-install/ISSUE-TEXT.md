@@ -1,5 +1,4 @@
-Title: Clean-machine install with a setup flow
-
+<!-- Copy of the published body of GitHub issue #151. -->
 ## Origin
 
 Deck super-assistant MVP roadmap, M17 (8 November 2026): a clean-machine
@@ -122,3 +121,8 @@ thread.
 - Keys for runtimes other than Claude, and OpenAI-compatible endpoints.
 - An approval gate enforced in code.
 - Workflows, a runs view, plugins, Brain changes, embedders, backup.
+
+## Implementation
+
+Tracked in [PR #148](https://github.com/simon-inkie/inkie-deck/pull/148), which builds on [PR #147](https://github.com/simon-inkie/inkie-deck/pull/147). The acceptance above states the intended behaviour. Signed-in Linux and WSL verification remains pending; issue creation is not acceptance of the implementation.
+

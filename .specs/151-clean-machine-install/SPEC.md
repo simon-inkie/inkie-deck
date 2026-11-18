@@ -1,10 +1,9 @@
-# #TBD: Clean-machine install with a setup flow
+# #151: Clean-machine install with a setup flow
 
-- Issue: none yet
-- Branch: feat/clean-machine-install (renamed to `<issue>-clean-machine-install`
-  once the issue exists)
+- Issue: #151 (https://github.com/simon-inkie/inkie-deck/issues/151)
+- Branch: feat/clean-machine-install
 - Started: 2026-11-18
-- Depends on: the name-your-assistant change, still in review. This item
+- Depends on: the name-your-assistant change (#150), still in review. This item
   consumes its final contract after it merges and rebases onto `main`:
   `first-run.sh`, the editable defaults `inkie` (assistant, the main
   orchestrator) and `doctor` (platform agent, the brain surgeon), `.kind`,
