@@ -615,4 +615,3 @@ Docs claim only the Claude Code support above and say "not yet" for the rest.
   banner and its test, so roughly 150 to 200 lines across four files, in the
   shell that every page uses. Over the 150-line, risk-free bar, so it is not
   built; it needs approval.
-
