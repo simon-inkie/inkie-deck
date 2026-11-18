@@ -1541,6 +1541,20 @@ describe("secrets, person, member kind and --status", () => {
     const snapshot = (b: Sandbox) =>
       fs.readdirSync(home(b), { recursive: true }).map(String).sort().join("\n");
 
+    it("an empty or foreign home, or an inbox alone, is incomplete, never absent", () => {
+      const empty = sandbox();
+      fs.mkdirSync(home(empty), { recursive: true });
+      expect(status(empty).stdout.trim()).toBe("incomplete");
+      const foreign = sandbox();
+      fs.mkdirSync(home(foreign), { recursive: true });
+      fs.writeFileSync(path.join(home(foreign), "notes.txt"), "mine");
+      expect(status(foreign).stdout.trim()).toBe("incomplete");
+      const inboxOnly = sandbox();
+      fs.mkdirSync(path.join(inboxOnly.inboxRoot, "scribe", "inbox"), { recursive: true });
+      expect(status(inboxOnly).stdout.trim()).toBe("incomplete");
+      expect(fs.readdirSync(home(empty))).toEqual([]);
+    });
+
     it("reads absent, incomplete and complete, and writes nothing", () => {
       const b = sandbox();
       expect(status(b).stdout.trim()).toBe("absent");

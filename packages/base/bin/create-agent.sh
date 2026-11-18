@@ -1055,12 +1055,15 @@ refuse_if_occupied() {
 # home reads `incomplete`, and is left exactly as it is for repair.
 if [[ $STATUS_ONLY -eq 1 ]]; then
   [[ -n "$NAME" ]] || die_scaffold "--status needs a name"
+  # "absent" means no observed home or inbox entry of any kind (a dangling
+  # symlink counts). Anything else that is not whole reads incomplete, including
+  # an empty or foreign home directory. Creation is deliberately more lenient
+  # (it scaffolds into an existing empty home), so incomplete here does not mean
+  # creation will refuse.
   any=0
-  [[ -L "$AGENT_HOME" ]] && any=1
-  for entry in "${PERSONA_FILES[@]}" .runtime .kind .peer .claude; do
-    [[ -e "$AGENT_HOME/$entry" || -L "$AGENT_HOME/$entry" ]] && any=1
+  for entry in "$AGENT_HOME" "$INBOX_ROOT/$NAME"; do
+    [[ -e "$entry" || -L "$entry" ]] && any=1
   done
-  [[ -e "$AGENT_INBOX" || -L "$AGENT_INBOX" ]] && any=1
   if [[ $any -eq 0 ]]; then say "absent"; exit "$EXIT_VERIFIED"; fi
 
   status_ok() {

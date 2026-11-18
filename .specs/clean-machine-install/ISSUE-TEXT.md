@@ -54,8 +54,10 @@ thread.
   afterwards), puts the first file back if the second write fails, and keeps
   the marker if that fails too or setup is interrupted. A later run that finds
   the pair resolved (the same key in both, or in neither) clears the marker;
-  one that finds the pair mixed, unreadable or invalid stops before any check or
-  launch until it is reconciled with `--replace-key`. Starting agents by hand
+  one that finds the pair different or unreadable stops before any check or
+  launch. A different readable pair is reconciled with `--replace-key`, bound
+  to the two agents the marker names; malformed or unreadable files need manual
+  repair, and identical malformed values are not detected. Starting agents by hand
   is outside the marker's protection.
 - Without a terminal, it needs explicit flags for the names and the key
   choice, or it stops before doing anything.
@@ -72,7 +74,8 @@ thread.
   when its kind marker (written last) and the intended kind and peer are
   there and so is the whole scaffold: persona files, settings, boot phrase,
   role brief and inbox directory. A foreign, malformed, unreadable or partly
-  built home reads incomplete, is reported for the user to repair and is never
+  built home, including an empty home directory, reads incomplete (absent means
+  no home or inbox entry of any kind), is reported for the user to repair and is never
   recreated or deleted. Complete agents are skipped, and creation and launch
   results are reported separately; only complete approved agents are launched,
   and if none remain nothing is launched. The approval, the cap and the order
@@ -86,13 +89,17 @@ thread.
   starts Deck on loopback, does not start the agents, and exits with the
   "no model CLI" code. A pre-existing `.env` missing a required root stops
   the run, names it, and nothing is written.
-- With a signed-in Claude CLI (checked by hand on Linux and WSL), the run
-  ends "waiting on you", naming the prompts to answer. After the user answers
+- With a signed-in Claude CLI, the run is expected to end with exit 5,
+  "waiting on you", when the agents wait solely on native prompts, naming
+  them. Real signed-in Linux and WSL acceptance is pending, not done. After the user answers
   them, the assistant's first message asks what the user does.
 - A non-loopback effective `HOST`, a root user, an invalid key, or a missing
   flag without a terminal stops the run before anything is written.
-- A key entered at setup appears only in the two agents' `.env.secrets`, plus
-  private 0600 staging and backup copies in the same homes while it is written.
+- A key entered at setup is stored in the two agents' `.env.secrets`, plus
+  private 0600 staging and backup copies in the same homes while it is written,
+  and is visible to the agents' own runtime (probe and panes) and its private
+  raw probe capture. Printed diagnostics are redacted on a best-effort basis;
+  split or encoded leakage is deferred.
 - A failed key write that can be undone leaves both files as they were. One that
   cannot be undone, or an interrupted one, leaves a marker; the next run clears
   it if the pair matches, and otherwise stops before any check or launch.

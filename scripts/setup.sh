@@ -433,6 +433,8 @@ reconcile_marker() {
   { IFS= read -r MARKER_A; IFS= read -r MARKER_P; } < "$MARKER"
   [[ "$MARKER_A" =~ $NAME_RE && "$MARKER_P" =~ $NAME_RE ]] \
     || fail "mixed key state: $MARKER does not name two agents. Resolve it by hand, then run again."
+  [[ "$MARKER_A" != "$MARKER_P" ]] \
+    || fail "mixed key state: $MARKER names the same agent twice. Resolve it by hand, then run again."
   mf_a="$AGENTS_HOME/$MARKER_A/.env.secrets"; mf_p="$AGENTS_HOME/$MARKER_P/.env.secrets"
   check_key_path "$MARKER_A"; check_key_path "$MARKER_P"
   check_secrets_file "$mf_a"; check_secrets_file "$mf_p"
@@ -443,6 +445,9 @@ reconcile_marker() {
   if [[ $ka_found -eq $kp_found && "$ka" == "$kp" ]]; then
     CLEAR_MARKER=1
   elif [[ $REPLACE_KEY -eq 1 ]]; then
+    # Replacement is bound to the marker's own two distinct agents.
+    [[ "$MARKER_A" == "$A_NAME" && "$MARKER_P" == "$P_NAME" ]] \
+      || fail "mixed key state belongs to $MARKER_A and $MARKER_P, but this run selects $A_NAME and $P_NAME. Repair the pair named in $MARKER: run setup again with --assistant $MARKER_A --platform $MARKER_P --replace-key. Nothing was written."
     MIXED_MARKER=1
     note "mixed key state in $MARKER_A and $MARKER_P: --replace-key was given, so the new key will replace both."
   else

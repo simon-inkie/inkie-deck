@@ -61,8 +61,10 @@ In scope:
   scaffold: every persona file, `.runtime`, `.claude/settings.json`, the boot
   phrase in `IDENTITY.md`, the role brief in `CLAUDE.md` and the inbox
   directory, all as readable regular files and directories, none a symlink.
-  A foreign, malformed, unreadable or partly built home reads `incomplete`
-  and is left alone for repair. `--kind` gains a third value, `member`,
+  A foreign, malformed, unreadable or partly built home, including an
+  existing empty home directory, reads `incomplete` and is left alone for
+  repair; `absent` means no observed home or inbox entry of any kind.
+  Creation still scaffolds into an existing empty home without repair. `--kind` gains a third value, `member`,
   for agents the platform agent creates, with a short brief in
   `templates/kinds/member.md` naming the assistant. Deck pins only
   `assistant`, so members sort as today.
@@ -214,7 +216,8 @@ are removed afterwards.
 
 On the next run, B finds the marker and compares the two key lines in
 memory, printing neither. Same key in both (or in neither): remove the
-marker in C and continue. Different, unreadable or invalid: exit 1, "mixed key state", nothing
+marker in C and continue. Different or unreadable (or a marker that does not name two distinct
+agents): exit 1, "mixed key state", nothing
 verified or launched, unless `--replace-key` was given, in which case the
 new key is committed to both through the same steps. The limit, stated in
 Known limitations: `boot-agents.sh` run by hand does not read the marker, so
@@ -241,6 +244,7 @@ assistant -> user        the proposal as a decision card: approve, change, skip
 user      -> card        approve
 assistant -> platform    the approved list, quoting the card
 platform                 per approved name: create-agent.sh --status <name>
+                           --kind member --peer <assistant>
                            absent     -> create-agent.sh <name> --kind member
                                          --peer <assistant> --role --model
                            complete   -> skip creation
@@ -318,17 +322,28 @@ Test lane (sandbox, stub runtime):
   any write, naming where it came from.
 - Non-TTY without `--no-key`/`--key-stdin` or names exits 2, nothing written.
 - Run as uid 0 exits 1, nothing written.
+- Key replacement stays bound to the marker's two distinct agents: a run
+  selecting a different pair, or a marker naming one agent twice, is refused
+  before any write and the marker is preserved.
 - An invalid key, or `--replace-key` without a terminal or `--key-stdin`,
   stops the run before install or build: nothing written.
-- A key via `--key-stdin` is in each starter's `.env.secrets` (0600) as an
-  exported line, other lines kept, and in no other file, argument list,
-  child environment or output. A rerun with `--yes` leaves both files
+- A key via `--key-stdin` is stored in each starter's `.env.secrets` (0600) as
+  an exported line, other lines kept. Beyond that it appears only in private
+  0600 staging and backup copies in the same homes while it is written, in the
+  agents' own runtime credential environments (the probe and the panes, which
+  legitimately see it), and in the probe's private raw capture; never in an
+  argument list, setup's own output or any other file. Diagnostic redaction of
+  printed output is best-effort for the shell-assignment forms handled and key
+  shapes; split or encoded leakage is deferred. A rerun with `--yes` leaves both files
   byte-identical.
 - Second rename fails, restore succeeds: both files as they were, no marker,
   exit 1.
 - Second rename fails, restore fails: marker kept, exit 1 reporting a mixed
-  key state; mixed, unreadable or invalid state stops before any probe or
-  launch.
+  key state; mixed or unreadable state stops before any probe or launch. Stored-key
+  parsing covers the shell-assignment forms handled (last `ANTHROPIC_API_KEY=`
+  line, `export`, quotes); identical malformed values are not detected.
+  Different readable states are what `--replace-key` addresses; unreadable or
+  malformed state needs manual repair.
 - Interrupted commit (marker planted with two different key lines): the next
   run exits 1 before verification, verifies and launches nothing; with
   `--replace-key` it commits the new key to both and clears the marker.
@@ -343,7 +358,9 @@ Test lane (sandbox, stub runtime):
 - The platform brief skips boot when no complete approved name remains.
 
 Real-CLI lane (by hand, Linux and WSL):
-- With a signed-in Claude CLI, setup ends with exit 5 and names what is
+- Real signed-in Linux/WSL acceptance is PENDING: it has not been done. With
+  a signed-in Claude CLI, setup should end with exit 5 (reported only when the
+  boot output reports prompts and nothing else is waiting) and names what is
   waiting (folder trust in each pane, and key approval if a key was given);
   setup has answered none of them. Once the user answers them in Deck's
   terminal view, the assistant's first message asks what the user does.
@@ -365,7 +382,8 @@ Core behaviour only.
 - `create-agent.test.ts`: the probe sees an exported variable set only in
   `.env.secrets`; `--person` text is in the assistant's `CLAUDE.md`;
   `--status` for the three states and each fail-closed case; `--kind member`
-  stamps the member brief.
+  stamps the member brief; the platform agent checks a member with
+  `--status <name> --kind member --peer <assistant>`.
 - `boot-agents.test.sh`: the onboarding sentence is in the first-boot prompt
   for `.kind` assistant only, and still only once.
 - Rig: the rig lane above as a declared run and stage.
@@ -533,3 +551,19 @@ For the maintainer (recommendation first):
 - Supersedes: nothing.
 - Commits: see the branch log.
 
+### 2026-11-18: review round 3
+- What changed: `--status` reads absent only when neither the agent home nor
+  its inbox folder exists as any kind of entry (a dangling symlink counts);
+  an empty home, foreign files only, or an inbox alone read incomplete. A
+  mixed `--replace-key` repair is bound to the pair named in the pending
+  marker: a run selecting a different pair is refused before any write and the
+  marker is left intact. The member status example reads
+  `--status <name> --kind member --peer <assistant>`; real signed-in
+  Linux/WSL acceptance is marked pending.
+- Also: marker binding covers the two names being distinct; wording now
+  separates stored-key parsing from malformed-value detection, names the
+  intended runtime credential environments and private staging and capture,
+  calls printed redaction best-effort, and states that exit 5 depends on the
+  boot output reporting prompts. Creation still scaffolds into an existing
+  empty home, which `--status` reads as incomplete.
+- Not tested: real signed-in acceptance (pending).

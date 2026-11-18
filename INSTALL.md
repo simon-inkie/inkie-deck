@@ -1419,7 +1419,7 @@ Whether the platform agent waits for your approval on the decision card, keeps
 to three agents and calls `create-agent.sh --status` before creating anything
 is written in its role brief and followed by the model. Nothing in code stops
 it. The status check itself is deterministic (it reads the agent's files and
-fails closed: anything short of the whole scaffold reads `incomplete`, and an
+fails closed: anything short of the whole scaffold, including an empty home, reads `incomplete` (`absent` means no home or inbox entry at all), and an
 incomplete home is reported for you to repair, never recreated or deleted). The
 agents' own runtime permission prompts still apply. Not measured by the rig.
 
@@ -1437,7 +1437,7 @@ answer none of the model CLI's prompts. Each agent, including each one the
 platform agent creates, stops at its own folder-trust prompt (and key approval,
 if a key is stored) in its terminal view in Deck. Quick setup exits 5 until you
 have answered them and run it again. The rig measures it up to the model CLI
-only (exit 4); with a signed-in CLI it was checked by hand, not by the rig.
+only (exit 4); with a signed-in CLI, acceptance on Linux and WSL is pending. Exit 5 is reported when the agents wait solely on prompts.
 
 **The model selector is hidden after a Quick setup.** It, and the cron admin,
 are gated on Deck's default `MC_USER`, and setup sets `MC_USER` to your login

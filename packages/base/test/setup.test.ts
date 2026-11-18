@@ -411,6 +411,41 @@ describe("the API key", () => {
       for (const text of contents(b)) expect(text).toContain(`export ANTHROPIC_API_KEY=${KEY2}`);
     });
 
+    it("a mixed marker for another pair is never repaired or overwritten by a different selection", () => {
+      const b = seeded();
+      for (const [n, k] of [["ada", KEY], ["beth", KEY2]]) {
+        fs.mkdirSync(path.join(b.agents, n), { recursive: true });
+        fs.writeFileSync(path.join(b.agents, n, ".env.secrets"), `export ANTHROPIC_API_KEY=${k}\n`, { mode: 0o600 });
+      }
+      fs.writeFileSync(marker(b), "ada\nbeth\n");
+      const before = contents(b);
+      const r = setup(b, [...KEYRUN(b), "--replace-key"], { input: `${KEY2}\n` });
+      expect(r.status).toBe(1);
+      expect(r.output).toContain("ada");
+      expect(fs.readFileSync(marker(b), "utf8")).toBe("ada\nbeth\n");
+      expect(contents(b)).toEqual(before);
+      expect(fs.readFileSync(path.join(b.agents, "ada", ".env.secrets"), "utf8")).toContain(KEY);
+      expect(bootArgs(b)).toBe("");
+    });
+
+    it("a marker naming one agent twice is refused with the marker intact", () => {
+      const b = seeded();
+      fs.writeFileSync(marker(b), "inkie\ninkie\n");
+      const r = setup(b, [...KEYRUN(b), "--replace-key"], { input: `${KEY2}\n` });
+      expect(r.status).toBe(1);
+      expect(fs.readFileSync(marker(b), "utf8")).toBe("inkie\ninkie\n");
+      expect(bootArgs(b)).toBe("");
+    });
+
+    it("setup scaffolds into existing empty agent homes without repair", () => {
+      const b = box();
+      runtime(b);
+      for (const n of ["inkie", "doctor"]) fs.mkdirSync(path.join(b.agents, n), { recursive: true });
+      expect(setup(b, FRESH(b)).status).toBe(0);
+      expect(fs.existsSync(path.join(b.agents, "inkie", ".kind"))).toBe(true);
+      expect(fs.existsSync(path.join(b.agents, "doctor", ".kind"))).toBe(true);
+    });
+
     it("a marker over two matching key states is cleared and the run continues", () => {
       const b = seeded();
       fs.writeFileSync(marker(b), "inkie\ndoctor\n");
