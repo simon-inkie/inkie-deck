@@ -43,11 +43,23 @@ any app behaviour, Nudges availability, the logo.
 
 ## Log
 
-- 2026-11-18: README top rewritten as a sales page at the maintainer's request.
-- 2026-11-18: the leak gate denies the memory project's repository name and the
-  maintainer's name in file content, so the README names "the brain" without a
-  link and the video caption carries the title only. Linking it needs a
-  maintainer decision on a narrow gate exemption.
+### 2026-11-18: README top rewritten as a sales page
+- What changed: the opening sections of README.md now lead with one deck for every harness and model, the cognitive-overload story and video, the brain, the origin as an internal tool and not just for code.
+- Why: the maintainer found the first README dry and missing the harness and memory selling points.
+- Supersedes: the opening and feature sections from #213, additive below "Quick install".
+- Commits: 519b3a3 docs(readme): story pass: harnesses, the brain, origin and video (#215)
+
+### 2026-11-18: leak gate limits the brain link and video caption
+- What changed: the README names "the brain" without a link and the video caption carries the title only.
+- Why: the leak gate denies the memory project's repository name and the maintainer's name in file content. Linking needs a maintainer decision on a narrow gate exemption.
+- Supersedes: nothing, additive.
+- Commits: 519b3a3 docs(readme): story pass: harnesses, the brain, origin and video (#215)
+
+### 2026-11-18: copy tightened after independent review
+- What changed: duplicate harness lines removed, the licence line merged, the video uses the full-size thumbnail with a watch cue, and the Quick install caveat points at the harness table.
+- Why: review by a different model found the harness list repeated four times and a letterboxed thumbnail.
+- Supersedes: wording from 519b3a3 only.
+- Commits: 248a885 docs(readme): tighten copy, full-size video thumbnail, dedupe harness lines (#215)
 
 ## Follow-ups
 
