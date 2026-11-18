@@ -2,16 +2,11 @@
 
 **One deck for every harness and every model.**
 
-Inkie Deck is a local-first control room for your team of AI agents. Claude
-Code, Codex and Antigravity agents, whatever model runs them, all report to
-the same place. You stop juggling terminals. The decisions and the actions come
-to you, as cards.
+Inkie Deck is a local-first control room for your AI agents. Run Claude Code,
+Codex and Antigravity side by side, with many more harnesses coming very soon,
+and bring every decision and action back to one place, as cards.
 
-Support for Claude Code, Codex and Antigravity today; many more coming very
-soon.
-
-Inkie Deck is open source under the [Apache-2.0 licence](LICENSE).
-[Contributions are welcome](CONTRIBUTING.md).
+Open source under the [Apache-2.0 licence](LICENSE); [contributions are welcome](CONTRIBUTING.md).
 
 > Running ten agents at once broke my brain. Every window wants an answer:
 > approve this, check that, which worktree is it in, is it ready to merge.
@@ -37,10 +32,9 @@ thread.
 
 ## One deck, any harness, any model
 
-Most tools tie you to one vendor's agent. Deck sits above the harness. Your
-Claude Code agents, your Codex agents and your Antigravity agents share one
-inbox, one Needs you queue and one project board. Pick the best model for each
-job and still have one place to run the team.
+Most tools lock you into one vendor. Deck sits above the harness, so you can
+pick the best model for each job and run every agent through one inbox, one
+Needs you queue and one project board.
 
 Where it is today, plainly:
 
@@ -85,18 +79,16 @@ review panel, and type or dictate replies (optional
 
 ## Not just for code
 
-Deck started as the tool I use to run my own business with a team of agents,
-and that team does far more than write code: marketing, customer outreach,
-support, keeping the CRM straight, anything that helps a business run. If an
-agent can do the work, Deck can manage it.
+Deck runs my own business every day: marketing, customer outreach, support,
+CRM hygiene and code. If an agent can do the work, you can manage it from Deck.
 
 ## Built in daily use, not in a lab
 
-The first commit went in on 3 June 2026. Since then it has run my whole business
-every day, growing a piece at a time as the team needed it. Deck is the open
-source part of that tool, and I now run on the open source version myself. It
-looks simple. Underneath it is not, and that is the point: the complexity is
-the tool's problem, not yours.
+Deck began as an internal tool. The first commit went in on 3 June 2026 and it
+has run my business every day since, growing a piece at a time as the team
+needed it. This is the open source part of that tool, and I now run on this
+open source version myself. It looks simple. Underneath it is not, and that is
+the point: the complexity is the tool's problem, not yours.
 
 It is built to be built on. Your agents can extend it with you, and a plugin
 system is coming.
@@ -121,14 +113,14 @@ agent scaffold can wire it into each new agent: see
 
 ## Why I built it
 
-I gave it a name: agentic cognitive overload. Run enough agents and you drown
-in streams of reasoning and queues of approvals, all needing the same brain. I
-think it is common, and not only among coders. Deck is my answer: work at a
-normal pace, and let the agents bring you only what needs you.
+Run enough agents and you hit what I call agentic cognitive overload: streams
+of reasoning and queues of approvals, all competing for the same human brain.
+It is not only a coder's problem. Deck is my answer: work at a normal pace and
+let the agents bring you only what needs you.
 
-[![Agentic Cognitive Overload: Running 10 AI Agents Broke My Brain](https://i.ytimg.com/vi/EMOwJOWr0DU/hqdefault.jpg)](https://www.youtube.com/watch?v=EMOwJOWr0DU)
+[![Watch: Agentic Cognitive Overload: Running 10 AI Agents Broke My Brain](https://i.ytimg.com/vi/EMOwJOWr0DU/maxresdefault.jpg)](https://www.youtube.com/watch?v=EMOwJOWr0DU)
 
-*Agentic Cognitive Overload: Running 10 AI Agents Broke My Brain (five minutes).*
+*Watch (5 min): Agentic Cognitive Overload: Running 10 AI Agents Broke My Brain.*
 
 ## Why "Deck"
 
@@ -158,9 +150,8 @@ Once the assistant starts, its first message asks what you do and what you would
 five-minute sandbox with fixture data, a production install, and live agents in
 tmux. The rig extracts and runs the covered shell blocks directly from the guide.
 
-Quick setup, the scaffold and persona verification support Claude Code. The
-base can start Codex and Antigravity panes and send them inbox messages, but
-does not yet support their persona files or verification. To add another agent,
+Quick setup targets Claude Code today; see the harness table above for Codex
+and Antigravity. To add another agent,
 see [docs/adding-an-agent.md](docs/adding-an-agent.md).
 
 ## How this repository got its code
