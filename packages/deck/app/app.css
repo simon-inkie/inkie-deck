@@ -21,8 +21,8 @@
  * upstream token file to reconcile against and no generator step. Change a
  * value here and nowhere else.
  * Light mode only in v1 (warm cream is the brand identity). Retro is a seasoning:
- * clean shadcn base, halftone whisper on the app bg, hard-offset shadow reserved
- * for the decision card. No em-dashes in this file (check:dashes gate).
+ * clean shadcn base, hard-offset shadow reserved for the decision card.
+ * No em-dashes in this file (check:dashes gate).
  */
 
 :root {
@@ -106,12 +106,6 @@
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
-  }
-  /* halftone whisper on the app background (retro seasoning, ~3%) */
-  body {
-    background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
-    background-size: 4px 4px;
-    background-attachment: fixed;
   }
   h1,
   h2,

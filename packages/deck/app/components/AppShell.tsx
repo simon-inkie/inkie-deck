@@ -4,8 +4,7 @@
  * Top bar carries the Inkie Deck wordmark, a reserved (stubbed) Projects
  * tab, and the needs-you bell - a notifications dropdown listing the open
  * decisions to action now, each deep-linking to its message (a requirement
- * from the operator). The body is transparent so the cream + halftone
- * paper texture from app.css whispers through the centre pane.
+ * from the operator). The centre pane lets the cream background show through.
  *
  * Responsive layout (RESPONSIVE-RETROFIT-PLAN):
  *   - Under md: sidebar hidden; horizontal agent strip appears below the top bar.
