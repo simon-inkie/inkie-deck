@@ -216,10 +216,12 @@ are removed afterwards.
 
 On the next run, B finds the marker and compares the two key lines in
 memory, printing neither. Same key in both (or in neither): remove the
-marker in C and continue. Different or unreadable (or a marker that does not name two distinct
-agents): exit 1, "mixed key state", nothing
-verified or launched, unless `--replace-key` was given, in which case the
-new key is committed to both through the same steps. The limit, stated in
+marker in C and continue. Different readable keys: exit 1, "mixed key state", nothing verified or
+launched, unless `--replace-key` was given and the run selects the same two
+distinct starters the marker names, in which case the new key is committed to
+both through the same steps. An unreadable or malformed marker or key file,
+or a marker that does not name two distinct agents, exits 1 and needs manual
+repair; `--replace-key` does not address it. The limit, stated in
 Known limitations: `boot-agents.sh` run by hand does not read the marker, so
 starting agents outside setup while it exists can use a mixed pair.
 - Both documents carry the warning: `ANTHROPIC_API_KEY` takes precedence over
@@ -567,3 +569,7 @@ For the maintainer (recommendation first):
   boot output reporting prompts. Creation still scaffolds into an existing
   empty home, which `--status` reads as incomplete.
 - Not tested: real signed-in acceptance (pending).
+- Docs-only follow-up: replacement is limited to a readable mixed pair
+  matching the marker's two distinct starters. "Removal" in the marker-binding
+  rule means removal of the marker, not a key-removal command (setup has none).
+  INSTALL.md states exit 5 only conditionally.

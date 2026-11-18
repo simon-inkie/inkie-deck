@@ -1435,9 +1435,10 @@ you start would then inherit.
 **Quick setup's first-run prompts are yours.** Setup and the platform agent
 answer none of the model CLI's prompts. Each agent, including each one the
 platform agent creates, stops at its own folder-trust prompt (and key approval,
-if a key is stored) in its terminal view in Deck. Quick setup exits 5 until you
-have answered them and run it again. The rig measures it up to the model CLI
-only (exit 4); with a signed-in CLI, acceptance on Linux and WSL is pending. Exit 5 is reported when the agents wait solely on prompts.
+if a key is stored) in its terminal view in Deck. Quick setup exits 5 only when
+the boot output reports recognised prompts and nothing else is waiting; answer
+them in Deck, then run it again. The rig measures it up to the model CLI only
+(exit 4); acceptance with a signed-in CLI on Linux and WSL is pending.
 
 **The model selector is hidden after a Quick setup.** It, and the cron admin,
 are gated on Deck's default `MC_USER`, and setup sets `MC_USER` to your login
