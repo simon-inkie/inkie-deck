@@ -11,8 +11,11 @@ sandbox on fixture data through a real production install to live agents in
 tmux. Its shell blocks are extracted from the document and executed on every
 rig run, so what it tells you to type is what was measured. To add another
 agent once you are running, see
-[docs/adding-an-agent.md](docs/adding-an-agent.md). The rest of this file is
-about the repository itself.
+[docs/adding-an-agent.md](docs/adding-an-agent.md).
+
+**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup, the agent scaffold and the persona check support [Claude Code](https://github.com/anthropics/claude-code) today. [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) panes can be booted and sent inbox messages by the base, but their persona files and verification are not yet supported.
+
+The rest of this file is about the repository itself.
 
 ## How this repository got its code
 

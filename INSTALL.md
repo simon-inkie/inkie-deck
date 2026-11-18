@@ -324,6 +324,8 @@ Deck needs Node on a current LTS line, pnpm (via corepack), and a **git
 clone**. A downloaded ZIP or a release tarball is not enough: two of the test
 suites and the leak gate shell out to git against the repository root.
 
+**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup, the agent scaffold and the persona check support [Claude Code](https://github.com/anthropics/claude-code) today. [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) panes can be booted and sent inbox messages by the base, but their persona files and verification are not yet supported.
+
 Four more tools matter for one thing each, and are easy to miss because every
 machine that has run this so far already had them:
 

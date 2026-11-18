@@ -123,7 +123,7 @@ exit "$(cat "${root}/boot.rc" 2>/dev/null || echo 0)"
   );
   write(
     path.join(b.stubBin, "pnpm"),
-    `#!/bin/sh\necho "$@" >> "${root}/pnpm.log"\nwhile [ -e "${root}/pnpm.hold" ]; do sleep 0.2; done\n`,
+    `#!/bin/sh\necho "$@" >> "${root}/pnpm.log"\nwhile [ -e "${root}/pnpm.hold" ]; do sleep 0.2; done\n[ -n "$PNPM_NOISE" ] && echo "$PNPM_NOISE"\n[ -n "$PNPM_FAIL" ] && { echo "boom: $PNPM_FAIL"; exit 1; }\nexit 0\n`,
   );
   return b;
 }
@@ -465,6 +465,30 @@ describe("exit codes and boot", () => {
     expect(r.output).toContain("were not started");
     expect(fs.existsSync(path.join(b.root, "deck-up"))).toBe(true);
     expect(bootArgs(b)).toBe("");
+    // Said once, plainly: what is needed, what is supported, where to get it.
+    expect(r.output).toContain("A supported agent CLI must be installed and signed in");
+    expect(r.output).toContain("https://github.com/anthropics/claude-code");
+    expect(r.output).toContain("not yet");
+    expect(r.output).toContain("by asking what you do");
+    expect(r.output.split("No agent CLI was found").length - 1).toBe(1);
+  });
+
+  it("install and build noise goes to a log; a failure shows the tail and still fails", () => {
+    const b = box();
+    runtime(b);
+    const args = FRESH(b).filter((a) => a !== "--no-install" && a !== "--no-build");
+    const quiet = setup(b, args, { env: { PNPM_NOISE: "Future Flag Warning noise" } });
+    expect(quiet.status, quiet.output).toBe(0);
+    expect(quiet.output).not.toContain("Future Flag Warning noise");
+    expect(quiet.output).toContain("setup-install.log");
+    expect(fs.readFileSync(path.join(b.deck, "logs", "setup-install.log"), "utf8")).toContain("Future Flag Warning noise");
+
+    const c = box();
+    runtime(c);
+    const bad = setup(c, FRESH(c).filter((a) => a !== "--no-install"), { env: { PNPM_FAIL: "no network" } });
+    expect(bad.status).toBe(1);
+    expect(bad.output).toContain("boom: no network");
+    expect(bad.output).toContain("setup-install.log");
   });
 
   it("a failed persona check: exit 3, boot not called", () => {

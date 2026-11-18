@@ -1370,7 +1370,10 @@ if [[ "$VERIFY" == "no" ]]; then
 fi
 
 if ! command -v claude >/dev/null 2>&1; then
-  report_cannot_verify "No \`claude\` on PATH, so there was nothing to ask."
+  report_cannot_verify "No \`claude\` on PATH, so there was nothing to ask." \
+    "A supported agent CLI must be installed and signed in. Verification supports:" \
+    "  Claude Code   https://github.com/anthropics/claude-code" \
+    "Codex and Antigravity agents are not yet verified by this check."
 fi
 
 . "$SCRIPT_DIR/claude-binary-check.sh"

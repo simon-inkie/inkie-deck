@@ -522,9 +522,27 @@ fi
 
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
+# Install and build are noisy (update boxes, ignored-build-script lists,
+# framework warnings), so their output goes to a log under the deck home and
+# setup shows one status line. A failure prints the tail of the log, and the
+# exit status is still the command's own: nothing is hidden, only moved.
+LOG_DIR="$DECK_HOME/logs"
+run_logged() {  # <label> <log name> <command...>
+  local label="$1" log="$LOG_DIR/$2" rc
+  shift 2
+  mkdir -p "$LOG_DIR" 2>/dev/null || { "$@"; return $?; }
+  say "setup: $label (log: $log)"
+  (cd "$REPO" && "$@") > "$log" 2>&1
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf 'setup: %s failed (exit %s). Last lines of %s:\n' "$label" "$rc" "$log" >&2
+    tail -n 30 "$log" >&2
+  fi
+  return $rc
+}
+
 if [[ $NO_INSTALL -eq 0 ]]; then
-  say "setup: pnpm install"
-  (cd "$REPO" && pnpm install) || fail "pnpm install failed"
+  run_logged "pnpm install" setup-install.log pnpm install || fail "pnpm install failed; see $LOG_DIR/setup-install.log"
 fi
 
 for var in INBOX_ROOT ATTACHMENTS_ROOT PROJECTS_ROOT DATA_ROOT; do
@@ -547,8 +565,7 @@ else
 fi
 
 if [[ $NO_BUILD -eq 0 ]]; then
-  say "setup: pnpm build"
-  (cd "$REPO" && pnpm build) || fail "pnpm build failed"
+  run_logged "pnpm build" setup-build.log pnpm build || fail "pnpm build failed; see $LOG_DIR/setup-build.log"
 fi
 
 # The effective settings go to every child explicitly, so Deck, the scaffold,
@@ -683,8 +700,15 @@ release_lock
 verify_one() {
   env "${child_env[@]}" "$CREATE" --verify-only "$1" "${CREATE_COMMON[@]}" < /dev/null
 }
-verify_one "$A_NAME"; va=$?
-verify_one "$P_NAME"; vp=$?
+# With no agent CLI on PATH there is nothing to ask: say so once, plainly, at
+# the end, instead of two near-identical CANNOT VERIFY reports.
+NO_CLI=0
+if ! command -v claude >/dev/null 2>&1; then
+  NO_CLI=1; va=4; vp=4
+else
+  verify_one "$A_NAME"; va=$?
+  verify_one "$P_NAME"; vp=$?
+fi
 VCODE=0
 for v in "$va" "$vp"; do
   case "$v" in
@@ -754,18 +778,33 @@ fi
 # E. report
 # ---------------------------------------------------------------------------
 
+no_cli_help() {
+  say ""
+  say "No agent CLI was found on PATH, so the agents could not be checked or started."
+  say "A supported agent CLI must be installed and signed in. Quick setup supports:"
+  say "  Claude Code   https://github.com/anthropics/claude-code"
+  say "Codex (https://github.com/openai/codex) and Antigravity (https://antigravity.google/docs/install?tab=cli)"
+  say "can be booted and messaged by the base once an agent is set up for them by hand,"
+  say "but Quick setup does not scaffold or verify them: not yet."
+  say "Install Claude Code, sign in by running claude once, then run setup again."
+  say "Once the agents start, $A_NAME opens in its Deck thread by asking what you do,"
+  say "and is then expected to propose up to three more agents on a card for you to approve."
+}
+
 say ""
 if [[ $NO_START -eq 1 ]]; then
   case "$FINAL" in
     0) say "Both agents verified. Deck and the agents were not started (--no-start): run setup again without it." ;;
-    4) say "Both agents exist but could not be verified (install and sign in to the model CLI). Deck and the agents were not started (--no-start)." ;;
+    4) say "Both agents exist but could not be verified. Deck and the agents were not started (--no-start)."
+       [[ $NO_CLI -eq 0 ]] && say "Install and sign in to the model CLI, then run setup again." || no_cli_help ;;
     3) say "A starter agent failed its persona check. Deck and the agents were not started (--no-start). See the output above." ;;
   esac
 else
   case "$FINAL" in
     0) say "Setup is done. Deck is running at $URL and $A_NAME and $P_NAME are started and ready." ;;
     5) say "Deck is running at $URL. $A_NAME and $P_NAME are started and waiting on you at their own prompts (folder trust, and key approval if you stored a key). Answer them in Deck's terminal view for each agent; setup answered none. Run setup again afterwards to check." ;;
-    4) say "Deck is running at $URL. Your agents exist but were not started: install and sign in to the model CLI, then run setup again." ;;
+    4) say "Deck is running at $URL. Your agents exist but were not started."
+       [[ $NO_CLI -eq 0 ]] && say "Install and sign in to the model CLI, then run setup again." || no_cli_help ;;
     3) say "Deck is running at $URL. A starter agent failed its persona check, so the agents were not started. See the output above, then run setup again." ;;
     1) say "Setup failed while starting the agents. Deck is running at $URL. See the output above, then run setup again." ;;
   esac

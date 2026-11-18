@@ -573,3 +573,47 @@ For the maintainer (recommendation first):
   matching the marker's two distinct starters. "Removal" in the marker-binding
   rule means removal of the marker, not a key-removal command (setup has none).
   INSTALL.md states exit 5 only conditionally.
+
+### 2026-11-18: review round 4 (quiet output, no-CLI text, runtimes)
+- Setup sends `pnpm install` and `pnpm build` output to
+  `<deck home>/logs/setup-install.log` and `setup-build.log`, shows one status
+  line with the log path, and prints the last 30 lines on failure. Nothing is
+  hidden: the exit status is the command's own.
+- With no `claude` on PATH setup skips the two verify calls, still exits 4,
+  and prints one plain block: a supported agent CLI must be installed and
+  signed in, which are supported, the verified link, that Codex and
+  Antigravity are not yet scaffolded or verified by Quick setup, and what the
+  first conversation will look like (the assistant opens by asking what the
+  user does, then is expected to propose up to three agents on a card).
+  `create-agent.sh`'s own CANNOT VERIFY text names the same.
+- Links come from the CLIs' own official docs (read with ctx7): Claude Code
+  `https://github.com/anthropics/claude-code`, Codex
+  `https://github.com/openai/codex`, Antigravity
+  `https://antigravity.google/docs/install?tab=cli`.
+- Naming (`ask_name` and its wording) is untouched.
+
+Runtimes, read from the code (not memory):
+
+| runtime | scaffold | boot | verify | live inbox | gaps |
+| --- | --- | --- | --- | --- | --- |
+| claude | yes (CLAUDE.md, imports) | yes: pinned session, first-boot prompt, `.env.secrets` sourced | yes: `claude -p` probe from the agent home | yes | none known |
+| codex | partial: `--runtime codex` writes `.runtime`, but only CLAUDE.md-style persona files; no AGENTS.md | yes: resume by workspace session, update-dialog dismissal, AGENT_NAME/ROLE env | no: the probe always runs `claude`, so a codex agent is not verified | yes (paste-collapse and approval-dialog handling) | persona not delivered to Codex; not verified; Quick setup is Claude only |
+| agy (Antigravity) | partial: same as codex; no GEMINI.md | generic only: `agy` is launched plainly, no resume, no readiness-specific handling beyond the shared pane check | no | yes (runtime gate admits it) | persona not delivered; no resume; not verified; Quick setup is Claude only |
+
+Docs claim only the Claude Code support above and say "not yet" for the rest.
+
+### Follow-up (scoped, not built): agent CLI detection in Deck
+- Fit: a banner in the app shell, shown when no supported CLI is found.
+  Server side, a new `packages/deck/app/lib/runtime-detect.server.ts` runs
+  `command -v` for the three fixed names only (no arbitrary binaries, no
+  execution of anything found, no `--version`), cached for about a minute
+  because the shell loader revalidates every 3 seconds. `routes/shell.tsx`
+  adds the result to its view-model; `components/AppShell.tsx` renders a small
+  `RuntimeBanner`, dismissible, linking to the install pointers.
+- Caveat: it reports Deck's own PATH, not the agents' panes' PATH, and cannot
+  know that a CLI is signed in without running it.
+- Size: about 50 lines for the module, 15 in the shell loader and 30 for the
+  banner and its test, so roughly 150 to 200 lines across four files, in the
+  shell that every page uses. Over the 150-line, risk-free bar, so it is not
+  built; it needs approval.
+
