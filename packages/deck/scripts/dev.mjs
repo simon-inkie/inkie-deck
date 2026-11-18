@@ -78,6 +78,11 @@ const env = {
   // sandbox that "has no tmux, no agents". An explicit MC_TMUX_ENABLED export
   // still wins via the process.env spread above.
   ...(externalInbox ? {} : { MC_TMUX_ENABLED: process.env.MC_TMUX_ENABLED || "false" }),
+  // Nudges OFF on the internal sandbox too. It is on by default everywhere
+  // else, and it writes the real crontab and real ~/agents/<name>/bin scripts
+  // of whoever runs the sandbox, which INSTALL.md promises touches nothing
+  // outside the repository. An explicit export still wins, as above.
+  ...(externalInbox ? {} : { MC_CRON_ADMIN_ENABLED: process.env.MC_CRON_ADMIN_ENABLED || "false" }),
   VOICE_PROXY_URL: voiceProxyUrl,
   VOICE_PROXY_PORT: voiceProxyPort,
 };

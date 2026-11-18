@@ -766,6 +766,34 @@ export function deleteCron(
 }
 
 // ---------------------------------------------------------------------------
+// crontabAvailable
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether an executable `crontab` is on PATH. Lets the Nudges page say so
+ * plainly and refuse writes up front on a machine without cron, instead of
+ * listing nothing (readCrontab maps every failure to "empty") and then
+ * failing a create half way through, after the script files were written.
+ *
+ * Looks at PATH only; it never runs `crontab`, so it cannot read or change
+ * anyone's crontab. Tests pass their own PATH.
+ */
+export function crontabAvailable(pathEnv: string | undefined = process.env["PATH"]): boolean {
+  if (!pathEnv) return false;
+  return pathEnv
+    .split(path.delimiter)
+    .filter((dir) => dir !== "")
+    .some((dir) => {
+      try {
+        fs.accessSync(path.join(dir, "crontab"), fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // listAgentDirs (exported for use in route loaders)
 // ---------------------------------------------------------------------------
 

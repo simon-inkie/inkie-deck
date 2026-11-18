@@ -21,8 +21,11 @@
  * invisible unless you can see the arguments.
  *
  * Covers:
- *   - loader: 404 when the instance gate is off; seam passthrough when on.
- *   - action gate: every intent refused off-instance, seam never called.
+ *   - loader: 404 when the instance gate is off; seam passthrough when on,
+ *     for any MC_USER; no crontab read when `crontab` is missing.
+ *   - action gate: every intent refused when opted out, seam never called.
+ *   - degradation: missing `crontab` and a throwing seam both come back as
+ *     { ok: false } with a message, never a throw.
  *   - create: required-field and schedule validation before the seam;
  *     enabled/targetType coercion; schedule normalisation; result passthrough.
  *   - edit: same guards, plus the id requirement.
@@ -41,6 +44,7 @@ import type { CronEntry } from "~/lib/cron.server";
 vi.mock("~/lib/cron.server", () => ({
   listCrons: vi.fn((): CronEntry[] => []),
   listAgentDirs: vi.fn((): string[] => []),
+  crontabAvailable: vi.fn((): boolean => true),
   createCron: vi.fn(() => ({ ok: true as const, id: "new-id", scriptPath: "/tmp/new-id.sh" })),
   updateCron: vi.fn(() => ({ ok: true as const, id: "abc123", scriptPath: "/tmp/abc123.sh" })),
   setEnabled: vi.fn(() => ({ ok: true as const })),
@@ -66,7 +70,8 @@ function restore(key: string, value: string | undefined): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default to an admin instance: MC_USER unset means "alex".
+  seam.crontabAvailable.mockReturnValue(true);
+  // Default instance: Nudges on, no opt-out set.
   delete process.env["MC_USER"];
   delete process.env["MC_CRON_ADMIN_ENABLED"];
 });
@@ -162,22 +167,10 @@ describe("scheduler loader - instance gate", () => {
     }
   });
 
-  it("throws a 404 for a user who is not a trusted principal", async () => {
-    process.env["MC_CRON_ADMIN_ENABLED"] = "";
-    process.env["MC_USER"] = "quill";
-
-    try {
-      await runLoader();
-      expect.unreachable("loader should have thrown");
-    } catch (e) {
-      expect((e as Response).status).toBe(404);
-    }
-  });
-
   it("reads NOTHING when the gate is closed", async () => {
     // Refusing after the read would still have shelled out to `crontab -l` on
     // an instance that is not allowed to know what is in it.
-    process.env["MC_USER"] = "quill";
+    process.env["MC_CRON_ADMIN_ENABLED"] = "0";
 
     await expect(runLoader()).rejects.toBeInstanceOf(Response);
     expect(seam.listCrons).not.toHaveBeenCalled();
@@ -210,13 +203,24 @@ describe("scheduler loader - seam passthrough", () => {
     expect(data.agents).toEqual([]);
   });
 
-  it("loads for MC_USER=robin (the second trusted principal)", async () => {
-    process.env["MC_USER"] = "robin";
+  it("loads by default for any MC_USER", async () => {
+    process.env["MC_USER"] = "quill";
     seam.listCrons.mockReturnValue([cronEntry()]);
 
     const data = await runLoader();
 
     expect(data.crons).toHaveLength(1);
+    expect(data.crontabOk).toBe(true);
+  });
+
+  it("reports a missing crontab and does not try to read one", async () => {
+    seam.crontabAvailable.mockReturnValue(false);
+
+    const data = await runLoader();
+
+    expect(data.crontabOk).toBe(false);
+    expect(data.crons).toEqual([]);
+    expect(seam.listCrons).not.toHaveBeenCalled();
   });
 });
 
@@ -233,8 +237,9 @@ describe("scheduler action - instance gate", () => {
   ];
 
   for (const [name, fields] of intents) {
-    it(`refuses ${name} on a non-admin instance and never reaches the seam`, async () => {
+    it(`refuses ${name} when MC_CRON_ADMIN_ENABLED is an explicit off`, async () => {
       process.env["MC_USER"] = "quill";
+      process.env["MC_CRON_ADMIN_ENABLED"] = "false";
 
       const result = await runAction(fields);
 
@@ -245,14 +250,13 @@ describe("scheduler action - instance gate", () => {
       expectNoWrites();
     });
 
-    it(`refuses ${name} when MC_CRON_ADMIN_ENABLED is an explicit off`, async () => {
-      // The kill switch beats the derived default: alex is a trusted principal
-      // and is still refused.
-      process.env["MC_CRON_ADMIN_ENABLED"] = "false";
+    it(`refuses ${name} with a clear message when crontab is missing`, async () => {
+      seam.crontabAvailable.mockReturnValue(false);
 
       const result = await runAction(fields);
 
       expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("crontab was not found");
       expectNoWrites();
     });
   }
@@ -260,7 +264,7 @@ describe("scheduler action - instance gate", () => {
   it("does not even read the body when the gate is closed", async () => {
     // The gate is checked before request.formData(), so a refused request is
     // refused whatever it was carrying.
-    process.env["MC_USER"] = "quill";
+    process.env["MC_CRON_ADMIN_ENABLED"] = "0";
 
     const request = makeRequest(validCreate());
     const result = await action({
@@ -273,13 +277,25 @@ describe("scheduler action - instance gate", () => {
     expect(request.bodyUsed).toBe(false);
   });
 
-  it("allows robin through to the seam", async () => {
-    process.env["MC_USER"] = "robin";
+  it("allows any MC_USER through to the seam by default", async () => {
+    process.env["MC_USER"] = "quill";
 
     const result = await runAction(validCreate());
 
     expect(result.ok).toBe(true);
     expect(seam.createCron).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns a throwing seam into { ok: false } instead of a 500", async () => {
+    // e.g. `crontab -` rejecting the write, or an unwritable bin/ directory.
+    seam.createCron.mockImplementationOnce(() => {
+      throw new Error("crontab: write failed");
+    });
+
+    const result = await runAction(validCreate());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("crontab: write failed");
   });
 });
 

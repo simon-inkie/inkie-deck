@@ -607,8 +607,8 @@ questions, and only the second one matters.
 
 Two things this tier does not do. It is reachable only from the machine it
 runs on (the dev server binds loopback, and a container port map published
-against it gets nothing); and it has no tmux, no agents and no clock that
-moves. For those, keep going.
+against it gets nothing); and it has no tmux, no agents, no Nudges and no
+clock that moves. For those, keep going.
 
 ## 4. Run it for real
 
@@ -1195,6 +1195,27 @@ The reply is now in the thread, which you can see from Deck:
 ```sh
 curl -sS http://localhost:4242/threads/inkie | grep -c 'the whole protocol'
 ```
+
+### Scheduled nudges
+
+The Nudges page (`/scheduler`, linked from the top bar) sends an agent a
+prompt, or runs a shell script, on a cron schedule. Each nudge is a line in the
+system crontab of the user Deck runs as, tagged `# MC-CRON:<id>`, plus a script
+in `~/agents/<agent>/bin/`. Lines without that tag are never touched. It needs
+`crontab` on `PATH`; without it the page says so and saves nothing. An agent
+nudge is pasted into the agent's window in the `agents` tmux session, and if
+that session is not running when it fires, the run is skipped and the page
+shows it as fired but not delivered.
+
+Nudges is on by default. It can change your crontab, so if you do not want
+that, turn it off:
+
+```sh
+echo "MC_CRON_ADMIN_ENABLED=0" >> packages/deck/.env
+```
+
+That removes the nav entry, makes the page and `api/cron` answer 404, and
+refuses every write. `pnpm dev` already turns it off for the sandbox.
 
 ### What is still missing, and it is the important part
 

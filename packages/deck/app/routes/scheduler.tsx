@@ -2,8 +2,15 @@
  * scheduler.tsx - Scheduler admin page.
  *
  * Lists managed schedules (MC-CRON-tagged crontab lines) and provides a form to
- * create new ones. Hidden entirely + server-refused when not on the operator's
- * instance (cronAdminEnabled = false).
+ * create new ones. On by default; hidden entirely + server-refused when the
+ * instance opts out (MC_CRON_ADMIN_ENABLED=0, so cronAdminEnabled = false).
+ *
+ * Degrades rather than crashes: with no `crontab` on PATH the page says so and
+ * every write is refused before anything is written, and a seam call that
+ * throws (crontab rejecting the write, an unwritable bin/ directory) comes
+ * back as { ok: false } with a message instead of a 500. A missing tmux
+ * session is a fire-time condition, not a page one: the nudge script records
+ * that it fired and exits without delivering, which the Delivered field shows.
  *
  * Internal names (cron.server, cron-validate, MC-CRON tag, cronAdminEnabled,
  * api/cron path) are preserved. This file is the user-facing rename only.
@@ -20,7 +27,7 @@
 import { useState, useEffect } from "react";
 import { useFetcher } from "react-router";
 import type { Route } from "./+types/scheduler";
-import { listCrons, listAgentDirs } from "~/lib/cron.server";
+import { listCrons, listAgentDirs, crontabAvailable } from "~/lib/cron.server";
 import { cronAdminEnabled } from "~/lib/instance.server";
 import {
   SCHEDULE_PRESETS,
@@ -40,14 +47,20 @@ import { Badge } from "~/components/ui/badge";
 // ---------------------------------------------------------------------------
 
 export async function loader(_args: Route.LoaderArgs) {
-  // Gate: only the operator's instance can see/use this page.
+  // Gate: on unless this instance opted out with MC_CRON_ADMIN_ENABLED=0.
   if (!cronAdminEnabled(process.env)) {
     throw new Response("Not found", { status: 404 });
   }
-  const crons = listCrons();
+  const crontabOk = crontabAvailable();
+  // Without crontab there is nothing to list; skip the read rather than let
+  // readCrontab's "failure means empty" look like "no nudges yet".
+  const crons = crontabOk ? listCrons() : [];
   const agents = listAgentDirs();
-  return { crons, agents };
+  return { crons, agents, crontabOk };
 }
+
+const CRONTAB_MISSING_ERROR =
+  "crontab was not found on this machine, so nudges cannot be saved. Install cron (for example the cron or cronie package) and reload.";
 
 // ---------------------------------------------------------------------------
 // Action (thin wrapper - same gate as api.cron.tsx, inline for simplicity)
@@ -57,6 +70,20 @@ export async function action({ request }: Route.ActionArgs) {
   if (!cronAdminEnabled(process.env)) {
     return { ok: false as const, error: "Nudges admin is not available on this instance." };
   }
+  if (!crontabAvailable()) {
+    return { ok: false as const, error: CRONTAB_MISSING_ERROR };
+  }
+  try {
+    return await runIntent(request);
+  } catch (e) {
+    return {
+      ok: false as const,
+      error: `Could not update the crontab: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+async function runIntent(request: Request) {
   // Proxy to cron.server functions directly (same seam, no HTTP round-trip needed).
   const { createCron, updateCron, setEnabled, deleteCron } = await import("~/lib/cron.server");
   const formData = await request.formData();
@@ -118,7 +145,7 @@ export async function action({ request }: Route.ActionArgs) {
 // ---------------------------------------------------------------------------
 
 export default function SchedulerPage({ loaderData }: Route.ComponentProps) {
-  const { crons, agents } = loaderData;
+  const { crons, agents, crontabOk } = loaderData;
   const fetcher = useFetcher();
   const [schedulePreset, setSchedulePreset] = useState("daily-0730");
   const [customExpr, setCustomExpr] = useState("");
@@ -157,8 +184,16 @@ export default function SchedulerPage({ loaderData }: Route.ComponentProps) {
         <p className="mt-1 text-sm text-muted-foreground">
           System crontab entries that survive CC restarts and compacts.
           Each entry writes a nudge script to the target agent&apos;s bin/ directory.
+          Agent nudges are delivered into the agent&apos;s tmux window; if tmux is not
+          running when one fires, that run is skipped and shows as not delivered.
         </p>
       </div>
+
+      {!crontabOk && (
+        <p role="alert" className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {CRONTAB_MISSING_ERROR}
+        </p>
+      )}
 
       {/* Create form */}
       <Card>
