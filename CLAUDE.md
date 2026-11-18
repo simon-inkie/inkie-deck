@@ -1,7 +1,6 @@
 # inkie-deck
 
-A web control plane for a fleet of AI agents, copied in from the working
-platform and cleaned.
+A local-first control room for a team of AI agents.
 
 ## Shared rules
 

@@ -11,12 +11,12 @@ place each, so read these before your first change:
 
 - `packages/deck`: the React Router web app, with vitest unit tests and
   Playwright journeys.
-- `packages/base`: the agent protocol (`docs/protocol.md`), persona templates and
+- `packages/base`: the agent protocol (`packages/base/docs/protocol.md`), persona templates and
   the `inbox` CLI. It never imports from `packages/deck`; `pnpm check:boundaries`
   enforces that.
 - `.specs/<issue-number>-<slug>/`: one SPEC per ticket, written first and updated
   as the work happens.
-- `scripts/`: the gates (`leak-gate.mjs`, licence and dash checks) and setup.
+- `scripts/`: the root gates (leak, licence, lib-version) and `setup.sh`. The dash check is `packages/deck/scripts/check-dashes.mjs`.
 
 ## How to work
 

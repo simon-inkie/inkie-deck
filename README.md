@@ -26,8 +26,6 @@ Inkie Deck is open source under the [Apache-2.0 licence](LICENSE).
   the details when you need context.
 - **Draft and review in the browser.** Edit Markdown drafts saved in your
   workspace, and open linked documents in the review panel alongside the thread.
-- **Schedule recurring prompts.** Use Nudges on an operator instance to send
-  messages to agents on a schedule.
 - **Type or dictate a reply.** The compose box supports optional
   [voice dictation](INSTALL.md#voice-dictation-optional) with an API key.
 
