@@ -97,8 +97,8 @@ system is coming.
 
 ## Give your agents a memory that lasts
 
-Deck pairs with the brain, our open source long-term memory for AI coding
-agents, in use since April 2026:
+Deck pairs with [the Brain](https://github.com/simon-inkie/inkie-the-brain), our
+open source long-term memory for AI coding agents, in use since April 2026:
 
 - **Survives compaction.** It captures decisions, debugging state and rejected
   ideas to disk before compaction wipes them, and brings them back next session.
@@ -109,7 +109,7 @@ agents, in use since April 2026:
   the whole team should know.
 - **Filesystem-first.** Plain files you can read, edit and back up.
 
-Deck's quick setup does not install the brain yet. If you have it built, the
+Deck's quick setup does not install the Brain yet. If you have it built, the
 agent scaffold can wire it into each new agent: see
 [give the agent a memory loop](INSTALL.md#optional-give-the-agent-a-memory-loop).
 
