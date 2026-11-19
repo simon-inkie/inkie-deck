@@ -28,7 +28,8 @@ export const EXECUTABLE_LANGS = ["sh"];
  * container cannot run and which the document therefore marks as unverified.
  * `sh-manual` is the "Keep it running" section: a container has no systemd
  * user manager, and a detached second Deck would collide with the one the run
- * already started. The document says those blocks are not executed.
+ * already started. The optional Brain setup is also manual: the rig does not
+ * have a signed-in model CLI. The document says those blocks are not executed.
  * `powershell` is the Windows side of the WSL section: a Linux container
  * cannot run it, and the document says so.
  * A language outside this list fails the shape stage: unhandled, it would be
@@ -122,6 +123,7 @@ export const SKIPPED = {
   "1-prerequisites/sh#4": "git clone of the real URL: no credentials in the container, and the rig copies the tree in instead",
   "name-your-assistant-first-run/sh#1": "creates the default agent names inkie and doctor, which the create-an-agent block after it also creates, so the one-container run of the whole document cannot include both; first-run.sh itself is executed by the quick-setup run",
   "quick-setup/sh#1": "the interactive form: it asks for names and a key choice, and a container run has no terminal to answer; the unattended block beside it is executed",
+  "scheduled-nudges/sh#1": "optional opt-out: changes .env and needs a restart, whereas the production runs verify the configuration they started with",
 };
 
 /**
