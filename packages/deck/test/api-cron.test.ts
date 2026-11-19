@@ -70,6 +70,7 @@ function restore(key: string, value: string | undefined): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", undefined);
   seam.crontabAvailable.mockReturnValue(true);
   writes.crontab.length = 0;
   writes.scripts.length = 0;
@@ -78,6 +79,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   restore("MC_USER", ORIGINAL_MC_USER);
   restore("MC_CRON_ADMIN_ENABLED", ORIGINAL_CRON_ADMIN);
 });
@@ -92,8 +94,10 @@ function makeRequest(fields: Record<string, string>): Request {
   });
 }
 
-function runAction(fields: Record<string, string>) {
-  return action({ request: makeRequest(fields), params: {}, context: {} } as unknown as Parameters<typeof action>[0]);
+function runAction(fields: Record<string, string>, context: { socketAddress?: string } = { socketAddress: "127.0.0.1" }, forwardedFor?: string) {
+  const request = makeRequest(fields);
+  if (forwardedFor) request.headers.set("X-Forwarded-For", forwardedFor);
+  return action({ request, params: {}, context } as unknown as Parameters<typeof action>[0]);
 }
 
 function runLoader() {
@@ -111,6 +115,30 @@ const VALID_CREATE: Record<string, string> = {
   message: "morning check-in",
   enabled: "true",
 };
+
+describe("api.cron action - socket guard", () => {
+  it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])("writes for direct loopback %s", async (socketAddress) => {
+    await expect(runAction(VALID_CREATE, { socketAddress })).resolves.toMatchObject({ ok: true });
+    expect(writes.crontab).toHaveLength(1);
+  });
+
+  it.each([
+    { socketAddress: "192.0.2.10" },
+    { socketAddress: "192.0.2.10", forwardedFor: "127.0.0.1" },
+    { socketAddress: "127.0.0.1", forwardedFor: "192.0.2.10" },
+    { socketAddress: undefined },
+    { socketAddress: undefined, forwardedFor: "127.0.0.1" },
+  ])("returns 403 and writes nothing for %j", async ({ socketAddress, forwardedFor }) => {
+    await expect(runAction(VALID_CREATE, { socketAddress }, forwardedFor)).rejects.toMatchObject({ status: 403 });
+    expectNothingWritten();
+  });
+
+  it("allows remote writes after explicit opt-in", async () => {
+    vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", "1");
+    await expect(runAction(VALID_CREATE, { socketAddress: "192.0.2.10" })).resolves.toMatchObject({ ok: true });
+    expect(writes.crontab).toHaveLength(1);
+  });
+});
 
 function expectNothingWritten(): void {
   expect(writes.crontab).toEqual([]);

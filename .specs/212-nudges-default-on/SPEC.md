@@ -12,6 +12,8 @@ INSTALL.md tells people to. It is now on by default for everyone, with
 plainly when `crontab` is missing and refuse writes before anything is
 written, a throwing write comes back as an error instead of a 500, and the
 `pnpm dev` sandbox turns Nudges off so it cannot touch the real crontab.
+Writes require a direct loopback socket unless `MC_CRON_ALLOW_REMOTE_ADMIN=1`
+is set. Other connections can still view Nudges without editing controls.
 
 ## Scope
 In scope:
@@ -19,6 +21,7 @@ In scope:
 - `api/cron` GET now behind the same gate (404 when off); it was ungated.
 - Missing `crontab` (PATH lookup, never runs it) and throwing seam handling.
 - Dev sandbox default off; INSTALL.md section and `.env.example` entry.
+- Socket-based write guard for both routes and network-bind warnings.
 Out of scope:
 - README (separate PR).
 - The nudge script's hard-coded `agents` tmux session name (same limitation
@@ -30,6 +33,8 @@ Out of scope:
 - `test/api-cron.test.ts`: real seam bound to in-memory fake deps; GET 404
   when off; POST refused when off; missing crontab; throwing seam; injection.
 - `test/scheduler-route.test.ts`: same for the page loader and action.
+- Both route suites cover local and remote access with fake cron seams;
+  the scheduler suite also renders the remote read-only view.
 - `test/cron.server.test.ts`: `crontabAvailable` against temp-dir PATHs.
 No test reads or writes the real crontab.
 
@@ -44,3 +49,12 @@ None filed.
   relied on the gate or an unknown target to stop before a write; with the
   gate open by default that was one fixture change from writing the real
   crontab.
+
+### 2026-11-19: restrict Nudges writes to direct loopback
+- What changed: pass the socket peer through the production adapter and Vite
+  middleware, refuse non-local writes by default, and warn on network binds.
+- Why: the default adapters do not expose the peer to routes, and forwarded
+  addresses cannot grant write access. A loopback proxy must mark forwarded
+  requests or have Nudges disabled, as documented in INSTALL.md.
+- Supersedes: nothing, additive
+- Commits: pending

@@ -675,6 +675,9 @@ shell variable does not survive one.
 
 ### Reaching it from another machine
 
+When `HOST` is not loopback, anyone who can open this page can message your
+agents and, if enabled, create scheduled jobs on this machine.
+
 Skip this unless you need it. Deck binds loopback by default and that default
 is doing real work: **there is no authentication in front of the thing you are
 about to publish**, so read the warning at the top of this document again
@@ -1262,8 +1265,21 @@ nudge is pasted into the agent's window in the `agents` tmux session, and if
 that session is not running when it fires, the run is skipped and the page
 shows it as fired but not delivered.
 
-Nudges is on by default. It can change your crontab, so if you do not want
-that, turn it off:
+Nudges is on by default. To edit nudges, connect directly from the Deck
+machine over loopback (`127.0.0.1`, `::1` or `::ffff:127.0.0.1`). Other
+visitors can view the page but cannot change anything. Deck uses the socket
+address, never a forwarded address; requests carrying forwarding headers
+are read-only by default. If a reverse proxy connects over loopback, make
+sure it adds a forwarding header such as `X-Forwarded-For`, or disable
+Nudges: without that header Deck cannot distinguish the proxy from a local
+visitor.
+
+To allow remote writes deliberately, set `MC_CRON_ALLOW_REMOTE_ADMIN=1` in
+the server environment (or `packages/deck/.env` for the documented launcher)
+and restart Deck. Only do this behind access control you trust: anyone who
+can reach Deck can then schedule jobs as the user running it.
+
+To turn Nudges off entirely:
 
 ```sh
 echo "MC_CRON_ADMIN_ENABLED=0" >> packages/deck/.env

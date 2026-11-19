@@ -36,6 +36,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createMemoryRouter, RouterProvider } from "react-router";
 import type { CronEntry } from "~/lib/cron.server";
 
 // The route imports listCrons/listAgentDirs at module scope and pulls the
@@ -51,8 +54,9 @@ vi.mock("~/lib/cron.server", () => ({
   deleteCron: vi.fn(() => ({ ok: true as const })),
 }));
 
-import { loader, action } from "~/routes/scheduler";
+import SchedulerPage, { loader, action } from "~/routes/scheduler";
 import * as cronServer from "~/lib/cron.server";
+import { devSocketAddress } from "~/lib/nudge-admin.server";
 
 const seam = vi.mocked(cronServer);
 
@@ -70,6 +74,7 @@ function restore(key: string, value: string | undefined): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", undefined);
   seam.crontabAvailable.mockReturnValue(true);
   // Default instance: Nudges on, no opt-out set.
   delete process.env["MC_USER"];
@@ -77,6 +82,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   restore("MC_USER", ORIGINAL_MC_USER);
   restore("MC_CRON_ADMIN_ENABLED", ORIGINAL_CRON_ADMIN);
 });
@@ -95,20 +101,20 @@ function makeRequest(fields: Record<string, string>): Request {
 }
 
 /** Invoke the route action with the arg shape react-router passes. */
-function runAction(fields: Record<string, string>) {
+function runAction(fields: Record<string, string>, context: { socketAddress?: string } = { socketAddress: "127.0.0.1" }) {
   return action({
     request: makeRequest(fields),
     params: {},
-    context: {},
+    context,
   } as unknown as Parameters<typeof action>[0]);
 }
 
 /** Invoke the route loader with the arg shape react-router passes. */
-function runLoader() {
+function runLoader(socketAddress = "127.0.0.1") {
   return loader({
     request: new Request("http://localhost/scheduler"),
     params: {},
-    context: {},
+    context: { socketAddress },
   } as unknown as Parameters<typeof loader>[0]);
 }
 
@@ -224,6 +230,34 @@ describe("scheduler loader - seam passthrough", () => {
   });
 });
 
+describe("scheduler - socket guard", () => {
+  it("shows nudges without write controls to a remote visitor", async () => {
+    seam.listCrons.mockReturnValue([cronEntry()]);
+    const loaderData = await runLoader("192.0.2.10");
+    const router = createMemoryRouter([{
+      path: "/",
+      element: createElement(SchedulerPage, { loaderData } as Parameters<typeof SchedulerPage>[0]),
+    }]);
+    const html = renderToStaticMarkup(createElement(RouterProvider, { router }));
+    expect(html).toContain("morning check-in");
+    expect(html).toContain("Nudges are read-only unless you connect directly from this machine or set MC_CRON_ALLOW_REMOTE_ADMIN=1 on the server.");
+    expect(html).not.toMatch(/<form|<button/);
+  });
+
+  it.each(["create", "edit", "setEnabled", "delete", "run"])("refuses remote %s before the seam", async (intent) => {
+    await expect(runAction({ ...validCreate(), intent, id: "abc123" }, { socketAddress: "192.0.2.10" }))
+      .rejects.toMatchObject({ status: 403 });
+    for (const write of [seam.createCron, seam.updateCron, seam.setEnabled, seam.deleteCron]) {
+      expect(write).not.toHaveBeenCalled();
+    }
+  });
+
+  it("allows the dev adapter's direct loopback socket", async () => {
+    await expect(devSocketAddress.run("::1", () => runAction(validCreate(), {})))
+      .resolves.toMatchObject({ ok: true });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Action gate
 // ---------------------------------------------------------------------------
@@ -270,7 +304,7 @@ describe("scheduler action - instance gate", () => {
     const result = await action({
       request,
       params: {},
-      context: {},
+      context: { socketAddress: "127.0.0.1" },
     } as unknown as Parameters<typeof action>[0]);
 
     expect(result.ok).toBe(false);

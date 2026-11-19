@@ -12,7 +12,7 @@
  * GET 404s and POST is refused. With no `crontab` on PATH, GET returns an
  * empty list with crontabOk: false and POST is refused before any write.
  *
- * SEAM RULE: imports ONLY from ~/lib/cron.server + ~/lib/instance.server.
+ * The write path also requires local or explicitly enabled remote access.
  * The crontab runner is never called here directly - cron.server.ts is the seam.
  * Zod-at-boundary, never-throws, degrades to { ok: false }.
  * ASCII only - no em-dashes.
@@ -28,6 +28,7 @@ import {
   deleteCron,
 } from "~/lib/cron.server";
 import { cronAdminEnabled } from "~/lib/instance.server";
+import { requireNudgeAdmin } from "~/lib/nudge-admin.server";
 import { cronFormSchema } from "~/lib/cron-validate";
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,8 @@ const deleteSchema = z.object({
 // Action - write path (refused when the instance opted out)
 // ---------------------------------------------------------------------------
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireNudgeAdmin(request, context);
   // Server-side gate - refuses even if the endpoint is POSTed directly.
   if (!cronAdminEnabled(process.env)) {
     return {

@@ -29,6 +29,7 @@ import { useFetcher } from "react-router";
 import type { Route } from "./+types/scheduler";
 import { listCrons, listAgentDirs, crontabAvailable } from "~/lib/cron.server";
 import { cronAdminEnabled } from "~/lib/instance.server";
+import { canManageNudges, NUDGES_READ_ONLY, requireNudgeAdmin } from "~/lib/nudge-admin.server";
 import {
   SCHEDULE_PRESETS,
   validateCronExpression,
@@ -46,7 +47,7 @@ import { Badge } from "~/components/ui/badge";
 // Loader
 // ---------------------------------------------------------------------------
 
-export async function loader(_args: Route.LoaderArgs) {
+export async function loader({ request, context }: Route.LoaderArgs) {
   // Gate: on unless this instance opted out with MC_CRON_ADMIN_ENABLED=0.
   if (!cronAdminEnabled(process.env)) {
     throw new Response("Not found", { status: 404 });
@@ -55,8 +56,9 @@ export async function loader(_args: Route.LoaderArgs) {
   // Without crontab there is nothing to list; skip the read rather than let
   // readCrontab's "failure means empty" look like "no nudges yet".
   const crons = crontabOk ? listCrons() : [];
-  const agents = listAgentDirs();
-  return { crons, agents, crontabOk };
+  const canWrite = canManageNudges(request, context);
+  const agents = canWrite ? listAgentDirs() : [];
+  return { crons, agents, crontabOk, readOnlyMessage: canWrite ? null : NUDGES_READ_ONLY };
 }
 
 const CRONTAB_MISSING_ERROR =
@@ -66,7 +68,8 @@ const CRONTAB_MISSING_ERROR =
 // Action (thin wrapper - same gate as api.cron.tsx, inline for simplicity)
 // ---------------------------------------------------------------------------
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireNudgeAdmin(request, context);
   if (!cronAdminEnabled(process.env)) {
     return { ok: false as const, error: "Nudges admin is not available on this instance." };
   }
@@ -145,7 +148,7 @@ async function runIntent(request: Request) {
 // ---------------------------------------------------------------------------
 
 export default function SchedulerPage({ loaderData }: Route.ComponentProps) {
-  const { crons, agents, crontabOk } = loaderData;
+  const { crons, agents, crontabOk, readOnlyMessage } = loaderData;
   const fetcher = useFetcher();
   const [schedulePreset, setSchedulePreset] = useState("daily-0730");
   const [customExpr, setCustomExpr] = useState("");
@@ -195,8 +198,10 @@ export default function SchedulerPage({ loaderData }: Route.ComponentProps) {
         </p>
       )}
 
-      {/* Create form */}
-      <Card>
+      {readOnlyMessage && (
+        <p className="text-sm text-muted-foreground">{readOnlyMessage}</p>
+      )}
+      {!readOnlyMessage && <Card>
         <CardHeader>
           <CardTitle>New nudge</CardTitle>
         </CardHeader>
@@ -372,7 +377,7 @@ export default function SchedulerPage({ loaderData }: Route.ComponentProps) {
             </Button>
           </fetcher.Form>
         </CardContent>
-      </Card>
+      </Card>}
 
       {/* Nudge list */}
       <div className="space-y-3">
@@ -382,12 +387,12 @@ export default function SchedulerPage({ loaderData }: Route.ComponentProps) {
 
         {crons.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No nudges yet. Create one above.
+            {readOnlyMessage ? "No nudges yet." : "No nudges yet. Create one above."}
           </p>
         ) : (
           <div className="divide-y divide-border rounded-lg border border-border bg-card">
             {crons.map((cron) => (
-              <CronRow key={cron.id} cron={cron} agents={agents} />
+              <CronRow key={cron.id} cron={cron} agents={agents} canWrite={!readOnlyMessage} />
             ))}
           </div>
         )}
@@ -413,9 +418,10 @@ interface CronRowProps {
     lastDelivered: string | null;
   };
   agents: string[];
+  canWrite: boolean;
 }
 
-function CronRow({ cron, agents }: CronRowProps) {
+function CronRow({ cron, agents, canWrite }: CronRowProps) {
   const fetcher = useFetcher();
   const [isEditing, setIsEditing] = useState(false);
 
@@ -440,7 +446,7 @@ function CronRow({ cron, agents }: CronRowProps) {
   // When editing, the whole row becomes the pre-filled edit form. Same field
   // shapes + validation as the create form (custom-expression path), so an edit
   // round-trips through the SAME updateCron seam guards.
-  if (isEditing) {
+  if (canWrite && isEditing) {
     return (
       <EditCronForm
         cron={cron}
@@ -498,7 +504,7 @@ function CronRow({ cron, agents }: CronRowProps) {
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2">
+      {canWrite && <div className="flex shrink-0 items-center gap-2">
         <Button
           type="button"
           variant="outline"
@@ -526,7 +532,7 @@ function CronRow({ cron, agents }: CronRowProps) {
         >
           Delete
         </Button>
-      </div>
+      </div>}
     </div>
   );
 }
