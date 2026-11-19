@@ -154,4 +154,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   inbox retains the full message without waking a draining tmux pane. The
   guards use the instance flag and on-disk agent settings, not a launch
   override or a live lock, so they also work before the first PTY start.
-- Commits: pending
+- Commits: 0412b72 feat(base): skip and refuse PTY-runner agents in boot, push and provider switch (#240)
