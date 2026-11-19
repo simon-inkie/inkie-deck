@@ -326,7 +326,7 @@ suites and the leak gate shell out to git against the repository root.
 
 **Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup uses [Claude Code](https://github.com/anthropics/claude-code). The agent scaffold, the launchers and the persona check also support [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) (`agy`), per agent, with `create-agent.sh --runtime codex` or `--runtime agy`; see "Codex and Antigravity agents" below for what differs.
 
-Four more tools matter for one thing each, and are easy to miss because every
+These tools matter for specific tasks, and are easy to miss because every
 machine that has run this so far already had them:
 
 | tool | needed for | without it |
@@ -335,6 +335,7 @@ machine that has run this so far already had them:
 | python3 | the `inbox` CLI, which is how an agent replies (PyYAML, `python3-yaml`, for decision cards) | Deck runs fine; your agents cannot answer, or cannot send a card |
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
 | xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
+| jq | the Brain's optional memory hooks | live recall does not update; Quick setup skips memory wiring |
 
 On Ubuntu or Debian, as root. If you are not root, type `sudo -i` for a root
 shell first, paste the block, `exit`, and set the `export` line again in your
@@ -343,7 +344,7 @@ The block is:
 
 ```sh
 apt-get update
-apt-get install -y ca-certificates curl git ripgrep python3 python3-yaml tmux xxd
+apt-get install -y ca-certificates curl git jq ripgrep python3 python3-yaml tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
@@ -357,7 +358,7 @@ the Node instructions until you have it.
 On macOS, unverified here, the equivalent is roughly:
 
 ```zsh
-brew install node@22 ripgrep python3 tmux
+brew install node@22 jq ripgrep python3 tmux
 corepack enable
 ```
 
@@ -454,8 +455,12 @@ Add `--memory` to install [the Brain](https://github.com/simon-inkie/inkie-the-b
 and wire each starter after its persona check. Setup prints the checkout path
 (`$HOME/inkie-the-brain` by default). Use `--memory-root <absolute-path>` or
 `MEMORY_LAYER_ROOT` for a clean checkout of the public Brain outside Deck.
-`--no-memory` is the default and does not remove existing hooks. If the Brain
-cannot be built, setup continues without wiring it and prints why. See
+`--no-memory` is the default and does not remove existing hooks. If `jq` is
+missing or the Brain cannot be built, setup continues without wiring it and
+prints why. A rerun reuses a verified build at the pinned revision instead of
+rebuilding files that existing hooks may use. If an existing build cannot be
+verified, setup leaves it and its hooks unchanged; use an unused
+`--memory-root` path for a fresh build. See
 [the manual memory step](#optional-give-the-agent-a-memory-loop) for the
 requirements and cost. Deck's own prerequisites still apply.
 
@@ -1003,15 +1008,16 @@ inbox separate from `~/.the-brain/agents`; agents with the same name in two
 Deck installs under one home share a silo.
 
 For a manual fresh install, use this in place of the earlier `first-run.sh`
-block. It needs git, network access, Node 22 or newer and pnpm. Run from the
-Deck checkout and use an unused checkout path outside it. The commit pin
-matches Quick setup and will be replaced by a release tag when available.
+block. It needs git, network access, Node 22 or newer, pnpm and `jq` (see
+[system packages](#1-prerequisites)). Run from the Deck checkout and use an
+unused checkout path outside it. The commit pin matches Quick setup and will
+be replaced by a release tag when available.
 
 ```sh-manual
 export AGENTS_HOME="$HOME/agents"
 export INBOX_ROOT="$HOME/deck/inbox"
 brain_root="$HOME/inkie-the-brain"
-command -v claude >/dev/null &&
+command -v jq >/dev/null && command -v claude >/dev/null &&
   git clone https://github.com/simon-inkie/inkie-the-brain.git "$brain_root" &&
   git -C "$brain_root" checkout --detach 27a4a279b36f8e65be41d9044a6af857389ef124 &&
   (cd "$brain_root" && pnpm install --frozen-lockfile && pnpm build) &&

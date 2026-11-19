@@ -64,3 +64,13 @@ Out of scope:
   leak and licence gates, the dash scan and the INSTALL.md shape stage.
   Live Brain build and compaction acceptance remain unverified.
 - Commits: 2a5d4fb feat(setup): opt-in Brain install, wired after the persona check (#21)
+
+### 2026-11-19: Protect memory setup on reruns
+
+- What changed: Require jq before preparing memory. Reuse a verified build at
+  the pinned revision and leave an existing build untouched if it cannot be
+  verified. Cover both cases in the offline setup tests.
+- Why: Without jq, live recall silently stops updating. The pinned build
+  removes dist before compiling, so a failed or interrupted rebuild can break
+  hooks that agents already use.
+- Commits: pending

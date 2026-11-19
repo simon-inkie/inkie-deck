@@ -128,6 +128,7 @@ const settings = (b: Box, name: string) => path.join(b.agents, name, ".claude", 
 
 function brain(b: Box): void {
   const root = brainRoot(b);
+  write(path.join(b.stubBin, "jq"), "#!/bin/sh\nexit 0\n");
   write(path.join(b.stubBin, "git"), `#!/usr/bin/env bash
 case "$1" in
   clone)
@@ -144,8 +145,12 @@ case "$1" in
       'rev-parse --show-toplevel') printf '%s\n' "${root}" ;;
       'remote get-url origin') printf '%s\n' '${BRAIN_URL}' ;;
       'status --porcelain') ;;
+      'rev-parse --verify HEAD') cat "${b.root}/brain-head" ;;
       'rev-parse --verify ${BRAIN_REF}^{commit}') [[ -z "\${PIN_NEEDS_FETCH:-}" ]] ;;
-      'fetch --no-tags ${BRAIN_URL} ${BRAIN_REF}'|'checkout --detach ${BRAIN_REF}')
+      'checkout --detach ${BRAIN_REF}')
+        printf '%s\n' '${BRAIN_REF}' > "${b.root}/brain-head"
+        printf 'git %s\n' "$*" >> "${b.root}/brain-commands" ;;
+      'fetch --no-tags ${BRAIN_URL} ${BRAIN_REF}')
         printf 'git %s\n' "$*" >> "${b.root}/brain-commands" ;;
       *) exit 91 ;;
     esac
@@ -159,10 +164,12 @@ printf 'pnpm %s\n' "$*" >> "${b.root}/brain-commands"
 case "$*" in
   'install --frozen-lockfile') mkdir -p node_modules/.bin; touch node_modules/.bin/tsx; chmod +x node_modules/.bin/tsx ;;
   build)
+    rm -rf -- dist
     [[ -z "\${BUILD_FAIL:-}" ]] || exit 1
     [[ -z "\${BUILD_INCOMPLETE:-}" ]] || exit 0
     mkdir -p dist/claude-code/bin
     touch dist/claude-code/bin/{user-prompt-submit,on-stop,on-pre-compact}.sh
+    chmod +x dist/claude-code/bin/*.sh
     ;;
   *) exit 94 ;;
 esac
@@ -294,18 +301,60 @@ describe("optional Brain setup", () => {
     }
 
     const before = agents.map((name) => fs.readFileSync(settings(b, name), "utf8"));
-    const rerun = setup(b, memoryArgs(b));
+    const rerun = setup(b, memoryArgs(b), { env: { BUILD_FAIL: "1" } });
+    for (const name of ["user-prompt-submit", "on-stop", "on-pre-compact"]) {
+      fs.accessSync(path.join(brainRoot(b), "dist", "claude-code", "bin", `${name}.sh`), fs.constants.X_OK);
+    }
     expect(rerun.status, rerun.output).toBe(0);
+    expect(rerun.output).toContain("reusing the pinned Brain build");
     expect(rerun.output.match(/create-agent: memory on/g)).toHaveLength(2);
-    expect(commands()).toEqual([...first, ...build]);
+    expect(commands()).toEqual(first);
     expect(memoryEvents(b).slice(4)).toEqual(["probe inkie wired", "wire inkie", "probe doctor wired", "wire doctor"]);
     expect(agents.map((name) => fs.readFileSync(settings(b, name), "utf8"))).toEqual(before);
 
     const disabled = setup(b, [...memoryArgs(b), "--no-memory"]);
     expect(disabled.status, disabled.output).toBe(0);
     expect(memoryEvents(b).slice(8)).toEqual(["probe inkie wired", "probe doctor wired"]);
-    expect(commands()).toEqual([...first, ...build]);
+    expect(commands()).toEqual(first);
     expect(fs.readFileSync(global, "utf8")).toBe(original);
+  });
+
+  it("leaves an existing build and agent settings unchanged if the revision is not pinned", () => {
+    const b = box();
+    brain(b);
+    expect(setup(b, memoryArgs(b)).status).toBe(0);
+    write(path.join(b.root, "brain-head"), `${"1".repeat(40)}\n`);
+    const before = agents.map((name) => fs.readFileSync(settings(b, name), "utf8"));
+    const commands = path.join(b.root, "brain-commands");
+    const previousCommands = fs.readFileSync(commands, "utf8");
+
+    const rerun = setup(b, memoryArgs(b), { env: { BUILD_FAIL: "1" } });
+    expect(rerun.status, rerun.output).toBe(0);
+    expect(rerun.output).toContain("setup: memory unchanged");
+    expect(fs.readFileSync(commands, "utf8")).toBe(previousCommands);
+    expect(agents.map((name) => fs.readFileSync(settings(b, name), "utf8"))).toEqual(before);
+    expect(memoryEvents(b).slice(4)).toEqual(["probe inkie wired", "probe doctor wired"]);
+  });
+
+  it("leaves memory off without jq and does not attempt a Brain build", () => {
+    const b = box();
+    brain(b);
+    fs.unlinkSync(path.join(b.stubBin, "jq"));
+    const systemBin = path.join(b.root, "system-bin");
+    fs.mkdirSync(systemBin);
+    for (const tool of [
+      "basename", "bash", "cat", "chmod", "cp", "date", "dirname", "env", "find", "grep", "head",
+      "id", "ln", "mkdir", "mktemp", "mv", "readlink", "rm", "sed", "sort", "tail", "tr",
+    ]) {
+      fs.symlinkSync(path.join("/usr/bin", tool), path.join(systemBin, tool));
+    }
+    const PATH = [b.stubBin, path.join(b.root, "node-only"), systemBin].join(path.delimiter);
+    const result = setup(b, memoryArgs(b), { env: { PATH } });
+    expect(result.status, result.output).toBe(0);
+    expect(result.output).toContain("setup: memory off (the Brain needs jq");
+    expect(result.output).toContain("sudo apt-get install jq");
+    expect(memoryEvents(b)).toEqual(["probe inkie unwired", "probe doctor unwired"]);
+    expect(fs.existsSync(path.join(b.root, "brain-commands"))).toBe(false);
   });
 
   it.each([

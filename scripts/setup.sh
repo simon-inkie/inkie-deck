@@ -419,8 +419,15 @@ assert_outside_git() {
 
 LOCK="$AGENTS_HOME/.setup-key-lock"
 LOCK_HELD=0
+MEMORY_PREPARING=0
 release_lock() { [[ $LOCK_HELD -eq 0 ]] || { rmdir -- "$LOCK" 2>/dev/null; LOCK_HELD=0; }; }
-trap release_lock EXIT
+setup_cleanup() {
+  release_lock
+  if [[ $MEMORY_PREPARING -eq 1 ]]; then
+    note "memory unchanged (Brain preparation was interrupted; no hooks were changed)"
+  fi
+}
+trap setup_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 lock_message() {
@@ -579,10 +586,20 @@ if [[ $NO_BUILD -eq 0 ]]; then
   run_logged "pnpm build" setup-build.log pnpm build || fail "pnpm build failed; see $LOG_DIR/setup-build.log"
 fi
 
+brain_build_complete() {
+  local root="$1" hook
+  [[ -f "$root/scripts/install.sh" && -x "$root/node_modules/.bin/tsx" ]] || return 1
+  for hook in user-prompt-submit on-stop on-pre-compact; do
+    [[ -f "$root/dist/claude-code/bin/$hook.sh" ]] || return 1
+  done
+}
+
 prepare_memory() {
-  local version root repo origin top dirty log="$LOG_DIR/setup-memory.log" scratch hook
+  local version root repo origin top dirty head log="$LOG_DIR/setup-memory.log" scratch
   MEMORY_REASON="not requested"
   [[ $WITH_MEMORY -eq 1 ]] || return 1
+  MEMORY_REASON="the Brain needs jq; run 'sudo apt-get install jq' (Debian/Ubuntu) or 'brew install jq' (macOS), then rerun setup"
+  command -v jq >/dev/null 2>&1 || return 1
   MEMORY_REASON="the Brain needs Node 22 or newer"
   version="$(node --version 2>/dev/null)"
   [[ "$version" =~ ^v([0-9]+)\. ]] && (( BASH_REMATCH[1] >= 22 )) || return 1
@@ -609,6 +626,7 @@ JS
   repo="$(cd -P -- "$REPO" && pwd -P)" || return 1
   [[ "$root" != / && "$root" != "$repo" && "$root" != "$repo/"* && "$repo" != "$root/"* ]] || return 1
 
+  if [[ -e "$root/dist" || -L "$root/dist" ]]; then MEMORY_STATUS="unchanged"; fi
   if [[ -e "$root" || -L "$root" ]]; then
     MEMORY_REASON="$root is not a checkout of the public Brain repository; nothing changed there"
     [[ -f "$root/scripts/install.sh" ]] || return 1
@@ -619,6 +637,15 @@ JS
     MEMORY_REASON="$root has local changes or could not be checked; nothing changed there"
     dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$root" status --porcelain 2>/dev/null)" || return 1
     [[ -z "$dirty" ]] || return 1
+  fi
+
+  if [[ "$MEMORY_STATUS" == unchanged ]]; then
+    MEMORY_REASON="existing build at $root is not usable at the pinned revision; choose an unused --memory-root to build there instead"
+    head="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null)" || return 1
+    [[ "$head" == "$BRAIN_REF" ]] && brain_build_complete "$root" || return 1
+    say "setup: reusing the pinned Brain build at $root"
+    BUILT_BRAIN="$root"
+    return 0
   fi
 
   MEMORY_REASON="could not open the Brain build log at $log"
@@ -635,15 +662,15 @@ JS
   MEMORY_REASON="the Brain dependency install or build failed; see $log"
   (cd "$root" && pnpm install --frozen-lockfile && pnpm build) >> "$log" 2>&1 || return 1
   MEMORY_REASON="the Brain build is incomplete; see $log"
-  [[ -f "$root/scripts/install.sh" && -x "$root/node_modules/.bin/tsx" ]] || return 1
-  for hook in user-prompt-submit on-stop on-pre-compact; do
-    [[ -f "$root/dist/claude-code/bin/$hook.sh" ]] || return 1
-  done
+  brain_build_complete "$root" || return 1
   BUILT_BRAIN="$root"
 }
 
 BUILT_BRAIN=""
-if ! prepare_memory; then say "setup: memory off ($MEMORY_REASON)"; fi
+MEMORY_STATUS="off"
+MEMORY_PREPARING=$WITH_MEMORY
+if ! prepare_memory; then say "setup: memory $MEMORY_STATUS ($MEMORY_REASON)"; fi
+MEMORY_PREPARING=0
 memory_env=(MEMORY_LAYER_ROOT="$BUILT_BRAIN")
 [[ -z "$BUILT_BRAIN" ]] || memory_env+=(USER_NAME="$MC_USER_VALUE")
 
