@@ -389,9 +389,8 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // it calls keep their defaults. Those have one caller each and stable
   // signatures; this closure is the seam the bug actually lived at. A
   // default here means a third push path added in six months silently reintroduces
-  // the drop with no error, no failing test and no reviewer prompt. Given the family
-  // of MC defects around this one is fields going missing at seams where nobody was
-  // asked, the compiler should be the one asking.
+  // the drop with no error, no failing test and no reviewer prompt. Require the
+  // flag so the compiler catches a missing value at every call site.
   const pushTarget = (target: string, body: string, dictated: boolean) => {
     if (tmuxEnabled(process.env)) {
       void pushMessageToIdleAgent(process.env, target, user, body, dictated).catch(
@@ -496,7 +495,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
       },
       body: payload.body,
       // Dictation provenance marker: a meta line in the written block, so
-      // both the MC bubble and agents reading the raw markdown know the text
+      // both the Deck bubble and agents reading the raw markdown know the text
       // is transcribed speech (may carry transcription wonk).
       rawMeta: isDictated ? "dictated: true" : "",
       card: undefined,
@@ -525,7 +524,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   }
 
   if (payload.intent === "custom") {
-    // MC-02: apply user-authored option C answer by stable decision-id
+    // Apply the user-authored option C answer by stable decision-id
     const result = await inbox.customAnswerCard(
       agent,
       user,
@@ -1657,8 +1656,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
 
 /**
  * Scoped error boundary: a failure in this
- * route renders here, inside the shell - the sidebar and the rest of MC stay
- * usable. Real error text shown (tailnet-only internal tool).
+ * route renders here, inside the shell, so the sidebar and the rest of Deck
+ * stay usable. The panel shows the actual error text.
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (

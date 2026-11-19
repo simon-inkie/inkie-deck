@@ -40,7 +40,7 @@ export const links: Route.LinksFunction = () => [
   { rel: "manifest", href: "/manifest.webmanifest" },
   { rel: "apple-touch-icon", href: "/icons/apple-touch-icon.png" },
   // Browser-tab favicon. SVG first (crisp, modern browsers), PNGs as the
-  // universal fallback. Same teal-square MC mark as the home-screen icon.
+  // universal fallback. Matches the teal home-screen icon.
   { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
   { rel: "icon", href: "/favicon-32.png", sizes: "32x32", type: "image/png" },
   { rel: "icon", href: "/favicon-16.png", sizes: "16x16", type: "image/png" },
@@ -73,9 +73,9 @@ export default function App() {
  * Last-resort full-page boundary. Content
  * routes carry their own scoped boundaries (RouteErrorPanel inside the shell),
  * so reaching THIS one means the shell/root itself failed. Show the real
- * error message even in production - MC is a tailnet-only internal tool and
- * the operator needs the actual failure text to relay, not "Oops". Always offer
- * a way out (reload / home).
+ * error message even in production so the operator can diagnose it. Deck
+ * relies on loopback or external access control. Always offer a way out
+ * (reload / home).
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   let message = "Inkie Deck hit an error";

@@ -1,5 +1,5 @@
 /**
- * scripts/deploy.mjs - no-404-window redeploy of the MC production daemon.
+ * scripts/deploy.mjs - no-404-window redeploy of the Deck production daemon.
  *
  * THE BUG THIS FIXES: `pnpm build` used to empty build/client and write fresh
  * hashed asset names. The production daemon serves build/client

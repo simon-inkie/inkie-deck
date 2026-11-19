@@ -23,21 +23,16 @@ boundary is marked where you reach it.
 
 ## Read this before you put Deck on a network
 
-**Deck has no login, no password, and no authentication of any kind.** There
-is no user model, no session, no access control in the application at all.
+**Deck has no authentication and binds to loopback by default.** There is no
+login, user model, session or access control in the application itself.
 Anyone who can reach the port can read every message in your inbox, answer
 decision cards as you, and type into your agents' terminal sessions.
 
-That is a reasonable trade for the deployment it was written for: one person,
-one machine, bound to loopback or reachable only over a private network with
-authentication in front of it. It is not a defensible position anywhere else,
-and it will not become one by accident. There is no decision yet about
-building an authentication layer, so treat "who can reach this port" as the
-entire security model, because today it is.
-
-The production launcher binds loopback by default and says so at boot. Every
-step below that widens that bind says this again, in the place where you would
-be about to do it.
+Keep Deck on loopback for local use. Before anyone else can reach it, put it
+behind your own access control, such as a VPN, a restricted tailnet or a
+reverse proxy with authentication. Do not expose the Deck port directly in
+ways that bypass that access control. Host and origin checks do not authenticate
+users. See [Reaching it from another machine](#reaching-it-from-another-machine).
 
 ## How this document is tested
 
@@ -691,11 +686,11 @@ shell variable does not survive one.
 Anyone who can open Deck through an approved Host can message your agents.
 Scheduled jobs have a separate admin check, covered under Scheduled nudges.
 
-Skip this unless you need it. Deck binds loopback by default and that default
-is doing real work: **there is no authentication in front of the thing you are
-about to publish**, so read the warning at the top of this document again
-before you run this, and put access control (a reverse proxy, or a private
-network that authenticates its own members) in front of it.
+Skip this unless you need it. Deck binds to loopback by default and has no
+authentication. Set up your own access control before making Deck reachable,
+as described in the [deployment boundary](#read-this-before-you-put-deck-on-a-network).
+If a proxy or tunnel can reach Deck on loopback, leave the bind unchanged.
+Otherwise, widen the bind only if access to the port is restricted:
 
 ```sh
 echo "HOST=0.0.0.0" >> packages/deck/.env

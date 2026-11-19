@@ -5,7 +5,7 @@
  * payload carries everything the notification needs (title, body, deepLink).
  *
  * push          -> show the notification verbatim from the payload.
- * notificationclick -> focus an existing MC window on the deep link, or
+ * notificationclick -> focus an existing Deck window on the deep link, or
  *                      open a fresh one.
  *
  * ASCII only - no em-dashes.

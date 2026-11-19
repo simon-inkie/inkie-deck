@@ -1,6 +1,6 @@
 {
   "name": "Inkie Deck",
-  "short_name": "MC",
+  "short_name": "Deck",
   "description": "Your agent team, in your pocket.",
   "start_url": "/",
   "display": "standalone",

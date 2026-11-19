@@ -232,7 +232,7 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
           >
             {/* Mobile UX: the full wordmark squeezed the
                 thread identity + view toggle off-screen on phones. */}
-            <span className="md:hidden">MC</span>
+            <span className="md:hidden">Deck</span>
             <span className="hidden md:inline">Inkie Deck</span>
           </Link>
           {instanceLabel ? (

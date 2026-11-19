@@ -261,8 +261,8 @@ function PinnedCardHeader({ card }: { card: ProjectCard }) {
 
 /**
  * Scoped error boundary: a failure in this
- * route renders here, inside the shell - the sidebar and the rest of MC stay
- * usable. Real error text shown (tailnet-only internal tool).
+ * route renders here, inside the shell, so the sidebar and the rest of Deck
+ * stay usable. The panel shows the actual error text.
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (

@@ -739,7 +739,7 @@ describe("Codex runtime (U+203A glyph + ANSI dim-hint disambiguation)", () => {
   // --- STAGED: real typed text (no dim wrapping) is dirty. Test BOTH the
   // no-raw fallback AND the live path (raw present). The live path is the
   // safety-critical discriminator: a raw capture that carries NO dim SGR must
-  // still read dirty, or MC would send-keys into a half-typed composer. Real
+  // still read dirty, or Deck would send-keys into a half-typed composer. Real
   // staged text has no dim, so CODEX_STAGED doubles as its own no-dim raw. ---
   it("STAGED - real composer text, no raw -> idle=false, acceptsSend=false", () => {
     expect(paneTextIsIdle(CODEX_STAGED)).toBe(false);

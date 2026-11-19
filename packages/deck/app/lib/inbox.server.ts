@@ -148,7 +148,7 @@ interface WindowCacheEntry {
  */
 const windowMemo = new Map<string, WindowCacheEntry>();
 /** Cap on windowMemo entries. Comfortably above realistic concurrent scroll
- * positions for one ops user across MC's threads, while still bounding
+ * positions for one ops user across Deck's threads, while still bounding
  * process memory growth over a long server lifetime. */
 const WINDOW_MEMO_MAX_ENTRIES = 200;
 
@@ -198,8 +198,8 @@ const markReadMemo = new Map<string, { mtimeMs: number; size: number }>();
 // (loadCache) and file-manifest-cache.server.ts, third use of the same pattern.
 //
 // Correctness-preserving, not a staleness tradeoff: every call still stats the
-// file, so an out-of-process writer (the inbox CLI, the other MC) is caught by
-// the (mtimeMs, size) guard. In-process writers do not LEAN on that guard at
+// file, so the (mtimeMs, size) guard catches writes by the inbox CLI or
+// another Deck instance. In-process writers do not LEAN on that guard at
 // all - every writer in this module invalidates the file's cached parses
 // explicitly after its write. See invalidateParsedCaches below.
 // ---------------------------------------------------------------------------
@@ -570,7 +570,7 @@ export interface InboxRepository {
   /**
    * The SYSTEM.md read receipt: flip status:sent ->
    * status:read on blocks NOT authored by the thread's participant. The
-   * participant rendering the thread IS the read - MC renders for the operator, so
+   * participant rendering the thread IS the read - Deck renders for the operator, so
    * the loader calls this with the operator's participant name before reading.
    *
    * Scope: no symmetric flip - the participant's own
@@ -823,7 +823,7 @@ export class FileInboxRepository implements InboxRepository {
     const root = this.getRoot();
     // Same allowlist as the write guard (default-open when unset): the real
     // an inbox root can carry archived and scratch dirs (harness-*, archived-demo) that
-    // are not agents - don't surface anything MC would refuse to write to.
+    // are not agents - don't surface anything Deck would refuse to write to.
     const allowed = getInboxAgentAllowlist();
     try {
       const entries = await fs.promises.readdir(root, { withFileTypes: true });
@@ -1022,8 +1022,8 @@ export class FileInboxRepository implements InboxRepository {
     // on any violation; we use the resolved path for the subsequent write.
     const resolvedPath = assertSafeWritePath(filePath);
 
-    // Read + write under the cross-process lock so a concurrent append (the CLI or
-    // the other MC) cannot be orphaned by our rename. Read is INSIDE the lock.
+    // Read + write under the cross-process lock so our rename cannot orphan
+    // a concurrent append from the CLI or another Deck instance.
     await withInboxLock(resolvedPath, async () => {
       // Read the existing content first (or start empty if file does not exist)
       let existing = "";
@@ -1205,7 +1205,7 @@ export class FileInboxRepository implements InboxRepository {
       // with "read" at its byte offset. Never rewrites the file and never moves a
       // byte anywhere else, so a concurrent EOF append is never clobbered and
       // every other block stays byte-identical - the format THREE other live
-      // consumers read (the inbox CLI, agent read-receipts, MC's own unread-dot).
+      // consumers read (the inbox CLI, agent read-receipts, Deck's own unread-dot).
       // Mirrors flip_blocks_in_file in packages/base/bin/inbox. resolvedPath is
       // already validated by assertSafeWritePath above.
       let patched = 0;

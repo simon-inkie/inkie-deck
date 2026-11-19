@@ -1,6 +1,6 @@
 /**
  * generate-icons.mjs - one-off PWA + favicon icon generation.
- * Teal rounded square + cream MC wordmark, Inkie design tokens
+ * Teal rounded square + cream legacy wordmark, Inkie design tokens
  * (#1a7a7a teal / #fffdf5 cream). Outputs public/icons/mc-{192,512}.png
  * + apple-touch-icon (180), plus the browser-tab favicon set
  * (public/favicon.svg + favicon-{16,32}.png). Assets are committed;
@@ -27,7 +27,7 @@ for (const size of [192, 512, 180]) {
 }
 
 // Browser-tab favicon: a simplified mark. The hairline inner border is dropped
-// (it is invisible and aliases badly at 16-32px), and the MC wordmark is sized
+// (it is invisible and aliases badly at 16-32px), and the legacy wordmark is sized
 // to fill the square so it stays legible in a tab. SVG is served for crisp
 // scaling on hi-DPI + pinned tabs; the PNGs are the universal fallback.
 const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
