@@ -1,56 +1,134 @@
 # Inkie Deck
 
-A local-first control room for your team of AI agents.
+**One deck for every harness and every model.**
 
-Inkie Deck runs on your machine and gives you a browser interface for working
-with several agents. Talk to each agent in a chat-style inbox, then open
-**Needs you** to see which decisions and actions need your attention without
-reading every thread. Deck stores conversations in local files.
+Inkie Deck is a local-first control room for your AI agents. Run Claude Code,
+Codex and Antigravity side by side, with many more harnesses coming very soon,
+and bring every decision and action back to one place, as cards.
 
-Inkie Deck is open source under the [Apache-2.0 licence](LICENSE).
-[Contributions are welcome](CONTRIBUTING.md).
+Open source under the [Apache-2.0 licence](LICENSE); [contributions are welcome](CONTRIBUTING.md).
+
+> Running ten agents at once broke my brain. Every window wants an answer:
+> approve this, check that, which worktree is it in, is it ready to merge.
+> After three weeks off I came back and could only handle two. So I built one
+> place where the agents bring me the decisions, and they keep the noise.
+> That place is Deck.
 
 ![Needs you page listing overdue and upcoming decisions from agents, with a separate section for blocked work](docs/images/needs-you.png)
 
-*Needs you brings requests from across your agents into one view, with the most urgent items first.*
+*Needs you: every question from every agent in one queue, most urgent first.*
+
+## Your agents ask. You answer.
+
+Agents do not need your eyes on every line of reasoning. They need you for the
+calls only you can make. In Deck, an agent sends a **decision card** when it
+needs a choice and an **action card** when it needs you to do something. You
+answer the card, the agent carries on, and the whole exchange stays in the
+thread.
 
 ![Agent thread showing an answered decision card, the user's reply and the agent's follow-up](docs/images/agent-thread.png)
 
-*An agent thread keeps the decision, your answer and the agent's update together.*
+*The decision, your answer and the agent's follow-up, kept together.*
+
+## One deck, any harness, any model
+
+Most tools lock you into one vendor. Deck sits above the harness, so you can
+pick the best model for each job and run every agent through one inbox, one
+Needs you queue and one project board.
+
+Where it is today, plainly:
+
+| Harness | Today |
+| --- | --- |
+| Claude Code | Fully supported: one-command setup, generated persona files, persona checks, live check, inbox delivery. |
+| Codex | Supported: `--runtime codex` creates the agent with an `AGENTS.md` and a start-up hook that loads its persona, plus launch, resume and inbox delivery. Live check is opt-in. |
+| Antigravity | Supported: `--runtime agy` creates the agent with a `GEMINI.md` built from its persona files, plus launch, resume and inbox delivery. Live check is opt-in. |
+
+Memory hooks and the first-run welcome message are Claude Code only for now. Many more harnesses are coming very soon.
+
+An Agent Client Protocol (ACP) client has also landed, the groundwork for
+plugging in any agent that speaks ACP.
+
+## See the work, not a description of it
+
+Agents share what they make as inline images and links to files. Generated
+images, code and notes open beside the thread, searchable and ready to review.
 
 ![A second agent's thread with a launch carousel slide shown inline and links to the kit label and a config file](docs/images/agent-thread-tech.png)
 
-*Agents share work as inline images and links to files, so a launch carousel arrives as something you can see, not a description.*
+*A launch carousel arrives as something you can see.*
 
 ![Review panel with a file list of generated images and code files, and a hero image previewed beside the thread](docs/images/review-panel.png)
 
-*Files an agent produces open beside the thread: generated images, code and notes, searchable and ready to review.*
+*Everything an agent produced, open beside the conversation about it.*
 
 ![A second agent's thread with an inline carousel slide and a link to its launch config, beside the same config open as highlighted JSON](docs/images/code-preview.png)
 
-*Code opens in the same panel with syntax highlighting, so a config file an agent wrote can be read next to the conversation about it.*
+*Code opens with syntax highlighting, right next to the thread.*
+
+## Keep the whole team on one board
+
+Every piece of work sits in one of five stages, each card showing its owner and
+what it is waiting on. You can see who is stuck without asking anyone.
 
 ![Project board with twelve cards across to do, in progress, blocked, in review and done](docs/images/project-board.png)
 
-*The project board keeps every piece of work in one of five stages, each card showing its owner and what it is waiting on.*
+*Twelve pieces of work, five stages, one glance.*
 
-## Why Deck
+You can also edit Markdown drafts in the browser, open linked documents in the
+review panel, and type or dictate replies (optional
+[voice dictation](INSTALL.md#voice-dictation-optional) with an API key).
 
-- **Handle requests from across your agents.** Answer decision cards and mark
-  action cards done without searching through conversations.
-- **Track project work.** Move cards between stages on a project board and open
-  the details when you need context.
-- **Draft and review in the browser.** Edit Markdown drafts saved in your
-  workspace, and open linked documents in the review panel alongside the thread.
-- **Type or dictate a reply.** The compose box supports optional
-  [voice dictation](INSTALL.md#voice-dictation-optional) with an API key.
+## Not just for code
 
-## The name
+Deck runs my own business every day: marketing, customer outreach, support,
+CRM hygiene and code. If an agent can do the work, you can manage it from Deck.
 
-Deck has two sources. It is "all hands on deck": your whole team of agents,
-working together on one ship. And it is a deck of cards: agents send you decision
-cards and action cards, so you answer a question or tick off a task instead of
-reading every thread. The cards take the cognitive load off you.
+## Built in daily use, not in a lab
+
+Deck began as an internal tool. The first commit went in on 3 June 2026 and it
+has run my business every day since, growing a piece at a time as the team
+needed it. This is the open source part of that tool, and I now run on this
+open source version myself. It looks simple. Underneath it is not, and that is
+the point: the complexity is the tool's problem, not yours.
+
+It is built to be built on. Your agents can extend it with you, and a plugin
+system is coming.
+
+## Give your agents a memory that lasts
+
+Deck pairs with the brain, our open source long-term memory for AI coding
+agents, in use since April 2026:
+
+- **Survives compaction.** It captures decisions, debugging state and rejected
+  ideas to disk before compaction wipes them, and brings them back next session.
+- **Remembers across sessions.** Semantic search over notes, observations and
+  past conversations, so an agent can recall what the team already worked out.
+- **One memory per agent, one shared vault.** Each agent keeps its own memory
+  on disk, recall can be scoped to it, and a shared knowledge vault holds what
+  the whole team should know.
+- **Filesystem-first.** Plain files you can read, edit and back up.
+
+Deck's quick setup does not install the brain yet. If you have it built, the
+agent scaffold can wire it into each new agent: see
+[give the agent a memory loop](INSTALL.md#optional-give-the-agent-a-memory-loop).
+
+## Why I built it
+
+Run enough agents and you hit what I call agentic cognitive overload: streams
+of reasoning and queues of approvals, all competing for the same human brain.
+It is not only a coder's problem. Deck is my answer: work at a normal pace and
+let the agents bring you only what needs you.
+
+[![Watch: Agentic Cognitive Overload: Running 10 AI Agents Broke My Brain](https://i.ytimg.com/vi/EMOwJOWr0DU/maxresdefault.jpg)](https://www.youtube.com/watch?v=EMOwJOWr0DU)
+
+*Watch (5 min): Agentic Cognitive Overload: Running 10 AI Agents Broke My Brain.*
+
+## Why "Deck"
+
+All hands on deck: your whole crew of agents, on one ship. And a deck of cards:
+they deal you decisions and actions, you play them, and nobody reads every
+thread. Go and make something good, and take it easy on your head.
 
 ## Quick install
 
@@ -74,9 +152,8 @@ Once the assistant starts, its first message asks what you do and what you would
 five-minute sandbox with fixture data, a production install, and live agents in
 tmux. The rig extracts and runs the covered shell blocks directly from the guide.
 
-Quick setup, the scaffold and persona verification support Claude Code. The
-base can start Codex and Antigravity panes and send them inbox messages, but
-does not yet support their persona files or verification. To add another agent,
+Quick setup starts a Claude Code agent. To add a Codex or Antigravity agent, run
+`create-agent.sh --runtime codex` or `--runtime agy`; see the harness table above. To add another agent,
 see [docs/adding-an-agent.md](docs/adding-an-agent.md).
 
 ## How this repository got its code
