@@ -21,6 +21,14 @@ interface NativeBinding {
   }): NativeTerminal;
 }
 
+export function loadNodePty(): NativeBinding {
+  try {
+    return require("node-pty");
+  } catch (error) {
+    throw new LaunchFailure("unavailable", `Could not load node-pty: ${String(error)}`, error);
+  }
+}
+
 export class PtyRunner extends FixtureRunner {
   readonly kind = "pty";
   private terminal?: NativeTerminal;
@@ -31,12 +39,7 @@ export class PtyRunner extends FixtureRunner {
     if (process.platform !== "linux") {
       throw new LaunchFailure("unavailable", "The PTY fixture runner is verified only on Linux.");
     }
-    let binding: NativeBinding;
-    try {
-      binding = require("node-pty");
-    } catch (error) {
-      throw new LaunchFailure("unavailable", `Could not load node-pty: ${String(error)}`, error);
-    }
+    const binding = loadNodePty();
     const { file, args, env } = fixtureCommand(this.directory, spec);
     const terminal = binding.spawn(file, args, {
       cwd: this.directory, env, cols: spec.cols ?? 80, rows: spec.rows ?? 24, encoding: null,

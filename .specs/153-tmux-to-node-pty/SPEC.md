@@ -180,6 +180,7 @@ paths are unchanged in this slice.
 | `app/components/TmuxPane.tsx`, `app/routes/threads.$agent.tsx` | Poll the thread loader for viewport snapshots, display the pane and post terminal input to the tmux send action. | Replace presentation and polling only with an authorised terminal transport; guard old input. |
 | `app/routes.ts`, `app/components/AppShell.tsx` | Register and link the Activity and per-thread terminal surfaces. | Guard availability and retire tmux-specific links/routes once unused. |
 | `bin/boot-agents.sh`, `bin/workspace.sh`, `bin/claude-session.sh`, `bin/claude-binary-check.sh` | Own tmux workspace/agent start and resume; validate the CLI expected to run in a pane. | Guard single ownership during draining; replace migrated launch and resume paths. |
+| `scripts/setup.sh` | Requires tmux in preflight and runs `bin/boot-agents.sh` to start agents. | Update the prerequisite and boot path when setup no longer needs tmux. |
 | `bin/codex-provider-switch` | Reads pane identity, working directory and quiescence; interrupts, launches and checks the selected CLI in that pane. | Guard against operating on a migrated agent; replace only with equivalent ownership and rollback checks. |
 | `bin/create-agent.sh`, `app/lib/agent-model.server.ts`, `app/routes/api.agent-model.tsx`, `app/components/ModelSelector.tsx` | Create agent configuration or persist the next-launch model; do not switch an active pane through the model selector. | Preserve provisioning and persist-only behaviour; guard backend-specific identity assumptions. |
 | `app/lib/cron.server.ts`, `app/lib/cron-validate.ts`, `app/routes/scheduler.tsx`, `app/routes/api.cron.tsx` | Validate and store schedules; generated agent-mode jobs load a tmux buffer, paste and press Enter. Script-mode jobs are separate. | Replace agent-mode jobs and guard already-installed jobs during drain; leave script mode alone. |
@@ -471,4 +472,19 @@ Recommendations only.
   cases skipped because the sandbox denied the private Unix socket. Ten
   voice-origin unit tests passed; the socket-based case was not run.
   Typecheck, licence, direct dash scan and `git diff --check` passed.
+- Commits: pending.
+
+### 2026-11-19: Address the optional addon and setup inventory review
+- What changed: the native contract probes the runner's lazy loader once,
+  skips with the load error and installation guidance if unavailable, and
+  fails an explicit availability assertion in CI. The tmux and dedicated
+  missing-dependency cases keep their own gates. Added setup to the inventory.
+- Why: contributors can omit the optional addon without losing legacy coverage,
+  CI must still exercise the native runner, and setup depends on tmux at boot.
+- Supersedes: nothing, additive.
+- Verification: 26 runner tests passed with CI set; eight tmux cases skipped
+  because the sandbox denied their private socket. Simulated absence skipped
+  native cases locally, and a simulated load failure failed the CI assertion.
+  The dedicated missing-dependency test passed in both runs. Typecheck,
+  licence, direct dash scan and `git diff --check` passed.
 - Commits: pending.

@@ -7,7 +7,22 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixtureEnvironment } from "./fixture-command.js";
 import { fixtureRegistry } from "./fixture-registry.js";
+import { loadNodePty } from "./pty-runner.js";
 import type { Runner } from "./runner.js";
+
+const inCI = process.env.CI !== undefined;
+let nodePtyRestriction: string | undefined;
+if (process.platform === "linux" || inCI) {
+  try {
+    loadNodePty();
+  } catch (error) {
+    nodePtyRestriction = `${String(error)}\nRun pnpm install --frozen-lockfile with optional dependencies enabled to install node-pty.`;
+  }
+}
+
+it.runIf(inCI)("requires node-pty in CI", () => {
+  expect(nodePtyRestriction, nodePtyRestriction).toBeUndefined();
+});
 
 function groupMembers(group: number): number[] {
   return readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).flatMap((pid) => {
@@ -31,7 +46,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
   let runner: Runner;
   let transcript: string;
   let drained: Promise<void>;
-  let tmuxSocketRestriction: string | undefined;
+  let skipReason = kind === "pty" ? nodePtyRestriction : undefined;
 
   beforeAll(async () => {
     if (kind !== "tmux") return;
@@ -47,14 +62,14 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     } catch (error) {
       const { code } = error as NodeJS.ErrnoException;
       if (code !== "EPERM" && code !== "EACCES") throw error;
-      tmuxSocketRestriction = `Permission denied for the private tmux Unix socket (${code}).`;
+      skipReason = `Permission denied for the private tmux Unix socket (${code}).`;
     } finally {
       rmSync(probeDirectory, { force: true, recursive: true });
     }
   }, timeout);
 
   beforeEach(({ skip }) => {
-    if (tmuxSocketRestriction) skip(tmuxSocketRestriction);
+    if (skipReason) skip(skipReason);
     directory = mkdtempSync(join(tmpdir(), "r-"));
     runner = fixtureRegistry(directory)(kind);
     transcript = "";
@@ -66,7 +81,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
   });
 
   afterEach(async () => {
-    if (tmuxSocketRestriction) return;
+    if (skipReason) return;
     try {
       await runner.stop("kill");
       await drained;
