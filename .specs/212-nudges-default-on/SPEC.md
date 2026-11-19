@@ -87,4 +87,4 @@ None filed.
 - Why: Devin review found that a wildcard bind such as `HOST=0.0.0.0` does not
   match the LAN address in a request's Host header, blocking opted-in writes.
 - Supersedes: the remote Host rules in the 2026-11-19 Host and origin guard.
-- Commits: pending fix(nudges): allow opted-in remote IP and configured hosts (#212)
+- Commits: 71dd799 fix(nudges): accept IP-literal and listed hosts when remote admin is on (#212)
