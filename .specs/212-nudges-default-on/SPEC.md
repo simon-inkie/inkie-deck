@@ -57,4 +57,4 @@ None filed.
   addresses cannot grant write access. A loopback proxy must mark forwarded
   requests or have Nudges disabled, as documented in INSTALL.md.
 - Supersedes: nothing, additive
-- Commits: pending
+- Commits: e864545 feat(nudges): loopback-only admin guard and network bind warning (#212)
