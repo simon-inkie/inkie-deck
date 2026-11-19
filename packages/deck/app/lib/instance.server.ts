@@ -43,6 +43,10 @@ export function tmuxEnabled(env: Env): boolean {
   return !(v === "0" || v === "false");
 }
 
+export function ptyRunnerEnabled(env: Env): boolean {
+  return env["MC_PTY_RUNNER"] === "1";
+}
+
 /**
  * Whether the agent-activity panel is exposed on this instance.
  *

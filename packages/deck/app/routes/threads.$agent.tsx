@@ -75,9 +75,13 @@ import { ReviewPanel, DOC_PARAM } from "~/components/ReviewPanel";
 import { FilesPanel } from "~/components/FilesPanel";
 import { isNearBottom, shouldFollow } from "~/lib/scroll-follow";
 import { avatarUrl } from "~/lib/avatars.server";
-import { captureTmuxPane, wakeIdleAgent, pushMessageToIdleAgent } from "~/lib/tmux.server";
+import {
+  buildPanePushPayload, buildPaneWakePayload, captureTmuxPane, wakeIdleAgent, pushMessageToIdleAgent,
+} from "~/lib/tmux.server";
+import { isPtyOptedIn, runnerRegistry, type SessionStatus } from "~/lib/runner/registry.server";
 import { classifyPaneHint } from "~/lib/pane-hints";
 import { TmuxPane } from "~/components/TmuxPane";
+import { Button } from "~/components/ui/button";
 import { formatDayDivider, londonDayKey } from "~/lib/time";
 
 /**
@@ -270,11 +274,17 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const latestBlock = blocks[blocks.length - 1];
   const awaitingAgent = !tmuxView && startIndex + blocks.length === totalCount &&
     latestBlock?.header.from === user;
-  const pane = tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent)
-    ? captureTmuxPane(process.env, agent)
-    : undefined;
+  const needsPane = tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);
+  const pty = needsPane && runnerRegistry.handlesTerminal(agent);
+  const ptyAllowed = pty && canWriteFromRequest(request, context);
+  const pane = !needsPane ? undefined : pty
+    ? ptyAllowed ? runnerRegistry.capture(agent) : undefined
+    : captureTmuxPane(process.env, agent);
   const hint = pane === undefined ? null : classifyPaneHint(pane);
-  const tmux = tmuxView ? { pane } : undefined;
+  const runner = tmuxView && ptyAllowed && (isPtyOptedIn(process.env, agent) || runnerRegistry.canControl(agent))
+    ? runnerRegistry.status(agent) ?? { state: "not-started" as const }
+    : undefined;
+  const tmux = tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
   const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
 
   return {
@@ -307,7 +317,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
  * the appropriate seam method. Unknown intents and malformed payloads return
  * { ok: false, error } rather than throwing (fail-safe).
  *
- * Imports ONLY makeStores + zod + model types. No fs, no banned path strings.
+ * Terminal delivery is best effort after the inbox write.
  */
 export async function action({ request, params, context }: Route.ActionArgs) {
   requireSameOriginWrite(request, context);
@@ -362,7 +372,7 @@ export async function action({ request, params, context }: Route.ActionArgs) {
 
   const payload = parsed.data;
 
-  // When an idle agent receives a human message, poke its tmux pane so it
+  // When an idle agent receives a human message, poke its terminal so it
   // picks the message up now (hook-inject only delivers on the agent's next
   // turn; an idle agent takes no turn on its own). Fire-and-forget - NOT
   // awaited - because the send-keys path sleeps ~1s before Enter and the
@@ -370,7 +380,10 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // (tmux is off on some instances). wakeIdleAgent is a no-op on an active pane.
   const wakeTarget = (target: string) => {
     if (tmuxEnabled(process.env)) {
-      void wakeIdleAgent(process.env, target, user).catch(() => {});
+      const wake = runnerRegistry.handlesTerminal(target)
+        ? runnerRegistry.submit(target, buildPaneWakePayload(user))
+        : wakeIdleAgent(process.env, target, user);
+      void wake.catch(() => {});
     }
   };
 
@@ -393,9 +406,10 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // flag so the compiler catches a missing value at every call site.
   const pushTarget = (target: string, body: string, dictated: boolean) => {
     if (tmuxEnabled(process.env)) {
-      void pushMessageToIdleAgent(process.env, target, user, body, dictated).catch(
-        () => {}
-      );
+      const push = runnerRegistry.handlesTerminal(target)
+        ? runnerRegistry.submit(target, buildPanePushPayload(user, body, dictated))
+        : pushMessageToIdleAgent(process.env, target, user, body, dictated);
+      void push.catch(() => {});
     }
   };
 
@@ -704,6 +718,28 @@ export function refreshesRetainedBlocks(fetcher: RefreshGateFetcher): boolean {
     typeof fetcher.data === "object" &&
     fetcher.data !== null &&
     "alreadyAnswered" in fetcher.data
+  );
+}
+
+function RunnerControls({ agent, status }: { agent: string; status: SessionStatus | { state: "not-started" } }) {
+  const fetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const busy = fetcher.state !== "idle";
+  const running = status.state === "running" || status.state === "quiet";
+  const canStart = status.state === "not-started" || status.state === "stopped" || status.state === "unavailable" || status.state === "locked";
+  const canStop = running || status.state === "starting" || status.state === "cleanup-pending";
+  const description = "reason" in status ? `${status.state}: ${status.reason}`
+    : status.state === "stopped" && status.code !== null ? `stopped (code ${status.code})` : status.state.replace("-", " ");
+  const operate = (op: "start" | "stop" | "cancel") => fetcher.submit(
+    { agent, op }, { method: "post", action: "/api/runner", encType: "application/json" },
+  );
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      <span className="label-mono text-xs text-muted-foreground" role="status">PTY: {description}</span>
+      <Button type="button" size="sm" variant="outline" disabled={busy || !canStart} onClick={() => operate("start")}>Start</Button>
+      <Button type="button" size="sm" variant="outline" disabled={busy || !running} onClick={() => operate("cancel")}>Interrupt</Button>
+      <Button type="button" size="sm" variant="outline" disabled={busy || !canStop} onClick={() => operate("stop")}>Stop</Button>
+      {fetcher.data?.error && !busy && <span className="text-xs text-destructive" role="alert">{fetcher.data.error}</span>}
+    </div>
   );
 }
 
@@ -1435,7 +1471,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
             the compose row to send-keys into this agent's live session. */}
         {tmux !== undefined ? (
           <div className="flex min-h-0 flex-1 flex-col px-6 py-4" data-testid="thread-tmux-view">
-            <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={agent} hint={hint} />
+            {tmux.runner && <RunnerControls key={agent} agent={agent} status={tmux.runner} />}
+            <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={!tmux.pty || tmux.runner ? agent : undefined} hint={hint} />
             <p className="label-mono mt-2 shrink-0 text-[10px] text-muted-foreground">
               Live terminal for {agent} - refreshes automatically; the box types
               into their session.

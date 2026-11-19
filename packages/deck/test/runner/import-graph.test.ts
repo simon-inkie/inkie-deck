@@ -6,18 +6,22 @@ import { expect, it } from "vitest";
 
 const deck = fileURLToPath(new URL("../../", import.meta.url));
 const fixtures = join("test", "runner") + sep;
+const runner = join("app", "lib", "runner");
+const core = join(runner, "runner.ts");
+const pty = join(runner, "pty-runner.server.ts");
+const registry = join(runner, "registry.server.ts");
+const sourceFile = /\.[cm]?[jt]sx?$/;
 const compilerOptions = ts.getParsedCommandLineOfConfigFile(join(deck, "tsconfig.json"), {}, {
   ...ts.sys,
   onUnRecoverableConfigFileDiagnostic: (error) => { throw new Error(String(error.messageText)); },
 })!.options;
 
-it("keeps the fixture registry, runners and node-pty out of the production import graph", () => {
-  const app = join(deck, "app");
-  const server = join(deck, "server");
+it("allows only the registry to import the PTY adapter in production", () => {
   const roots = [
-    ...readdirSync(app, { recursive: true, encoding: "utf8" }).filter((file) => /\.[cm]?[jt]sx?$/.test(file)).map((file) => join(app, file)),
-    ...readdirSync(server).filter((file) => file.endsWith(".mjs")).map((file) => join(server, file)),
-    join(deck, "scripts/start-production.mjs"), join(deck, "vite.config.ts"), join(deck, "react-router.config.ts"),
+    ...["app", "server", "scripts"].flatMap((directory) =>
+      readdirSync(join(deck, directory), { recursive: true, encoding: "utf8" })
+        .filter((file) => sourceFile.test(file)).map((file) => join(deck, directory, file))),
+    join(deck, "vite.config.ts"), join(deck, "react-router.config.ts"),
   ];
   const visited = new Set<string>();
   const violations: string[] = [];
@@ -26,13 +30,17 @@ it("keeps the fixture registry, runners and node-pty out of the production impor
   function scan(file: string): void {
     if (visited.has(file)) return;
     visited.add(file);
+    const importer = relative(deck, file);
     const source = readFileSync(file, "utf8");
     for (const { fileName } of ts.preProcessFile(source, true, true).importedFiles) {
       const resolved = ts.resolveModuleName(fileName, file, compilerOptions, ts.sys, cache).resolvedModule;
       const dependency = resolved?.resolvedFileName;
-      if (/^node-pty(?:\/|$)/.test(fileName) || (dependency && relative(deck, dependency).startsWith(fixtures))) {
-        violations.push(`${relative(deck, file)} -> ${fileName}`);
-      } else if (dependency && !resolved.isExternalLibraryImport && /\.[cm]?[jt]sx?$/.test(dependency)) {
+      const target = dependency && relative(deck, dependency);
+      if ((/^node-pty(?:\/|$)/.test(fileName) && importer !== pty) || target?.startsWith(fixtures) ||
+        (target === pty && importer !== registry) ||
+        (target === core && ![pty, registry, join(runner, "lock.server.ts")].includes(importer))) {
+        violations.push(`${importer} -> ${fileName}`);
+      } else if (dependency && !resolved.isExternalLibraryImport && sourceFile.test(dependency)) {
         scan(dependency);
       }
     }

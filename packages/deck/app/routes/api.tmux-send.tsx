@@ -9,8 +9,8 @@
  * logic lives in exactly one place - mirrors the api.review resource-route
  * precedent.
  *
- * SEAM RULE: imports ONLY from tmux.server - the subprocess never
- * appears in route code. Validates at the boundary (parse-don't-validate).
+ * The subprocess never appears in route code. An opted-in agent is routed
+ * through the PTY registry, never back to a draining tmux pane.
  *
  * READONLY FALLBACK: this route is purely additive. If it fails, the capture
  * loaders still render the pane - the operator is never worse off than read-only.
@@ -28,6 +28,7 @@ import {
 } from "~/lib/tmux.server";
 import { tmuxEnabled } from "~/lib/instance.server";
 import { requireSameOriginWrite } from "~/lib/request-origin.server";
+import { runnerRegistry } from "~/lib/runner/registry.server";
 
 const windowSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 const sendSchema = z.union([
@@ -80,7 +81,14 @@ export async function action({ request, context }: Route.ActionArgs) {
       { status: 400 }
     );
   }
+  const pty = runnerRegistry.handlesTerminal(parsed.data.window);
   if ("key" in parsed.data) {
+    if (pty) {
+      const result = await runnerRegistry.key(parsed.data.window, parsed.data.key);
+      if (result.status === "written") return { ok: true as const };
+      return { ok: false as const, error: result.reason === "unsafe-pane"
+        ? "A PTY send is already in progress." : "Could not send the key to a running, opted-in PTY session." };
+    }
     return sendNamedKeyToWindow(
       process.env,
       parsed.data.window,
@@ -89,7 +97,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
   // sendKeysToWindow carries the ROSTER + live-allowlist gate, verifies the
   // submit, and degrades to { ok: false } on any failure - it never throws.
-  const result = await sendKeysToWindow(
+  const result = pty ? await runnerRegistry.submit(parsed.data.window, parsed.data.text) : await sendKeysToWindow(
     process.env,
     parsed.data.window,
     parsed.data.text
@@ -100,11 +108,11 @@ export async function action({ request, context }: Route.ActionArgs) {
   // "unverified" means text AND Enter were sent but delivery could not be
   // proven. Surface it distinctly so the operator is told "sent, could not
   // confirm" rather than "failed", which would invite a duplicate resend.
-  if (result.status === "unverified") {
+  if (result.status === "unverified" || (pty && result.status === "not-submitted" && result.enterAttempts > 1)) {
     return {
       ok: false as const,
       unverified: true as const,
-      error: result.error,
+      error: pty ? "Sent, could not confirm delivery." : result.error,
     };
   }
   return { ok: false as const, error: result.error };

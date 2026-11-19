@@ -18,6 +18,15 @@
 #
 # Requires AGENTS_HOME to be set by the caller.
 
+agent_opts_into_pty() {
+  local agent_home="$AGENTS_HOME/$1" runner
+  # A marker drains tmux admission; a lock keeps it drained after opt-out.
+  [[ -e "$agent_home/.runner.lock" || -L "$agent_home/.runner.lock" ]] && return 0
+  [[ -f "$agent_home/.runner" ]] || return 1
+  runner="$(< "$agent_home/.runner")" || return 1
+  [[ "$runner" =~ ^[[:space:]]*pty[[:space:]]*$ ]]
+}
+
 # agent_role <agent> -- the optional one-line role in $AGENTS_HOME/<agent>/.role.
 agent_role() {
   local file="$AGENTS_HOME/$1/.role"

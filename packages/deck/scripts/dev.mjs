@@ -149,6 +149,8 @@ const appEnv = {
   ...withVoiceDisabledReason(env),
   VOICE_ALLOWED_ORIGINS: proxyEnv.VOICE_ALLOWED_ORIGINS,
 };
+// PTY recovery and shutdown hooks currently belong to server/production.mjs.
+// Dev PTY lifecycle integration remains a follow-up; use production for PTY.
 const child = spawn("react-router", args, {
   stdio: "inherit",
   env: appEnv,

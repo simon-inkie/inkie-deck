@@ -1,9 +1,12 @@
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { isValidPaneKey, type PaneKey } from "../../app/lib/tmux.server.js";
+import { isValidPaneKey, type PaneKey } from "../tmux.server.js";
 
 export interface SessionSpec {
-  scenario?: "normal" | "slow" | "failed" | "missing";
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
   cols?: number;
   rows?: number;
 }
@@ -54,7 +57,7 @@ function deferred<Value>() {
   return { promise, resolve, reject };
 }
 
-export abstract class FixtureRunner implements Runner {
+export abstract class BaseRunner implements Runner {
   abstract readonly kind: Runner["kind"];
   readonly caps = { terminalAttach: false, deliveryAck: false, stateEvents: false } as const;
   private readonly stream = new Readable({ read() {}, objectMode: true });
@@ -62,10 +65,7 @@ export abstract class FixtureRunner implements Runner {
   private readonly ready = deferred<boolean>();
   private state: "new" | "starting" | "running" | "stopping" | "ended" = "new";
   private starting?: Promise<number>;
-  private readinessTail = "";
   protected pid?: number;
-
-  constructor(private readonly readinessTimeout = 3000) {}
 
   protected abstract start(spec: SessionSpec): Promise<number>;
   protected abstract dispose(): Promise<void>;
@@ -74,15 +74,19 @@ export abstract class FixtureRunner implements Runner {
   protected abstract interrupt(): void;
   protected onStopRequested(): void {}
 
-  async launch(spec: SessionSpec): Promise<SessionHandle> {
+  async launch(spec: SessionSpec, onSpawn?: (pid: number) => void): Promise<SessionHandle> {
     if (this.state !== "new") throw new LaunchFailure("start-failed", "Runner is single-use.");
     this.state = "starting";
-    const timeout = setTimeout(() => this.ready.resolve(false), this.readinessTimeout);
+    const timeout = setTimeout(() => this.ready.resolve(false), 10_000);
     try {
-      this.starting = this.start(spec).then((pid) => { this.pid = pid; return pid; });
+      this.starting = this.start(spec).then((pid) => {
+        this.pid = pid;
+        onSpawn?.(pid);
+        return pid;
+      });
       const pid = await this.starting;
       if (!await this.ready.promise || !this.inState("starting")) {
-        throw new LaunchFailure("start-failed", "Fixture exited or did not become ready.");
+        throw new LaunchFailure("start-failed", "Session exited or did not become ready.");
       }
       this.state = "running";
       return { pid };
@@ -91,10 +95,10 @@ export abstract class FixtureRunner implements Runner {
         await this.stop("kill");
       } catch (cleanupError) {
         throw new LaunchFailure(error instanceof LaunchFailure ? error.reason : "start-failed",
-          "Fixture launch and cleanup failed.", new AggregateError([error, cleanupError]));
+          "Session launch and cleanup failed.", new AggregateError([error, cleanupError]));
       }
       if (error instanceof LaunchFailure) throw error;
-      throw new LaunchFailure("start-failed", "Could not start the fixture.", error);
+      throw new LaunchFailure("start-failed", "Could not start the session.", error);
     } finally {
       clearTimeout(timeout);
     }
@@ -102,13 +106,9 @@ export abstract class FixtureRunner implements Runner {
 
   private inState(state: typeof this.state): boolean { return this.state === state; }
 
-  protected data(chunk: Uint8Array): void {
+  protected data(chunk: Uint8Array, ready = chunk.byteLength > 0): void {
     this.stream.push(chunk);
-    if (this.state === "starting") {
-      const text = this.readinessTail + Buffer.from(chunk).toString("ascii");
-      if (text.includes("FIXTURE READY\r\n")) this.ready.resolve(true);
-      this.readinessTail = text.slice(-32);
-    }
+    if (ready && this.state === "starting") this.ready.resolve(true);
   }
 
   protected async finish(info: ExitInfo): Promise<void> {
@@ -148,7 +148,7 @@ export abstract class FixtureRunner implements Runner {
     }
   }
 
-  output(): AsyncIterable<Uint8Array> { return this.stream; }
+  output(): Readable { return this.stream; }
 
   async resize(cols: number, rows: number): Promise<void> {
     if (this.state === "running") this.setSize(cols, rows);

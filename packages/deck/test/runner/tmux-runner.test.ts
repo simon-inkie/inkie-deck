@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
+import { fixtureCommand, type FixtureSpec } from "./fixture-command.js";
 import { TmuxRunner } from "./tmux-runner.js";
 
 const panePid = 12345;
@@ -82,7 +83,8 @@ function fixture(status: () => string | undefined, {
   });
   const runner = runnerToStop = new TmuxRunner(directory, { execFile, execFileSync, spawn } as unknown as
     NonNullable<ConstructorParameters<typeof TmuxRunner>[1]>);
-  return { runner, server, control, groupKill, execFile, execFileSync };
+  const launch = (spec: FixtureSpec = {}) => runner.launch(fixtureCommand(directory, spec));
+  return { runner, launch, server, control, groupKill, execFile, execFileSync };
 }
 
 afterEach(async () => {
@@ -97,14 +99,14 @@ afterEach(async () => {
 it("retries a failed probe and waits for a late exit status before closing output", async () => {
   const status = vi.fn().mockReturnValueOnce(undefined)
     .mockReturnValueOnce("1  \n").mockReturnValueOnce("1  \n").mockReturnValue("1 23 \n");
-  const { runner, server, control, execFile } = fixture(status, { ready: false });
+  const { runner, launch, server, control, execFile } = fixture(status, { ready: false });
   const output = (async () => {
     const chunks: Uint8Array[] = [];
     for await (const chunk of runner.output()) chunks.push(chunk);
     return Buffer.concat(chunks).toString();
   })();
 
-  await expect(runner.launch({ scenario: "failed" })).rejects.toMatchObject({ reason: "start-failed" });
+  await expect(launch({ scenario: "failed" })).rejects.toMatchObject({ reason: "start-failed" });
   await expect(runner.exited()).resolves.toEqual({ code: 23, signal: null });
   await expect(output).resolves.toBe("FIXTURE END\r\n");
   expect(status).toHaveBeenCalledTimes(4);
@@ -122,7 +124,7 @@ it.runIf(process.platform === "linux").each([
   try {
     const status = vi.fn(() => undefined);
     let wrapperPid: number;
-    const { runner, groupKill } = fixture(status, {
+    const { runner, launch, groupKill } = fixture(status, {
       directory, ready: false,
       onLaunch(args, closeControl) {
         const command = args.indexOf("/usr/bin/env");
@@ -135,7 +137,7 @@ it.runIf(process.platform === "linux").each([
         if (missing === "session") closeControl();
       },
     });
-    await expect(runner.launch({ scenario })).rejects.toMatchObject({ reason: "start-failed" });
+    await expect(launch({ scenario })).rejects.toMatchObject({ reason: "start-failed" });
     await expect(runner.exited()).resolves.toEqual({ code, signal: null });
     await expect(runner.write("no input")).resolves.toEqual({ status: "refused", reason: "not-running" });
     await expect(runner.key("Enter")).resolves.toEqual({ status: "refused", reason: "not-running" });
@@ -149,13 +151,13 @@ it.runIf(process.platform === "linux").each([
 it("uses a recorded zero exit when the pane vanishes after launch and drains output", async () => {
   const directory = mkdtempSync(join(tmpdir(), "r-"));
   try {
-    const { runner, groupKill } = fixture(() => undefined, { directory });
+    const { runner, launch, groupKill } = fixture(() => undefined, { directory });
     const output = (async () => {
       const chunks: Uint8Array[] = [];
       for await (const chunk of runner.output()) chunks.push(chunk);
       return Buffer.concat(chunks).toString();
     })();
-    await runner.launch({});
+    await launch();
     writeFileSync(join(directory, "fixture-exit"), `${panePid} 0 0\n`);
     await expect(runner.exited()).resolves.toEqual({ code: 0, signal: null });
     await expect(output).resolves.toBe("FIXTURE READY\r\nFIXTURE END\r\n");
@@ -174,8 +176,8 @@ it.each([
   try {
     vi.spyOn(performance, "now").mockImplementation(() => Date.now());
     let status = response;
-    const { runner, groupKill } = fixture(() => status);
-    await runner.launch({});
+    const { runner, launch, groupKill } = fixture(() => status);
+    await launch();
     const reported = vi.fn();
     void runner.exited().then(reported, reported);
 
@@ -193,16 +195,16 @@ it.each([
 });
 
 it("settles with unknown status after stopping a pane that never reports its status", async () => {
-  const { runner, groupKill } = fixture(() => "1  \n");
-  await runner.launch({});
+  const { runner, launch, groupKill } = fixture(() => "1  \n");
+  await launch();
   await expect(runner.stop("kill")).resolves.toEqual({ code: null, signal: null });
   expect(groupKill).toHaveBeenCalledWith(-panePid, "SIGKILL");
 });
 
 it("reports the kill signal and refuses writes immediately while stopping", async () => {
   let status = "0  \n";
-  const { runner, groupKill, execFileSync } = fixture(() => status);
-  await runner.launch({});
+  const { runner, launch, groupKill, execFileSync } = fixture(() => status);
+  await launch();
   groupKill.mockImplementation(() => { status = "1  KILL\n"; return true; });
   const stopped = runner.stop("kill");
   await expect(runner.write("no input")).resolves.toEqual({ status: "refused", reason: "not-running" });
@@ -217,8 +219,8 @@ it.each([
     inspections: ["display-message", "capture-pane", "display-message", "capture-pane"] },
 ])("refuses text and named keys with $reason before the exit poll", async ({ paneDead, viewport, reason, inspections }) => {
   let status = "0  \n";
-  const { runner, groupKill, execFileSync } = fixture(() => status, { paneDead, viewport });
-  await runner.launch({});
+  const { runner, launch, groupKill, execFileSync } = fixture(() => status, { paneDead, viewport });
+  await launch();
   groupKill.mockImplementation(() => { status = "1  KILL\n"; return true; });
   await expect(runner.write("must not reach a shell")).resolves.toEqual({ status: "refused", reason });
   await expect(runner.key("Enter")).resolves.toEqual({ status: "refused", reason });
@@ -228,8 +230,8 @@ it.each([
 it("forces both tmux processes down if the pane never reports death and shutdown stalls", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const { runner, server, control, groupKill } = fixture(() => "0  \n", { wedgedShutdown: true });
-    await runner.launch({});
+    const { runner, launch, server, control, groupKill } = fixture(() => "0  \n", { wedgedShutdown: true });
+    await launch();
     const stopped = runner.stop("kill");
     await vi.advanceTimersByTimeAsync(7000);
     await expect(stopped).resolves.toEqual({ code: null, signal: null });
