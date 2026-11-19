@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-roman-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-italic-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 /* Per-area typography tokens; rem sizes follow the root font size. */
 :root {
   --mc-chat-font-size: 1.0625rem;
@@ -92,14 +108,17 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  --font-sans: "Work Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "League Spartan", "Work Sans", ui-sans-serif, sans-serif;
-  --font-mono: "Space Grotesk", ui-monospace, "SF Mono", monospace;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace;
 }
 
 @layer base {
   * {
     border-color: var(--border);
+  }
+  html {
+    font-size: 87.5%;
   }
   html,
   body {
@@ -122,7 +141,7 @@
     font-family: var(--font-mono);
     text-transform: uppercase;
     letter-spacing: 0.18em;
-    font-size: 0.6875rem; /* 11px */
+    font-size: 0.6875rem;
   }
   /* reserved for the decision card so a "needs you" card feels physical */
   .shadow-retro {
