@@ -65,7 +65,7 @@ any app behaviour, Nudges availability, the logo.
 - What changed: the Codex and Antigravity rows now describe generated persona files, launch, resume and inbox delivery, and the Quick install note points at `create-agent.sh --runtime`.
 - Why: the cross-harness wiring (#214) merged, so the earlier "being ported" wording was no longer true.
 - Supersedes: the harness table rows from 519b3a3.
-- Commits: pending
+- Commits: 3530108 docs(readme): harness table matches the merged wiring (#215)
 
 ## Follow-ups
 
