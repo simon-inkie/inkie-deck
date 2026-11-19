@@ -9,8 +9,7 @@
  *   - hljs.highlight(content, { language, ignoreIllegals: true }) with a
  *     fallback to hljs.highlightAuto for unknown languages.
  *   - Output is injected as innerHTML inside <pre><code class="hljs ...">
- *     (safe: highlight.js escapes input and emits only span markup; content
- *     is server-trusted file text from inside the review roots).
+ *     (safe: highlight.js escapes file text and emits only span markup).
  *   - Monospace, overflow-x: auto (no wrap for long lines).
  *   - Line-number gutter rendered as a left column (CSS counter-based).
  *
@@ -180,14 +179,10 @@ export function CodeView({ content, lang }: CodeViewProps) {
       >
         {/*
           SAFETY INVARIANT - do not weaken without a security review:
-          dangerouslySetInnerHTML is safe HERE because BOTH of these hold:
-            1. `content` is server-trusted file text served by readReviewFile,
-               which enforces realpath containment, extension allowlist, and the
-               secret denylist. Arbitrary/user-supplied strings must NEVER be
-               passed as `content` to CodeView.
-            2. highlight.js escapes all HTML special chars (& < >) and emits
-               only <span class="hljs-*"> markup - no raw passthrough.
-          If either invariant breaks, this becomes an XSS vector.
+          File text may come from an uploaded attachment. Only the output of
+          highlightContent reaches dangerouslySetInnerHTML: highlight.js
+          escapes text and emits span markup, and our fallback escapes text
+          without adding markup. Never pass raw file text here.
         */}
         {/* eslint-disable-next-line react/no-danger */}
         <code
