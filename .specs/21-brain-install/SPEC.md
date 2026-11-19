@@ -63,4 +63,4 @@ Out of scope:
 - Validated offline with the targeted Vitest and shell suites, typecheck,
   leak and licence gates, the dash scan and the INSTALL.md shape stage.
   Live Brain build and compaction acceptance remain unverified.
-- Commits: pending
+- Commits: 2a5d4fb feat(setup): opt-in Brain install, wired after the persona check (#21)
