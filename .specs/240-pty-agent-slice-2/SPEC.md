@@ -247,4 +247,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   licence, library version, direct dash and whitespace checks passed. The
   explicit working-tree leak scan passed; sandboxed Git calls blocked the
   default, history and commit-message leak scans.
-- Commits: pending
+- Commits: 7db30a6 fix(runner): make lock recovery and cleanup crash-safe (#240)
