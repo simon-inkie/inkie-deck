@@ -178,4 +178,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   The offline build, typecheck, boundaries, licence, library version, dash and
   whitespace checks passed. Default leak commands hit `spawnSync git EPERM`;
   the explicit working-tree file scan passed.
-- Commits: pending
+- Commits: 3293d06 feat(runner): PTY registry, opt-in, lock, launch environment and shutdown cleanup (#240)
