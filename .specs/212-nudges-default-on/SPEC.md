@@ -74,4 +74,4 @@ None filed.
   route writes crontab; terminal sends and thread-to-tmux delivery still lack
   an origin check and are outside this fix.
 - Supersedes: 2026-11-19 socket-only write guard; keeps the socket check.
-- Commits: pending
+- Commits: 2fa6d1b fix(nudges): refuse cross-origin and unapproved-host nudge writes (#212)
