@@ -351,3 +351,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   test isolation gap: EEXIST recovery now remembers a locked fixture. Teardown
   now clears that temporary claim through recovery before removing its home.
 - Commits: 64f6f47 fix(runner): base guards key on the .runner file, stop works after opt-in removal, recovery retried on start (#240)
+- What changed: Reset push_rc before every Case 67 push invocation; checked the other Case 6x tests for the same pattern. Why: Prevent a stale failure status from making an assertion pass. Commits: pending.

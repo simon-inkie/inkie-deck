@@ -2129,10 +2129,12 @@ STUB
 
     rm "$T/beta/.runner"
     touch "$T/beta/.runner.lock"
+    push_rc=0
     verdict=$(AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
     [[ "$push_rc" -eq 2 && "$verdict" == "skip:pty-runner" && ! -e "$TMUX_LOG" ]] || exit 1
 
     rm "$T/beta/.runner.lock"
+    push_rc=0
     verdict=$(AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
     [[ "$push_rc" -eq 2 && "$verdict" == "skip:no-window" && -s "$TMUX_LOG" ]]
   ); then
