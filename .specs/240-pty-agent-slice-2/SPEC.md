@@ -17,8 +17,8 @@ In this slice:
    Verify: unit tests for every combination; any other value means tmux.
 2. **Production runner module.** Move the interface and shared lifecycle from `packages/deck/test/runner/runner.ts` (former slice 1 path) to `packages/deck/app/lib/runner/runner.ts`; add `packages/deck/app/lib/runner/pty-runner.server.ts` with a launch spec (command, args, cwd, env) replacing fixture scenarios. PTY readiness becomes "spawned and produced output within 10 s", not `FIXTURE READY`. Process group kill, typed `LaunchFailure`, write refused after exit: all kept. Fixture tests reuse the same base.
    Verify: slice 1 contract suite against both runners, plus PTY readiness without a marker and silent-session cleanup.
-3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts`, the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time.
-   Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock with dead pid is reclaimed only after the group is confirmed gone.
+3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts`, the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time and a phase written before spawn.
+   Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock reclaimed only when recovery proves there was no spawn or confirms the group is gone.
 4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR`, `MC_PTY_RUNNER` if set), the resolved `AGENTS_HOME` and the agent's `INBOX_ROOT`. No other `MC_*` values or tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
    Verify: env snapshot test; stub launch end to end.
 5. **Start, stop, interrupt.** `packages/deck/app/routes/api.runner.tsx`: POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, refused unless opted in. No auto-restart.
@@ -29,9 +29,9 @@ In this slice:
    Verify: driver tests with the fixture's composer, paste placeholder and confirmation-dialog shapes; exact payload asserted.
 8. **Terminal view.** The loader's `captureTmuxPane` call becomes a snapshot from the screen buffer for PTY agents. `packages/deck/app/components/TmuxPane.tsx` keeps polling; no WebSocket, no new stream.
    Verify: loader test; manual try.
-9. **Exit and quiet.** On `exited()`: lock removed, exit code and time kept in memory, view shows "stopped (code N)", sends refused with a typed reason. "Quiet" = alive, no output for 10 minutes after an unanswered write: shown only, no action.
+9. **Exit and quiet.** On `exited()`: lock removed, exit code and time kept in memory, view shows "stopped (code N)", sends refused with a typed reason. If cleanup fails, starts stay blocked and Stop retries cleanup without signalling the exited child. "Quiet" = alive, no output for 10 minutes after an unanswered write: shown only, no action.
    Verify: stub exits 23; stub hangs.
-10. **Deck shutdown.** `packages/deck/server/production.mjs` on SIGTERM/SIGINT: `stop("graceful")` for all sessions. On Deck start, a stale lock's group is killed and the agent shown stopped. Restart survival is out.
+10. **Deck shutdown.** `packages/deck/server/production.mjs` on SIGTERM/SIGINT: `stop("graceful")` for all sessions. On Deck start, stale-lock recovery uses Linux `flock` from util-linux. It only kills a verified group and requires the kernel to confirm the group is gone before releasing the lock. Restart survival is out.
     Verify: kill Deck with the stub running; no descendant remains.
 11. **Base script guards.** `packages/base/bin/inbox-push`: an opted-in recipient is not pushed; exits with a distinct persisted-not-pushed status. `packages/base/bin/boot-agents.sh`, `packages/base/bin/workspace.sh`: skip opted-in agents with a log line. `packages/base/bin/codex-provider-switch`: refuse.
     Verify: base tests with `.runner` present and absent, plus a PTY child running `inbox reply` against a marked recipient with a stubbed live tmux window.
@@ -109,7 +109,8 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
 1. Yes: `.runner` file plus `MC_PTY_RUNNER`; matches `.runtime`.
 2. Yes: fresh session only, old `.session-id` untouched; resume on PTY next slice.
 3. Yes: add `@xterm/headless` (MIT) in build step 4; raw bytes cannot be classified.
-4. Yes: Deck restart kills the PTY agent; no survival.
+4. Yes: Deck does not resume the PTY agent across restarts. It kills verified
+   stale groups and refuses starts when it cannot safely recover ownership.
 5. Yes: reuse the "sent, could not confirm" UI wording when verification is unavailable; no `packages/deck/app/components/TmuxPane.tsx` change.
 
 ## Follow-ups
@@ -226,3 +227,24 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   The SPEC folder now matches the issue it tracks.
 - Supersedes: The earlier child environment allowlist; the opt-in is unchanged.
 - Commits: 4af6d74 fix(runner): keep the inbox push guard working inside the PTY child, rename the SPEC folder (#240)
+
+### 2026-11-19: Address the local runner review
+- What changed: Require kernel confirmation that a group is gone, serialise
+  recovery on the claim inode with `flock`, mark the launch boundary before
+  spawning, make failed exit cleanup retryable via Stop, and cancel the
+  render timer on shell error.
+- Why: A process listing can miss forked replacements. A crashed recoverer
+  must not leave a permanent guard, and a dead Deck's reservation is safe to
+  reclaim only if it never entered spawn. Once spawn is marked, a missing PID
+  is ambiguous and stays locked, as do legacy locks with no child PID. Zombie
+  groups that the kernel still reports, unverifiable groups and unavailable
+  `flock` also fail closed. Exit cleanup checks the same inode on every retry,
+  so a retry cannot remove a replacement claim. A failed render has no stream
+  finaliser to cancel its timer.
+- Supersedes: The recovery and exit-cleanup details in build step 2.
+- Validation: The runner suite passed 52 tests; 10 private tmux tests were
+  skipped because the sandbox denies Unix sockets. Typecheck, boundaries,
+  licence, library version, direct dash and whitespace checks passed. The
+  explicit working-tree leak scan passed; sandboxed Git calls blocked the
+  default, history and commit-message leak scans.
+- Commits: pending

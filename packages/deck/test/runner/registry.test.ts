@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,7 +186,7 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     const reloaded = await import("../../app/lib/runner/registry.server.js");
     await expect(new reloaded.RunnerRegistry(env, { launchSpec, createScreen: fixtureScreen }).start(agent)).rejects.toMatchObject({ reason: "busy" });
     const first = JSON.parse(readFileSync(lock, "utf8"));
-    expect(first).toMatchObject({ deckPid: process.pid, childPid: expect.any(Number), startedAt: expect.any(Number) });
+    expect(first).toMatchObject({ deckPid: process.pid, childPid: expect.any(Number), startedAt: expect.any(Number), phase: "spawning" });
     expect(statSync(lock).mode & 0o777).toBe(0o600);
     expect(first.sessionId).toMatch(/^[a-f0-9-]{36}$/);
     expect(launchSpec).toHaveBeenCalledWith({
@@ -261,6 +261,29 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     expect(existsSync(lock)).toBe(false);
     expect(await registry.write(agent, "must not reach a shell")).toEqual({ status: "refused", reason: "not-running" });
     expect(await registry.key(agent, "Enter")).toEqual({ status: "refused", reason: "not-running" });
+  });
+
+  it("retries cleanup after exit without releasing a replacement claim or admitting a start", async () => {
+    const registry = stubRegistry();
+    addAgent(other);
+    await registry.start(agent);
+    const retained = join(home, "retained-lock");
+    renameSync(lock, retained);
+    try {
+      await registry.write(agent, "exit23");
+      await registry.key(agent, "Enter");
+      await vi.waitFor(() => expect(registry.status(agent)).toEqual({ state: "cleanup-pending" }));
+      await expect(registry.start(other)).rejects.toMatchObject({ reason: "locked" });
+      writeFileSync(lock, "replacement\n");
+      await expect(registry.stop(agent)).rejects.toThrow("The runner lock changed owners.");
+      expect(readFileSync(lock, "utf8")).toBe("replacement\n");
+    } finally {
+      renameSync(retained, lock);
+    }
+    await registry.stop(agent);
+    expect(registry.status(agent)).toMatchObject({ state: "stopped", code: 23 });
+    expect(existsSync(lock)).toBe(false);
+    await registry.start(other);
   });
 
   it.each(["SIGTERM", "SIGINT"] as const)("stops Deck and its stub group on %s without binding a port", async (signal) => {

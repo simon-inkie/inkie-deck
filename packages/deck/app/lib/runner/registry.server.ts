@@ -27,15 +27,16 @@ type ActiveSession = {
   unansweredSince?: number;
   submission?: { cancelled: boolean };
 };
+type CleanupSession = { state: "cleanup-pending"; retry: () => Promise<void> };
 type InactiveSession =
   | { state: "stopped"; code: number | null; exitedAt: number }
   | { state: "locked"; reason: string }
   | { state: "unavailable"; reason: string };
-export type SessionStatus = { state: ActiveSession["state"] | "quiet" } | InactiveSession;
+export type SessionStatus = { state: ActiveSession["state"] | CleanupSession["state"] | "quiet" } | InactiveSession;
 
 const registryKey = Symbol.for("inkie-deck.runner.registry");
 const globals = globalThis as typeof globalThis & {
-  [registryKey]?: { sessions: Map<string, ActiveSession | InactiveSession>; closing: boolean; recoveryFailed: boolean };
+  [registryKey]?: { sessions: Map<string, ActiveSession | CleanupSession | InactiveSession>; closing: boolean; recoveryFailed: boolean };
 };
 const shared = globals[registryKey] ??= { sessions: new Map(), closing: false, recoveryFailed: false };
 
@@ -122,7 +123,7 @@ export class RunnerRegistry {
 
   handlesTerminal(agent: string): boolean {
     for (const [path, session] of shared.sessions) {
-      if ("runner" in session && basename(path) === agent) return true;
+      if (("runner" in session || session.state === "cleanup-pending") && basename(path) === agent) return true;
     }
     const home = agentHome(this.env, agent);
     if (!home) return false;
@@ -144,6 +145,7 @@ export class RunnerRegistry {
 
   status(agent: string): SessionStatus | undefined {
     const session = this.session(agent);
+    if (session?.state === "cleanup-pending") return { state: session.state };
     if (!session || !("runner" in session)) return session;
     const quiet = session.state === "running" && session.unansweredSince !== undefined &&
       this.now() - session.unansweredSince >= quietAfterMs;
@@ -157,7 +159,7 @@ export class RunnerRegistry {
     if (shared.recoveryFailed) throw new StartRefusal("locked");
     for (const session of shared.sessions.values()) {
       if ("runner" in session) throw new StartRefusal("busy");
-      if (session.state === "locked") throw new StartRefusal("locked");
+      if (session.state === "locked" || session.state === "cleanup-pending") throw new StartRefusal("locked");
     }
     if (process.platform !== "linux") {
       const reason = "The PTY runner is verified only on Linux.";
@@ -194,7 +196,7 @@ export class RunnerRegistry {
       screen.dispose();
       throw error;
     }
-    const runner = new PtyRunner();
+    const runner = new PtyRunner(lock.beforeSpawn);
     const session: ActiveSession = { state: "starting", runner, screen, outputVersion: 0, settled: Promise.resolve() };
     shared.sessions.set(home, session);
     runner.output().on("data", (chunk: Uint8Array) => {
@@ -233,10 +235,16 @@ export class RunnerRegistry {
       lock.retain();
       throw error;
     }).finally(() => session.screen.dispose());
-    session.state = "stopping";
     const exitedAt = this.now();
-    await lock.release();
-    shared.sessions.set(home, { state: "stopped", code: exit.code, exitedAt });
+    let pending: Promise<void> | undefined;
+    const cleanup: CleanupSession = {
+      state: "cleanup-pending",
+      retry: () => pending ??= lock.release().then(() => {
+        shared.sessions.set(home, { state: "stopped", code: exit.code, exitedAt });
+      }).finally(() => { pending = undefined; }),
+    };
+    shared.sessions.set(home, cleanup);
+    await cleanup.retry();
   }
 
   async write(agent: string, text: string): Promise<WriteResult> {
@@ -303,6 +311,7 @@ export class RunnerRegistry {
   async stop(agent: string): Promise<void> {
     const session = this.session(agent);
     if (session && "runner" in session) await this.stopSession(session);
+    else if (session?.state === "cleanup-pending") await session.retry();
   }
 
   private async stopSession(session: ActiveSession): Promise<void> {
@@ -314,7 +323,7 @@ export class RunnerRegistry {
   async shutdown(): Promise<void> {
     shared.closing = true;
     await Promise.all(Array.from(shared.sessions.values(), (session) =>
-      "runner" in session ? this.stopSession(session) : undefined));
+      "runner" in session ? this.stopSession(session) : session.state === "cleanup-pending" ? session.retry() : undefined));
   }
 
   async recover(): Promise<void> {
@@ -331,13 +340,14 @@ export class RunnerRegistry {
     for (const entry of entries) {
       if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
       const home = join(root, entry.name);
+      const existing = shared.sessions.get(home);
+      if (existing && ("runner" in existing || existing.state === "cleanup-pending")) continue;
       try {
-        if (await recoverRunnerLock(join(home, lockName))) {
+        if (await recoverRunnerLock(join(home, lockName)) && shared.sessions.get(home) === existing) {
           shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
         }
       } catch {
-        const current = shared.sessions.get(home);
-        if (!current || !("runner" in current)) {
+        if (shared.sessions.get(home) === existing) {
           shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
         }
       }

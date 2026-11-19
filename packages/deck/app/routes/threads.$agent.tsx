@@ -727,6 +727,7 @@ function RunnerControls({ agent, status }: { agent: string; status: SessionStatu
   const busy = fetcher.state !== "idle";
   const running = status.state === "running" || status.state === "quiet";
   const canStart = status.state === "not-started" || status.state === "stopped" || status.state === "unavailable";
+  const canStop = running || status.state === "starting" || status.state === "cleanup-pending";
   const description = "reason" in status ? `${status.state}: ${status.reason}`
     : status.state === "stopped" && status.code !== null ? `stopped (code ${status.code})` : status.state.replace("-", " ");
   const operate = (op: "start" | "stop" | "cancel") => fetcher.submit(
@@ -737,7 +738,7 @@ function RunnerControls({ agent, status }: { agent: string; status: SessionStatu
       <span className="label-mono text-xs text-muted-foreground" role="status">PTY: {description}</span>
       <Button type="button" size="sm" variant="outline" disabled={busy || !canStart} onClick={() => operate("start")}>Start</Button>
       <Button type="button" size="sm" variant="outline" disabled={busy || !running} onClick={() => operate("cancel")}>Interrupt</Button>
-      <Button type="button" size="sm" variant="outline" disabled={busy || (!running && status.state !== "starting")} onClick={() => operate("stop")}>Stop</Button>
+      <Button type="button" size="sm" variant="outline" disabled={busy || !canStop} onClick={() => operate("stop")}>Stop</Button>
       {fetcher.data?.error && !busy && <span className="text-xs text-destructive" role="alert">{fetcher.data.error}</span>}
     </div>
   );

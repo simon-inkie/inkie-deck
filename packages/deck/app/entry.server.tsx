@@ -45,6 +45,7 @@ export default function handleRequest(
           }));
         },
         onShellError(error: unknown) {
+          clearTimeout(timeout);
           reject(error);
         },
         onError(error: unknown) {

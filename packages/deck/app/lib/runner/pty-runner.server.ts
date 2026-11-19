@@ -51,13 +51,17 @@ export class PtyRunner extends BaseRunner {
   readonly kind = "pty";
   private terminal?: NativeTerminal;
 
+  constructor(private readonly beforeSpawn?: () => void) { super(); }
+
   protected async start(spec: SessionSpec): Promise<number> {
     if (process.platform !== "linux") {
       throw new LaunchFailure("unavailable", "The PTY runner is verified only on Linux.");
     }
     const binding = loadNodePty();
     const { args, cwd, env } = spec;
-    const terminal = binding.spawn(resolveCommand(spec), args, {
+    const command = resolveCommand(spec);
+    this.beforeSpawn?.();
+    const terminal = binding.spawn(command, args, {
       cwd, env: { ...env }, cols: spec.cols ?? 80, rows: spec.rows ?? 24, encoding: null,
     });
     this.terminal = terminal;

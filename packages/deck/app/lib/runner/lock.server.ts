@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import {
   closeSync, constants, fstatSync, ftruncateSync, lstatSync, openSync,
-  readdirSync, readFileSync, unlinkSync, writeSync,
+  readFileSync, unlinkSync, writeSync,
 } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { signalGroup } from "./runner.js";
@@ -13,6 +14,7 @@ interface LockRecord {
   bootId: string;
   sessionId: string;
   startedAt: number;
+  phase?: "reserved" | "spawning";
 }
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -40,26 +42,27 @@ function live(state: string | undefined): boolean {
   return state !== "Z" && state !== "X";
 }
 
-function groupAlive(group: number): boolean {
+function groupExists(group: number): boolean {
   try {
     process.kill(-group, 0);
+    return true;
   } catch (error) {
     if (hasCode(error, "ESRCH")) return false;
     throw error;
   }
-  return readdirSync("/proc").some((entry) => {
-    if (!/^\d+$/.test(entry)) return false;
-    const info = processInfo(Number(entry));
-    return info?.group === group && live(info.state);
-  });
 }
 
 async function waitForGroupExit(group: number): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt++) {
-    if (!groupAlive(group)) return;
+    if (!groupExists(group)) return;
     await delay(20);
   }
   throw new Error("The PTY process group did not stop.");
+}
+
+function sameLock(file: string, owned: { dev: number; ino: number }): boolean {
+  const current = lstatSync(file, { throwIfNoEntry: false });
+  return current?.dev === owned.dev && current.ino === owned.ino;
 }
 
 export function claimRunnerLock(file: string, sessionId: string, startedAt: number) {
@@ -67,7 +70,7 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
   if (!deckBirth) throw new Error("Could not identify the Deck process.");
   const record: LockRecord = {
     deckPid: process.pid, deckBirth, childPid: null, childBirth: null,
-    bootId: bootId(), sessionId, startedAt,
+    bootId: bootId(), sessionId, startedAt, phase: "reserved",
   };
   const fd = openSync(file, "wx", 0o600);
   const owned = fstatSync(fd);
@@ -80,26 +83,27 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
     ftruncateSync(fd, bytes.length);
   }
 
-  function release() {
-    try {
-      const current = lstatSync(file);
-      if (current.dev !== owned.dev || current.ino !== owned.ino) {
-        throw new Error("The runner lock changed owners.");
-      }
-      unlinkSync(file);
-    } finally {
-      closeSync(fd);
-    }
+  function unlinkOwned() {
+    if (!sameLock(file, owned)) throw new Error("The runner lock changed owners.");
+    unlinkSync(file);
   }
 
   try {
     persist();
   } catch (error) {
-    release();
+    try {
+      unlinkOwned();
+    } finally {
+      closeSync(fd);
+    }
     throw error;
   }
 
   return {
+    beforeSpawn() {
+      record.phase = "spawning";
+      persist();
+    },
     spawned(pid: number) {
       record.childPid = pid;
       record.childBirth = processInfo(pid)?.birth ?? null;
@@ -107,13 +111,13 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
       if (record.childBirth === null) throw new Error("Could not identify the PTY child.");
     },
     async release() {
-      try {
-        if (record.childPid !== null) await waitForGroupExit(record.childPid);
-      } catch (error) {
-        closeSync(fd);
-        throw error;
+      if (record.childPid !== null) {
+        await waitForGroupExit(record.childPid);
+      } else if (record.phase !== "reserved") {
+        throw new Error("The PTY child was not recorded.");
       }
-      release();
+      unlinkOwned();
+      closeSync(fd);
     },
     retain() { closeSync(fd); },
   };
@@ -135,6 +139,8 @@ function readLock(fd: number): LockRecord {
       !(record.childBirth === null || (typeof record.childBirth === "string" && /^\d+$/.test(record.childBirth))) ||
       typeof record.bootId !== "string" || !uuid.test(record.bootId) ||
       typeof record.sessionId !== "string" || !uuid.test(record.sessionId) ||
+      !(record.phase === undefined || record.phase === "spawning" ||
+        (record.phase === "reserved" && record.childPid === null && record.childBirth === null)) ||
       !Number.isSafeInteger(record.startedAt)) {
     throw new Error("Invalid runner lock.");
   }
@@ -142,43 +148,48 @@ function readLock(fd: number): LockRecord {
 }
 
 export async function recoverRunnerLock(file: string): Promise<boolean> {
-  if (!lstatSync(file, { throwIfNoEntry: false })) return false;
-  const guard = `${file}.recovery`;
-  const guardFd = openSync(guard, "wx", 0o600);
+  let fd: number;
   try {
-    let fd: number;
-    try {
-      fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    } catch (error) {
-      if (hasCode(error, "ENOENT")) return false;
-      throw error;
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return false;
+    throw error;
+  }
+  try {
+    const guard = spawnSync("flock", ["-n", "3"], {
+      env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "ignore", "ignore", fd], timeout: 1_000,
+    });
+    if (guard.error || guard.status !== 0) {
+      throw new Error("Could not lock the runner claim for recovery.", { cause: guard.error });
     }
-    try {
-      const record = readLock(fd);
-      if (record.bootId === bootId()) {
-        const deck = processInfo(record.deckPid);
-        if (deck?.birth === record.deckBirth && live(deck.state)) return false;
+    const owned = fstatSync(fd);
+    if (!sameLock(file, owned)) return false;
+    const record = readLock(fd);
+    if (record.bootId === bootId()) {
+      const deck = processInfo(record.deckPid);
+      if (deck?.birth === record.deckBirth && live(deck.state)) return false;
+      if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;
-        if (groupAlive(group)) {
+        if (groupExists(group)) {
           const leader = processInfo(group);
           if (!leader || leader.birth !== record.childBirth || leader.group !== group || leader.session !== group) {
             throw new Error("Could not verify the stale PTY process group.");
           }
           signalGroup(group, "SIGKILL");
+        } else {
+          const child = processInfo(group);
+          if (child && live(child.state) && (record.childBirth === null || child.birth === record.childBirth)) {
+            throw new Error("The PTY child is still alive outside its expected group.");
+          }
         }
         await waitForGroupExit(group);
       }
-      const opened = fstatSync(fd);
-      const current = lstatSync(file);
-      if (current.dev !== opened.dev || current.ino !== opened.ino) return false;
-      unlinkSync(file);
-      return true;
-    } finally {
-      closeSync(fd);
     }
+    if (!sameLock(file, owned)) return false;
+    unlinkSync(file);
+    return true;
   } finally {
-    closeSync(guardFd);
-    unlinkSync(guard);
+    closeSync(fd);
   }
 }
