@@ -399,11 +399,6 @@ above ask for:
 git clone https://github.com/simon-inkie/inkie-deck.git && cd inkie-deck
 ```
 
-While the repository is private, that clone needs you signed in to GitHub.
-Install the GitHub CLI (`gh`) and run `gh auth login` inside the same Linux
-environment you are installing in, which on Windows means inside Ubuntu, not in
-PowerShell. Delete this paragraph once the repository is public.
-
 This block is the one exception to "executed from this document": the rig
 copies the tree into its container instead of cloning it, so it is declared
 as skipped in `rig/install-plan.mjs`, with the reason.

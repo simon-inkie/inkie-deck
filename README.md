@@ -148,7 +148,18 @@ thread. Go and make something good, and take it easy on your head.
 
 ## Quick install
 
-**Before you start:** Node `^22.13.0 || >=24.0.0`, pnpm `10.34.5` via Corepack, and the Claude Code CLI installed and signed in. See [prerequisites](INSTALL.md#1-prerequisites) for system packages.
+Deck has no authentication; put it behind your own [access control](INSTALL.md#read-this-before-you-put-deck-on-a-network) before anyone else can reach it.
+
+**Try the demo, no AI CLI needed:** from your clone, with Node and pnpm installed:
+
+```sh
+pnpm install && pnpm dev
+```
+
+Open <http://localhost:4242> for the interface with throwaway fixture data.
+See [Try it](INSTALL.md#3-try-it).
+
+**For Quick setup with live agents:** Node `^22.13.0 || >=24.0.0`, pnpm `10.34.5` via Corepack, and the Claude Code CLI installed and signed in. See [prerequisites](INSTALL.md#1-prerequisites) for system packages.
 
 Run as your own user, not as root:
 

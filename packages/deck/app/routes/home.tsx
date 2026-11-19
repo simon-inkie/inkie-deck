@@ -238,7 +238,7 @@ function KindBadge({ kind }: { kind: NeedsYouItem["kind"] }) {
 // NeedsYouRow
 // ---------------------------------------------------------------------------
 
-function NeedsYouRow({ item, now }: { item: NeedsYouItem; now: string }) {
+export function NeedsYouRow({ item, now }: { item: NeedsYouItem; now: string }) {
   const fetcher = useFetcher();
   const busy = fetcher.state !== "idle";
   const [showDismissForm, setShowDismissForm] = useState(false);
@@ -264,10 +264,15 @@ function NeedsYouRow({ item, now }: { item: NeedsYouItem; now: string }) {
     >
       <div className="flex items-start justify-between gap-3">
         {/* Left: link area */}
-        <Link
-          to={item.deepLink}
-          className="flex min-w-0 flex-1 items-start gap-3 group"
+        <div
+          className="relative flex min-w-0 flex-1 items-start gap-3 group"
         >
+          {/* Cover the row area while keeping the ticket a separate link. */}
+          <Link
+            to={item.deepLink}
+            aria-label={`${item.agentName}: ${item.title}`}
+            className="absolute inset-0 z-10 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
           <Avatar name={item.agentName} className="h-8 w-8 text-xs" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
@@ -321,7 +326,7 @@ function NeedsYouRow({ item, now }: { item: NeedsYouItem; now: string }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
-                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                  className="relative z-20 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
                   Ticket
                   <ExternalLink className="h-3 w-3" aria-hidden="true" />
@@ -329,7 +334,7 @@ function NeedsYouRow({ item, now }: { item: NeedsYouItem; now: string }) {
               ) : null}
             </div>
           </div>
-        </Link>
+        </div>
 
         {/* Right: action affordance */}
         <div className="flex shrink-0 items-center gap-2">
