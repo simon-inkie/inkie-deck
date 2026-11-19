@@ -145,3 +145,13 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   explicit working-tree file scan passed. The dash check timed out; a direct
   full-tree scan found no banned dashes.
 - Commits: 523d594 refactor(runner): promote the runner out of tests for slice 2 (#240)
+
+### 2026-11-19: Guard base scripts (build step 3)
+- What changed: `inbox-push` returns `skip:pty-runner` with exit 2. Boot and
+  workspace log and skip PTY targets before using tmux or changing their
+  session files. The provider switch refuses a PTY target at validation.
+- Why: Use the existing persist-only exit code with a distinct verdict, so the
+  inbox retains the full message without waking a draining tmux pane. The
+  guards use the instance flag and on-disk agent settings, not a launch
+  override or a live lock, so they also work before the first PTY start.
+- Commits: pending

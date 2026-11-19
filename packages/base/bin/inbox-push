@@ -82,7 +82,7 @@
 # that residual is the detection side (bin/stuck-pane-sweep.sh), not a wider
 # guess here.
 #   2  -- skip:<reason>  not pushed; caller treats as persist-only. Reasons:
-#         self, no-window, unknown-runtime (runtime is not claude, agy or codex),
+#         self, pty-runner, no-window, unknown-runtime (not claude, agy or codex),
 #         staged (real text in the composer at the gate), unknown-format,
 #         dialog-pending (a Codex approval dialog is up: Enter would confirm it,
 #         not deliver -- see the dialog block above), ctx-over (recipient's
@@ -179,6 +179,14 @@ emit() {
     *) exit 1 ;;
   esac
 }
+
+if [[ "${MC_PTY_RUNNER:-0}" == "1" ]]; then
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-launch.sh" || emit "skip:no-runtime-launch-lib"
+  declare -F agent_opts_into_pty >/dev/null || emit "skip:no-runtime-launch-lib"
+  if agent_opts_into_pty "$RECIPIENT"; then
+    emit "skip:pty-runner"
+  fi
+fi
 
 # --------------------------------------------------------------------------
 # check_idle <pane>  -- return 0 (busy) / 1 (idle).

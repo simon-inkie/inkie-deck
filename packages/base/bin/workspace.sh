@@ -66,6 +66,17 @@ fi
 # Per-runtime launch constructors, shared with boot-agents.sh.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-launch.sh"
 
+TMUX_AGENTS=()
+for agent in "${AGENTS[@]}"; do
+  if agent_opts_into_pty "$agent"; then
+    echo "workspace: skipping $agent (opted into the PTY runner)" >&2
+  else
+    TMUX_AGENTS+=("$agent")
+  fi
+done
+[[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
+AGENTS=("${TMUX_AGENTS[@]}")
+
 get_runtime() {
   local agent="$1"
   if [[ -n "$RUNTIME_OVERRIDE" ]]; then

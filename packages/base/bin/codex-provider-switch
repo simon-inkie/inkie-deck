@@ -45,6 +45,21 @@ def state_root() -> Path:
     ).resolve()
 
 
+def agent_opts_into_pty(home: Path) -> bool:
+    if os.environ.get("MC_PTY_RUNNER") != "1":
+        return False
+    runner_file = home / ".runner"
+    runtime_file = home / ".runtime"
+    try:
+        if not runner_file.is_file() or runner_file.read_text(encoding="utf-8").strip() != "pty":
+            return False
+        return not runtime_file.exists() or (
+            runtime_file.is_file() and runtime_file.read_text(encoding="utf-8").strip() == "claude"
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
 def validate_agent(agent: str) -> Path:
     if not AGENT_RE.fullmatch(agent):
         raise SwitchError("invalid agent name")
@@ -52,6 +67,8 @@ def validate_agent(agent: str) -> Path:
     home = (root / agent).resolve()
     if home.parent != root or not home.is_dir():
         raise SwitchError("agent home does not exist")
+    if agent_opts_into_pty(home):
+        raise SwitchError(f"{agent} opted into the PTY runner; provider switch refused")
     return home
 
 
