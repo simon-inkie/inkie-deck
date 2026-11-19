@@ -43,4 +43,4 @@ None for this change.
 - What changed: Removed the public memory-layer name from the internal repository rule, extended the URL exemption, added regression checks and linked the Brain from the README.
 - Why: Deck should be able to point readers to its public memory companion without permitting private checkout names or unrelated URLs.
 - Supersedes: The decision in #215 to name the memory project without linking to it.
-- Commits: pending
+- Commits: c42986d feat(leak-gate): allow naming and linking the public Brain repo (#220)
