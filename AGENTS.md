@@ -5,7 +5,8 @@ and action cards, projects and drafts, backed by a file-based message protocol.
 This file is the short orientation for AI coding agents. The rules live in one
 place each, so read these before your first change:
 [CONTRIBUTING.md](CONTRIBUTING.md) (rules), [DEVELOPMENT.md](DEVELOPMENT.md)
-(workflow), [README.md](README.md) and [INSTALL.md](INSTALL.md) (setup).
+(workflow), [README.md](README.md) and [INSTALL.md](INSTALL.md) (setup),
+[Testing and evals](docs/testing-and-evals.md) and [UI components](docs/ui-components.md).
 
 ## Map
 
@@ -31,6 +32,24 @@ place each, so read these before your first change:
    request must pass"). Commit first: two suites assert the tree is clean.
 5. Branch off `main`, keep each pull request to one change, and title commits
    `type(scope): summary (#issue)`. Never push to `main`.
+
+## Patterns and tests
+
+- Test core behaviour, meaningful regressions and safeguards against
+  unexpected spend, data loss or leaks. Skip exhaustive low-risk edge cases
+  and implementation details unless they are part of the contract.
+- Test shell scripts in subprocesses with temporary fixtures, fake homes and
+  stubs. For Nudges, use synthetic requests and fake cron dependencies, never
+  a real crontab. If tmux is needed, use a private fixture socket, never the
+  real `agents` session or the user's tmux. Do not run live agents for tests.
+- The [eval workflow](docs/testing-and-evals.md#agent-evals-proposed-not-implemented)
+  is proposed, not implemented: use synthetic fixtures, check outputs and side
+  effects deterministically first, and use a fixed rubric for model grading
+  only where judgement is needed. Keep live evals opt-in and agree limits first.
+- Feature components live in `packages/deck/app/components/`, with shared
+  primitives in its `ui/` subdirectory. Reuse existing components before adding
+  new ones and follow the semantic tokens in `packages/deck/app/app.css`.
+  See the [UI components guide](docs/ui-components.md).
 
 ## House rules
 
