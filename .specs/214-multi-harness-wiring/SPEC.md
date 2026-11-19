@@ -50,9 +50,9 @@ In scope:
   fail open.
 - `bin/sync-gemini-includes.sh`: inlines persona and shared files into
   GEMINI.md between generated fences, idempotently.
-- Verification for Codex and `agy`: local checks (files present and well
-  formed, the hook actually emits the boot phrase, GEMINI.md in sync and
-  carrying the boot phrase), plus an opt-in live probe (`codex exec`,
+- Verification for Codex and `agy`: local checks (hooks match the scaffold
+  without running, real GEMINI.md refreshed and carrying the boot phrase),
+  plus an opt-in live probe (`codex exec`,
   `agy -p`).
 - `first-run.sh --runtime` passes the runtime through to both agents.
 - Tests, docs (INSTALL.md, docs/adding-an-agent.md, packages/base/README.md)
@@ -103,9 +103,9 @@ Not ported, deliberately:
 | --- | --- | --- | --- |
 | Persona file the runtime reads | CLAUDE.md with `@` imports | AGENTS.md, plus a SessionStart hook that injects the persona files | GEMINI.md, with the persona files inlined by the include sync |
 | `create-agent.sh --runtime` | yes | yes | yes |
-| Launch and resume | pinned session id | newest session for the workspace, verified, fallback to fresh | newest conversation for the workspace from the CLI history |
+| Launch and resume | pinned session id | newest session for the workspace in the effective Codex home, fallback to fresh | newest complete conversation record for the workspace from the CLI history |
 | `workspace.sh` | yes | yes, resumes, not verified | yes, resumes |
-| Local verification (no model call) | import chain resolves | hooks file valid, hook runs and emits the boot phrase | GEMINI.md syncs cleanly and the synced text carries the boot phrase (behind its sources is a note, not a failure: the launcher re-syncs) |
+| Local verification (no model call) | import chain resolves | hooks file valid and both commands match the scaffold without running | real GEMINI.md is refreshed and carries the boot phrase |
 | Live verification | on by default (`claude -p`) | opt-in, `--live-probe` (`codex exec`) | opt-in, `--live-probe` (`agy -p`) |
 | Memory hooks | yes, when configured | no | no |
 | First-boot day-one message | yes | no | no |
@@ -116,21 +116,17 @@ Not ported, deliberately:
 - `packages/base/test/multi-harness.test.sh` (run by `shell-suites.test.ts`):
   launch command per runtime through `boot-agents.sh` and `workspace.sh`
   with `tmux`, `claude`, `codex` and `agy` stubbed on PATH, so no pane or
-  runtime starts; the `agy` conversation lookup (newest match, other
-  workspace skipped, prefix name not matched, missing history); the include
-  sync (idempotent, relative paths, no-final-newline source, missing source
-  leaves the file untouched).
+  runtime starts; Codex home precedence and fresh launch; `agy` history
+  matches decoded paths and ignores unfinished records; include sync is
+  idempotent with quoted markers and preserves the original on copy failure.
 - `packages/base/test/create-agent-runtimes.test.ts`: each runtime writes the
-  right files; the Codex hooks file is valid JSON whose commands exist; both
-  hooks print valid hook JSON and fail open; Codex and `agy` local checks pass
-  and exit 4 without calling a model; a hook without the boot phrase or a
-  GEMINI.md that no longer inlines IDENTITY.md is FAILED, a stale GEMINI.md is
-  only a note; `--live-probe` uses a stub runtime and reports VERIFIED or
-  FAILED; memory is off for non-Claude runtimes; `first-run.sh --runtime`.
-- The full check list from DEVELOPMENT.md section 4. On the uncommitted
-  working tree: base suite green (8 files, 187 tests); the deck suite's 73
-  failures are all its dirty-tree guard (`assertGitClean`, by design), so the
-  full `pnpm test` needs re-running on the committed tree.
+  right files; existing and symlinked hook paths are refused; both commands
+  are checked statically even with `--no-verify`; the hook itself is tested
+  separately, including truncation of a large IDENTITY.md; the `agy` stub
+  reads GEMINI.md, with both a stale-file refresh and a negative case where
+  the identity fence has been removed; `first-run.sh --runtime`.
+- Run the checks listed in DEVELOPMENT.md section 4. Deck's dirty-tree group
+  needs a committed tree; the base setup suite needs loopback networking.
 
 ## Follow-ups
 
@@ -193,3 +189,18 @@ Not ported, deliberately:
     are opt-in partly for this reason.
 - Supersedes: nothing, additive.
 - Commits: none yet (working tree only).
+
+### 2026-11-19: independent review follow-up
+- Picked up on the existing branch with a clean working tree. Address all six
+  findings offline, using stubbed runtimes and no live panes.
+- Supersedes the earlier decisions to run a command from the Codex hooks file
+  in the local check and to sync only a copy of GEMINI.md for verification.
+- Fixed all six findings: exclusive, symlink-safe hook creation; exact static
+  hook checks; whole-line include fences with atomic replacement; checks and
+  probes using the same refreshed GEMINI.md; Codex session lookup using the
+  launch home; decoded `agy` history and boot phrase retention on truncation.
+- Offline validation: 158 base tests passed. Skipped `setup.test.ts` because
+  it opens loopback sockets, and the deck dirty-tree group because the changes
+  are uncommitted. Typecheck, boundaries, leak, licence, dash and diff checks
+  passed.
+- Commits: none (working tree only).

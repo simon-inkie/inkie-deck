@@ -84,9 +84,11 @@ Everything else in this guide is the same. The differences:
 | Ask the model too | always | add `--live-probe` | add `--live-probe` |
 | First message on day one | yes | no: say hello to it yourself | no: say hello to it yourself |
 
-The local checks for Codex and Antigravity call no model: they prove the
-files are right and that the boot phrase is in what the CLI will read. To
-prove it reached the model, run
+Codex creation refuses an existing `.codex/hooks.json` or a symlinked `.codex`
+directory and leaves it untouched. The local check validates the hooks JSON
+and both scaffolded commands without executing them. The Antigravity check
+refreshes the real `GEMINI.md` and looks for its boot phrase. Neither calls a
+model. To prove the phrase reached the model, run
 `packages/base/bin/create-agent.sh --verify-only quill --live-probe`, which
 uses one turn of your plan or API credit. For Codex, start the agent once
 first (step 3) and approve its hooks when Codex asks, because Codex does not

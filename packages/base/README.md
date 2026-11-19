@@ -276,10 +276,12 @@ status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 `--runtime claude|codex|agy` picks the agent CLI (Claude Code by default). A
 Codex agent also gets `AGENTS.md` and a `.codex/hooks.json` whose SessionStart
 hook (`bin/codex-persona-inject`) injects the persona files, since Codex has no
-`@` import; an Antigravity agent gets `GEMINI.md` with the persona files
-inlined by `bin/sync-gemini-includes.sh`, which the launchers re-run before
-every start. For those two the checks above run locally, without a model, and
-end in `CANNOT VERIFY` unless `--live-probe` asks the model as well.
+`@` import. Creation refuses an existing `hooks.json` or a symlinked `.codex`
+directory. The local check compares both commands with the scaffold and never
+executes them. An Antigravity agent gets `GEMINI.md` with the persona files
+inlined by `bin/sync-gemini-includes.sh`. Both verification and the launchers
+refresh that file in place. Passing local checks still ends in `CANNOT VERIFY`
+unless `--live-probe` asks the model as well.
 `boot-agents.sh` and `workspace.sh` launch and resume all three from the shared
 constructors in `bin/runtime-launch.sh`.
 

@@ -634,14 +634,14 @@ launch_agent() {
     # be REAL OS-level env vars set before the codex process starts.
     local role; role="$(agent_role "$a")"
     local codex_home=""
-    codex_home="$(codex_home_for_agent "$a")" || {
+    codex_home="$(codex_launch_home_for_agent "$a")" || {
       echo "boot-agents: refusing to launch $a because provider selection failed" >&2
       echo "skipped:provider-state"
       return
     }
-    local CODEX_SESSIONS_DIR
+    local CODEX_SESSIONS_DIR sid
     CODEX_SESSIONS_DIR="$(codex_sessions_dir_for_home "$codex_home")"
-    local sid; sid="$(codex_latest_session_for_workspace "$a")"
+    sid="$(codex_latest_session_for_workspace "$a" "$codex_home")"
     local codex_cmd
     codex_cmd="$(codex_launch_command "$a" "$role" "$codex_home" "$sid" "$model_flag")"
     tmux send-keys -t "$target" "$codex_cmd" Enter || return 1

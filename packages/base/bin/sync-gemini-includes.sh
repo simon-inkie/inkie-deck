@@ -26,8 +26,8 @@
 # because the END marker must start a line of its own or the next run would
 # read it as part of the generated body.
 #
-# Safe on error: a missing or unreadable source, or a BEGIN with no END,
-# leaves the target exactly as it was and exits non-zero.
+# Safe on error: a missing or unreadable source, a BEGIN with no matching END,
+# or a failed write leaves the target exactly as it was and exits non-zero.
 #
 # Usage:
 #   sync-gemini-includes.sh [GEMINI.md ...]
@@ -68,48 +68,52 @@ sync_one() {
     return 1
   }
 
-  local regions=0 in_region=0 line after raw_src src
+  local regions=0 in_region=0 line raw_src src last
+  local begin_re='^<!-- BEGIN SYNCED:([^[:space:]]+)([[:blank:]]+.*)?[[:blank:]]+-->$'
+  local end_re='^<!-- END SYNCED:([^[:space:]]+)[[:blank:]]+-->$'
   # Outside a region: copy each line. On a BEGIN marker: copy it, splice in the
   # source, and drop the old body up to the matching END marker, which is
   # copied in turn.
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_region" -eq 0 ]]; then
-      printf '%s\n' "$line" >>"$tmp"
-      if [[ "$line" == *"<!-- BEGIN SYNCED:"* ]]; then
-        after="${line#*<!-- BEGIN SYNCED:}"
-        raw_src="${after%% *}"
+      printf '%s\n' "$line" || { status=1; break; }
+      if [[ "$line" =~ $begin_re ]]; then
+        raw_src="${BASH_REMATCH[1]}"
         src="$(resolve_source "$raw_src" "$base")"
         regions=$((regions + 1))
         in_region=1
         if [[ ! -f "$src" || ! -r "$src" ]]; then
           printf 'sync-gemini-includes: synced source not found or unreadable: %s (named in %s)\n' "$src" "$target" >&2
           status=1
-        else
-          cat "$src" >>"$tmp" || status=1
-          # The END marker must start its own line; see the header.
-          if [[ -s "$src" && -n "$(tail -c 1 "$src")" ]]; then printf '\n' >>"$tmp"; fi
+          break
+        fi
+        cat -- "$src" || { status=1; break; }
+        last="$(tail -c 1 -- "$src")" || { status=1; break; }
+        if [[ -n "$last" ]]; then
+          printf '\n' || { status=1; break; }
         fi
       fi
-    elif [[ "$line" == *"<!-- END SYNCED:"* ]]; then
-      printf '%s\n' "$line" >>"$tmp"
+    elif [[ "$line" =~ $end_re && "${BASH_REMATCH[1]}" == "$raw_src" ]]; then
+      printf '%s\n' "$line" || { status=1; break; }
       in_region=0
     fi
-  done <"$target"
+  done <"$target" >"$tmp" || status=1
 
-  if [[ "$in_region" -ne 0 ]]; then
+  if [[ "$status" -eq 0 && "$in_region" -ne 0 ]]; then
     printf 'sync-gemini-includes: a BEGIN SYNCED fence has no END marker in %s\n' "$target" >&2
     status=1
   fi
   if [[ "$status" -ne 0 ]]; then
+    printf 'sync-gemini-includes: not replacing %s after a failed sync\n' "$target" >&2
     rm -f "$tmp"
     return "$status"
   fi
 
-  # Keep the original's permissions (GNU chmod; elsewhere the default stands).
-  chmod --reference="$target" "$tmp" 2>/dev/null || true
+  local mode
   if cmp -s "$tmp" "$target"; then
     rm -f "$tmp"
-  elif ! mv -f "$tmp" "$target"; then
+  elif ! mode="$(stat -Lc '%a' -- "$target" 2>/dev/null || stat -Lf '%Lp' "$target")" \
+    || ! chmod "$mode" "$tmp" || ! mv -f -- "$tmp" "$target"; then
     printf 'sync-gemini-includes: could not write %s\n' "$target" >&2
     rm -f "$tmp"
     return 1

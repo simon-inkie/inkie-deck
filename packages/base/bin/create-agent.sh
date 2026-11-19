@@ -131,17 +131,16 @@
 #
 #   claude  the CLAUDE.md import chain resolves (a scaffold error if not); the
 #           live probe (`claude -p`) runs by default.
-#   codex   AGENTS.md is present; .codex/hooks.json is valid JSON whose hook
-#           commands exist and are executable; and the SessionStart hook, run
-#           here exactly as Codex would run it, prints valid hook output that
-#           carries the boot phrase. The live probe (`codex exec`) runs only
-#           with --live-probe.
-#   agy     GEMINI.md is present, its fences sync cleanly from their sources,
-#           and the synced text carries the boot phrase. The live probe
+#   codex   AGENTS.md is present; .codex/hooks.json is valid JSON and both
+#           events use the exact scaffolded commands. The check never runs
+#           those commands. The live probe (`codex exec`) runs only with
+#           --live-probe.
+#   agy     GEMINI.md is refreshed in place from its sources, and the file
+#           carries the boot phrase. The live probe
 #           (`agy -p`) runs only with --live-probe.
 #
 # Local checks call no model. A missing or malformed file is a SCAFFOLD ERROR
-# (1); a hook or GEMINI.md that would deliver a persona without the boot phrase
+# (1); a GEMINI.md that would deliver a persona without the boot phrase
 # is FAILED (3); all checks passing without the live probe is CANNOT VERIFY
 # (4), because passing local checks is not the persona reaching a model.
 
@@ -199,6 +198,68 @@ usage() {
 
 node_run() { node --input-type=module - 7>&-; }
 
+codex_hooks() {
+  CA_HOME="$AGENT_HOME" CA_BIN_DIR="$SCRIPT_DIR" CA_HOOKS_ACTION="$1" \
+    CA_HOOKS_TEMPLATE="$TEMPLATES_DIR/codex/hooks.json" node_run <<'JS'
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const { CA_HOME: home, CA_BIN_DIR: binDir, CA_HOOKS_ACTION: action } = process.env;
+const template = path.resolve(process.env.CA_HOOKS_TEMPLATE);
+const dir = path.join(home, ".codex");
+const file = path.join(dir, "hooks.json");
+const creating = action === "create";
+const quote = (text) => "'" + text.replaceAll("'", "'\\''") + "'";
+const injector = path.join(binDir, "codex-persona-inject");
+const prompt = path.join(binDir, "codex-user-prompt-submit");
+const expected = {
+  SessionStart: { bin: injector, args: ` --agent-home ${quote(home)}`, placeholder: "<codex-persona-inject-command>" },
+  UserPromptSubmit: { bin: prompt, args: "", placeholder: "<codex-user-prompt-submit-command>" },
+};
+
+try {
+  if (creating) {
+    try { fs.mkdirSync(dir); } catch (err) { if (err.code !== "EEXIST") throw err; }
+  }
+  if (!fs.lstatSync(dir).isDirectory()) throw new Error(`${dir} is a symlink or not a directory; refusing to use it`);
+  process.chdir(dir);
+  if (process.cwd() !== path.join(fs.realpathSync(home), ".codex")) {
+    throw new Error(`${dir} resolves outside its expected path; refusing to use it`);
+  }
+  const existing = fs.lstatSync("hooks.json", { throwIfNoEntry: false });
+  if (creating && existing) throw new Error(`${file} already exists; leaving it untouched`);
+  if (!creating && !existing?.isFile()) throw new Error(`${file} is missing or not a regular file (symlinks are not allowed)`);
+
+  const data = fs.readFileSync(creating ? template : "hooks.json", {
+    encoding: "utf8", flag: creating ? "r" : fs.constants.O_NOFOLLOW,
+  });
+  let config;
+  try { config = JSON.parse(data); } catch { throw new Error(`${creating ? template : file} is not valid JSON`); }
+  const events = config?.hooks;
+  if (!events || Object.keys(events).some((event) => !Object.hasOwn(expected, event))) {
+    throw new Error(".codex/hooks.json must contain only SessionStart and UserPromptSubmit hooks");
+  }
+  for (const [event, { bin, args, placeholder }] of Object.entries(expected)) {
+    const groups = events[event];
+    const hooks = Array.isArray(groups) && groups.every((group) => Array.isArray(group?.hooks))
+      ? groups.flatMap((group) => group.hooks) : [];
+    const hook = hooks[0];
+    const command = quote(bin) + args;
+    if (hooks.length !== 1 || hook?.type !== "command" || hook.command !== (creating ? placeholder : command)) {
+      throw new Error(`.codex/hooks.json ${event} must contain exactly the scaffolded command`);
+    }
+    if (creating) hook.command = command;
+    else fs.accessSync(bin, fs.constants.X_OK);
+  }
+
+  if (creating) fs.writeFileSync("hooks.json", JSON.stringify(config, null, 2) + "\n", { flag: "wx" });
+} catch (err) {
+  console.error(creating && err.code === "EEXIST" ? `${file} already exists; leaving it untouched` : err.message);
+  process.exitCode = 1;
+}
+JS
+}
+
 gen_nonce() {
   node_run <<'JS'
 import { randomBytes } from "node:crypto";
@@ -226,7 +287,6 @@ const createCli = process.env.CA_CREATE_CLI;
 const person = process.env.CA_PERSON;
 const runtime = process.env.CA_RUNTIME || "claude";
 const binDir = process.env.CA_BIN_DIR;
-const hooksTemplate = process.env.CA_HOOKS_TEMPLATE;
 
 const identityPath = path.join(home, "IDENTITY.md");
 let identity = fs.readFileSync(identityPath, "utf8");
@@ -281,27 +341,6 @@ if (runtimeFile) {
     .replaceAll("<gemini-path>", runtimePath);
   if (brief) text = text.replace(/\n*$/, "\n\n") + brief.replace(/\n*$/, "\n");
   fs.writeFileSync(runtimePath, text);
-}
-
-// Codex hooks. Commands are absolute and shell-quoted: Codex runs them through
-// a shell from the session's directory, and either path may contain spaces.
-if (runtime === "codex") {
-  const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
-  const commands = {
-    "<codex-persona-inject-command>":
-      `${quote(path.join(binDir, "codex-persona-inject"))} --agent-home ${quote(home)}`,
-    "<codex-user-prompt-submit-command>": quote(path.join(binDir, "codex-user-prompt-submit")),
-  };
-  const hooks = JSON.parse(fs.readFileSync(hooksTemplate, "utf8"));
-  for (const groups of Object.values(hooks.hooks)) {
-    for (const group of groups) {
-      for (const hook of group.hooks) {
-        if (hook.command in commands) hook.command = commands[hook.command];
-      }
-    }
-  }
-  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
-  fs.writeFileSync(path.join(home, ".codex", "hooks.json"), JSON.stringify(hooks, null, 2) + "\n");
 }
 
 // The inbox section of TOOLS.md. Stamped rather than shipped verbatim because
@@ -1286,6 +1325,9 @@ else
 
   settings_is_contained || die_scaffold "refusing to write settings outside the agent's own directory:" "  $AGENT_HOME, its .claude or its settings.json is a symlink, or resolves" "  somewhere other than $AGENTS_HOME/$NAME. The settings are written in place," "  so they could land in a global file. Remove the link, or choose another name."
   mkdir -p "$AGENT_HOME" || die_scaffold "could not create $AGENT_HOME"
+  if [[ "$RUNTIME" == codex ]]; then
+    hooks_error="$(codex_hooks create 2>&1)" || die_scaffold "$hooks_error"
+  fi
   for template in "${PERSONA_FILES[@]}"; do
     cp "$TEMPLATES_DIR/$template" "$AGENT_HOME/$template" \
       || die_scaffold "could not copy $template into $AGENT_HOME"
@@ -1302,16 +1344,8 @@ else
   CA_HOME="$AGENT_HOME" CA_NAME="$NAME" CA_ROLE="$ROLE" CA_NONCE="$NONCE" \
     CA_INBOX_CLI="$SCRIPT_DIR/inbox" CA_PEER="$PEER" CA_AGENTS_HOME="$AGENTS_HOME" \
     CA_CREATE_CLI="$SCRIPT_DIR/create-agent.sh" CA_RUNTIME="$RUNTIME" CA_BIN_DIR="$SCRIPT_DIR" \
-    CA_HOOKS_TEMPLATE="$TEMPLATES_DIR/codex/hooks.json" \
     CA_PERSON="$PERSON" CA_KIND_FILE="${KIND:+$TEMPLATES_DIR/kinds/$KIND.md}" stamp_templates \
     || die_scaffold "could not write the persona files in $AGENT_HOME"
-
-  # agy: copy the stamped persona files into GEMINI.md now, so the agent is
-  # whole before its first launch (the launchers also re-sync before each one).
-  if [[ "$RUNTIME" == agy ]]; then
-    bash "$SCRIPT_DIR/sync-gemini-includes.sh" "$AGENT_HOME/GEMINI.md" >/dev/null \
-      || die_scaffold "could not inline the persona files into $AGENT_HOME/GEMINI.md"
-  fi
 
   # .runtime is written explicitly even though the launcher defaults it. The
   # default is the launcher's business and can change; what this agent runs on
@@ -1458,155 +1492,26 @@ report_cannot_verify() {
 
 LOCAL_PASSED=()
 
-local_checks() {
-  CA_HOME="$AGENT_HOME" CA_RUNTIME="$RUNTIME" CA_NAME="$NAME" CA_NONCE="$NONCE" \
-    CA_INBOX_ROOT="$INBOX_ROOT" CA_SYNC="$SCRIPT_DIR/sync-gemini-includes.sh" node_run <<'JS'
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { spawnSync } from "node:child_process";
-
-const { CA_HOME: home, CA_RUNTIME: runtime, CA_NAME: name, CA_NONCE: nonce } = process.env;
-const passed = [];
-const scaffold = [];
-const failed = [];
-const done = () => {
-  process.stdout.write(JSON.stringify({ passed, scaffold, failed }));
-  process.exit(0);
-};
-const nonEmpty = (file) => {
-  try {
-    const st = fs.statSync(file);
-    return st.isFile() && st.size > 0;
-  } catch {
-    return false;
-  }
-};
-
-if (runtime === "codex") {
-  if (!nonEmpty(path.join(home, "AGENTS.md"))) scaffold.push("AGENTS.md is missing or empty");
-  else passed.push("AGENTS.md is present");
-
-  const hooksFile = path.join(home, ".codex", "hooks.json");
-  let hooks;
-  try {
-    hooks = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
-  } catch (err) {
-    scaffold.push(`.codex/hooks.json is missing or not valid JSON (${err.message})`);
-    done();
-  }
-  // Every hook command must start with an executable that exists. The first
-  // word is single-quoted by create-agent.sh; a hand-edited bare word works too.
-  const firstWord = (cmd) => {
-    const quoted = /^'((?:[^']|'\\'')*)'/.exec(cmd);
-    return quoted ? quoted[1].replaceAll("'\\''", "'") : cmd.split(/\s+/)[0];
-  };
-  const commandsFor = (event) =>
-    (Array.isArray(hooks?.hooks?.[event]) ? hooks.hooks[event] : [])
-      .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
-      .filter((hook) => hook?.type === "command" && typeof hook.command === "string")
-      .map((hook) => hook.command);
-  const start = commandsFor("SessionStart");
-  if (start.length === 0) scaffold.push(".codex/hooks.json has no SessionStart command hook");
-  for (const cmd of [...start, ...commandsFor("UserPromptSubmit")]) {
-    const bin = firstWord(cmd);
-    try {
-      fs.accessSync(bin, fs.constants.X_OK);
-    } catch {
-      scaffold.push(`hook command is not an executable file: ${bin}`);
-    }
-  }
-  if (scaffold.length > 0) done();
-  passed.push(".codex/hooks.json is valid and every hook command is executable");
-
-  // Run the SessionStart hook the way Codex does: through a shell, from the
-  // agent home, with the hook payload on stdin and the launcher's environment.
-  const injector = start.find((cmd) => cmd.includes("codex-persona-inject")) ?? start[0];
-  const run = spawnSync("bash", ["-c", injector], {
-    cwd: home,
-    input: JSON.stringify({ hook_event_name: "SessionStart", source: "startup", cwd: home }),
-    env: { ...process.env, AGENT_NAME: name, INBOX_ROOT: process.env.CA_INBOX_ROOT },
-    encoding: "utf8",
-    timeout: 20000,
-  });
-  let out;
-  try {
-    out = JSON.parse(run.stdout);
-  } catch {
-    failed.push(`the SessionStart hook did not print hook JSON (exit ${run.status}): ${String(run.stdout || run.stderr).slice(0, 300)}`);
-    done();
-  }
-  const ctx = out?.hookSpecificOutput?.additionalContext;
-  if (out?.hookSpecificOutput?.hookEventName !== "SessionStart" || typeof ctx !== "string") {
-    failed.push("the SessionStart hook's JSON is not SessionStart output with additionalContext");
-  } else if (!ctx.includes(nonce)) {
-    failed.push("the SessionStart hook ran, and its context does NOT carry the boot phrase");
-  } else {
-    passed.push("the SessionStart hook ran and its context carries the boot phrase");
-  }
-  done();
-}
-
-if (runtime === "agy") {
-  const gemini = path.join(home, "GEMINI.md");
-  if (!nonEmpty(gemini)) {
-    scaffold.push("GEMINI.md is missing or empty");
-    done();
-  }
-  passed.push("GEMINI.md is present");
-  // Sync a copy beside it, so relative fence paths resolve the same way, and
-  // check the result rather than the file as it stands.
-  const copy = path.join(home, `.GEMINI.verify-${process.pid}.md`);
-  fs.copyFileSync(gemini, copy);
-  const sync = spawnSync("bash", [process.env.CA_SYNC, copy], { encoding: "utf8", timeout: 20000 });
-  const synced = sync.status === 0 ? fs.readFileSync(copy, "utf8") : null;
-  fs.rmSync(copy, { force: true });
-  const original = fs.readFileSync(gemini, "utf8");
-  if (synced === null) {
-    scaffold.push(`GEMINI.md's inlined sections cannot be synced: ${String(sync.stderr).trim().slice(0, 300)}`);
-    done();
-  }
-  // Behind its sources is not a failure: the launchers re-sync before every
-  // start, so what the model will read is the synced text, and that is what
-  // the boot phrase is looked for in.
-  if (synced !== original) {
-    passed.push(`GEMINI.md's inlined sections are behind their sources; the launcher re-syncs before every start (or run ${process.env.CA_SYNC} ${gemini})`);
-  } else {
-    passed.push("GEMINI.md's inlined sections match their sources");
-  }
-  if (!synced.includes(nonce)) failed.push("GEMINI.md, once synced, does NOT carry the boot phrase (is IDENTITY.md inlined between fences?)");
-  else passed.push("GEMINI.md carries the boot phrase");
-  done();
-}
-done();
-JS
-}
-
 run_local_checks() {
-  local json kind line
-  json="$(local_checks)" || die_scaffold "could not run the local checks for $RUNTIME (is node on PATH?)"
-  while IFS= read -r line || [[ -n "$line" ]]; do [[ -n "$line" ]] && LOCAL_PASSED+=("$line"); done < <(
-    CA_JSON="$json" node_run <<'JS'
-process.stdout.write(JSON.parse(process.env.CA_JSON).passed.join("\n"));
-JS
-  )
-  for kind in scaffold failed; do
-    local problems
-    problems="$(CA_JSON="$json" CA_KIND="$kind" node_run <<'JS'
-process.stdout.write(JSON.parse(process.env.CA_JSON)[process.env.CA_KIND].join("\n"));
-JS
-)"
-    [[ -n "$problems" ]] || continue
-    if [[ "$kind" == scaffold ]]; then
-      die_scaffold "the $RUNTIME persona files are not usable:" "$problems"
-    fi
-    printf '\n'
-    printf 'create-agent: FAILED %s\n' "$NAME"
-    printf '  A local check for %s failed, so the persona would not reach the model\n' "$RUNTIME"
-    printf '  with its boot phrase. No model was asked; none needed to be.\n'
-    printf '\n'
-    while IFS= read -r line; do printf '    - %s\n' "$line"; done <<< "$problems"
+  local hooks_error gemini="$AGENT_HOME/GEMINI.md"
+  if [[ "$RUNTIME" == codex ]]; then
+    [[ -f "$AGENT_HOME/AGENTS.md" && -s "$AGENT_HOME/AGENTS.md" ]] \
+      || die_scaffold "AGENTS.md is missing or empty"
+    hooks_error="$(codex_hooks check 2>&1)" || die_scaffold "$hooks_error"
+    LOCAL_PASSED+=("AGENTS.md is present" ".codex/hooks.json matches the scaffolded commands (not run)")
+    return
+  fi
+
+  [[ -f "$gemini" && -s "$gemini" ]] || die_scaffold "GEMINI.md is missing or empty"
+  bash "$SCRIPT_DIR/sync-gemini-includes.sh" "$gemini" >/dev/null \
+    || die_scaffold "GEMINI.md's inlined sections cannot be synced"
+  if ! grep -Fq -- "$NONCE" "$gemini"; then
+    printf '\ncreate-agent: FAILED %s\n' "$NAME"
+    printf '  GEMINI.md does NOT carry the boot phrase after syncing (is IDENTITY.md inlined between fences?).\n'
+    printf '  No model was asked.\n'
     exit "$EXIT_FAILED"
-  done
+  fi
+  LOCAL_PASSED+=("GEMINI.md carries the boot phrase after syncing")
 }
 
 # Memory is wired on the way out, AFTER the probe below. The probe runs the

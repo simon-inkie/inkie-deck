@@ -28,6 +28,7 @@ export HOME="$BOX/home"
 export AGENTS_HOME="$BOX/agents"
 export CLAUDE_CONFIG_DIR="$BOX/claude-config"
 export AGY_HISTORY_FILE="$BOX/agy-history.jsonl"
+unset CODEX_HOME
 mkdir -p "$HOME" "$AGENTS_HOME" "$BOX/stubs"
 
 # make_agent <name> <runtime>
@@ -70,6 +71,12 @@ got="$(agy_latest_conversation_for_workspace ann)"
 check "L2 agy lookup: newest entry for the workspace, prefix name not matched" test "$got" = "c-new-2"
 got="$(agy_latest_conversation_for_workspace anna)"
 check "L2 agy lookup: the longer name finds its own" test "$got" = "c-anna-3"
+
+printf '{"workspace": "%s/\\u0061nn", "conversationId": "c-decoded"}\n' "$AGENTS_HOME" >> "$AGY_HISTORY_FILE"
+printf '{"workspace":"%s/ann","conversationId":"c-unfinished"' "$AGENTS_HOME" >> "$AGY_HISTORY_FILE"
+got="$(agy_latest_conversation_for_workspace ann)"
+check "agy lookup: decoded workspace matches and an unfinished record is ignored" test "$got" = "c-decoded"
+printf '\n' >> "$AGY_HISTORY_FILE"
 
 # L3: an id that is not a plain token never reaches a command line.
 hist_line "bad" 5 "$AGENTS_HOME/ann" 'x;touch /tmp/pwned' >> "$AGY_HISTORY_FILE"
@@ -206,6 +213,27 @@ ws_rc=$?
 [[ "$ws_rc" -eq 0 && "$(sent_to cobalt)" == *" codex Enter" && "$(sent_to gale)" == *" agy --conversation gale-conv-1 Enter" && "$(sent_to claudia)" == *" claude "* ]] \
   && pass "W6 workspace run: each pane is sent its own runtime's command" || fail "W6 workspace run" "rc=$ws_rc $(cat "$TMUX_LOG")"
 
+provider_home="$AGENTS_HOME/cobalt/.codex-home"
+exported_home="$BOX/exported codex"
+mkdir -p "$provider_home/sessions" "$exported_home/sessions" "$HOME/.codex/sessions"
+touch "$provider_home/config.toml"
+codex_session() {
+  printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s/cobalt","originator":"codex-tui","thread_source":"user"}}\n' "$2" "$AGENTS_HOME" \
+    > "$1/sessions/rollout-fixture-$2.jsonl"
+}
+codex_session "$HOME/.codex" shared
+codex_session "$provider_home" provider
+codex_session "$exported_home" exported
+out="$(PATH="$STUB_PATH" WORKSPACE_DRY_RUN=1 bash "$BIN_DIR/workspace.sh" cobalt 2>&1)"
+[[ "$out" == *" CODEX_HOME=$provider_home codex resume provider" ]] \
+  && pass "workspace uses the per-agent Codex home when CODEX_HOME is unset" || fail "workspace per-agent Codex home" "$out"
+out="$(PATH="$STUB_PATH" WORKSPACE_DRY_RUN=1 CODEX_HOME="$exported_home" bash "$BIN_DIR/workspace.sh" cobalt 2>&1)"
+[[ "$out" == *" CODEX_HOME=$(printf '%q' "$exported_home") codex resume exported" ]] \
+  && pass "workspace passes the exported Codex home and resumes from it" || fail "workspace exported Codex home" "$out"
+out="$(PATH="$STUB_PATH" WORKSPACE_DRY_RUN=1 CODEX_HOME="$BOX/empty" bash "$BIN_DIR/workspace.sh" cobalt 2>&1)"
+[[ "$out" == *" CODEX_HOME=$BOX/empty codex" ]] \
+  && pass "workspace starts fresh when the selected Codex home has no sessions" || fail "workspace fresh Codex launch" "$out"
+
 # ===== sync-gemini-includes.sh ==============================================
 SYNC="$BIN_DIR/sync-gemini-includes.sh"
 S_DIR="$BOX/sync"; mkdir -p "$S_DIR/agent"
@@ -260,6 +288,28 @@ done
 bash "$SYNC" >/dev/null 2>&1; rc=$?
 [[ "$rc" -eq 0 ]] && grep -qx 'id-gale' "$AGENTS_HOME/gale/GEMINI.md" && ! grep -q 'id-cobalt' "$AGENTS_HOME/cobalt/GEMINI.md" \
   && pass "S7 no arguments: only agy agents under AGENTS_HOME are synced" || fail "S7 discovery" "rc=$rc"
+
+cat > "$S_DIR/agent/SOUL.md" <<'EOF'
+Examples of generated markers:
+    <!-- END SYNCED:SOUL.md -->
+> <!-- END SYNCED:SOUL.md -->
+EOF
+printf '<!-- BEGIN SYNCED:SOUL.md -->\n<!-- END SYNCED:SOUL.md -->\n' > "$S_DIR/agent/GEMINI.md"
+bash "$SYNC" "$S_DIR/agent/GEMINI.md" >/dev/null 2>&1; rc1=$?
+first="$(cat "$S_DIR/agent/GEMINI.md"; echo x)"
+bash "$SYNC" "$S_DIR/agent/GEMINI.md" >/dev/null 2>&1; rc2=$?
+second="$(cat "$S_DIR/agent/GEMINI.md"; echo x)"
+[[ "$rc1" -eq 0 && "$rc2" -eq 0 && "$first" == "$second" ]] \
+  && grep -qx '> <!-- END SYNCED:SOUL.md -->' "$S_DIR/agent/GEMINI.md" \
+  && pass "sync leaves indented and quoted END examples untouched on repeated runs" || fail "sync with END marker examples"
+
+printf 'new source text\n' >> "$S_DIR/agent/SOUL.md"
+printf '#!/bin/sh\nprintf "partial output\\n"\nexit 1\n' > "$BOX/stubs/cat"
+chmod +x "$BOX/stubs/cat"
+PATH="$STUB_PATH" bash "$SYNC" "$S_DIR/agent/GEMINI.md" >/dev/null 2>&1; rc=$?
+after="$(cat "$S_DIR/agent/GEMINI.md"; echo x)"
+[[ "$rc" -ne 0 && "$second" == "$after" ]] \
+  && pass "sync leaves the original intact after a partial copy fails" || fail "sync partial copy" "rc=$rc"
 
 echo
 echo "multi-harness: $PASS passed, $FAILS failed"

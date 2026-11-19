@@ -54,11 +54,12 @@ function box(): Box {
 
 /**
  * A stand-in runtime that logs its arguments and environment, then either
- * quotes the boot phrase from IDENTITY.md in its cwd or answers without it.
+ * quotes the boot phrase from the runtime's persona fixture or answers without it.
  */
 function stubRuntime(b: Box, name: string, answers: boolean): void {
+  const persona = name === "agy" ? "GEMINI.md" : "IDENTITY.md";
   const reply = answers
-    ? 'echo "name: x"; grep -oE "boot-[0-9a-f]{16}" IDENTITY.md | head -n1 | sed "s/^/boot phrase: /"'
+    ? `echo "name: x"; grep -oE "boot-[0-9a-f]{16}" ${persona} | head -n1 | sed "s/^/boot phrase: /"`
     : 'echo "name: x"; echo "boot phrase: NONE"';
   fs.writeFileSync(
     path.join(b.stubBin, name),
@@ -141,6 +142,26 @@ describe("files per runtime", () => {
     expect(JSON.stringify(hooks)).not.toMatch(/<[a-z-]+-command>/);
   });
 
+  it.each(["existing file", "hook symlink", "directory symlink"])("codex refuses to scaffold over an existing hook path (%s)", (kind) => {
+    const b = box();
+    const codexDir = path.join(home(b, "cobalt"), ".codex");
+    const hooksFile = path.join(codexDir, "hooks.json");
+    const elsewhere = path.join(b.home, "hooks.json");
+    fs.mkdirSync(home(b, "cobalt"));
+    if (kind === "directory symlink") {
+      fs.symlinkSync(b.home, codexDir);
+    } else {
+      fs.mkdirSync(codexDir);
+      if (kind === "hook symlink") fs.symlinkSync(elsewhere, hooksFile);
+    }
+    fs.writeFileSync(kind === "existing file" ? hooksFile : elsewhere, "keep this file\n");
+    const result = create(b, ["cobalt", "--runtime", "codex", "--no-verify"]);
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(result.output).toContain(kind === "directory symlink" ? "is a symlink" : "already exists; leaving it untouched");
+    expect(fs.readFileSync(hooksFile, "utf8")).toBe("keep this file\n");
+    expect(fs.readdirSync(home(b, "cobalt"))).toEqual([".codex"]);
+  });
+
   it("agy gets GEMINI.md with the persona inlined, boot phrase included", () => {
     const b = box();
     create(b, ["gale", "--runtime", "agy", "--no-verify"]);
@@ -183,7 +204,7 @@ describe("verification for codex and agy", () => {
     stubRuntime(b, "codex", true);
     const result = create(b, ["cobalt", "--runtime", "codex"]);
     expect(result.status).toBe(EXIT.CANNOT_VERIFY);
-    expect(result.output).toContain("the SessionStart hook ran and its context carries the boot phrase");
+    expect(result.output).toContain("matches the scaffolded commands (not run)");
     expect(result.output).toContain("--live-probe");
     expect(probeCalls(b)).toBe("");
   });
@@ -197,22 +218,26 @@ describe("verification for codex and agy", () => {
     expect(probeCalls(b)).toBe("");
   });
 
-  it("codex: a hook that delivers context without the boot phrase is FAILED, with no model asked", () => {
+  it("codex: a changed hook is refused without being run, even with --no-verify", () => {
     const b = box();
     create(b, ["cobalt", "--runtime", "codex", "--no-verify"]);
     const fake = path.join(b.home, "fake-hook");
+    const marker = path.join(b.home, "hook-ran");
     fs.writeFileSync(
       fake,
-      `#!/usr/bin/env bash\necho '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"generic"}}'\n`,
+      `#!/usr/bin/env bash\ntouch ${JSON.stringify(marker)}\n`,
       { mode: 0o755 },
     );
     const file = path.join(home(b, "cobalt"), ".codex", "hooks.json");
     const hooks = JSON.parse(fs.readFileSync(file, "utf8"));
     hooks.hooks.SessionStart[0].hooks[0].command = `'${fake}'`;
     fs.writeFileSync(file, JSON.stringify(hooks));
-    const result = create(b, ["--verify-only", "cobalt"]);
-    expect(result.status).toBe(EXIT.FAILED);
-    expect(result.output).toContain("does NOT carry the boot phrase");
+    for (const flags of [[], ["--no-verify"]]) {
+      const result = create(b, ["--verify-only", "cobalt", ...flags]);
+      expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+      expect(result.output).toContain("SessionStart must contain exactly the scaffolded command");
+      expect(fs.existsSync(marker)).toBe(false);
+    }
   });
 
   it("codex: a malformed hooks file is a scaffold error", () => {
@@ -224,26 +249,44 @@ describe("verification for codex and agy", () => {
     expect(result.output).toContain("not valid JSON");
   });
 
-  it("agy: a GEMINI.md that no longer inlines IDENTITY.md is FAILED", () => {
+  it("codex: UserPromptSubmit is required too", () => {
+    const b = box();
+    create(b, ["cobalt", "--runtime", "codex", "--no-verify"]);
+    const file = path.join(home(b, "cobalt"), ".codex", "hooks.json");
+    const hooks = JSON.parse(fs.readFileSync(file, "utf8"));
+    delete hooks.hooks.UserPromptSubmit;
+    fs.writeFileSync(file, JSON.stringify(hooks));
+    const result = create(b, ["--verify-only", "cobalt"]);
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(result.output).toContain("UserPromptSubmit");
+  });
+
+  it("agy: stale identity text without sync fences fails before the live probe", () => {
     const b = box();
     create(b, ["gale", "--runtime", "agy", "--no-verify"]);
+    stubRuntime(b, "agy", true);
     const file = path.join(home(b, "gale"), "GEMINI.md");
     const text = fs.readFileSync(file, "utf8");
     fs.writeFileSync(
       file,
-      text.replace(/<!-- BEGIN SYNCED:IDENTITY\.md[\s\S]*?<!-- END SYNCED:IDENTITY\.md -->\n/, ""),
+      text.replace(/<!-- BEGIN SYNCED:IDENTITY\.md[\s\S]*?<!-- END SYNCED:IDENTITY\.md -->\n/, "Stale identity: boot-0000000000000000\n"),
     );
-    const result = create(b, ["--verify-only", "gale"]);
+    const result = create(b, ["--verify-only", "gale", "--live-probe"]);
     expect(result.status).toBe(EXIT.FAILED);
+    expect(probeCalls(b)).toBe("");
   });
 
-  it("agy: an edited source is reported as behind, not as a failure, since the launcher re-syncs", () => {
+  it("agy: the live probe reads the real GEMINI.md after stale text is refreshed", () => {
     const b = box();
     create(b, ["gale", "--runtime", "agy", "--no-verify"]);
-    fs.appendFileSync(path.join(home(b, "gale"), "SOUL.md"), "\nOne more line.\n");
-    const result = create(b, ["--verify-only", "gale"]);
-    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
-    expect(result.output).toContain("behind their sources");
+    stubRuntime(b, "agy", true);
+    const phrase = bootPhrase(b, "gale");
+    const gemini = read(b, "gale", "GEMINI.md");
+    expect(gemini).toContain(phrase);
+    fs.writeFileSync(path.join(home(b, "gale"), "GEMINI.md"), gemini.replace(phrase, "stale"));
+    const result = create(b, ["--verify-only", "gale", "--live-probe"]);
+    expect(result.status).toBe(EXIT.VERIFIED);
+    expect(read(b, "gale", "GEMINI.md")).toBe(gemini);
   });
 
   it("codex --live-probe: VERIFIED when the reply carries the boot phrase, run as codex exec with the agent's env", () => {
@@ -303,15 +346,22 @@ describe("codex hooks", () => {
     expect(ctx.indexOf("## IDENTITY.md")).toBeLessThan(ctx.indexOf("## SOUL.md"));
   });
 
-  it("the SessionStart hook says where it cut an oversized persona, and keeps the boot phrase", () => {
+  it.each(["SOUL.md", "IDENTITY.md"])("the SessionStart hook cuts oversized %s but keeps the identity head and boot phrase", (filename) => {
     const b = box();
     create(b, ["cobalt", "--runtime", "codex", "--no-verify"]);
-    fs.appendFileSync(path.join(home(b, "cobalt"), "SOUL.md"), "x".repeat(20000));
+    const original = read(b, "cobalt", filename);
+    const head = read(b, "cobalt", "IDENTITY.md").split("\n", 1)[0];
+    const phrase = bootPhrase(b, "cobalt");
+    const longer = filename === "IDENTITY.md"
+      ? original.replace("\n", `\n${"x".repeat(20000)}\n`)
+      : original + "x".repeat(20000);
+    fs.writeFileSync(path.join(home(b, "cobalt"), filename), longer);
     const hooks = JSON.parse(read(b, "cobalt", ".codex/hooks.json"));
     const out = runHook(hooks.hooks.SessionStart[0].hooks[0].command, home(b, "cobalt"), "{}", {});
     const ctx: string = JSON.parse(out.stdout).hookSpecificOutput.additionalContext;
     expect(Buffer.byteLength(ctx, "utf8")).toBeLessThanOrEqual(9000);
-    expect(ctx).toContain(bootPhrase(b, "cobalt"));
+    expect(ctx).toContain(`## IDENTITY.md\n\n${head}\n`);
+    expect(ctx).toContain(phrase);
     expect(ctx).toContain("cut here to stay under");
     expect(ctx).toContain("[not included:");
   });

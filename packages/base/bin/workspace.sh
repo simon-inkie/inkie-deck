@@ -111,14 +111,13 @@ launch_command() {
     # Same envelope as boot-agents.sh (codex_launch_command): identity on the
     # process environment, the provider home it selects, and a resume of this
     # workspace's newest interactive session.
-    local role codex_home CODEX_SESSIONS_DIR sid
+    local role codex_home sid
     role="$(agent_role "$agent")"
-    codex_home="$(codex_home_for_agent "$agent")" || {
+    codex_home="$(codex_launch_home_for_agent "$agent")" || {
       echo "workspace: not launching $agent because its Codex provider selection failed" >&2
       return 1
     }
-    CODEX_SESSIONS_DIR="$(codex_sessions_dir_for_home "$codex_home")"
-    sid="$(codex_latest_session_for_workspace "$agent")"
+    sid="$(codex_latest_session_for_workspace "$agent" "$codex_home")"
     codex_launch_command "$agent" "$role" "$codex_home" "$sid" "$model_flag"
   elif [[ "$runtime" == "agy" ]]; then
     # Same envelope as boot-agents.sh (agy_launch_command), after the GEMINI.md

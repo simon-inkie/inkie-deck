@@ -941,7 +941,9 @@ packages/base/bin/create-agent.sh fern --runtime agy
   start, resume and compaction, with a count of unread messages; its
   per-prompt hook (`bin/codex-user-prompt-submit`) mentions new unread
   messages. Codex runs a folder's hooks only after you trust them: on the
-  agent's first launch, attach and approve them.
+  agent's first launch, attach and approve them. Creation refuses a symlinked
+  `.codex` directory or an existing `hooks.json` (including a symlink),
+  leaving it untouched.
 - **Antigravity** gets `GEMINI.md`, with the persona files copied into it
   between generated fences by `bin/sync-gemini-includes.sh`. The launchers run
   the sync before every start, so edit the source files, never the fences.
@@ -949,11 +951,12 @@ packages/base/bin/create-agent.sh fern --runtime agy
   `INBOX_ROOT`, since neither reads `.claude/settings.json`.
 
 The proof is different too. For these two, `create-agent.sh` runs local checks
-that call no model: for Codex, that the hooks file is valid and the hook,
-run as Codex would run it, emits the boot phrase; for Antigravity, that
-`GEMINI.md` syncs cleanly and carries it. Passing them still exits 4, because
-no model was asked. Asking one costs a turn of your plan or API credit, so it
-is opt-in: add `--live-probe` (or set `CREATE_AGENT_LIVE_PROBE=1`) to run
+that call no model. For Codex, they validate the hooks JSON and compare the
+commands for both events to the exact scaffolded commands without running
+them, even with `--no-verify`. For Antigravity, they refresh `GEMINI.md` in
+place and check that the file carries the boot phrase. Passing these checks
+still exits 4, because no model was asked. A live probe uses a turn of your
+plan or API credit, so it is opt-in: add `--live-probe` (or set `CREATE_AGENT_LIVE_PROBE=1`) to run
 `codex exec` or `agy -p` from the agent's home. For Codex, approve the hooks
 on a first interactive launch before the live probe, or it reports FAILED.
 Memory hooks are Claude Code only and stay off for the other two.
@@ -962,7 +965,7 @@ Memory hooks are Claude Code only and stay off for the other two.
 | --- | --- | --- | --- |
 | Persona file it reads | `CLAUDE.md` with imports | `AGENTS.md` plus a SessionStart hook | `GEMINI.md`, persona inlined |
 | Resume on relaunch | pinned session id | newest session for its home | newest conversation for its home |
-| Check without a model | imports resolve | hook emits the boot phrase | `GEMINI.md` carries it |
+| Check without a model | imports resolve | both hook commands match the scaffold | refreshed `GEMINI.md` carries the boot phrase |
 | Live proof | default | `--live-probe` | `--live-probe` |
 | Memory hooks | when configured | no | no |
 | Day-one first message | yes | no | no |
@@ -1107,10 +1110,12 @@ hint. It is a tmux server option with no per-session form, so it applies to
 the whole tmux server, including any other sessions on it. Add
 `tmux set -g focus-events off` after a boot if you want it off.
 
-Each agent runs the CLI named in its `.runtime`. A Codex agent resumes the
-newest session started in its own home, and a fresh one if that resume fails;
-an Antigravity agent resumes the newest conversation started in its own home
-(`agy --conversation <id>`, never the global `--continue`), after its
+Each agent runs the CLI named in its `.runtime`. A Codex agent looks up the
+newest session for its workspace in the home it launches with: exported
+`CODEX_HOME` first, then the agent's configured provider home, then `~/.codex`.
+It starts fresh if that home has no matching session or boot detects a failed
+resume. An Antigravity agent resumes the newest conversation started in its
+own home (`agy --conversation <id>`, never the global `--continue`), after its
 `GEMINI.md` is re-synced. Neither has its own approval prompts switched off.
 
 On first boot, attach to the session and answer any runtime setup prompts

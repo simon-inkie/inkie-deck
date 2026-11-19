@@ -35,6 +35,7 @@ which Codex does not put into the model's context.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -141,6 +142,7 @@ def main() -> None:
         f"{inbox_summary(name)}"
     )
 
+    header = fit(header, CAP // 2)
     parts = [header]
     used = len(header.encode("utf-8"))
     for index, filename in enumerate(PERSONA_FILES):
@@ -149,8 +151,7 @@ def main() -> None:
             with open(path, "r", encoding="utf-8") as handle:
                 content = handle.read().rstrip("\n")
         except OSError:
-            parts.append(f"## {filename}\n\n[missing: {path} could not be read]")
-            continue
+            content = f"[missing: {filename} could not be read]"
         section = f"## {filename}\n\n{content}"
         size = len(("\n\n" + section).encode("utf-8"))
         if used + size <= CAP:
@@ -159,15 +160,21 @@ def main() -> None:
             continue
         # Over the cap: cut this file, say so, and name what was left out.
         rest = list(PERSONA_FILES[index + 1:])
-        marker = f"\n[cut here to stay under {CAP} bytes; read {path} in full]"
+        marker = f"\n[cut here to stay under {CAP} bytes; read {filename} in full]"
         if rest:
-            marker += "\n[not included: " + ", ".join(os.path.join(home, f) for f in rest) + "]"
+            marker += "\n[not included: " + ", ".join(rest) + "]"
         room = CAP - used - len(("\n\n## " + filename + "\n\n").encode("utf-8")) - len(marker.encode("utf-8"))
-        parts.append(f"## {filename}\n\n{fit(content, room)}{marker}")
+        fragment = fit(content, room)
+        if filename == "IDENTITY.md":
+            boot_stamp = re.search(r"^- \*\*Boot phrase:\*\* boot-[0-9a-f]{16}$", content, re.MULTILINE)
+            if boot_stamp and boot_stamp.end() > len(fragment):
+                stamp = "\n\n" + boot_stamp.group()
+                fragment = fit(content, room - len(stamp)).rstrip("\n") + stamp
+        parts.append(f"## {filename}\n\n{fragment}{marker}")
         note(f"persona for {name} cut at {CAP} bytes in {filename}")
         break
 
-    emit("\n\n".join(parts))
+    emit(fit("\n\n".join(parts), CAP))
 
 
 if __name__ == "__main__":

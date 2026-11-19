@@ -16,9 +16,6 @@
 #   agy     Antigravity CLI. agy_launch_command below; resumes the newest
 #           conversation recorded for the agent's own workspace.
 #
-# The Codex functions were moved here unchanged from boot-agents.sh, apart from
-# the optional INBOX_ROOT segment (agent_inbox_root_env, below).
-#
 # Requires AGENTS_HOME to be set by the caller.
 
 # agent_role <agent> -- the optional one-line role in $AGENTS_HOME/<agent>/.role.
@@ -84,10 +81,15 @@ agent_inbox_root_env() {
 # a mismatch is treated as a malformed line and skipped like any other parse
 # failure.
 #
-# CODEX_SESSIONS_DIR is the test seam: the suite points it at fixture
-# directories instead of the real sessions directory.
+# The launchers pass the effective home as the second argument. With no home
+# argument, CODEX_SESSIONS_DIR lets the tests supply a fixture directory.
 codex_latest_session_for_workspace() {
-  local a="$1" dir="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+  local a="$1" dir
+  if [[ "$#" -gt 1 ]]; then
+    dir="$(codex_sessions_dir_for_home "$2")"
+  else
+    dir="${CODEX_SESSIONS_DIR:-$HOME/.codex/sessions}"
+  fi
   local want_cwd="\"cwd\":\"$AGENTS_HOME/$a\""
   [[ -d "$dir" ]] || return 0
   local f line sid fname
@@ -191,6 +193,17 @@ codex_home_for_agent() {
   esac
 }
 
+codex_launch_home_for_agent() {
+  local agent="$1" home
+  home="$(printenv CODEX_HOME)" || home=""
+  if [[ -z "$home" ]]; then
+    home="$(codex_home_for_agent "$agent")" || return 1
+    home="${home:-$HOME/.codex}"
+  fi
+  [[ "$home" == /* ]] || home="$AGENTS_HOME/$agent/$home"
+  printf '%s\n' "$home"
+}
+
 # ---------------------------------------------------------------------------
 # Antigravity (agy)
 # ---------------------------------------------------------------------------
@@ -208,21 +221,38 @@ codex_home_for_agent() {
 # prompt, so the newest entry for THIS workspace is looked up and resumed
 # explicitly with --conversation <id>.
 #
-# MECHANISM. The history file is JSON lines, appended in time order, each
-# carrying "workspace" and "conversationId" with no space after the colon.
-# The workspace is matched THROUGH its closing quote, so agent "ann" can never
-# match a line belonging to "anna". The id must be a plain token (letters,
-# digits, dot, underscore, hyphen) or it is not used: it lands on a shell
-# command line.
+# The history file is JSON lines, appended in time order. Compare the decoded
+# workspace exactly and ignore unfinished or malformed records. The id must
+# be a plain token: it lands on a shell command line.
 #
 # AGY_HISTORY_FILE is the test seam; the default is where the CLI keeps it.
 agy_latest_conversation_for_workspace() {
   local a="$1" hist="${AGY_HISTORY_FILE:-$HOME/.gemini/antigravity-cli/history.jsonl}" cid
   [[ -r "$hist" ]] || return 0
-  cid=$(grep -F "\"workspace\":\"$AGENTS_HOME/$a\"" "$hist" 2>/dev/null \
-        | grep -oE '"conversationId":"[^"]+"' | tail -n 1 \
-        | sed 's/^"conversationId":"//;s/"$//') || true
-  [[ "$cid" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+  cid=$(python3 - "$hist" "$AGENTS_HOME/$a" 2>/dev/null <<'PY'
+import json
+import re
+import sys
+
+latest = None
+with open(sys.argv[1], "rb") as history:
+    for line in history:
+        if not line.endswith(b"\n"):
+            break
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("workspace") != sys.argv[2]:
+            continue
+        candidate = record.get("conversationId")
+        if isinstance(candidate, str) and candidate:
+            latest = candidate
+if latest is not None and re.fullmatch(r"[A-Za-z0-9._-]+", latest):
+    print(latest)
+PY
+  ) || return 0
+  [[ -n "$cid" ]] || return 0
   printf '%s\n' "$cid"
 }
 
