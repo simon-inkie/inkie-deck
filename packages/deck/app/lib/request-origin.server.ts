@@ -38,17 +38,22 @@ export function hasSameOriginProof(request: Request, context: AppLoadContext) {
   return parsed.host === URL.parse(`${parsed.protocol}//${request.headers.get("host")}`)?.host;
 }
 
-export function requireSameOriginWrite(request: Request, context: AppLoadContext) {
-  const error = !isAllowedHost(request.headers.get("host"), process.env["MC_ALLOWED_HOSTS"])
-    ? "Writes require an allowed Host. Add trusted public hostnames to MC_ALLOWED_HOSTS."
-    : !hasSameOriginProof(request, context)
-      ? "Writes require a same-origin request."
-      : null;
+function hasAllowedWriteHost(request: Request): boolean {
+  return isAllowedHost(request.headers.get("host"), process.env["MC_ALLOWED_HOSTS"]);
+}
 
-  if (error) {
-    throw Response.json({ ok: false, error }, {
-      status: 403,
-      headers: { "Cache-Control": "private, no-store" },
-    });
-  }
+export function canWriteFromRequest(request: Request, context: AppLoadContext): boolean {
+  return hasAllowedWriteHost(request) && hasSameOriginProof(request, context);
+}
+
+export function requireSameOriginWrite(request: Request, context: AppLoadContext) {
+  if (canWriteFromRequest(request, context)) return;
+
+  const error = hasAllowedWriteHost(request)
+    ? "Writes require a same-origin request."
+    : "Writes require an allowed Host. Add trusted public hostnames to MC_ALLOWED_HOSTS.";
+  throw Response.json({ ok: false, error }, {
+    status: 403,
+    headers: { "Cache-Control": "private, no-store" },
+  });
 }

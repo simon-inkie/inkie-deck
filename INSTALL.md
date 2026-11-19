@@ -700,11 +700,12 @@ or ports. A proxy or tunnel must preserve the public Host, including the port
 if present, so that it matches the browser's Origin. This does not enable remote
 Nudge editing or replace access control.
 
-Deck refuses cross-site and same-site writes, including opening a chat thread
-from another site because that page records a read receipt. Open the Deck home
-page first, then follow the thread link there. Clients that omit both `Origin`
-and `Sec-Fetch-Site` must connect directly over loopback. Drafts use these same
-checks rather than the separate voice origin allowlist.
+Deck refuses cross-site and same-site writes. If a chat navigation fails the
+write checks, Deck still opens the thread without marking messages as read.
+This can happen on plain HTTP over a LAN even with an approved `Host`, because
+browsers may omit both `Origin` and `Sec-Fetch-Site`. Without either header,
+only a direct loopback connection can write. Drafts use these same checks
+rather than the separate voice origin allowlist.
 
 ### Build, and start
 

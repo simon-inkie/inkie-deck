@@ -33,7 +33,7 @@ import { useFetcher, useFetchers, useLocation, useNavigate, useSearchParams } fr
 import type { Route } from "./+types/threads.$agent";
 import { RouteErrorPanel } from "~/components/RouteErrorPanel";
 import { makeStores } from "~/lib/stores.server";
-import { requireSameOriginWrite } from "~/lib/request-origin.server";
+import { canWriteFromRequest, requireSameOriginWrite } from "~/lib/request-origin.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled } from "~/lib/instance.server";
 import { saveAttachment } from "~/lib/attachments.server";
@@ -197,14 +197,12 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
 
   // The operator rendering the thread IS the read - flip the
   // agent's sent blocks to read on disk BEFORE reading, so the receipt is
-  // durable and this render already shows the flipped state. A receipt
-  // failure (e.g. allowlist refusal on a direct URL) must never break the
-  // render - log and serve the thread read-only.
+  // durable and this render already shows the flipped state. Without an
+  // approved Host and origin proof, serve the thread without a receipt.
   // SKIPPED in tmux view - terminal mode renders no
   // messages, and the 1s poll would otherwise mark unseen messages read.
   // Render-is-the-receipt only counts when the messages actually render.
-  if (!tmuxView) {
-    requireSameOriginWrite(request, context);
+  if (!tmuxView && canWriteFromRequest(request, context)) {
     try {
       await inbox.markRead(agent, user);
     } catch (err) {
@@ -218,8 +216,8 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   // Windowed read - the loader returns the last ~30 blocks (or, on a
   // deep-link ?anchor=<card-id>, the window extended back to that card). The
   // client lazy-loads older chunks via api/thread-window on scroll-up. The
-  // markRead flip above is deliberately UNTOUCHED: it operates whole-file, so
-  // out-of-window sent blocks still flip on thread open (render-is-the-receipt).
+  // allowed receipt write operates on the whole file, so out-of-window sent
+  // blocks still flip on thread open (render-is-the-receipt).
   const anchorParam = requestUrl.searchParams.get("anchor");
   const {
     blocks: rawBlocks,

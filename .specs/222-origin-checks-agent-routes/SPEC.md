@@ -31,6 +31,10 @@ Out of scope:
   before side effects for cross-site, same-site, mismatched Origin and an
   unapproved Host. Check same-origin browser writes, including via an
   approved proxy host, and direct header-less loopback writes.
+- Verify that chat navigation still returns 200 without writing a receipt
+  when the write checks fail, including over plain HTTP on an approved LAN
+  host with neither browser header. Verify that allowed requests still mark
+  the thread read.
 - Run the touched Vitest files and Nudge tests:
 
   ```sh
@@ -77,3 +81,11 @@ None.
   processes that could not use Node's default sync subprocess pipes.
 - Supersedes: nothing, additive
 - Commits: 4a406e7 fix(security): same-origin and host checks on routes that write to agents (#222)
+
+### 2026-11-19: Keep chat navigation readable without origin proof
+- What changed: The chat loader skips the read receipt when the write checks
+  fail and still serves the thread. Explicit write actions still return 403.
+- Why: The PR review found that browsers can omit both Origin and fetch
+  metadata on plain HTTP LAN navigation, even when the Host is approved.
+- Supersedes: Guard the chat receipt and document proxy hosts (loader refusal only)
+- Commits: pending
