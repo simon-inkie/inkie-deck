@@ -1,0 +1,23 @@
+{
+  "shop": "Spark and Relay",
+  "page": "/launch/bench-kits",
+  "launchDate": "2026-06-18T09:00:00Z",
+  "hero": {
+    "image": "tech-hero-a.png",
+    "alt": "Tin robot on a burst of teal, rust and mustard",
+    "headline": "Local tools, built to last",
+    "cta": { "label": "See the kits", "href": "/collections/bench-kits" }
+  },
+  "carousel": [
+    { "slide": 1, "image": "tech-carousel-1.png", "caption": "Local tools, built to last" },
+    { "slide": 2, "image": "tech-carousel-2.png", "caption": "Zero cloud, full control" }
+  ],
+  "kits": [
+    { "sku": "SR-KIT-01", "name": "Relay starter kit", "price": 34.0, "stock": 120 },
+    { "sku": "SR-KIT-02", "name": "Telemetry bench kit", "price": 58.0, "stock": 64 },
+    { "sku": "SR-KIT-03", "name": "Valve radio kit", "price": 72.5, "stock": 25 }
+  ],
+  "freeDeliveryOver": 40,
+  "showCountdown": true,
+  "newsletterSignup": false
+}

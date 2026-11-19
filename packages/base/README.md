@@ -273,6 +273,39 @@ was no runtime to ask, which is not a pass). An empty reply with a zero exit
 status is `FAILED`. Re-check later with `create-agent.sh --verify-only <name>`;
 `create-agent.sh --help` has the rest.
 
+`--runtime claude|codex|agy` picks the agent CLI (Claude Code by default). A
+Codex agent also gets `AGENTS.md` and a `.codex/hooks.json` whose SessionStart
+hook (`bin/codex-persona-inject`) injects the persona files, since Codex has no
+`@` import. Creation refuses an existing `hooks.json` or a symlinked `.codex`
+directory. The local check compares both commands with the scaffold and never
+executes them. An Antigravity agent gets `GEMINI.md` with the persona files
+inlined by `bin/sync-gemini-includes.sh`. Both verification and the launchers
+refresh that file in place. A source with an unindented SYNCED marker line,
+even inside a Markdown code block, is rejected without replacing `GEMINI.md`.
+Passing local checks still ends in `CANNOT VERIFY` unless `--live-probe` asks
+the model as well. The Codex probe uses the same Codex home as a launch and
+does not run if provider selection fails.
+`boot-agents.sh` and `workspace.sh` launch and resume all three from the shared
+constructors in `bin/runtime-launch.sh`.
+
+Five flags support a first-run setup: `--kind assistant|platform|member` writes
+`<agent home>/.kind` (Deck pins the assistant) and stamps a short role brief
+into `CLAUDE.md`; `--peer <name>` names the other agent in that brief and is
+saved as `.peer`; `--check-name <name>` validates a name and that both homes
+are free, and writes nothing; `--person <name>` stamps your `MC_USER` into the
+role brief (without it the assistant's "First conversation" section is left
+out); `--status <name>` prints `complete`, `incomplete` or `absent` and writes
+nothing. In addition to the shared scaffold, `complete` requires the files
+for the saved `.runtime`: `AGENTS.md`, `.codex/hooks.json` and `.inbox-root`
+for Codex, or `GEMINI.md` and `.inbox-root` for Antigravity. Status does not
+sync includes or ask the model. Add `--kind` and `--peer` to require the
+intended markers. `member` is for agents the platform agent
+creates, with a brief that names the assistant. The persona check sources the
+agent's own `.env.secrets` in its subshell, as the launcher does. `bin/first-run.sh` wraps them: it asks for an
+assistant and a platform agent name, checks both before creating either, skips
+a kind that already exists, and exits with the worst verdict. The boot phrase
+proves the persona loaded, not that the role brief is right.
+
 There is nothing magic in it. If you would rather do it by hand, the templates
 are just files, and the two things easiest to miss doing it that way are the
 inbox directory (an agent your launcher can see but your control plane cannot)

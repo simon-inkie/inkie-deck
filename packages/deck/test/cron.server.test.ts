@@ -19,6 +19,9 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   listCrons,
   createCron,
@@ -26,6 +29,7 @@ import {
   setEnabled,
   deleteCron,
   buildNudgeScript,
+  crontabAvailable,
   type CronDeps,
 } from "~/lib/cron.server";
 
@@ -1168,5 +1172,45 @@ describe("updateCron - happy path (in-place re-write)", () => {
     const deletedPaths = (deps.deleteScript as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
     expect(deletedPaths.some((p) => p === "/home/you/agents/sprout/bin/cron-nudge-edit.sh")).toBe(true);
     expect(deletedPaths.some((p) => p === "/home/you/agents/sprout/bin/cron-nudge-edit.prompt.md")).toBe(true);
+  });
+});
+
+describe("crontabAvailable - PATH lookup only, never runs crontab", () => {
+  // Each case builds its own PATH from temp dirs, so the real PATH (and the
+  // real crontab binary, if any) is never consulted.
+  function tmpDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "deck-crontab-path-"));
+  }
+
+  it("is false when no PATH entry holds an executable crontab", () => {
+    const empty = tmpDir();
+    try {
+      expect(crontabAvailable(empty)).toBe(false);
+      expect(crontabAvailable("")).toBe(false);
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("is false for a crontab file that is not executable", () => {
+    const dir = tmpDir();
+    try {
+      fs.writeFileSync(path.join(dir, "crontab"), "", { mode: 0o644 });
+      expect(crontabAvailable(dir)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is true when any PATH entry holds an executable crontab", () => {
+    const empty = tmpDir();
+    const bin = tmpDir();
+    try {
+      fs.writeFileSync(path.join(bin, "crontab"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      expect(crontabAvailable([empty, bin].join(path.delimiter))).toBe(true);
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
   });
 });

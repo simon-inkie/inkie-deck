@@ -1,0 +1,90 @@
+# #212: Nudges on by default
+
+- Issue: #212
+- Branch: nudges-default-on
+- Started: 2026-11-18
+
+## TL;DR
+`cronAdminEnabled` only opened for two hard-coded MC_USER names, so Nudges
+(`/scheduler`, `api/cron`) was hidden on any install that sets MC_USER, as
+INSTALL.md tells people to. It is now on by default for everyone, with
+`MC_CRON_ADMIN_ENABLED=0`/`false` as the off switch. The page and API now say
+plainly when `crontab` is missing and refuse writes before anything is
+written, a throwing write comes back as an error instead of a 500, and the
+`pnpm dev` sandbox turns Nudges off so it cannot touch the real crontab.
+Writes require a direct loopback socket unless `MC_CRON_ALLOW_REMOTE_ADMIN=1`
+is set. Either way, writes require an allowed Host and same-origin browser
+headers; direct loopback clients can omit both browser headers. Other
+connections can still view Nudges without editing controls.
+With remote admin enabled, IP literals and names in `MC_CRON_ALLOWED_HOSTS`
+are also allowed, including when `HOST` is a wildcard bind address.
+
+## Scope
+In scope:
+- Gate: default on, explicit opt-out, generic doc comments.
+- `api/cron` GET now behind the same gate (404 when off); it was ungated.
+- Missing `crontab` (PATH lookup, never runs it) and throwing seam handling.
+- Dev sandbox default off; INSTALL.md section and `.env.example` entry.
+- Socket, Host and browser-origin write guards for both routes, plus
+  network-bind warnings.
+Out of scope:
+- README (separate PR).
+- The nudge script's hard-coded `agents` tmux session name (same limitation
+  as `boot-agents.sh`, already in INSTALL.md known limitations).
+
+## Test plan
+- `test/instance.test.ts`: default on for any MC_USER; 0/false (any case,
+  padded) off; other values stay on.
+- `test/api-cron.test.ts`: real seam bound to in-memory fake deps; GET 404
+  when off; POST refused when off; missing crontab; throwing seam; injection.
+- `test/scheduler-route.test.ts`: same for the page loader and action.
+- Both route suites cover local and remote access with fake cron seams;
+  the scheduler suite also renders the remote read-only view.
+- Browser writes cover same-origin, cross-site, same-site, mismatched Origin
+  and DNS rebinding, plus direct loopback CLI compatibility.
+- The cron API suite covers IPv4, bracketed IPv6 and explicitly listed names
+  on a wildcard bind, with and without the remote opt-in.
+- `test/cron.server.test.ts`: `crontabAvailable` against temp-dir PATHs.
+No test reads or writes the real crontab.
+
+## Follow-ups
+None filed.
+
+## Log
+### 2026-11-18: default on, degrade without crontab
+- What changed: gate rewritten; crontab check and try/catch in both routes;
+  sandbox default off; api-cron tests moved off the real seam deps.
+- Why: the old api-cron suite ran the real `createCron` with default deps and
+  relied on the gate or an unknown target to stop before a write; with the
+  gate open by default that was one fixture change from writing the real
+  crontab.
+
+### 2026-11-19: restrict Nudges writes to direct loopback
+- What changed: pass the socket peer through the production adapter and Vite
+  middleware, refuse non-local writes by default, and warn on network binds.
+- Why: the default adapters do not expose the peer to routes, and forwarded
+  addresses cannot grant write access. A loopback proxy must mark forwarded
+  requests or have Nudges disabled, as documented in INSTALL.md.
+- Supersedes: nothing, additive
+- Commits: e864545 feat(nudges): loopback-only admin guard and network bind warning (#212)
+
+### 2026-11-19: verify the Host and origin of Nudges writes
+- What changed: both actions require an allowed Host and reject cross-origin
+  writes even with remote admin enabled. Direct loopback clients can still
+  omit both browser headers.
+- Why: Devin review found that the socket alone does not distinguish a local
+  visitor from a cross-origin form submitted by that visitor's browser.
+  Comparing Origin to Host alone would also allow DNS rebinding. No other
+  route writes crontab; terminal sends and thread-to-tmux delivery still lack
+  an origin check and are outside this fix.
+- Supersedes: 2026-11-19 socket-only write guard; keeps the socket check.
+- Commits: 2fa6d1b fix(nudges): refuse cross-origin and unapproved-host nudge writes (#212)
+
+### 2026-11-19: allow remote IP literals and configured hostnames
+- What changed: remote admin opt-in also allows IP literals and hostnames in
+  `MC_CRON_ALLOWED_HOSTS`. Unknown hostnames are still refused, and the
+  same-origin checks are unchanged.
+- Why: Devin review found that a wildcard bind such as `HOST=0.0.0.0` does not
+  match the LAN address in a request's Host header, blocking opted-in writes.
+- Supersedes: the remote Host rules in the 2026-11-19 Host and origin guard.
+- Commits: 71dd799 fix(nudges): accept IP-literal and listed hosts when remote admin is on (#212)

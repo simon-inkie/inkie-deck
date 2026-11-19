@@ -27,6 +27,7 @@ import type { Route } from "./+types/projects";
 import { RouteErrorPanel } from "~/components/RouteErrorPanel";
 import { listCards, moveCard, createCard } from "~/lib/projects.server";
 import { makeStores } from "~/lib/stores.server";
+import { requireSameOriginWrite } from "~/lib/request-origin.server";
 import { resolveNow } from "~/lib/time";
 import { filterCardsForInstance, mcUser } from "~/lib/instance.server";
 import { ProjectBoard } from "~/components/ProjectBoard";
@@ -69,7 +70,8 @@ const createSchema = z.object({
 // Action
 // ---------------------------------------------------------------------------
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireSameOriginWrite(request, context);
   const formData = await request.formData();
   const raw = Object.fromEntries(formData);
 

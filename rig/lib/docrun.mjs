@@ -75,9 +75,10 @@ export function removeContainer(name) {
  *   name: string,
  *   blocks: import("./fenced.mjs").FencedBlock[],
  *   longRunning?: Record<string, { waitSeconds: number }>,
+ *   asUser?: { user: string, ids: string[] },
  * }} spec
  */
-export function runBlocks({ name, blocks, longRunning = {} }) {
+export function runBlocks({ name, blocks, longRunning = {}, asUser = undefined }) {
   const staging = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "rig-doc-"));
   /** Where each block's verbatim bytes ended up INSIDE the container, so a
    * stage that wants to re-run one (in a fresh shell, say) executes the
@@ -100,6 +101,16 @@ export function runBlocks({ name, blocks, longRunning = {} }) {
         driver.push(`( . /doc/${file} ) > /doc/${file}.log 2>&1 &`);
         driver.push(`echo "###BG ${block.id} $!"`);
         driver.push(`sleep ${long.waitSeconds}`);
+      } else if (asUser && asUser.ids.includes(block.id)) {
+        // A block the document tells an ordinary user to run (setup refuses
+        // root). Its own login shell state is what a reader's new terminal has:
+        // the user's HOME and nothing exported by the root shell above.
+        driver.push(`id ${asUser.user} >/dev/null 2>&1 || useradd -m -s /bin/bash ${asUser.user}`);
+        driver.push(`chown -R ${asUser.user}:${asUser.user} /src`);
+        driver.push(
+          `runuser -u ${asUser.user} -- env HOME=/home/${asUser.user} USER=${asUser.user} LOGNAME=${asUser.user} LANG=C.UTF-8 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 bash -c 'cd /src && . /doc/${file}'`,
+        );
+        driver.push(`echo "###EXIT ${block.id} $?"`);
       } else {
         driver.push(`. /doc/${file}`);
         driver.push(`echo "###EXIT ${block.id} $?"`);

@@ -54,7 +54,7 @@ jobs:
       - name: Install ripgrep, jq, PyYAML and tmux
         run: sudo apt-get update && sudo apt-get install -y ripgrep jq python3-yaml tmux
 
-      - name: Typecheck
+      - name: Typecheck with tsgo
         run: pnpm typecheck
 
       - name: Unit tests

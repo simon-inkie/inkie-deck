@@ -230,6 +230,7 @@ function getRequest(agent: string): Request {
 function postRequest(form: Record<string, string>): Request {
   return new Request("http://localhost/api/agent-model", {
     method: "POST",
+    headers: { host: "localhost", origin: "http://localhost" },
     body: new URLSearchParams(form),
   });
 }

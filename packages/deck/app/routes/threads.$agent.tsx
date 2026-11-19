@@ -33,6 +33,7 @@ import { useFetcher, useFetchers, useLocation, useNavigate, useSearchParams } fr
 import type { Route } from "./+types/threads.$agent";
 import { RouteErrorPanel } from "~/components/RouteErrorPanel";
 import { makeStores } from "~/lib/stores.server";
+import { canWriteFromRequest, requireSameOriginWrite } from "~/lib/request-origin.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled } from "~/lib/instance.server";
 import { saveAttachment } from "~/lib/attachments.server";
@@ -56,7 +57,7 @@ import { ActionCard } from "~/components/ActionCard";
 import { Compose } from "~/components/Compose";
 import { PendingBubble } from "~/components/PendingBubble";
 import { PendingStatusLine } from "~/components/PendingStatusLine";
-import { EmptyState } from "~/components/EmptyState";
+import { PaneHintBanner } from "~/components/PaneHintBanner";
 import {
   usePendingBatch,
   buildBatchBody,
@@ -75,8 +76,8 @@ import { FilesPanel } from "~/components/FilesPanel";
 import { isNearBottom, shouldFollow } from "~/lib/scroll-follow";
 import { avatarUrl } from "~/lib/avatars.server";
 import { captureTmuxPane, wakeIdleAgent, pushMessageToIdleAgent } from "~/lib/tmux.server";
+import { classifyPaneHint } from "~/lib/pane-hints";
 import { TmuxPane } from "~/components/TmuxPane";
-import { MessageSquare } from "lucide-react";
 import { formatDayDivider, londonDayKey } from "~/lib/time";
 
 /**
@@ -181,7 +182,7 @@ export type IntentPayload = z.infer<typeof intentSchema>;
 // the work panel is fed by the SHELL loader now. This loader keeps listCards
 // only for the ticketColumns synergy-badge map.
 
-export async function loader({ params, request }: Route.LoaderArgs) {
+export async function loader({ params, request, context }: Route.LoaderArgs) {
   const { inbox } = makeStores(process.env);
   const agent = params.agent;
 
@@ -196,13 +197,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   // The operator rendering the thread IS the read - flip the
   // agent's sent blocks to read on disk BEFORE reading, so the receipt is
-  // durable and this render already shows the flipped state. A receipt
-  // failure (e.g. allowlist refusal on a direct URL) must never break the
-  // render - log and serve the thread read-only.
+  // durable and this render already shows the flipped state. Without an
+  // approved Host and origin proof, serve the thread without a receipt.
   // SKIPPED in tmux view - terminal mode renders no
   // messages, and the 1s poll would otherwise mark unseen messages read.
   // Render-is-the-receipt only counts when the messages actually render.
-  if (!tmuxView) {
+  if (!tmuxView && canWriteFromRequest(request, context)) {
     try {
       await inbox.markRead(agent, user);
     } catch (err) {
@@ -216,8 +216,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // Windowed read - the loader returns the last ~30 blocks (or, on a
   // deep-link ?anchor=<card-id>, the window extended back to that card). The
   // client lazy-loads older chunks via api/thread-window on scroll-up. The
-  // markRead flip above is deliberately UNTOUCHED: it operates whole-file, so
-  // out-of-window sent blocks still flip on thread open (render-is-the-receipt).
+  // allowed receipt write operates on the whole file, so out-of-window sent
+  // blocks still flip on thread open (render-is-the-receipt).
   const anchorParam = requestUrl.searchParams.get("anchor");
   const {
     blocks: rawBlocks,
@@ -267,22 +267,15 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     if (url !== undefined) avatarUrls[from] = url;
   }
 
-  // Capture the agent's live pane only in tmux view.
-  const tmux = tmuxView
-    ? { pane: captureTmuxPane(process.env, agent) }
-    : undefined;
-
-  // Working indicator (option A): when the operator's last message is
-  // unanswered, fingerprint the agent's live tmux pane so the client can show a
-  // "working" indicator while the pane keeps stirring. Guarded to the pending
-  // case so we never spawn a tmux subprocess per poll on an already-answered
-  // thread (or in tmux view, which captures the pane itself). Only the HASH
-  // leaves the server here - no pane text crosses into the chat payload.
   const latestBlock = blocks[blocks.length - 1];
-  const awaitingAgent = !tmuxView && latestBlock?.header.from === user;
-  const agentPaneHash = awaitingAgent
-    ? hashPane(captureTmuxPane(process.env, agent))
-    : null;
+  const awaitingAgent = !tmuxView && startIndex + blocks.length === totalCount &&
+    latestBlock?.header.from === user;
+  const pane = tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent)
+    ? captureTmuxPane(process.env, agent)
+    : undefined;
+  const hint = pane === undefined ? null : classifyPaneHint(pane);
+  const tmux = tmuxView ? { pane } : undefined;
+  const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
 
   return {
     agent,
@@ -296,6 +289,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     ticketColumns,
     avatarUrls,
     tmux,
+    tmuxOn,
+    hint,
     agentPaneHash,
     user,
   };
@@ -314,7 +309,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
  *
  * Imports ONLY makeStores + zod + model types. No fs, no banned path strings.
  */
-export async function action({ request, params }: Route.ActionArgs) {
+export async function action({ request, params, context }: Route.ActionArgs) {
+  requireSameOriginWrite(request, context);
   const formData = await request.formData();
   const agent = params.agent;
 
@@ -723,6 +719,8 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
     ticketColumns,
     avatarUrls,
     tmux,
+    tmuxOn,
+    hint,
     agentPaneHash,
     user,
   } = loaderData;
@@ -1438,7 +1436,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
             the compose row to send-keys into this agent's live session. */}
         {tmux !== undefined ? (
           <div className="flex min-h-0 flex-1 flex-col px-6 py-4" data-testid="thread-tmux-view">
-            <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={agent} />
+            <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={agent} hint={hint} />
             <p className="label-mono mt-2 shrink-0 text-[10px] text-muted-foreground">
               Live terminal for {agent} - refreshes automatically; the box types
               into their session.
@@ -1450,17 +1448,15 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          role="region"
+          aria-label="Message history"
+          tabIndex={-1}
           data-testid="thread-scroll"
           className="flex-1 overflow-y-auto px-6 pt-6 pb-28"
         >
           <div className="mx-auto max-w-2xl">
-            {totalCount === 0 ? (
-              <EmptyState
-                icon={MessageSquare}
-                title="No messages in this thread"
-                body="Send the first reply below."
-              />
-            ) : (
+            <PaneHintBanner hint={hint ?? (totalCount === 0 ? "H6" : null)} agent={agent} tmuxOn={tmuxOn} focusFallback={scrollRef} />
+            {totalCount > 0 ? (
               <div className="flex flex-col">
                 {/* Top sentinel - scrolling it into view lazy-loads
                     the previous chunk of history. Doubles as the affordance. */}
@@ -1575,7 +1571,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
                   );
                 })}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
 

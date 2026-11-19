@@ -1,5 +1,21 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-roman-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-italic-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 /* Per-area typography tokens; rem sizes follow the root font size. */
 :root {
   --mc-chat-font-size: 1.0625rem;
@@ -21,8 +37,8 @@
  * upstream token file to reconcile against and no generator step. Change a
  * value here and nowhere else.
  * Light mode only in v1 (warm cream is the brand identity). Retro is a seasoning:
- * clean shadcn base, halftone whisper on the app bg, hard-offset shadow reserved
- * for the decision card. No em-dashes in this file (check:dashes gate).
+ * clean shadcn base, hard-offset shadow reserved for the decision card.
+ * No em-dashes in this file (check:dashes gate).
  */
 
 :root {
@@ -92,26 +108,23 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  --font-sans: "Work Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "League Spartan", "Work Sans", ui-sans-serif, sans-serif;
-  --font-mono: "Space Grotesk", ui-monospace, "SF Mono", monospace;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace;
 }
 
 @layer base {
   * {
     border-color: var(--border);
   }
+  html {
+    font-size: 87.5%;
+  }
   html,
   body {
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
-  }
-  /* halftone whisper on the app background (retro seasoning, ~3%) */
-  body {
-    background-image: radial-gradient(var(--border) 0.5px, transparent 0.5px);
-    background-size: 4px 4px;
-    background-attachment: fixed;
   }
   h1,
   h2,
@@ -128,7 +141,7 @@
     font-family: var(--font-mono);
     text-transform: uppercase;
     letter-spacing: 0.18em;
-    font-size: 0.6875rem; /* 11px */
+    font-size: 0.6875rem;
   }
   /* reserved for the decision card so a "needs you" card feels physical */
   .shadow-retro {

@@ -982,6 +982,21 @@ else
 fi
 rm -f "$C_HOME/IDENTITY.md"
 
+# C8b: only an assistant's first message carries the first-conversation sentence.
+rm -f "$C_HOME/.session-id" "$C_HOME/.first-boot-done" "$C_HOME/.kind"
+c8b_plain="$(eval "printf '%s' $(claude_first_boot_prompt "$(claude_session_args wren "$C_HOME" 2>/dev/null)" "$C_HOME")")"
+rm -f "$C_HOME/.session-id" "$C_HOME/.first-boot-done"
+printf 'assistant' > "$C_HOME/.kind"
+c8b_args="$(claude_session_args wren "$C_HOME" 2>/dev/null)"
+c8b_prompt="$(eval "printf '%s' $(claude_first_boot_prompt "$c8b_args" "$C_HOME")")"
+c8b_again="$(claude_first_boot_prompt "$c8b_args" "$C_HOME")"
+if [[ "$c8b_prompt" == *"first conversation"* && "$c8b_plain" != *"first conversation"* && "$c8b_plain" == *"day-one"* && -z "$c8b_again" ]]; then
+  pass "C8b first message: first-conversation sentence for an assistant only, still once"
+else
+  fail "C8b first message: first-conversation sentence for an assistant only, still once" "plain=$c8b_plain assistant=$c8b_prompt again=$c8b_again"
+fi
+rm -f "$C_HOME/.kind" "$C_HOME/.session-id" "$C_HOME/.first-boot-done"
+
 # C9: .model is validated before it reaches a shell command line.
 printf 'claude-sonnet-5-5\n' > "$C_HOME/.model"
 [ "$(agent_model_flag "$C_HOME")" = "--model claude-sonnet-5-5" ] && pass "C9 .model: plain id becomes --model" || fail "C9 .model: plain id becomes --model"
@@ -1082,6 +1097,7 @@ boot_fixture() {
             existing-fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
             existing-approval) printf "Would you like to run the following command?\n\n  $ ls\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n" ;;
             trust|existing) printf "Do you trust the files in this folder?\n  1. Yes\n❯ 2. No (default)\nEnter to confirm\n" ;;
+            apikey) printf "Detected a custom API key in your environment\n\n Do you want to use this API key?\n\n❯ 1. Yes\n  2. No (recommended)\n" ;;
             resume) printf "Resume a conversation\n❯ demo\n" ;;
             fullscreen) printf "Try the fullscreen renderer?\n❯ Yes\n" ;;
             unknown) printf "An unfamiliar first-run prompt\n❯ Proceed\n" ;;
@@ -1123,7 +1139,7 @@ boot_fixture() {
     fail "full boot: $scenario" "rc=$rc expected=$expected output=$output"
   fi
   case "$scenario" in
-    trust|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
+    trust|apikey|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
       if grep -q 'arm your monitor' "$BOOT_BOX/log"; then fail "full boot: $scenario never arms"; else pass "full boot: $scenario never arms"; fi ;;
   esac
   if [[ "$scenario" == monitor-timeout || "$scenario" == scroll-monitor ]]; then
@@ -1176,6 +1192,10 @@ boot_fixture unknown 3 'demo waiting: unrecognised screen'
 boot_fixture busy 3 'demo waiting: runtime busy'
 boot_fixture staged 3 'demo waiting: composer contains text or menu selection'
 boot_fixture missing-runtime 3 'demo waiting: runtime not running'
+boot_fixture trust 3 'waiting-detail: prompts=1 other=0'
+boot_fixture apikey 3 'demo waiting: API key approval'
+boot_fixture apikey 3 'waiting-detail: prompts=1 other=0'
+boot_fixture missing-runtime 3 'waiting-detail: prompts=0 other=1'
 boot_fixture session-fail 1 'session creation failed'
 boot_fixture window-fail 1 'demo launch failed'
 boot_fixture send-fail 1 'demo launch failed'

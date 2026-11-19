@@ -12,7 +12,8 @@ promise different things.
 | [2. Run it for real](#2-run-it-for-real) | Deck over your own files, production build | four directories and a `.env` |
 | [3. Bring your agents to life](#3-bring-your-agents-to-life) | actual agents in tmux sessions | a model CLI that you install, sign in to and pay for |
 
-On Windows, start with [Windows (via WSL)](#windows-via-wsl).
+On Windows, start with [Windows (via WSL)](#windows-via-wsl). For one command
+instead of the steps below, see [Quick setup](#quick-setup).
 
 Tiers 1 and 2 are executed from this document on every rig run (see
 [How this document is tested](#how-this-document-is-tested)). Tier 3 is
@@ -56,10 +57,10 @@ wrong, the rig goes red.
   belief rather than an observation.
 - Blocks tagged `sh-manual` are not executed either: a container has no
   systemd user manager, and a second Deck would collide with the one the run
-  already started. They were run by hand when written, and can drift without
-  the rig going red. They are in [Keep it running](#keep-it-running), and in
-  the [Windows section](#windows-via-wsl), where the ones that only make sense
-  under WSL were not run by hand at all, because nothing here runs Windows.
+  already started. These blocks can drift without the rig going red. They are
+  in [Keep it running](#keep-it-running), the [Windows section](#windows-via-wsl)
+  and the [optional Brain step](#optional-give-the-agent-a-memory-loop), which
+  needs a signed-in CLI to verify.
 - Blocks tagged `powershell` are the Windows side of that section. A Linux
   container cannot run them, so they are neither executed nor measured.
 
@@ -323,15 +324,18 @@ Deck needs Node on a current LTS line, pnpm (via corepack), and a **git
 clone**. A downloaded ZIP or a release tarball is not enough: two of the test
 suites and the leak gate shell out to git against the repository root.
 
-Four more tools matter for one thing each, and are easy to miss because every
+**Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup uses [Claude Code](https://github.com/anthropics/claude-code). The agent scaffold, the launchers and the persona check also support [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) (`agy`), per agent, with `create-agent.sh --runtime codex` or `--runtime agy`; see "Codex and Antigravity agents" below for what differs.
+
+These tools matter for specific tasks, and are easy to miss because every
 machine that has run this so far already had them:
 
 | tool | needed for | without it |
 | --- | --- | --- |
 | ripgrep (`rg`) | `pnpm check:dashes`, and the test suite | four test failures, which do at least name ripgrep |
-| python3 | the `inbox` CLI, which is how an agent replies | Deck runs fine; your agents cannot answer |
+| python3 | the `inbox` CLI, which is how an agent replies (PyYAML, `python3-yaml`, for decision cards) | Deck runs fine; your agents cannot answer, or cannot send a card |
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
 | xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
+| jq | the Brain's optional memory hooks | live recall does not update; Quick setup skips memory wiring |
 
 On Ubuntu or Debian, as root. If you are not root, type `sudo -i` for a root
 shell first, paste the block, `exit`, and set the `export` line again in your
@@ -340,7 +344,7 @@ The block is:
 
 ```sh
 apt-get update
-apt-get install -y ca-certificates curl git ripgrep python3 tmux xxd
+apt-get install -y ca-certificates curl git jq ripgrep python3 python3-yaml tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
@@ -354,7 +358,7 @@ the Node instructions until you have it.
 On macOS, unverified here, the equivalent is roughly:
 
 ```zsh
-brew install node@22 ripgrep python3 tmux
+brew install node@22 jq ripgrep python3 tmux
 corepack enable
 ```
 
@@ -409,6 +413,141 @@ This block is the one exception to "executed from this document": the rig
 copies the tree into its container instead of cloning it, so it is declared
 as skipped in `rig/install-plan.mjs`, with the reason.
 
+## Quick setup
+
+With section 1 done and the clone in place, one command does sections 2 to 5
+for you. Run it as your own user, not as root (it refuses root), from the root
+of your clone:
+
+```sh
+scripts/setup.sh
+```
+
+It checks everything first and writes nothing until the checks pass. Then it
+installs, makes the four roots and `packages/deck/.env` (only if there is none),
+builds, creates the two starter agents through `first-run.sh` (an assistant,
+default `inkie`, and a platform agent, default `doctor`), optionally stores a
+model API key, verifies both agents, starts Deck on loopback in a tmux session
+called `deck`, and starts the two agents only if both verified. It asks for the
+two names and whether you want to use an API key; both questions come before
+anything is installed.
+
+It does not install system packages (it names what is missing and points at
+section 1, and never runs `sudo`), does not install, sign in to or pay for your
+model CLI, and never answers that CLI's own prompts (sign-in, folder trust, key
+approval). Those stay with you. It does not connect mail or a calendar. On
+Windows, finish the [WSL prerequisites](#windows-via-wsl) first; setup adds
+nothing Windows-specific.
+
+For no prompts, accept the defaults and skip the key:
+
+```sh
+scripts/setup.sh --yes --no-key
+```
+
+On a machine with no model CLI that command exits 4: your roots, `.env` and
+both agents exist, Deck is running at `http://127.0.0.1:4242`, and the agents
+are not started. Install and sign in to the model CLI, then run it again. That
+is also the rig's measured case (see [How this document is
+tested](#how-this-document-is-tested)).
+
+Add `--memory` to install [the Brain](https://github.com/simon-inkie/inkie-the-brain)
+and wire each starter after its persona check. Setup prints the checkout path
+(`$HOME/inkie-the-brain` by default). Use `--memory-root <absolute-path>` or
+`MEMORY_LAYER_ROOT` for a clean checkout of the public Brain outside Deck.
+`--no-memory` is the default and does not remove existing hooks. If `jq` is
+missing or the Brain cannot be built, setup continues without wiring it and
+prints why. A rerun reuses a verified build at the pinned revision instead of
+rebuilding files that existing hooks may use. If an existing build cannot be
+verified, setup leaves it and its hooks unchanged; use an unused
+`--memory-root` path for a fresh build. See
+[the manual memory step](#optional-give-the-agent-a-memory-loop) for the
+requirements and cost. Deck's own prerequisites still apply.
+
+The flags are `--yes`, `--deck-home <dir>` (default `$HOME/deck`),
+`--agents-home <dir>` (default `$HOME/agents`), `--assistant <name>`,
+`--platform <name>`, `--model <id>`, `--no-key`, `--key-stdin`, `--replace-key`,
+`--no-install`, `--no-build` and `--no-start`; `scripts/setup.sh --help` has
+the rest. With no terminal on stdin it needs names (`--yes`, or both name flags)
+and a key choice (`--no-key` or `--key-stdin`), and otherwise exits 2 before
+writing anything.
+
+Exit codes, in order of precedence when more than one applies:
+
+| code | meaning |
+| --- | --- |
+| 2 | a flag is missing for an unattended run; nothing was done |
+| 1 | failed: a check, the configuration, the scaffold, a key write, Deck, or the agent launch |
+| 3 | a starter agent's persona check failed; the agents were not started |
+| 4 | no usable model CLI, or verification could not run; Deck is running, the agents are not started |
+| 5 | the agents are started and are waiting on you at their own prompts |
+| 0 | Deck is running on loopback, both agents verified and started |
+
+### What setup checks first
+
+It resolves each setting the way Deck's launcher does: your environment first,
+then an existing `packages/deck/.env`. It refuses a `HOST` that is not
+loopback (and tells you whether it came from the environment or the file), a
+port something else is listening on, a root that is missing from an existing
+`.env`, and an `MC_USER` that is not a plain name. It never edits an existing
+`.env`. Deck is started with `HOST=127.0.0.1` in its own environment, which
+wins over the file, because Deck has no authentication (see the warning at the
+top of this document).
+
+### Model keys
+
+A sign-in belongs to your model CLI, and setup only checks the CLI is there. A
+key is optional. If you want one, setup reads it without echo (or one line from
+stdin with `--key-stdin`), checks it contains only letters, digits, hyphens and
+underscores, and stores it as an `export ANTHROPIC_API_KEY=` line in each
+starter agent's `.env.secrets` (mode 0600), which is where the agent's terminal
+and its persona check read it. It is never an argument and never printed.
+
+A stored `ANTHROPIC_API_KEY` takes precedence over a subscription sign-in even
+when you are signed in, and each agent's terminal asks you once to approve it.
+Setup does not answer that question. An existing key is never replaced by a
+rerun, with or without `--yes`; `--replace-key` (with a terminal or
+`--key-stdin`) changes it.
+
+Two files cannot be renamed as one step, so setup records the pair in
+`.setup-key-pending` in the agents home first, works through private (0600)
+staging and backup copies in the two agent homes, and removes the marker and the
+copies when both are done. If a write fails it puts the first file back. If that
+fails too, or setup is interrupted, the marker stays: the next run compares the
+two stored keys without printing them, clears the marker if they match, and
+otherwise stops with "mixed key state" before it verifies or starts anything, so
+you run it again with `--replace-key` and enter the key once more. A lock directory (`.setup-key-lock`, same place) keeps two setup runs from writing keys at once; a run killed mid-write can leave it behind, and the message says to remove it. Setup refuses to store a key if the agents home, an agent's folder or its `.env.secrets` is a symlink, or if the agents home is inside a git work tree.
+
+### The first conversation
+
+When the agents start, the assistant's first message asks what you do and what
+you would like help with first. It happens in the assistant's existing thread in
+Deck, with no new page or endpoint: it writes with the `inbox` CLI and you answer
+in the composer. It then asks the platform agent for a proposal of up to three
+agents that fit, and puts that to you as a decision card (approve, change or
+skip) before anything is created. The platform agent then checks each approved
+name with `create-agent.sh --status` and creates only the ones that are absent,
+as `member` agents that name the assistant. It starts only the ones that are
+complete, and reports what was created and what was launched as two separate
+lists.
+
+The card and the cap of three are guidance in the agents' role briefs, not a lock
+in code, and the agents' own runtime permission prompts still apply. Each new
+agent stops at its own first-run prompt (folder trust) in its terminal view in
+Deck, where only you should answer it. The decision card needs PyYAML for the
+`inbox` CLI, which is why `python3-yaml` is in section 1's package line.
+
+### Running it again
+
+A healthy rerun repeats the checks, `pnpm install` and `pnpm build`, and skips
+everything else: the `.env`, the roots, the agents, any stored key, a running
+`deck` session and any running agent pane. If an earlier run ended at 3 or 4,
+running it again is the repair: the agents are verified again and, if both now
+pass, started. A half-created pair is completed by `first-run.sh`'s own recovery.
+
+The manual path is sections 2 to 5 below, which are also the reference for
+every step setup takes.
+
 ## 2. Install the dependencies
 
 Everything from here runs from the root of your clone.
@@ -440,9 +579,9 @@ pnpm install
 One warning is expected and harmless:
 `Ignored build scripts: esbuild@0.27.7, esbuild@0.28.0`.
 
-If you want to run the checks the project runs on itself (`pnpm typecheck`,
-`pnpm test` and the three gates), the README covers them. They are not needed
-to run Deck.
+The README covers the project's checks, including `pnpm typecheck` (native
+TypeScript), `pnpm typecheck:tsc` (the `tsc` fallback), and `pnpm test`.
+They are not needed to run Deck.
 
 ## 3. Try it
 
@@ -481,8 +620,8 @@ questions, and only the second one matters.
 
 Two things this tier does not do. It is reachable only from the machine it
 runs on (the dev server binds loopback, and a container port map published
-against it gets nothing); and it has no tmux, no agents and no clock that
-moves. For those, keep going.
+against it gets nothing); and it has no tmux, no agents, no Nudges and no
+clock that moves. For those, keep going.
 
 ## 4. Run it for real
 
@@ -549,6 +688,9 @@ shell variable does not survive one.
 
 ### Reaching it from another machine
 
+Anyone who can open Deck through an approved Host can message your agents.
+Scheduled jobs have a separate admin check, covered under Scheduled nudges.
+
 Skip this unless you need it. Deck binds loopback by default and that default
 is doing real work: **there is no authentication in front of the thing you are
 about to publish**, so read the warning at the top of this document again
@@ -562,6 +704,21 @@ echo "HOST=0.0.0.0" >> packages/deck/.env
 This is also the line a container image needs. A published port against a
 loopback bind is silent: you get a connection refused from a launcher that is
 still reporting a healthy start.
+
+Writes to agent threads, terminals, model settings, project cards and drafts
+require an approved `Host`. Deck accepts `localhost`, supported loopback IPs
+and the host configured in `HOST`. For other addresses, set `MC_ALLOWED_HOSTS`
+to a comma-separated list of trusted hostnames or IP addresses, without schemes
+or ports. A proxy or tunnel must preserve the public Host, including the port
+if present, so that it matches the browser's Origin. This does not enable remote
+Nudge editing or replace access control.
+
+Deck refuses cross-site and same-site writes. If a chat navigation fails the
+write checks, Deck still opens the thread without marking messages as read.
+This can happen on plain HTTP over a LAN even with an approved `Host`, because
+browsers may omit both `Origin` and `Sec-Fetch-Site`. Without either header,
+only a direct loopback connection can write. Drafts use these same checks
+rather than the separate voice origin allowlist.
 
 ### Build, and start
 
@@ -698,6 +855,7 @@ Then tell the proxy about the origin and the browser about the proxy, where
 the admin console show it:
 
 ```text
+MC_ALLOWED_HOSTS=<tailnet-host>
 VOICE_ALLOWED_ORIGINS=https://<tailnet-host>
 VOICE_PROXY_URL=wss://<tailnet-host>:8443/voice
 ```
@@ -732,6 +890,30 @@ any of those three for you, and a container cannot be handed a subscription.
 The tooling here is deliberately built so that the boundary is visible rather
 than assumed: everything below runs and reports honestly on a machine with no
 model CLI at all, and the step that requires one refuses to claim success.
+
+### Name your assistant (first run)
+
+On a new install, start here. One command asks for two names, an assistant you
+talk to (default `inkie`) and a platform agent that changes the setup (default
+`doctor`), and creates both with `create-agent.sh`:
+
+```sh
+export AGENTS_HOME=$HOME/agents
+export INBOX_ROOT=$HOME/deck/inbox
+packages/base/bin/first-run.sh
+```
+
+For no prompts, pass `--assistant <name> --platform <name>`; `--model <id>` and
+`--no-verify` go through to `create-agent.sh`. Both names are checked before
+either agent is created. Each agent is told its role and the other's name, and
+Deck pins the assistant above the agent list. Re-running is safe: an agent that
+already exists is skipped, and a run that stopped after one agent creates the
+other under the peer name the first one already holds.
+
+Verification is as below: with a working `claude` CLI each agent is `VERIFIED`;
+without one, or with `--no-verify`, both are created and report
+`CANNOT VERIFY` (exit 4). The proof shows the persona loaded, not that the role
+brief is right, so ask each agent what its job is once.
 
 ### Create an agent
 
@@ -773,6 +955,53 @@ create-agent: CANNOT VERIFY inkie
   No `claude` on PATH, so there was nothing to ask.
 ```
 
+#### Codex and Antigravity agents
+
+`--runtime` picks the agent CLI per agent: `claude` (the default), `codex` or
+`agy`. The shared persona files are the same for all three; what differs is
+the file each CLI reads, because neither Codex nor Antigravity follows the `@`
+imports in `CLAUDE.md`:
+
+```text
+packages/base/bin/create-agent.sh quill --runtime codex --model gpt-5.5
+packages/base/bin/create-agent.sh fern --runtime agy
+```
+
+- **Codex** gets `AGENTS.md`, which Codex reads on its own, and
+  `.codex/hooks.json`. Its SessionStart hook (`bin/codex-persona-inject`) puts
+  `IDENTITY.md`, `SOUL.md`, `USER.md` and `TOOLS.md` into the session at every
+  start, resume and compaction, with a count of unread messages; its
+  per-prompt hook (`bin/codex-user-prompt-submit`) mentions new unread
+  messages. Codex runs a folder's hooks only after you trust them: on the
+  agent's first launch, attach and approve them. Creation refuses a symlinked
+  `.codex` directory or an existing `hooks.json` (including a symlink),
+  leaving it untouched.
+- **Antigravity** gets `GEMINI.md`, with the persona files copied into it
+  between generated fences by `bin/sync-gemini-includes.sh`. The launchers run
+  the sync before every start, so edit the source files, never the fences.
+- Both get `.inbox-root`, which the launchers pass to the CLI as
+  `INBOX_ROOT`, since neither reads `.claude/settings.json`.
+
+The proof is different too. For these two, `create-agent.sh` runs local checks
+that call no model. For Codex, they validate the hooks JSON and compare the
+commands for both events to the exact scaffolded commands without running
+them, even with `--no-verify`. For Antigravity, they refresh `GEMINI.md` in
+place and check that the file carries the boot phrase. Passing these checks
+still exits 4, because no model was asked. A live probe uses a turn of your
+plan or API credit, so it is opt-in: add `--live-probe` (or set `CREATE_AGENT_LIVE_PROBE=1`) to run
+`codex exec` or `agy -p` from the agent's home. For Codex, approve the hooks
+on a first interactive launch before the live probe, or it reports FAILED.
+Memory hooks are Claude Code only and stay off for the other two.
+
+| | Claude Code | Codex | Antigravity |
+| --- | --- | --- | --- |
+| Persona file it reads | `CLAUDE.md` with imports | `AGENTS.md` plus a SessionStart hook | `GEMINI.md`, persona inlined |
+| Resume on relaunch | pinned session id | newest session for its home | newest conversation for its home |
+| Check without a model | imports resolve | both hook commands match the scaffold | refreshed `GEMINI.md` carries the boot phrase |
+| Live proof | default | `--live-probe` | `--live-probe` |
+| Memory hooks | when configured | no | no |
+| Day-one first message | yes | no | no |
+
 Exit 4 means created but unproven, and it is not a pass. Once you have a model
 CLI installed and signed in, `packages/base/bin/create-agent.sh --verify-only
 inkie` re-runs only the proof. It exits 0 only if the phrase comes back, which
@@ -785,18 +1014,40 @@ is the set of directories under `INBOX_ROOT`.
 
 ### Optional: give the agent a memory loop
 
-Memory is optional, and Deck works the same without it. If you have the
-separate memory-layer project checked out and built (its own README covers
-that, and its basic loop needs only the model CLI you already have: no extra
-key, no Docker), tell `create-agent.sh` where it is, before creating agents:
+The Brain keeps observations in each agent's own silo under
+`~/.the-brain/agents/<name>/memory/observations/`. Observations appear after a
+compaction: send a real message, then try `/compact`. Each observation costs
+a model call (Haiku by default) through the signed-in `claude` CLI. If you
+stored an Anthropic API key for the agent, that call can bill the key. The
+basic loop needs no Docker, embeddings key or semantic search. Keep Deck's
+inbox separate from `~/.the-brain/agents`; agents with the same name in two
+Deck installs under one home share a silo.
+
+For a manual fresh install, use this in place of the earlier `first-run.sh`
+block. It needs git, network access, Node 22 or newer, pnpm and `jq` (see
+[system packages](#1-prerequisites)). Run from the Deck checkout and use an
+unused checkout path outside it. The commit pin matches Quick setup and will
+be replaced by a release tag when available.
 
 ```sh-manual
-export MEMORY_LAYER_ROOT=$HOME/src/memory-layer   # any name, any place
-export USER_NAME=$(id -un)                        # optional, names you in memory prompts
-packages/base/bin/create-agent.sh wren --role "keeps the notes"
+export AGENTS_HOME="$HOME/agents"
+export INBOX_ROOT="$HOME/deck/inbox"
+brain_root="$HOME/inkie-the-brain"
+command -v jq >/dev/null && command -v claude >/dev/null &&
+  git clone https://github.com/simon-inkie/inkie-the-brain.git "$brain_root" &&
+  git -C "$brain_root" checkout --detach 27a4a279b36f8e65be41d9044a6af857389ef124 &&
+  (cd "$brain_root" && pnpm install --frozen-lockfile && pnpm build) &&
+  MEMORY_LAYER_ROOT="$brain_root" USER_NAME="$(id -un)" packages/base/bin/first-run.sh
 ```
 
-For each agent that wires the memory hooks into that agent's own
+If the Brain step fails, run the earlier `first-run.sh` block with `--no-memory`.
+For agents that already exist, use Quick setup with `--memory`, or set
+`MEMORY_LAYER_ROOT` to the built checkout and run
+`packages/base/bin/create-agent.sh --verify-only <name> --wire-memory` for each
+agent. Memory re-checks run with hooks disabled so they do not add probe
+memories, even if you did not request memory on this run.
+
+The scaffold wires memory hooks into each agent's own
 `.claude/settings.json` (not your global one, see the checks below), records `USER_NAME` there, and
 seeds the agent's memory silo, by running the checkout's own non-interactive
 install command. The silo is picked by the `AGENT_NAME` Deck already writes
@@ -815,15 +1066,14 @@ created exactly as before. Memory never changes the exit code. The reasons:
   installed (settings are not touched);
 - the agent's `.claude/settings.json` already says `env.AGENT_NAME` is another
   agent, which would seed one memory silo and send the hooks to a different
-  one (settings are not touched; fix the name and run the checkout's install
-  command with `--agent <name>`);
+  one (settings are not touched; fix the name and re-check with `--wire-memory`);
 - the persona check failed or the model CLI errored, so a broken agent is not
-  wired (once fixed, run the checkout's install command with `--agent <name>`);
+  wired (once fixed, re-check with `--wire-memory`);
 - the checkout's install command failed. Deck puts the agent's previous
   settings back, so no hooks are left active, and says so. If it cannot put
   them back the line starts `off (PARTIAL: ...)`: open the agent's
   `.claude/settings.json` and remove the memory hooks, or fix the cause and
-  re-run the install command. The silo may be partly seeded; the command is
+  re-check with `--wire-memory`. The silo may be partly seeded; the installer is
   idempotent;
 - the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). The last line always says
   what state that left: before wiring nothing is wired; during the install the
@@ -835,10 +1085,10 @@ created exactly as before. Memory never changes the exit code. The reasons:
   checkout's install command writes a temporary file and a backup beside
   `settings.json` and follows links, so a planted link could redirect a write
   onto another file, such as a global settings file. Nothing is written;
-  remove the link and run the install command with `--agent <name>`;
+  remove the link and re-check with `--wire-memory`;
 - the agent's `.claude` already holds files named `settings.json.<something>`
-  that this run did not create. A new agent has none, and that is where a
-  planted link would hide. Remove them and run the install command.
+  that this run did not create. A re-check accepts the Brain's existing backup
+  only if it is a regular file with no symlink or hard link.
 
 Deck checks again after the install and, if a link appeared meanwhile, reports
 `PARTIAL` rather than `on`. That later check runs after the install's write, so
@@ -912,6 +1162,14 @@ before starting any pane, which stops Claude Code showing its focus-events
 hint. It is a tmux server option with no per-session form, so it applies to
 the whole tmux server, including any other sessions on it. Add
 `tmux set -g focus-events off` after a boot if you want it off.
+
+Each agent runs the CLI named in its `.runtime`. A Codex agent looks up the
+newest session for its workspace in the home it launches with: exported
+`CODEX_HOME` first, then the agent's configured provider home, then `~/.codex`.
+It starts fresh if that home has no matching session or boot detects a failed
+resume. An Antigravity agent resumes the newest conversation started in its
+own home (`agy --conversation <id>`, never the global `--continue`), after its
+`GEMINI.md` is re-synced. Neither has its own approval prompts switched off.
 
 On first boot, attach to the session and answer any runtime setup prompts
 manually. Folder trust defaults to No: do not press Enter while No is
@@ -1045,6 +1303,54 @@ The reply is now in the thread, which you can see from Deck:
 ```sh
 curl -sS http://localhost:4242/threads/inkie | grep -c 'the whole protocol'
 ```
+
+### Scheduled nudges
+
+The Nudges page (`/scheduler`, linked from the top bar) sends an agent a
+prompt, or runs a shell script, on a cron schedule. Each nudge is a line in the
+system crontab of the user Deck runs as, tagged `# MC-CRON:<id>`, plus a script
+in `~/agents/<agent>/bin/`. Lines without that tag are never touched. It needs
+`crontab` on `PATH`; without it the page says so and saves nothing. An agent
+nudge is pasted into the agent's window in the `agents` tmux session, and if
+that session is not running when it fires, the run is skipped and the page
+shows it as fired but not delivered.
+
+Nudges is on by default. To edit nudges, connect directly from the Deck
+machine over loopback (`127.0.0.1`, `::1` or `::ffff:127.0.0.1`). Other
+visitors can view the page but cannot change anything. Deck uses the socket
+address, never a forwarded address; requests carrying forwarding headers
+are read-only by default. If a reverse proxy connects over loopback, make
+sure it adds a forwarding header such as `X-Forwarded-For`, or disable
+Nudges: without that header Deck cannot distinguish the proxy from a local
+visitor.
+
+Writes also require a `Host` of `localhost`, a supported loopback IP, or
+the hostname configured in `HOST`. The browser's `Sec-Fetch-Site` must be
+`same-origin` or `none` if present, and any `Origin` must match the request
+`Host` (including the port). Command-line clients such as `curl` can omit
+both headers only on a direct loopback connection, so local scripts keep
+working.
+
+To allow remote writes deliberately, set `MC_CRON_ALLOW_REMOTE_ADMIN=1` in
+the server environment (or `packages/deck/.env` for the documented launcher)
+and restart Deck. This also accepts any IPv4 or bracketed IPv6 address in
+`Host`, including the LAN address when Deck binds to `0.0.0.0`. To allow
+extra hostnames, set `MC_CRON_ALLOWED_HOSTS` to a comma-separated list such as
+`deck.example.com,nudges.example.com`, without schemes or ports. The list is
+ignored without the remote opt-in, and unknown hostnames are still refused.
+The origin checks still apply. A reverse proxy should validate and preserve
+the public Host rather than rewrite it to localhost. Only enable remote
+writes behind access control you trust: a visitor who passes those checks can
+schedule jobs as the user running Deck.
+
+To turn Nudges off entirely:
+
+```sh
+echo "MC_CRON_ADMIN_ENABLED=0" >> packages/deck/.env
+```
+
+That removes the nav entry, makes the page and `api/cron` answer 404, and
+refuses every write. `pnpm dev` already turns it off for the sandbox.
 
 ### What is still missing, and it is the important part
 
@@ -1265,6 +1571,36 @@ has rebooted a machine to confirm that.
 **`MC_USER` defaults to `alex`.** Set it deliberately, as above. It is not
 only a display name: it is a filename in your inbox root. Checked: `mcUser` in
 `packages/deck/app/lib/instance.server.ts` returns `alex` when it is unset.
+
+**Quick setup's approval, cap and status check are instructions, not locks.**
+Whether the platform agent waits for your approval on the decision card, keeps
+to three agents and calls `create-agent.sh --status` before creating anything
+is written in its role brief and followed by the model. Nothing in code stops
+it. The status check itself is deterministic (it reads the agent's files and
+fails closed: anything short of the whole scaffold, including an empty home, reads `incomplete` (`absent` means no home or inbox entry at all), and an
+incomplete home is reported for you to repair, never recreated or deleted). The
+agents' own runtime permission prompts still apply. Not measured by the rig.
+
+**Quick setup's key pair is protected by a marker, not by atomicity.** Two
+renames cannot be one step. Setup records a pending marker, and a run that finds
+two different stored keys stops before it verifies or starts anything. Starting
+agents by hand with `boot-agents.sh` does not read the marker, so doing that
+while `.setup-key-pending` exists can start an agent with a mixed pair. Setup
+also holds the key only in its own memory and in the two files; it cannot stop
+you putting `ANTHROPIC_API_KEY` in your own environment, which every program
+you start would then inherit.
+
+**Quick setup's first-run prompts are yours.** Setup and the platform agent
+answer none of the model CLI's prompts. Each agent, including each one the
+platform agent creates, stops at its own folder-trust prompt (and key approval,
+if a key is stored) in its terminal view in Deck. Quick setup exits 5 only when
+the boot output reports recognised prompts and nothing else is waiting; answer
+them in Deck, then run it again. The rig measures it up to the model CLI only
+(exit 4); acceptance with a signed-in CLI on Linux and WSL is pending.
+
+**The model selector is hidden after a Quick setup.** It, and the cron admin,
+are gated on Deck's default `MC_USER`, and setup sets `MC_USER` to your login
+name. Change an agent's model by editing `$AGENTS_HOME/<name>/.model`.
 
 ## Where to go next
 

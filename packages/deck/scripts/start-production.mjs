@@ -8,7 +8,7 @@
  *     validated HERE, fail-fast, before anything listens - a misconfigured
  *     daemon must crash with the bad root named in the journal, not sit
  *     "active (running)" while 500ing.
- *   - Serves the production build via react-router-serve. Run `pnpm build`
+ *   - Serves the production build via server/production.mjs. Run `pnpm build`
  *     before (re)starting the unit.
  *   - Spawns the voice proxy as a sibling, in the same SHAPE dev.mjs uses but
  *     with less configuration. The proxy's origin allowlist now defaults to
@@ -26,6 +26,7 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { isLoopbackHost } from "../server/bind-host.mjs";
 import { withVoiceDisabledReason } from "./voice-env.mjs";
 
 const root = process.cwd();
@@ -97,7 +98,7 @@ console.log(`[prod] app on http://${appHost}:${appPort}`);
 // A loopback bind is the right default behind a proxy, and it is silent: a
 // published container port or a request from another machine simply gets
 // nothing, while this banner still reads like a healthy start. Say so.
-if (appHost === "127.0.0.1" || appHost === "localhost" || appHost === "::1") {
+if (isLoopbackHost(appHost)) {
   console.log(
     `[prod] HOST=${appHost} is loopback, so ONLY this machine can reach the app.` +
       ` That is the default on purpose (this deployment sits behind a proxy).` +
@@ -140,48 +141,6 @@ pushWatcher.on("exit", (code) => {
 });
 
 // --- The app server ---------------------------------------------------------
-// Run react-router-serve's declared `bin` entry with the SAME node binary as
-// this process (process.execPath). Both original hazards are still avoided:
-// never `node_modules/.bin/react-router-serve`, which really is a /bin/sh
-// shim that node cannot parse as JS, and never a PATH-resolved `node`
-// (systemd's login shell resolved system node v18, not nvm v22; RR7 needs
-// 20+).
-//
-// bin.js is NOT that shim. It is plain JavaScript, it is the package's
-// declared `bin` entry, and `node bin.js` runs fine. Its entire job is to set
-// NODE_ENV=production when nothing else has, BEFORE it requires ./dist/cli.
-// Targeting dist/cli.js directly skipped exactly that: dist/cli.js sets
-// NODE_ENV only after its own requires, one of which pulls in React, whose
-// conditional exports then resolve against an unset NODE_ENV. The render ends
-// up mixing react.development.js with react-dom-server.node.production.js and
-// every request 500s with "dispatcher.getOwner is not a function", which
-// names nothing that leads back to NODE_ENV.
-//
-// bin.js requires the very same dist/cli.js this line used to name, so nothing
-// downstream changes. What changes is where NODE_ENV comes from, and the `??`
-// fallback is the POINT of this line rather than a formality: nothing in this
-// repository sets NODE_ENV. Not deploy.mjs, not any unit file, and it is absent
-// from .env.example deliberately, because after this fix nothing needs it. So
-// for anyone running outside a process manager that happens to export it,
-// bin.js is the only thing setting it at all.
-//
-// An earlier version of this comment claimed a systemd unit set it and that the
-// fallback was therefore dead code. That was asserted about a unit nobody had
-// read. It is false here, where no unit exists, and it was false on the
-// deployment the line was copied from, where the value reached the process only
-// through a gitignored EnvironmentFile. Do not reinstate the claim without
-// reading the unit.
-const serveCli = path.join(
-  root,
-  "node_modules",
-  "@react-router",
-  "serve",
-  "bin.js"
-);
-if (!existsSync(serveCli)) {
-  console.error(`[prod] FATAL: ${serveCli} missing - reinstall dependencies.`);
-  process.exit(1);
-}
 // --max-http-header-size=65536: raise Node's incoming-header cap from the 16KB
 // default to 64KB. Behind the Tailscale serve proxy a client can accumulate a
 // large Cookie header (stale/duplicated cookies survive a hard-refresh), which
@@ -196,7 +155,7 @@ const appEnv = withVoiceDisabledReason({
 });
 const child = spawn(
   process.execPath,
-  ["--max-http-header-size=65536", serveCli, buildEntry],
+  ["--max-http-header-size=65536", "--enable-source-maps", path.join(root, "server", "production.mjs"), buildEntry],
   {
     stdio: "inherit",
     env: appEnv,

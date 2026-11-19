@@ -13,6 +13,10 @@ the workflow around them (the SPEC, review and handover).
 For setting up a machine and running the checks, see [README.md](README.md)
 ("Development") and [INSTALL.md](INSTALL.md).
 
+For targeted checks and safe Nudges tests, see
+[Testing and evals](docs/testing-and-evals.md). For UI changes, see
+[UI components](docs/ui-components.md).
+
 ## The short version
 
 1. Start from an issue, on a branch: see
@@ -167,6 +171,9 @@ Before opening:
   pnpm check:licence
   pnpm check:lib-version
   ```
+
+  `pnpm typecheck` uses `tsgo`; run `pnpm typecheck:tsc` to compare diagnostics
+  with `tsc` when investigating a discrepancy.
 
   The dash check lives in the deck package rather than the root, so run it
   from there: `pnpm -C packages/deck check:dashes`.
