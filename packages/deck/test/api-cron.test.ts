@@ -71,6 +71,7 @@ function restore(key: string, value: string | undefined): void {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", undefined);
+  vi.stubEnv("MC_CRON_ALLOWED_HOSTS", undefined);
   vi.stubEnv("HOST", undefined);
   seam.crontabAvailable.mockReturnValue(true);
   writes.crontab.length = 0;
@@ -150,7 +151,7 @@ describe("api.cron action - request guard", () => {
     ["mismatched Origin", { "sec-fetch-site": "same-origin", origin: "http://127.0.0.1:8123" }],
     ["mismatched Origin port", { origin: "http://localhost:8124" }],
     ["opaque Origin", { origin: "null" }],
-    ["rebound Host", { host: "other.example:8123", origin: "http://other.example:8123", "sec-fetch-site": "same-origin" }],
+    ["rebound Host", { host: "evil.example:8123", origin: "http://evil.example:8123", "sec-fetch-site": "same-origin" }],
   ])("returns 403 and writes nothing for %s", async (_label, headers) => {
     await expect(runAction(VALID_CREATE, undefined, headers)).rejects.toMatchObject({ status: 403 });
     expectNothingWritten();
@@ -158,19 +159,37 @@ describe("api.cron action - request guard", () => {
 
   it("allows remote writes only with opt-in, an allowed Host and origin proof", async () => {
     vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", "1");
+    vi.stubEnv("MC_CRON_ALLOWED_HOSTS", "nudges.example.com");
     vi.stubEnv("HOST", "deck.example.com");
     const remote = { socketAddress: "192.0.2.10" };
     const headers = { host: "deck.example.com:8123", origin: "http://deck.example.com:8123" };
     await expect(runAction(VALID_CREATE, remote, { host: headers.host })).rejects.toMatchObject({ status: 403 });
     await expect(runAction(VALID_CREATE, remote, { ...headers, "sec-fetch-site": "cross-site" }))
       .rejects.toMatchObject({ status: 403 });
-    await expect(runAction(VALID_CREATE, remote, { host: "other.example", "sec-fetch-site": "same-origin" }))
+    await expect(runAction(VALID_CREATE, remote, { host: "evil.example", origin: "http://evil.example" }))
       .rejects.toMatchObject({ status: 403 });
     expectNothingWritten();
 
     await expect(runAction(VALID_CREATE, remote, headers)).resolves.toMatchObject({ ok: true });
     expect(writes.crontab).toHaveLength(1);
   });
+
+  it.each(["203.0.113.20:8123", "[2001:db8::20]:8123", "deck.example.com:8123", "nudges.example.com:8123"])(
+    "allows %s on a wildcard bind only with remote opt-in",
+    async (host) => {
+      vi.stubEnv("HOST", "0.0.0.0");
+      vi.stubEnv("MC_CRON_ALLOWED_HOSTS", " DECK.example.com , nudges.example.com ");
+      const remote = { socketAddress: "192.0.2.10" };
+      const headers = { host, origin: `http://${host}` };
+      await expect(runAction(VALID_CREATE, remote, headers)).rejects.toMatchObject({ status: 403 });
+      await expect(runAction(VALID_CREATE, undefined, headers)).rejects.toMatchObject({ status: 403 });
+      expectNothingWritten();
+
+      vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", "1");
+      await expect(runAction(VALID_CREATE, remote, headers)).resolves.toMatchObject({ ok: true });
+      expect(writes.crontab).toHaveLength(1);
+    },
+  );
 });
 
 function expectNothingWritten(): void {

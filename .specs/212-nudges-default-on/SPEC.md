@@ -16,6 +16,8 @@ Writes require a direct loopback socket unless `MC_CRON_ALLOW_REMOTE_ADMIN=1`
 is set. Either way, writes require an allowed Host and same-origin browser
 headers; direct loopback clients can omit both browser headers. Other
 connections can still view Nudges without editing controls.
+With remote admin enabled, IP literals and names in `MC_CRON_ALLOWED_HOSTS`
+are also allowed, including when `HOST` is a wildcard bind address.
 
 ## Scope
 In scope:
@@ -40,6 +42,8 @@ Out of scope:
   the scheduler suite also renders the remote read-only view.
 - Browser writes cover same-origin, cross-site, same-site, mismatched Origin
   and DNS rebinding, plus direct loopback CLI compatibility.
+- The cron API suite covers IPv4, bracketed IPv6 and explicitly listed names
+  on a wildcard bind, with and without the remote opt-in.
 - `test/cron.server.test.ts`: `crontabAvailable` against temp-dir PATHs.
 No test reads or writes the real crontab.
 
@@ -75,3 +79,12 @@ None filed.
   an origin check and are outside this fix.
 - Supersedes: 2026-11-19 socket-only write guard; keeps the socket check.
 - Commits: 2fa6d1b fix(nudges): refuse cross-origin and unapproved-host nudge writes (#212)
+
+### 2026-11-19: allow remote IP literals and configured hostnames
+- What changed: remote admin opt-in also allows IP literals and hostnames in
+  `MC_CRON_ALLOWED_HOSTS`. Unknown hostnames are still refused, and the
+  same-origin checks are unchanged.
+- Why: Devin review found that a wildcard bind such as `HOST=0.0.0.0` does not
+  match the LAN address in a request's Host header, blocking opted-in writes.
+- Supersedes: the remote Host rules in the 2026-11-19 Host and origin guard.
+- Commits: pending fix(nudges): allow opted-in remote IP and configured hosts (#212)

@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isIP } from "node:net";
 import type { AppLoadContext } from "react-router";
 import { isLoopbackAddress, isLoopbackHost } from "../../server/bind-host.mjs";
 
 export const devSocketAddress = new AsyncLocalStorage<string | undefined>();
 
 export const NUDGES_READ_ONLY =
-  "Nudges editing requires localhost, a loopback IP or the configured HOST. Remote editing also requires MC_CRON_ALLOW_REMOTE_ADMIN=1 on the server.";
+  "Nudges editing requires an allowed Host, such as localhost. Remote editing also requires MC_CRON_ALLOW_REMOTE_ADMIN=1 on the server. With that setting, IP addresses and names in MC_CRON_ALLOWED_HOSTS are also allowed.";
 
 function isDirectLoopback(request: Request, context: AppLoadContext) {
   const address = context?.socketAddress ?? devSocketAddress.getStore();
@@ -14,18 +15,26 @@ function isDirectLoopback(request: Request, context: AppLoadContext) {
       .some((header) => request.headers.has(header));
 }
 
-function isAllowedHost(host: string | null) {
-  if (!host || !/^(\[[\da-f:.]+\]|[a-z\d.-]+)(?::\d+)?$/i.test(host)) return false;
+function isAllowedHost(host: string | null, allowRemote: boolean) {
+  if (!host) return false;
+  const rawHostname = host.match(/^(\[[\da-f:.]+\]|[a-z\d.-]+)(?::\d+)?$/i)?.[1];
+  if (!rawHostname) return false;
   const hostname = URL.parse(`http://${host}`)?.hostname.replace(/^\[|\]$/g, "");
-  return hostname !== undefined && (
-    isLoopbackHost(hostname) || hostname === "::ffff:7f00:1" ||
+  if (hostname === undefined) return false;
+  if (isLoopbackHost(hostname) || hostname === "::ffff:7f00:1" ||
     hostname === process.env["HOST"]?.toLowerCase()
-  );
+  ) return true;
+  if (!allowRemote) return false;
+
+  return isIP(rawHostname.replace(/^\[|\]$/g, "")) !== 0 ||
+    (process.env["MC_CRON_ALLOWED_HOSTS"]?.split(",")
+      .some((allowedHost) => allowedHost.trim().toLowerCase() === hostname) ?? false);
 }
 
 export function canManageNudges(request: Request, context: AppLoadContext) {
-  return isAllowedHost(request.headers.get("host")) &&
-    (process.env["MC_CRON_ALLOW_REMOTE_ADMIN"] === "1" || isDirectLoopback(request, context));
+  const allowRemote = process.env["MC_CRON_ALLOW_REMOTE_ADMIN"] === "1";
+  return isAllowedHost(request.headers.get("host"), allowRemote) &&
+    (allowRemote || isDirectLoopback(request, context));
 }
 
 function hasSameOriginProof(request: Request, context: AppLoadContext) {

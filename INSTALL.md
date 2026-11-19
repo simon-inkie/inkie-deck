@@ -1283,10 +1283,15 @@ working.
 
 To allow remote writes deliberately, set `MC_CRON_ALLOW_REMOTE_ADMIN=1` in
 the server environment (or `packages/deck/.env` for the documented launcher)
-and restart Deck. This does not bypass the Host or origin checks. A reverse
-proxy should validate and preserve the public Host rather than rewrite it to
-localhost. Only enable remote writes behind access control you trust: a
-visitor who passes those checks can schedule jobs as the user running Deck.
+and restart Deck. This also accepts any IPv4 or bracketed IPv6 address in
+`Host`, including the LAN address when Deck binds to `0.0.0.0`. To allow
+extra hostnames, set `MC_CRON_ALLOWED_HOSTS` to a comma-separated list such as
+`deck.example.com,nudges.example.com`, without schemes or ports. The list is
+ignored without the remote opt-in, and unknown hostnames are still refused.
+The origin checks still apply. A reverse proxy should validate and preserve
+the public Host rather than rewrite it to localhost. Only enable remote
+writes behind access control you trust: a visitor who passes those checks can
+schedule jobs as the user running Deck.
 
 To turn Nudges off entirely:
 
