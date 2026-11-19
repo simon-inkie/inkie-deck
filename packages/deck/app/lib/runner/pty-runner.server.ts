@@ -1,6 +1,7 @@
+import { accessSync, constants, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fixtureCommand } from "./fixture-command.js";
-import { FixtureRunner, LaunchFailure, type SessionSpec, type WriteResult } from "./runner.js";
+import { resolve } from "node:path";
+import { BaseRunner, LaunchFailure, type SessionSpec, type WriteResult } from "./runner.js";
 
 const require = createRequire(import.meta.url);
 const keys: Record<string, string> = {
@@ -29,20 +30,35 @@ export function loadNodePty(): NativeBinding {
   }
 }
 
-export class PtyRunner extends FixtureRunner {
+function resolveCommand({ command, cwd, env }: SessionSpec): string {
+  if (!command || !cwd || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new LaunchFailure("start-failed", "A command and an existing working directory are required.");
+  }
+  const directories = command.includes("/") ? [""] : (env.PATH ?? "/bin:/usr/bin").split(":");
+  for (const directory of directories) {
+    const candidate = resolve(cwd, directory, command);
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    }
+  }
+  throw new LaunchFailure("start-failed", "The PTY command is not executable.");
+}
+
+export class PtyRunner extends BaseRunner {
   readonly kind = "pty";
   private terminal?: NativeTerminal;
 
-  constructor(private readonly directory: string) { super(); }
-
   protected async start(spec: SessionSpec): Promise<number> {
     if (process.platform !== "linux") {
-      throw new LaunchFailure("unavailable", "The PTY fixture runner is verified only on Linux.");
+      throw new LaunchFailure("unavailable", "The PTY runner is verified only on Linux.");
     }
     const binding = loadNodePty();
-    const { file, args, env } = fixtureCommand(this.directory, spec);
-    const terminal = binding.spawn(file, args, {
-      cwd: this.directory, env, cols: spec.cols ?? 80, rows: spec.rows ?? 24, encoding: null,
+    const { args, cwd, env } = spec;
+    const terminal = binding.spawn(resolveCommand(spec), args, {
+      cwd, env: { ...env }, cols: spec.cols ?? 80, rows: spec.rows ?? 24, encoding: null,
     });
     this.terminal = terminal;
     const output = terminal.onData((chunk) => this.data(chunk));

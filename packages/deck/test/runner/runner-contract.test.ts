@@ -1,14 +1,13 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadNodePty } from "../../app/lib/runner/pty-runner.server.js";
 import { fixtureEnvironment } from "./fixture-command.js";
-import { fixtureRegistry } from "./fixture-registry.js";
-import { loadNodePty } from "./pty-runner.js";
-import type { Runner } from "./runner.js";
+import { fixtureRegistry, type FixtureRunner } from "./fixture-registry.js";
 
 const inCI = process.env.CI !== undefined;
 let nodePtyRestriction: string | undefined;
@@ -43,7 +42,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
   const waitTimeout = kind === "tmux" ? 10_000 : 1500;
   const groupTimeout = kind === "tmux" ? waitTimeout : 1000;
   let directory: string;
-  let runner: Runner;
+  let runner: FixtureRunner;
   let transcript: string;
   let drained: Promise<void>;
   let skipReason = kind === "pty" ? nodePtyRestriction : undefined;
@@ -128,12 +127,27 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     await expect(runner.launch({ scenario })).rejects.toMatchObject({ name: "LaunchFailure", reason: "start-failed" });
     const { code } = await waitForExit();
     if (scenario === "failed") expect(code).toBe(23);
+    else if (kind === "pty") expect(code).toBeNull();
     else {
       expect(code).not.toBeNull();
       expect(code).toBeGreaterThan(0);
     }
     expect(await runner.write("not running")).toEqual({ status: "refused", reason: "not-running" });
     expect(await runner.key("Enter")).toEqual({ status: "refused", reason: "not-running" });
+  });
+
+  it.runIf(kind === "pty")("accepts output without the fixture ready marker", { timeout }, async () => {
+    await runner.launch({ scenario: "plain" });
+    await waitFor(">\r\n");
+    expect(transcript).not.toContain("FIXTURE READY");
+    await submit("exit");
+    expect(await waitForExit()).toEqual({ code: 0, signal: null });
+  });
+
+  it.runIf(kind === "pty")("kills a session that does not produce output before the readiness deadline", { timeout: 15_000 }, async () => {
+    await expect(runner.launch({ scenario: "silent" })).rejects.toMatchObject({ name: "LaunchFailure", reason: "start-failed" });
+    expect(await waitForExit()).toEqual({ code: null, signal: constants.signals.SIGKILL });
+    expect(await runner.write("not running")).toEqual({ status: "refused", reason: "not-running" });
   });
 
   it("resizes the terminal and handles fixture input", { timeout }, async () => {

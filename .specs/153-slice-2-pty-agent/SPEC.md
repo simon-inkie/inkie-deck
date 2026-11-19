@@ -1,0 +1,147 @@
+# #240: Run one opted-in Claude agent on the PTY runner
+
+- Issue: #240 (child of #153, tracked by #225)
+- Branch: `pty-slice-2`
+- Started: 2026-11-19
+- Status: In progress.
+
+## TL;DR
+
+Slice 1 proved `Runner`, `PtyRunner` and `TmuxRunner` against a fixture, under `packages/deck/test/runner/`. This slice runs ONE real Claude Code agent on `PtyRunner`: an agent the operator opts in, in a fresh session Deck starts, with Deck's send route, message push and thread terminal view going through the runner for that agent only. Every other agent stays on tmux, unchanged. Linux only.
+
+## Scope
+
+In this slice:
+
+1. **Opt-in, two keys, both required.** Instance: `MC_PTY_RUNNER=1` (default off, read in `packages/deck/app/lib/instance.server.ts` beside `tmuxEnabled`). Agent: `$AGENTS_HOME/<agent>/.runner` containing `pty`, the same per-agent file convention as `.runtime` and `.model` (`packages/base/bin/runtime-launch.sh`, `packages/deck/app/lib/agent-model.server.ts`). Only `.runtime` = `claude` (or absent) qualifies. At most one running PTY agent per instance.
+   Verify: unit tests for every combination; any other value means tmux.
+2. **Production runner module.** Move the interface and shared lifecycle from `packages/deck/test/runner/runner.ts` (former slice 1 path) to `packages/deck/app/lib/runner/runner.ts`; add `packages/deck/app/lib/runner/pty-runner.server.ts` with a launch spec (command, args, cwd, env) replacing fixture scenarios. PTY readiness becomes "spawned and produced output within 10 s", not `FIXTURE READY`. Process group kill, typed `LaunchFailure`, write refused after exit: all kept. Fixture tests reuse the same base.
+   Verify: slice 1 contract suite against both runners, plus PTY readiness without a marker and silent-session cleanup.
+3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts` (planned), the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time.
+   Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock with dead pid is reclaimed only after the group is confirmed gone.
+4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR` if set, the agent's `INBOX_ROOT`). No `MC_*`, no tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
+   Verify: env snapshot test; stub launch end to end.
+5. **Start, stop, interrupt.** New `packages/deck/app/routes/api.runner.tsx` (planned): POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, refused unless opted in. No auto-restart.
+   Verify: route tests for each op and each refusal.
+6. **Screen buffer.** `@xterm/headless` fed from `output()`, scrollback 1000 lines (matches `TMUX_CAPTURE_SCROLLBACK_LINES`), memory only, never written to disk or logs.
+   Verify: fixture output renders the same text the fixture drew.
+7. **Send route and push.** `packages/deck/app/routes/api.tmux-send.tsx`: for a PTY-owned agent, run `submitPaneText` (`packages/deck/app/lib/tmux-submit.ts`) with a `PaneSubmitDriver` whose `capture` classifies the screen buffer via `classifyPaneSnapshot`, and whose `sendText`/`pressEnter` call `runner.write` / `runner.key("Enter")`. If the buffer cannot yield SGR for ghost detection, composer is `unknown` and the send fails closed. `packages/deck/app/routes/threads.$agent.tsx` `wakeTarget` and `pushTarget` take the same branch. Named keys go to `runner.key`.
+   Verify: driver tests with the fixture's composer, paste placeholder and confirmation-dialog shapes; exact payload asserted.
+8. **Terminal view.** The loader's `captureTmuxPane` call becomes a snapshot from the screen buffer for PTY agents. `packages/deck/app/components/TmuxPane.tsx` keeps polling; no WebSocket, no new stream.
+   Verify: loader test; manual try.
+9. **Exit and quiet.** On `exited()`: lock removed, exit code and time kept in memory, view shows "stopped (code N)", sends refused with a typed reason. "Quiet" = alive, no output for 10 minutes after an unanswered write: shown only, no action.
+   Verify: stub exits 23; stub hangs.
+10. **Deck shutdown.** `packages/deck/server/production.mjs` on SIGTERM/SIGINT: `stop("graceful")` for all sessions. On Deck start, a stale lock's group is killed and the agent shown stopped. Restart survival is out.
+    Verify: kill Deck with the stub running; no descendant remains.
+11. **Base script guards.** `packages/base/bin/inbox-push`: an opted-in recipient is not pushed; exits with a distinct persisted-not-pushed status. `packages/base/bin/boot-agents.sh`, `packages/base/bin/workspace.sh`: skip opted-in agents with a log line. `packages/base/bin/codex-provider-switch`: refuse.
+    Verify: base tests with `.runner` present and absent.
+
+Not in this slice: more than one PTY agent; Codex or Antigravity on PTY (ACP, #154); browser keystroke streaming or WebSocket; resuming an existing conversation on PTY; restart survival; delivery acknowledgement from hooks; sweeps, activity and cron agent-mode rewired (they find no window and do nothing; documented); macOS and Windows; changing the default runner; authentication.
+
+## Drained cutover for one agent
+
+First try on a scratch agent (`packages/base/bin/create-agent.sh`), which has nothing to drain. For an existing agent:
+
+1. Stop admission: write `.runner`. Deck and `inbox-push` now persist only.
+2. Settle: operator sees the tmux pane idle and closes its window.
+3. Ownership: start refuses while the window is live or a lock is held.
+4. Start on PTY. Way back: stop, delete `.runner`, `packages/base/bin/boot-agents.sh` resumes the untouched `.session-id` on tmux.
+
+## Risks
+
+| Risk | Mitigation |
+| --- | --- |
+| Input to the wrong place | Writes only to the registry's own child; refused after exit; fail-closed composer check; no shell fallback |
+| Orphaned processes | Own process group; group kill on stop, exit and Deck shutdown; stale-lock sweep on start; test with a SIGTERM-ignoring descendant (slice 1) |
+| Two processes on one conversation | Fresh session id; exclusive lock; tmux-window check; boot scripts skip opted-in agents |
+| Secrets in terminal output | Buffer in memory only; served through the existing same-origin, `tmuxEnabled` loader; no worse than tmux capture today; Deck secrets never in child env |
+| Windows, macOS | Runner refuses non-Linux with a typed `unavailable`, as in slice 1 |
+| Resource use | One session; 1000-line buffer; output stream drained continuously; node-pty stays optional and lazy |
+| node-pty missing | Opt-in shows "unavailable: <reason>"; tmux unaffected |
+
+## Acceptance
+
+- Opted-in stub agent: start, send, see output, cancel, stop, exit 23 shown, no descendants, all in CI.
+- Non-opted agents: existing Deck and base suites pass unchanged.
+- In production, `PtyRunner` imported only by the registry; no listener opened.
+- Real Claude conformance note recorded for the version tried.
+
+## Test plan
+
+- For build step 1, run `pnpm -C packages/deck test test/runner`,
+  `pnpm typecheck`, and `pnpm check:boundaries`. Run the repository licence,
+  library version, dash, whitespace and leak checks.
+- Later steps add the automated checks listed in Scope. The manual try below
+  requires those steps to be complete; do not run it for step 1.
+
+### Manual try script (maintainer)
+
+From the repository root:
+
+```sh
+git switch pty-slice-2 && pnpm install
+packages/base/bin/create-agent.sh ptytest
+echo pty > "$AGENTS_HOME/ptytest/.runner"
+MC_PTY_RUNNER=1 pnpm -C packages/deck start
+```
+
+1. Open `/threads/ptytest?view=tmux`, press Start. See Claude's welcome screen within 10 s.
+2. Type "say hello" in the compose box. See it typed and answered.
+3. Send a chat message from the thread view. See it arrive in the terminal.
+4. Press Interrupt mid-answer. See the turn stop.
+5. `pgrep -af claude` shows one process for ptytest; `tmux ls` shows no ptytest window.
+6. Stop Deck with Ctrl+C. `pgrep -af claude` shows none for ptytest.
+7. Other agents: send to one on tmux; behaves as before.
+
+## Build plan
+
+1. **Promote the runner** (item 2, import-graph update). Verify: contract suite green, typecheck.
+2. **Registry, opt-in, lock, env, stub launch, exit, shutdown** (items 1, 3, 4, 9, 10). After 1. Verify: registry tests with the stub, descendant check.
+3. **Base script guards** (item 11). Parallel with 1 and 2; touches only `packages/base`. Verify: base suite.
+4. **Routes and view** (items 5 to 8). After 2. Verify: route, driver and loader tests; manual try steps 1 to 4.
+5. **Real Claude run and SPEC close-out**: conformance note, docs line in `docs/adding-an-agent.md`, Log. After 3 and 4. Verify: full manual try.
+
+## Open decisions
+
+1. Opt-in location: `.runner` file plus `MC_PTY_RUNNER`. Lean: yes; matches `.runtime`.
+2. Fresh session only, old `.session-id` untouched. Lean: yes; resume on PTY next slice.
+3. Add `@xterm/headless` (MIT) for the screen buffer. Lean: yes; raw bytes cannot be classified.
+4. Deck restart kills the PTY agent (no survival). Lean: accept for this slice.
+5. Reuse the "sent, could not confirm" UI wording when verification is unavailable. Lean: yes; no `packages/deck/app/components/TmuxPane.tsx` change.
+
+## Follow-ups
+
+- Build plan steps 2 to 5 remain in #240; no production caller is added in step 1.
+
+## Log
+
+### 2026-11-19: Draft written
+- What changed: private draft from slice 1 SPEC, runner code and touch points.
+- Supersedes: nothing.
+- Commits: none.
+
+### 2026-11-19: Prepare #240 and start build step 1
+- What changed: Put the draft in public SPEC format and marked planned paths.
+- Why: Establish the scope before changing the runner. Later build steps stay
+  in this issue, but are not part of the promotion patch.
+- Commits: pending
+
+### 2026-11-19: Promote the runner (build step 1)
+- What changed: Moved the runner interface, shared lifecycle and PTY adapter
+  into the application library. PTY launch takes a command, args, cwd and env
+  and waits up to 10 seconds for non-empty output. The fixture registry still
+  constructs its own commands and homes. Import checks keep fixtures out of
+  production and reserve the PTY adapter for the future registry.
+- Why: The plan promotes the shared code and PTY adapter only. The tmux
+  adapter stays test-only and keeps its readiness marker, so diagnostics from
+  the fixture wrapper cannot count as readiness. A missing PTY executable
+  now fails before spawn because node-pty can write an exec diagnostic to
+  the terminal; there is no child exit code in that case. First output does
+  not prove application readiness beyond the stated PTY contract.
+- Validation: Runner suite passed 28 tests with `CI=1`. The sandbox denied
+  private Unix sockets, so the live tmux fixture was skipped; mocked tmux
+  tests passed. Typecheck, boundaries, licence, library version and whitespace
+  checks passed. Both default leak checks hit `spawnSync git EPERM`; the
+  explicit working-tree file scan passed. The dash check timed out; a direct
+  full-tree scan found no banned dashes.
+- Commits: pending

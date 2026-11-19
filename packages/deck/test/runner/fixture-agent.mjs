@@ -83,8 +83,10 @@ process.stdin.on("data", (chunk) => {
   }
 });
 
-write("\x1b[?2004hFIXTURE READY\n>\n");
-for (const text of ["FIRST \\ frame", "SECOND \u00a3 frame", "THIRD frame"]) {
-  await delay(30);
-  write(`${text}\n`);
+if (scenario !== "silent") {
+  write(scenario === "plain" ? ">\n" : "\x1b[?2004hFIXTURE READY\n>\n");
+  for (const text of ["FIRST \\ frame", "SECOND \u00a3 frame", "THIRD frame"]) {
+    await delay(30);
+    write(`${text}\n`);
+  }
 }

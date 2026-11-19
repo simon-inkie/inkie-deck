@@ -15,6 +15,12 @@
 module.exports = {
   forbidden: [
     {
+      name: "deck-runner-does-not-import-test-code",
+      severity: "error",
+      from: { path: "^packages/deck/app/lib/runner/" },
+      to: { path: "^packages/deck/(?:test|e2e)/" },
+    },
+    {
       name: "base-never-imports-deck",
       severity: "error",
       comment:
