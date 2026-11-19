@@ -118,15 +118,14 @@ const RULES = [
   // no realistic false positives, so they get the stronger form.
   rule({
     label: "principal-first-name",
-    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment). EXEMPT IN MESSAGE SCOPE ONLY (see messageExempt below): this person is the repository's maintainer and the author and committer fields of every commit here carry his full name and address, by a deliberate decision that is not being revisited. Denying in a commit body what the header of that same commit states outright is theatre, and a rule kept only by being ignored is worse than no rule. File content permits only the exact intentional root copyright notice and the canonical clone URL; other name content remains denied.",
+    why: "First name of the person the internal deployment serves. A real person's name in the open repo is a clean-room breach. Substring match: distinctive, no \\b (see section comment). EXEMPT AS A WHOLE IN MESSAGE SCOPE (see messageExempt below): this person is the repository's maintainer and the author and committer fields of every commit here carry his full name and address, by a deliberate decision that is not being revisited. Denying in a commit body what the header of that same commit states outright is theatre, and a rule kept only by being ignored is worse than no rule. File content permits only the exact intentional root copyright notice and the canonical repository URLs for Deck and the Brain, with or without .git. A slash after either repository is allowed so docs can link to files and issues; other name content remains denied.",
     pattern: ["si", "mon"],
     sample: ["si", "mon"],
     messageExempt: true,
-    // The canonical clone URL carries the GitHub owner, which is this name,
-    // and INSTALL.md has to print it. Exempt that one URL and nothing wider:
-    // the owner/repo pair is fixed, an optional .git is allowed, and a longer
-    // repo name (a fork-style suffix) does not match.
-    contentExemptPattern: ["https://github\\.com/si", "mon-ink", "ie/ink", "ie-deck(?:\\.git)?(?![\\w-])"],
+    // The canonical repository URLs carry the GitHub owner. The two
+    // owner/repo pairs are fixed, .git is optional, and a fork-style suffix
+    // on the repo name does not match.
+    contentExemptPattern: ["https://github\\.com/si", "mon-ink", "ie/ink", "ie-(?:deck|the-", "brain)(?:\\.git)?(?![\\w-])"],
   }),
   rule({
     label: "second-principal-first-name",
@@ -233,7 +232,7 @@ const RULES = [
   // -- Internal repositories and hosts --------------------------------------
   rule({
     label: "internal-repo-or-host-name",
-    why: "Name of an internal repository, project or host. Their names alone reveal internal topology and invite links back into private material.",
+    why: "Name of an internal repository, project or host. These names alone reveal internal topology and invite links back into private material. The Brain memory layer is public and allowed, but the private checkout location still matches the internal projects directory name.",
     // NB the fragment split here is not arbitrary, and it has been wrong
     // twice. Splitting an alternation at its SEPARATORS leaves whichever
     // name follows sitting at the start of a fragment, delimited by a quote
@@ -243,7 +242,7 @@ const RULES = [
     // visible to any rule that existed at the time. Fragments must break
     // the NAMES, never the separators between them.
     pattern: [
-      "\\b(?:the-", "brain|mission-", "control|i", "o-projects|inkie-p",
+      "\\b(?:mission-", "control|i", "o-projects|inkie-p",
       "gr|inkie-", "app-v2|inkie-", "worker|inkie-", "functions)\\b",
     ],
     sample: ["mission-", "control"],
@@ -924,37 +923,62 @@ function selfTest() {
       );
       process.exit(1);
     }
-    // Prove the content-scope URL exemption is narrow: the canonical clone
-    // URL passes, and the name still fires on the bare name, on a different
-    // URL, on a longer repo name, and beside an exempt URL on the same line.
-    const nameRule = RULES.find((r) => r.label === "principal-first-name");
+    // Pin the public Brain references and the limits of the URL exemption.
+    const nameLabel = "principal-first-name";
+    const repoLabel = "internal-repo-or-host-name";
+    const worktreeLabel = "internal-worktree-name";
+    const nameRule = RULES.find((r) => r.label === nameLabel);
     if (!nameRule?.contentExemptRe) {
       console.error("leak-gate self-test: principal-first-name rule or its content exemption missing");
       process.exit(1);
     }
     const owner = ["si", "mon-ink", "ie"].join("");
     const bareName = ["si", "mon"].join("");
-    const exemptCases = [
-      { text: `git clone https://github.com/${owner}/inkie-deck.git && cd inkie-deck`, fires: false, why: "the canonical clone URL" },
-      { text: `see https://github.com/${owner}/inkie-deck for the source`, fires: false, why: "the canonical URL without .git" },
-      { text: `ask ${bareName} about it`, fires: true, why: "the bare name" },
-      { text: `https://github.com/${owner}/other-repo.git`, fires: true, why: "a different repo under the same owner" },
-      { text: `https://github.com/${owner}/inkie-deck-fork.git`, fires: true, why: "a longer repo name" },
-      { text: `http://example.com/${owner}/inkie-deck.git`, fires: true, why: "a different host" },
-      { text: `https://github.com/${owner}/inkie-deck.git from ${bareName}`, fires: true, why: "the name beside an exempt URL" },
+    const brainName = ["the-", "brain"].join("");
+    const brainRepo = `inkie-${brainName}`;
+    const deckUrl = `https://github.com/${owner}/inkie-deck`;
+    const brainUrl = `https://github.com/${owner}/${brainRepo}`;
+    const checkoutDir = ["i", "o-projects"].join("");
+    const memoryCodename = ["grey", "matter"].join("");
+    const worktreeName = ["inkie-i", "o"].join("");
+    const contentCases = [
+      { text: `git clone ${deckUrl}.git && cd inkie-deck`, why: "the Deck clone command" },
+      { text: `see ${deckUrl} for the source`, why: "the Deck URL without .git" },
+      { text: brainUrl, why: "the Brain URL without .git" },
+      { text: `${brainUrl}.git`, why: "the Brain URL with .git" },
+      { text: `git clone ${brainUrl}.git && cd ${brainRepo}`, why: "the Brain clone command" },
+      { text: `${brainUrl}/issues/11`, why: "a link to a Brain issue" },
+      { text: `~/.${brainName}/agents/wren/memory`, why: "a Brain memory path" },
+      { text: `"${brainName}": { "command": "${brainName}" }`, why: "a Brain MCP config entry" },
+      { text: `ask ${bareName} about it`, deniedBy: nameLabel, why: "the bare name" },
+      { text: owner, deniedBy: nameLabel, why: "the bare owner" },
+      { text: `https://github.com/${owner}/other-repo.git`, deniedBy: nameLabel, why: "a different repo under the same owner" },
+      { text: `${deckUrl}-fork.git`, deniedBy: nameLabel, why: "a longer Deck repo name" },
+      { text: `${brainUrl}-fork`, deniedBy: nameLabel, why: "a longer Brain repo name" },
+      { text: `http://example.com/${owner}/inkie-deck.git`, deniedBy: nameLabel, why: "the Deck repo on a different host" },
+      { text: `https://example.com/${owner}/${brainRepo}`, deniedBy: nameLabel, why: "the Brain repo on a different host" },
+      { text: `${deckUrl}.git from ${bareName}`, deniedBy: nameLabel, why: "the name beside the Deck URL" },
+      { text: `${brainUrl} from ${owner}`, deniedBy: nameLabel, why: "the owner beside the Brain URL" },
+      { text: `~/${checkoutDir}/${brainName}`, deniedBy: repoLabel, why: "the Brain in the internal checkout directory" },
+      { text: memoryCodename, deniedBy: worktreeLabel, why: "the internal memory codename" },
+      { text: worktreeName, deniedBy: worktreeLabel, why: "an internal worktree name" },
     ];
-    for (const { text, fires, why } of exemptCases) {
-      const fired = scanBuffer("case", Buffer.from(text)).some((f) => f.label === nameRule.label);
-      if (fired !== fires) {
-        console.error(`leak-gate self-test: principal-first-name ${fires ? "should fire on" : "should exempt"} ${why}`);
+    for (const { text, deniedBy, why } of contentCases) {
+      const findings = scanBuffer("case", Buffer.from(text));
+      if (deniedBy ? !findings.some((f) => f.label === deniedBy) : findings.length > 0) {
+        console.error(`leak-gate self-test: ${deniedBy ? `${deniedBy} should fire on` : "expected no findings for"} ${why}`);
         process.exit(1);
       }
+    }
+    if (scanMessageLine(`${brainName} #11`).some((f) => f.label === repoLabel)) {
+      console.error("leak-gate self-test: the public Brain name should pass in messages");
+      process.exit(1);
     }
     console.log(
       `leak-gate self-test: all ${RULES.length} rules fire correctly (content, filename and binary-sniff paths)`,
     );
     console.log("leak-gate self-test: message-scope exemption is narrow (approved shape only, not the whole rule)");
-    console.log("leak-gate self-test: content-scope URL exemption is narrow (canonical clone URL only)");
+    console.log("leak-gate self-test: public Brain references pass and the content-scope URL exemption stays narrow");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
