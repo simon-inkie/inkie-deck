@@ -23,8 +23,10 @@ function groupMembers(group: number): number[] {
 }
 
 describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s runner contract", (kind) => {
-  const timeout = kind === "tmux" ? 12000 : 5000;
-  const exitTimeout = kind === "tmux" ? 8000 : 4000;
+  const exitTimeout = kind === "tmux" ? 30_000 : 4000;
+  const timeout = kind === "tmux" ? exitTimeout + 30_000 : 5000;
+  const waitTimeout = kind === "tmux" ? 10_000 : 1500;
+  const groupTimeout = kind === "tmux" ? waitTimeout : 1000;
   let directory: string;
   let runner: Runner;
   let transcript: string;
@@ -49,7 +51,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     } finally {
       rmSync(probeDirectory, { force: true, recursive: true });
     }
-  });
+  }, timeout);
 
   beforeEach(({ skip }) => {
     if (tmuxSocketRestriction) skip(tmuxSocketRestriction);
@@ -71,9 +73,9 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
-  });
+  }, timeout);
 
-  async function waitFor(text: string, timeout = 1500) {
+  async function waitFor(text: string, timeout = waitTimeout) {
     await vi.waitFor(() => expect(transcript).toContain(text), { timeout });
   }
 
@@ -139,14 +141,14 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     await waitFor("TASK STARTED");
     await runner.cancel();
     await waitFor("TASK CANCELLED");
-    await waitFor("TASK DEADLINE", 3500);
+    await waitFor("TASK DEADLINE", Math.max(waitTimeout, 3500));
     expect(transcript).not.toContain("TASK FINISHED");
   });
 
   it.each(["graceful", "kill", "natural"] as const)("cleans the fixture process group on %s exit", { timeout }, async (mode) => {
     const { pid } = await runner.launch({});
     await submit("descendant");
-    await vi.waitFor(() => expect(transcript).toMatch(/DESCENDANT \d+\r\n/));
+    await vi.waitFor(() => expect(transcript).toMatch(/DESCENDANT \d+\r\n/), { timeout: groupTimeout });
     const descendant = Number(/DESCENDANT (\d+)\r\n/.exec(transcript)?.[1]);
     expect(groupMembers(pid)).toEqual(expect.arrayContaining([pid, descendant]));
 
@@ -162,7 +164,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     expect(transcript).toBe(beforeRefusal);
     if (mode === "natural") expect(transcript).toContain("fixture@terminal:~$");
     expect(transcript).not.toContain("must not reach a shell");
-    await vi.waitFor(() => expect(groupMembers(pid)).toEqual([]));
+    await vi.waitFor(() => expect(groupMembers(pid)).toEqual([]), { timeout: groupTimeout });
   });
 });
 

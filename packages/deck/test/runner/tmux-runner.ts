@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   buildCaptureViewportArgs, buildSendKeysNamedArgs, buildSendKeysTextArgs,
-  SHELL_PROMPT_RE, TMUX_EXEC_TIMEOUT_MS, type PaneKey,
+  SHELL_PROMPT_RE, type PaneKey,
 } from "../../app/lib/tmux.server.js";
 import { fixtureCommand, fixtureEnvironment } from "./fixture-command.js";
 import { FixtureRunner, type ExitInfo, type SessionSpec, type WriteResult } from "./runner.js";
@@ -14,12 +14,15 @@ import { FixtureRunner, type ExitInfo, type SessionSpec, type WriteResult } from
 const session = "fixture";
 const window = "agent";
 const target = `=${session}:=${window}`;
-const startupMs = 4000;
-const readinessMs = 5000;
+const startupMs = 10_000;
+const readinessMs = 10_000;
+const commandMs = 2000;
+const exitPollMs = 15;
+const exitProbeMs = 500;
 const stopWaitMs = 3000;
 const shutdownMs = 1000;
-const outputBarrier = "fixture-output-drained";
-const commandOptions = { encoding: "utf8", killSignal: "SIGKILL", timeout: TMUX_EXEC_TIMEOUT_MS } as const;
+const paneExitFormat = "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}";
+const commandOptions = { encoding: "utf8", killSignal: "SIGKILL", timeout: commandMs } as const;
 const commands = { execFile, execFileSync, spawn };
 
 function track<Child extends ChildProcess>(child: Child) {
@@ -52,7 +55,7 @@ export class TmuxRunner extends FixtureRunner {
   private readonly env: NodeJS.ProcessEnv;
   private server?: ReturnType<typeof track>;
   private control?: ReturnType<typeof track>;
-  private drainOutput?: () => Promise<void>;
+  private display?: (format: string, timeout: number) => Promise<string | undefined>;
   private poll?: NodeJS.Timeout;
   private stopTimer?: NodeJS.Timeout;
   private paneDead = false;
@@ -77,7 +80,7 @@ export class TmuxRunner extends FixtureRunner {
         this.tmux.execFile("tmux", ["-N", "-S", this.socket, ...args],
           { ...commandOptions, env: this.env }, (error, stdout) => error ? reject(error) : resolve(stdout));
       });
-      return await Promise.race([response, delay(TMUX_EXEC_TIMEOUT_MS, undefined, { signal: timer.signal }).then(() => {
+      return await Promise.race([response, delay(commandMs, undefined, { signal: timer.signal }).then(() => {
         throw new Error(`Private tmux command timed out: ${args[0]}.`);
       })]);
     } finally {
@@ -100,17 +103,30 @@ export class TmuxRunner extends FixtureRunner {
       "-x", String(spec.cols ?? 80), "-y", String(spec.rows ?? 24),
       "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), file, ...args,
     ], { env, stdio: ["pipe", "pipe", "ignore"] });
-    const trackedControl = this.control = track(control);
+    this.control = track(control);
     control.stdin.on("error", () => {});
     control.stdout.setEncoding("latin1");
     const lines = createInterface({ input: control.stdout });
-    const outputDrained = new Promise<void>((resolve) => {
-      lines.on("line", (line) => { if (line === outputBarrier) resolve(); });
-    });
-    this.drainOutput = async () => {
-      if (!alive(control)) return;
-      control.stdin.write(`display-message -p ${outputBarrier}\n`);
-      await closesWithin(Promise.race([outputDrained, trackedControl.closed]), TMUX_EXEC_TIMEOUT_MS);
+    let sequence = 0;
+    this.display = async (format, timeout) => {
+      if (!alive(control) || !control.stdin.writable) return;
+      const tag = `fixture-display-${++sequence}:`;
+      return new Promise<string | undefined>((resolve) => {
+        const finish = (response?: string) => {
+          clearTimeout(timer);
+          lines.off("line", onLine);
+          control.off("close", onClose);
+          resolve(response);
+        };
+        const onLine = (line: string) => {
+          if (line.startsWith(tag)) finish(line.slice(tag.length));
+        };
+        const onClose = () => finish();
+        const timer = setTimeout(onClose, timeout);
+        lines.on("line", onLine);
+        control.once("close", onClose);
+        control.stdin.write(`display-message -p -t ${target} '${tag}${format}'\n`);
+      });
     };
     lines.on("line", (line) => {
       const output = /^%output %\d+ (.*)$/.exec(line);
@@ -140,14 +156,14 @@ export class TmuxRunner extends FixtureRunner {
   }
 
   private schedulePoll(): void {
-    if (!this.disposing) this.poll = setTimeout(() => { void this.checkExit(); }, 25);
+    if (!this.disposing) this.poll = setTimeout(() => { void this.checkExit(); }, exitPollMs);
   }
 
   private async checkExit(): Promise<void> {
     let info: ExitInfo | undefined;
     try {
-      const [dead, status, signal] = (await this.query("display-message", "-p", "-t", target,
-        "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}")).trimEnd().split(" ");
+      const response = await this.display?.(paneExitFormat, exitProbeMs);
+      const [dead, status, signal] = response?.trimEnd().split(" ") ?? [];
       if (dead === "1") {
         this.paneDead = true;
         const signalName = signal?.startsWith("SIG") ? signal : `SIG${signal}`;
@@ -171,7 +187,7 @@ export class TmuxRunner extends FixtureRunner {
     clearTimeout(this.stopTimer);
     const children = [this.server, this.control].filter((tracked) => tracked !== undefined);
     const closed = Promise.all(children.map((tracked) => tracked.closed)).then(() => {});
-    if (this.paneDead) await this.drainOutput?.().catch(() => {});
+    if (this.paneDead) await this.display?.("drained", commandMs).catch(() => {});
     if (this.server && alive(this.server.child)) {
       await this.query("kill-server").catch(() => {});
     }

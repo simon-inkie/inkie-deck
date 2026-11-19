@@ -105,9 +105,11 @@ Requirements:
   Windows, later) and kills the group. This is a requirement to prove in
   tests, not an assumed guarantee.
 - `exited()` observes exit without initiating teardown. The tmux fixture
-  keeps polling until it sees a code or signal; contract tests bound their
-  own wait. The contract requires exact codes for normal exit (0) and the
-  failed fixture (23), and a non-zero code for the missing fixture.
+  polls on its existing control connection until it sees a code or signal.
+  The tmux contract bounds the exit wait at 30 seconds, with separate
+  headroom for setup and assertions. It still requires exact codes for
+  normal exit (0) and the failed fixture (23), and a non-zero code for the
+  missing fixture.
 - An explicit tmux stop allows up to three seconds for status before forcing
   cleanup. If status is still unavailable, `{ code: null, signal: null }`
   after cleanup means unknown, not success. Shutdown gives queued control
@@ -394,4 +396,33 @@ Recommendations only.
   scan and `git diff --check` passed. The full Deck suite was not run.
 - Supersedes: the passive exit and status grace deadlines in "Bound the tmux
   fixture lifecycle", not its shutdown bounds or the Linux CI requirement.
+- Commits: pending.
+
+### 2026-11-19: Pick up the remaining parallel exit flake
+- What changed: inspected the reported 8 s exit timeout. Each 25 ms status
+  poll launches a new tmux client and waits for it before scheduling the
+  next poll. The exit command in the fixture has no deliberate sleep.
+- Why: remove per-poll process launches and give the real tmux contract
+  more time under load without weakening its assertions.
+- Supersedes: nothing, additive.
+- Commits: pending.
+
+### 2026-11-19: Remove per-poll tmux client launches
+- What changed: wait 15 ms after each reply or probe timeout before polling
+  the private control connection again, and use a separate tagged output
+  barrier before shutdown. Late replies cannot be mistaken for later probes
+  or for the barrier. The tmux cases share a 30 s exit wait and a 60 s case
+  budget, with more headroom for launch, commands, output and group checks.
+  Exit codes, ordered bytes and process group assertions are unchanged.
+- Why: repeated process startup and command timeouts can delay status
+  observation under CPU load. The fixture's 150 ms slow start and 30 ms
+  frame spacing are intentional and precede the exit command. There is
+  no fixed delay on the exit path itself.
+- Verification: 21 runner tests passed, including the fake-clock probes;
+  eight real tmux cases skipped because the private socket bind returned
+  `EPERM`. Typecheck, licence, direct dash scan and `git diff --check`
+  passed. The real tmux exchange and the full parallel suite under load
+  still need verification on Linux with a permitted private socket.
+- Supersedes: the previous 8 s exit and 12 s case budgets, not the forced
+  stop policy or Linux CI requirement.
 - Commits: pending.

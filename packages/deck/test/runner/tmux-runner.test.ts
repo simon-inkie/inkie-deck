@@ -21,7 +21,7 @@ function fakeChild(pid: number) {
   return { child, close, kill };
 }
 
-function fixture(status: () => string | Error, {
+function fixture(status: () => string | undefined, {
   wedgedShutdown = false, ready = true, paneDead = "0", viewport = ">\n",
 } = {}) {
   const server = fakeChild(12346);
@@ -36,16 +36,14 @@ function fixture(status: () => string | Error, {
     callback: (error: ExecFileException | null, stdout: string) => void) => {
     expectPrivateInvocation(file, args, options);
     expect(args[0]).toBe("-N");
-    const response = args.at(-1) === "#{pane_pid}" ? String(panePid)
-      : args[3] === "display-message" ? status() : "";
+    const response = args.at(-1) === "#{pane_pid}" ? String(panePid) : "";
     queueMicrotask(() => {
       if (args[3] === "kill-server") {
         if (wedgedShutdown) return;
         server.close();
         control.close();
       }
-      if (response instanceof Error) callback(response, "");
-      else callback(null, response);
+      callback(null, response);
     });
   });
   const execFileSync = vi.fn((file: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
@@ -62,16 +60,22 @@ function fixture(status: () => string | Error, {
     return control.child;
   });
   control.child.stdin.on("data", (chunk: Buffer) => {
-    const marker = chunk.toString().trim().split(" ").at(-1);
+    const [, tag, format] = / '(fixture-display-\d+:)(.*)'\n$/.exec(chunk.toString())!;
+    if (format === "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}") {
+      const response = status();
+      if (response !== undefined) control.child.stdout.write(`${tag}${response}`);
+      return;
+    }
+    expect(format).toBe("drained");
     setTimeout(() => {
       if (control.child.exitCode === null) {
-        control.child.stdout.write(`%output %0 FIXTURE END\\015\\012\n${marker}\n`);
+        control.child.stdout.write(`%output %0 FIXTURE END\\015\\012\n${tag}${format}\n`);
       }
     }, 20);
   });
   const runner = runnerToStop = new TmuxRunner("/unused", { execFile, execFileSync, spawn } as unknown as
     NonNullable<ConstructorParameters<typeof TmuxRunner>[1]>);
-  return { runner, server, control, groupKill, execFileSync };
+  return { runner, server, control, groupKill, execFile, execFileSync };
 }
 
 afterEach(async () => {
@@ -84,9 +88,9 @@ afterEach(async () => {
 });
 
 it("retries a failed probe and waits for a late exit status before closing output", async () => {
-  const status = vi.fn().mockReturnValueOnce(new Error("command timed out"))
+  const status = vi.fn().mockReturnValueOnce(undefined)
     .mockReturnValueOnce("1  \n").mockReturnValueOnce("1  \n").mockReturnValue("1 23 \n");
-  const { runner, server, control } = fixture(status, { ready: false });
+  const { runner, server, control, execFile } = fixture(status, { ready: false });
   const output = (async () => {
     const chunks: Uint8Array[] = [];
     for await (const chunk of runner.output()) chunks.push(chunk);
@@ -97,6 +101,7 @@ it("retries a failed probe and waits for a late exit status before closing outpu
   await expect(runner.exited()).resolves.toEqual({ code: 23, signal: null });
   await expect(output).resolves.toBe("FIXTURE END\r\n");
   expect(status).toHaveBeenCalledTimes(4);
+  expect(execFile.mock.calls.map(([, args]) => args[3])).toEqual(["set-option", "display-message", "kill-server"]);
   expect(server.child.exitCode).toBe(0);
   expect(control.child.exitCode).toBe(0);
 });
@@ -104,7 +109,7 @@ it("retries a failed probe and waits for a late exit status before closing outpu
 it.each([
   { pending: "running", response: "0  \n", delayMs: 3500 },
   { pending: "dead without status", response: "1  \n", delayMs: 1500 },
-  { pending: "unreachable", response: new Error("command timed out"), delayMs: 1500 },
+  { pending: "unreachable", response: undefined, delayMs: 1500 },
 ])("keeps waiting for natural exit while the pane is $pending", async ({ response, delayMs }) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   try {
@@ -120,7 +125,7 @@ it.each([
     expect(groupKill).not.toHaveBeenCalled();
 
     status = "1 0 \n";
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(600);
     expect(reported).toHaveBeenCalledExactlyOnceWith({ code: 0, signal: null });
     expect(groupKill).toHaveBeenCalledWith(-panePid, "SIGKILL");
   } finally {
@@ -161,11 +166,18 @@ it.each([
   expect(execFileSync.mock.calls.map(([, args]) => args[3])).toEqual(inspections);
 });
 
-it("forces both tmux processes down if the pane never reports death and shutdown stalls", { timeout: 7000 }, async () => {
-  const { runner, server, control, groupKill } = fixture(() => "0  \n", { wedgedShutdown: true });
-  await runner.launch({});
-  await expect(runner.stop("kill")).resolves.toEqual({ code: null, signal: null });
-  expect(groupKill).toHaveBeenCalledWith(-panePid, "SIGKILL");
-  expect(server.kill).toHaveBeenCalledWith("SIGKILL");
-  expect(control.kill).toHaveBeenCalledWith("SIGKILL");
+it("forces both tmux processes down if the pane never reports death and shutdown stalls", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const { runner, server, control, groupKill } = fixture(() => "0  \n", { wedgedShutdown: true });
+    await runner.launch({});
+    const stopped = runner.stop("kill");
+    await vi.advanceTimersByTimeAsync(7000);
+    await expect(stopped).resolves.toEqual({ code: null, signal: null });
+    expect(groupKill).toHaveBeenCalledWith(-panePid, "SIGKILL");
+    expect(server.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(control.kill).toHaveBeenCalledWith("SIGKILL");
+  } finally {
+    vi.useRealTimers();
+  }
 });
