@@ -213,4 +213,4 @@ Not ported, deliberately:
 - Why: The probe could use the wrong Codex home, status missed runtime files,
   and a marker copied from a Gemini source could corrupt the next sync.
 - Supersedes: nothing, additive.
-- Commits: pending
+- Commits: 3d30207 fix(base): codex probe home, runtime-aware status and sync fence guard (#214)
