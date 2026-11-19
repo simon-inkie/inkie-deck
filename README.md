@@ -5,6 +5,8 @@
 Inkie Deck is a local-first control room for your AI agents. Run Claude Code,
 Codex and Antigravity side by side, with many more harnesses coming very soon,
 and bring every decision and action back to one place, as cards.
+With [the Brain](https://github.com/simon-inkie/inkie-the-brain), our open source
+long-term memory, your agents [remember across sessions](#give-your-agents-a-memory-that-lasts).
 
 Open source under the [Apache-2.0 licence](LICENSE); [contributions are welcome](CONTRIBUTING.md).
 
@@ -25,6 +27,10 @@ calls only you can make. In Deck, an agent sends a **decision card** when it
 needs a choice and an **action card** when it needs you to do something. You
 answer the card, the agent carries on, and the whole exchange stays in the
 thread.
+
+![Unanswered decision card with two options: launch the spring stationery range this week or wait for the gift-box restock. It also offers a free-text reply, Dismiss and Supersede.](docs/images/decision-card.png)
+
+*The call is yours: pick an option or write your own answer.*
 
 ![Agent thread showing an answered decision card, the user's reply and the agent's follow-up](docs/images/agent-thread.png)
 
@@ -51,8 +57,8 @@ plugging in any agent that speaks ACP.
 
 ## See the work, not a description of it
 
-Agents share what they make as inline images and links to files. Generated
-images, code and notes open beside the thread, searchable and ready to review.
+Agents share what they make as inline images and links to files. Open their
+images, code and notes in the review panel beside the thread.
 
 ![A second agent's thread with a launch carousel slide shown inline and links to the kit label and a config file](docs/images/agent-thread-tech.png)
 
@@ -61,10 +67,6 @@ images, code and notes open beside the thread, searchable and ready to review.
 ![Review panel with a file list of generated images and code files, and a hero image previewed beside the thread](docs/images/review-panel.png)
 
 *Everything an agent produced, open beside the conversation about it.*
-
-![A second agent's thread with an inline carousel slide and a link to its launch config, beside the same config open as highlighted JSON](docs/images/code-preview.png)
-
-*Code opens with syntax highlighting, right next to the thread.*
 
 ## Keep the whole team on one board
 
@@ -86,9 +88,10 @@ CRM hygiene and code. If an agent can do the work, you can manage it from Deck.
 
 ## Built in daily use, not in a lab
 
-Deck began as an internal tool. The first commit went in on 3 June 2026 and it
-has run my business every day since, growing a piece at a time as the team
-needed it. This is the open source part of that tool, and I now run on this
+Deck began as an internal tool: the team of agents behind it has been running
+since April 2026, and the app itself, first committed on 3 June 2026, has run my
+business every day since, growing a piece at a time as the team needed it.
+This is the open source part of that tool, and I now run on this
 open source version myself. It looks simple. Underneath it is not, and that is
 the point: the complexity is the tool's problem, not yours.
 
@@ -142,6 +145,8 @@ Run as your own user, not as root:
 git clone https://github.com/simon-inkie/inkie-deck.git && cd inkie-deck
 scripts/setup.sh
 ```
+
+To opt in to the Brain, run `scripts/setup.sh --memory` (requires Node 22 or newer and `jq`).
 
 **On Windows:** Follow the [WSL2 setup notes](INSTALL.md#windows-via-wsl) first.
 Keep the clone in your Linux home (for example, `~/inkie-deck`), not on `C:` (`/mnt/c`).
