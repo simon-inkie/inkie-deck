@@ -248,3 +248,22 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   explicit working-tree leak scan passed; sandboxed Git calls blocked the
   default, history and commit-message leak scans.
 - Commits: 7db30a6 fix(runner): make lock recovery and cleanup crash-safe (#240)
+
+### 2026-11-19: Address the second local runner review
+- What changed: Restore the reservation in memory if the pre-spawn write
+  fails. Distinguish an absent claim from an unrecovered one and clear an
+  obsolete locked entry only if it is still current. Clear the root scan
+  failure latch after a complete retry unless another scan has since failed.
+- Why: None of these transient failures should require Deck to restart.
+  A failed pre-spawn write never enters the native spawn, so cleanup can
+  release the owned claim. A live or replaced claim must not clear a locked
+  entry. The `/proc` snapshot finding is already addressed: group exit
+  requires `kill(-pgid, 0)` to return `ESRCH`, and the existing regression
+  keeps the claim when the kernel still sees the group. No change is needed
+  there.
+- Validation: Three focused regressions and the runner suite passed (54
+  passed, 11 skipped). Typecheck, boundaries, licence, library version,
+  direct dash and whitespace checks passed. The explicit working-tree leak
+  scan passed; sandboxed Git calls blocked the default, history and
+  commit-message modes.
+- Commits: pending

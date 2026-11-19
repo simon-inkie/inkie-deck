@@ -36,7 +36,7 @@ export type SessionStatus = { state: ActiveSession["state"] | CleanupSession["st
 
 const registryKey = Symbol.for("inkie-deck.runner.registry");
 const globals = globalThis as typeof globalThis & {
-  [registryKey]?: { sessions: Map<string, ActiveSession | CleanupSession | InactiveSession>; closing: boolean; recoveryFailed: boolean };
+  [registryKey]?: { sessions: Map<string, ActiveSession | CleanupSession | InactiveSession>; closing: boolean; recoveryFailed: false | symbol };
 };
 const shared = globals[registryKey] ??= { sessions: new Map(), closing: false, recoveryFailed: false };
 
@@ -328,13 +328,14 @@ export class RunnerRegistry {
 
   async recover(): Promise<void> {
     if (process.platform !== "linux") return;
+    const previousFailure = shared.recoveryFailed;
     let root: string;
     let entries;
     try {
       root = realpathSync(agentsRoot(this.env));
       entries = readdirSync(root, { withFileTypes: true });
     } catch (error) {
-      if (!hasCode(error, "ENOENT")) shared.recoveryFailed = true;
+      if (!hasCode(error, "ENOENT")) shared.recoveryFailed = Symbol();
       return;
     }
     for (const entry of entries) {
@@ -343,8 +344,12 @@ export class RunnerRegistry {
       const existing = shared.sessions.get(home);
       if (existing && ("runner" in existing || existing.state === "cleanup-pending")) continue;
       try {
-        if (await recoverRunnerLock(join(home, lockName)) && shared.sessions.get(home) === existing) {
+        const result = await recoverRunnerLock(join(home, lockName));
+        if (shared.sessions.get(home) !== existing) continue;
+        if (result === "recovered") {
           shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
+        } else if (result === "absent" && existing?.state === "locked") {
+          shared.sessions.delete(home);
         }
       } catch {
         if (shared.sessions.get(home) === existing) {
@@ -352,6 +357,7 @@ export class RunnerRegistry {
         }
       }
     }
+    if (shared.recoveryFailed === previousFailure) shared.recoveryFailed = false;
   }
 }
 

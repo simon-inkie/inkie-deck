@@ -1,10 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, ftruncateSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { recoverRunnerLock } from "../../app/lib/runner/lock.server.js";
+import { claimRunnerLock, recoverRunnerLock } from "../../app/lib/runner/lock.server.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, ftruncateSync: vi.fn(fs.ftruncateSync) };
+});
 
 const sessionId = "01234567-89ab-4cde-8fab-0123456789ab";
 const lockModule = new URL("../../app/lib/runner/lock.server.ts", import.meta.url).href;
@@ -73,13 +78,27 @@ describe.runIf(process.platform === "linux")("runner lock recovery", () => {
       holder.kill("SIGKILL");
       await exited;
     }
-    await expect(recoverRunnerLock(file)).resolves.toBe(true);
+    await expect(recoverRunnerLock(file)).resolves.toBe("recovered");
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("releases its reservation after a failed pre-spawn update", async () => {
+    const claim = claimRunnerLock(file, sessionId, Date.now());
+    const failure = new Error("Could not truncate the runner lock.");
+    vi.mocked(ftruncateSync).mockImplementationOnce(() => { throw failure; });
+    try {
+      expect(() => claim.beforeSpawn()).toThrow(failure);
+      expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ phase: "spawning", childPid: null });
+      await claim.release();
+    } finally {
+      if (existsSync(file)) claim.retain();
+    }
     expect(existsSync(file)).toBe(false);
   });
 
   it("reclaims a dead Deck's pre-spawn reservation but not a missing PID after the spawn boundary", async () => {
     crashClaim("reserved");
-    await expect(recoverRunnerLock(file)).resolves.toBe(true);
+    await expect(recoverRunnerLock(file)).resolves.toBe("recovered");
     expect(existsSync(file)).toBe(false);
 
     crashClaim("spawning");

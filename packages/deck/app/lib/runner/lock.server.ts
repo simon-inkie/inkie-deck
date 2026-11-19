@@ -101,8 +101,14 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
 
   return {
     beforeSpawn() {
+      const previousPhase = record.phase;
       record.phase = "spawning";
-      persist();
+      try {
+        persist();
+      } catch (error) {
+        record.phase = previousPhase;
+        throw error;
+      }
     },
     spawned(pid: number) {
       record.childPid = pid;
@@ -147,12 +153,12 @@ function readLock(fd: number): LockRecord {
   return record as LockRecord;
 }
 
-export async function recoverRunnerLock(file: string): Promise<boolean> {
+export async function recoverRunnerLock(file: string): Promise<"absent" | "recovered" | "unrecovered"> {
   let fd: number;
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
-    if (hasCode(error, "ENOENT")) return false;
+    if (hasCode(error, "ENOENT")) return "absent";
     throw error;
   }
   try {
@@ -163,11 +169,11 @@ export async function recoverRunnerLock(file: string): Promise<boolean> {
       throw new Error("Could not lock the runner claim for recovery.", { cause: guard.error });
     }
     const owned = fstatSync(fd);
-    if (!sameLock(file, owned)) return false;
+    if (!sameLock(file, owned)) return "unrecovered";
     const record = readLock(fd);
     if (record.bootId === bootId()) {
       const deck = processInfo(record.deckPid);
-      if (deck?.birth === record.deckBirth && live(deck.state)) return false;
+      if (deck?.birth === record.deckBirth && live(deck.state)) return "unrecovered";
       if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;
@@ -186,9 +192,9 @@ export async function recoverRunnerLock(file: string): Promise<boolean> {
         await waitForGroupExit(group);
       }
     }
-    if (!sameLock(file, owned)) return false;
+    if (!sameLock(file, owned)) return "unrecovered";
     unlinkSync(file);
-    return true;
+    return "recovered";
   } finally {
     closeSync(fd);
   }

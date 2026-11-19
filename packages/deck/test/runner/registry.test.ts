@@ -1,10 +1,11 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { claimRunnerLock } from "../../app/lib/runner/lock.server.js";
 import { loadNodePty } from "../../app/lib/runner/pty-runner.server.js";
 import { isPtyOptedIn, RunnerRegistry } from "../../app/lib/runner/registry.server.js";
 import { listTmuxWindows } from "../../app/lib/tmux.server.js";
@@ -13,9 +14,14 @@ import { fixtureCommand, fixtureScreen } from "./fixture-command.js";
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(), execFileSync: vi.fn(),
 }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, readdirSync: vi.fn(fs.readdirSync) };
+});
 
 const agent = "fixture-agent";
 const other = "second-fixture";
+const sessionId = "01234567-89ab-4cde-8fab-0123456789ab";
 let root: string;
 let home: string;
 let lock: string;
@@ -127,6 +133,46 @@ describe.runIf(process.platform === "linux")("registry ownership", () => {
     expect(readFileSync(lock, "utf8")).toBe("held\n");
   });
 
+  it("clears a locked entry only after the claim is gone", async () => {
+    addAgent(other);
+    const registry = stubRegistry({ listWindows: () => [other] });
+    writeFileSync(lock, "unreadable claim\n");
+    await registry.recover();
+    expect(registry.status(agent)).toMatchObject({ state: "locked" });
+    await expect(registry.start(other)).rejects.toMatchObject({ reason: "locked" });
+
+    rmSync(lock);
+    const claim = claimRunnerLock(lock, sessionId, Date.now());
+    try {
+      await registry.recover();
+      expect(registry.status(agent)).toMatchObject({ state: "locked" });
+      expect(existsSync(lock)).toBe(true);
+    } finally {
+      await claim.release();
+    }
+
+    await registry.recover();
+    expect(registry.status(agent)).toBeUndefined();
+    await expect(registry.start(other)).rejects.toMatchObject({ reason: "tmux-active" });
+  });
+
+  it("keeps starts locked until the root scan can complete", async () => {
+    const registry = stubRegistry({ listWindows: () => [agent] });
+    const denyScan = () => vi.mocked(readdirSync).mockImplementationOnce(() => { throw { code: "EACCES" }; });
+
+    denyScan();
+    await registry.recover();
+    await expect(registry.start(agent)).rejects.toMatchObject({ reason: "locked" });
+
+    const retry = registry.recover();
+    denyScan();
+    await Promise.all([retry, registry.recover()]);
+    await expect(registry.start(agent)).rejects.toMatchObject({ reason: "locked" });
+
+    await registry.recover();
+    await expect(registry.start(agent)).rejects.toMatchObject({ reason: "tmux-active" });
+  });
+
   it("leaves a mismatched group untouched and reclaims only after the verified group stops", async () => {
     const finished = spawnSync(process.execPath, ["-e", ""], { env: {} });
     expect(finished.status).toBe(0);
@@ -140,7 +186,7 @@ describe.runIf(process.platform === "linux")("registry ownership", () => {
       const record = {
         deckPid: finished.pid, deckBirth: "0", childPid: pid, childBirth: "0",
         bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
-        sessionId: "01234567-89ab-4cde-8fab-0123456789ab", startedAt: Date.now(),
+        sessionId, startedAt: Date.now(),
       };
       const registry = stubRegistry();
       writeFileSync(lock, JSON.stringify(record));
