@@ -5,7 +5,7 @@
  * - The decision card container is visible (data-testid="decision-card")
  * - The "Decision" label is visible (exact match to avoid matching subject text)
  * - Option button [A] "Hold spend..." is tappable (role=button)
- * - "OR write something..." affordance is present (MC #2: replaces "Push back")
+ * - "OR write something..." affordance is present
  *
  * Card blocks render as interactive DecisionCard.
  * ASCII only - no em-dashes.
@@ -30,6 +30,6 @@ test("CARD-01: decision card renders with tappable option buttons on /threads/sc
   // Option A button is visible and tappable (role=button).
   await expect(page.getByRole("button", { name: /Hold spend/ })).toBeVisible();
 
-  // MC #2: "OR write something..." affordance replaces the plain "Push back" button.
+  // The "OR write something..." affordance offers a free-text answer.
   await expect(page.getByTestId("write-own-btn")).toBeVisible();
 });

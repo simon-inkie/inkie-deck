@@ -68,7 +68,7 @@ test("TASK-435.1: a malformed-timestamp block renders the thread without crashin
 test("2026-06-11 P1 regression: an em-dash-delimited DECISION card crashes neither home nor thread", async ({
   page,
 }) => {
-  // The exact production shape that took MC down: header fields separated by
+  // The exact production shape that took Deck down: header fields separated by
   // em-dashes (U+2014, built via charCode so this file stays check:dashes
   // clean) carrying a decision card. Pre-fix: parseHeader failed, timestamp
   // fell back to "", deriveNeedsYou threw Invalid time value, EVERY page 500'd.

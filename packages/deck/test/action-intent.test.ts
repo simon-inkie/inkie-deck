@@ -134,7 +134,7 @@ describe("intentSchema - pushback", () => {
 });
 
 // ---------------------------------------------------------------------------
-// custom intent (MC #2: option C user-authored answer)
+// custom intent (option C user-authored answer)
 // ---------------------------------------------------------------------------
 
 describe("intentSchema - custom", () => {

@@ -2,7 +2,7 @@
  * batch-durability.ts - stop losing composed messages that never left the browser.
  *
  * WHY THIS EXISTS
- * Submitting in MC does not send anything. usePendingBatch holds the text in a
+ * Submitting in Deck does not send anything. usePendingBatch holds the text in a
  * CLIENT-SIDE batch and starts a settle timer (SETTLE_MS, 18s by default;
  * SAFETY_CAP_MS stretches it to 5 minutes while SUSPENDED). Only when that
  * elapses does anything reach the server or touch a file.
@@ -80,7 +80,7 @@ export const MAX_RECOVERY_AGE_MS = 24 * 60 * 60 * 1000;
  * Batches younger than this are LEFT ALONE on recovery.
  *
  * A live tab re-mirrors on every change, so a very recent record probably
- * belongs to a session that is still composing. Without this floor, opening MC
+ * belongs to a session that is still composing. Without this floor, opening Deck
  * in a second tab would drain the first tab's in-flight batch and send a
  * half-written message on the author's behalf. Recovery is for abandoned
  * sessions, and a session is only observably abandoned once it has stopped

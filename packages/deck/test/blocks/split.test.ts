@@ -2,7 +2,7 @@
  * Regression tests for the three ways splitBlocks has lost message content.
  *
  * 1. A standalone "---" line inside a message body silently truncated the
- *    rendered message in MC, dropping everything after it (reported by the
+ *    rendered message in Deck, dropping everything after it (reported by the
  *    operator twice). Two independent bugs: splitBlocks used "---" as a block boundary
  *    (dropping content up to the next header), and _parseBlock cut the body at
  *    the FIRST "---".

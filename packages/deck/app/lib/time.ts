@@ -57,7 +57,7 @@ function safeNow(now: Date): Date {
  * later threw "Invalid time value" inside toISOString/date-fns - killing the
  * shell loader and with it the whole app. This helper coalesces unparseable
  * input to the real wall clock so a bad env var can degrade timestamps but
- * never crash MC.
+ * never crash Deck.
  *
  * Pure: callers pass the env VALUE (loaders read process.env themselves,
  * preserving the .server seam and test injectability).

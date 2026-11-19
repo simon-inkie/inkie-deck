@@ -56,7 +56,7 @@ export function resetRuntime(root) {
     ? demoProjects
     : path.join(root, "fixtures", "projects");
   cpSync(projectsSource, p.runtimeProjects, { recursive: true });
-  // DATA_ROOT for MC state files (queue state) - must exist at boot.
+  // DATA_ROOT for Deck state files (queue state) - must exist at boot.
   mkdirSync(p.runtimeData, { recursive: true });
   mkdirSync(p.runtimeWorkspace, { recursive: true });
   return source;

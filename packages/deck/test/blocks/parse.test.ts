@@ -138,7 +138,7 @@ describe("parseBlock - header parsing", () => {
 describe("parseBlock - body-internal --- is preserved (truncation regression)", () => {
   // A "---" that is NOT the last non-blank line of the block is body content
   // (a visual divider), not the trailing separator. Scanning for the FIRST
-  // "---" truncated such bodies in the MC render.
+  // "---" truncated such bodies in the Deck render.
 
   it("keeps a mid-body --- line when a genuine trailing separator follows", () => {
     const block = [

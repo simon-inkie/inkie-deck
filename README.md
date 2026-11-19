@@ -1,12 +1,18 @@
 # Inkie Deck
 
-**One deck for every harness and every model.**
+**One inbox for your AI agent team.**
 
 Inkie Deck is a local-first control room for your AI agents. Run Claude Code,
-Codex and Antigravity side by side, with many more harnesses coming very soon,
-and bring every decision and action back to one place, as cards.
+Codex and Antigravity side by side, and bring their decisions and actions back
+to one place, as cards.
 With [the Brain](https://github.com/simon-inkie/inkie-the-brain), our open source
 long-term memory, your agents [remember across sessions](#give-your-agents-a-memory-that-lasts).
+
+**Deck has no authentication and binds to loopback by default.** Keep it local
+unless you put it behind your own access control, such as a VPN, a restricted
+tailnet or a reverse proxy with authentication, before anyone else can reach it.
+See the [deployment boundary](INSTALL.md#read-this-before-you-put-deck-on-a-network)
+and [Quick install](#quick-install).
 
 Open source under the [Apache-2.0 licence](LICENSE); [contributions are welcome](CONTRIBUTING.md).
 
@@ -36,24 +42,24 @@ thread.
 
 *The decision, your answer and the agent's follow-up, kept together.*
 
-## One deck, any harness, any model
+## Supported harnesses
 
-Most tools lock you into one vendor. Deck sits above the harness, so you can
-pick the best model for each job and run every agent through one inbox, one
-Needs you queue and one project board.
-
-Where it is today, plainly:
+The CLI harnesses verified by the scaffolding and launcher tests in
+[`packages/base`](packages/base) share one inbox, one Needs you queue and one
+project board. Available models depend on the harness you use.
 
 | Harness | Today |
 | --- | --- |
-| Claude Code | Fully supported: one-command setup, generated persona files, persona checks, live check, inbox delivery. |
+| Claude Code | Default for one-command setup: generated persona files, persona checks, live check and inbox delivery. |
 | Codex | Supported: `--runtime codex` creates the agent with an `AGENTS.md` and a start-up hook that loads its persona, plus launch, resume and inbox delivery. Live check is opt-in. |
-| Antigravity | Supported: `--runtime agy` creates the agent with a `GEMINI.md` built from its persona files, plus launch, resume and inbox delivery. Live check is opt-in. |
+| Antigravity (Gemini) | Supported: `--runtime agy` creates the agent with a `GEMINI.md` built from its persona files, plus launch, resume and inbox delivery. Live check is opt-in. |
 
-Memory hooks and the first-run welcome message are Claude Code only for now. Many more harnesses are coming very soon.
+Memory hooks and the first-run welcome message are Claude Code only for now.
+Support for more harnesses is planned.
 
-An Agent Client Protocol (ACP) client has also landed, the groundwork for
-plugging in any agent that speaks ACP.
+Deck contains an experimental Agent Client Protocol (ACP) client exercised
+with a scripted test adapter only. It is not wired into the running app and
+does not provide support for real ACP agents yet.
 
 ## See the work, not a description of it
 
@@ -88,7 +94,8 @@ review panel, and type or dictate replies (optional
 ## Not just for code
 
 Deck runs my own business every day: marketing, customer outreach, support,
-CRM hygiene and code. If an agent can do the work, you can manage it from Deck.
+CRM hygiene and code. Agents on the supported harnesses can bring decisions
+and actions from that work back to Deck.
 
 ## Built in daily use, not in a lab
 
@@ -100,7 +107,7 @@ open source version myself. It looks simple. Underneath it is not, and that is
 the point: the complexity is the tool's problem, not yours.
 
 It is built to be built on. Your agents can extend it with you, and a plugin
-system is coming.
+system is planned.
 
 ## Give your agents a memory that lasts
 
@@ -141,7 +148,18 @@ thread. Go and make something good, and take it easy on your head.
 
 ## Quick install
 
-**Before you start:** Node `^22.13.0 || >=24.0.0`, pnpm `10.34.5` via Corepack, and the Claude Code CLI installed and signed in. See [prerequisites](INSTALL.md#1-prerequisites) for system packages.
+Deck has no authentication; put it behind your own [access control](INSTALL.md#read-this-before-you-put-deck-on-a-network) before anyone else can reach it.
+
+**Try the demo, no AI CLI needed:** from your clone, with Node and pnpm installed:
+
+```sh
+pnpm install && pnpm dev
+```
+
+Open <http://localhost:4242> for the interface with throwaway fixture data.
+See [Try it](INSTALL.md#3-try-it).
+
+**For Quick setup with live agents:** Node `^22.13.0 || >=24.0.0`, pnpm `10.34.5` via Corepack, and the Claude Code CLI installed and signed in. See [prerequisites](INSTALL.md#1-prerequisites) for system packages.
 
 Run as your own user, not as root:
 

@@ -1,7 +1,7 @@
 /**
  * RouteErrorPanel - the shared error surface for route-level ErrorBoundaries.
  *
- * MC must stay usable when a route fails, so an error must never be a dead
+ * Deck must stay usable when a route fails, so an error must never be a dead
  * end. Two principles:
  *
  * 1. SCOPED BLAST RADIUS: every content route under the shell exports an
@@ -10,9 +10,9 @@
  *    sidebar + nav keep working. Only a failure in the shell/root itself
  *    falls back to the full-page root boundary.
  *
- * 2. HONEST MESSAGING: MC is a tailnet-only internal tool - showing the real
- *    error message in production is a feature, not a leak. The operator (or the
- *    agent they paste it to) needs the actual failure text, not "Oops".
+ * 2. USEFUL DIAGNOSTICS: Show the actual failure text so the operator can
+ *    diagnose it. Deck relies on loopback or external access control (see
+ *    INSTALL.md); the error panel does not restrict who can see the details.
  *
  * Pure presentational: no fs, no env.
  * ASCII only - no em-dashes.

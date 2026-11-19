@@ -52,7 +52,7 @@ import { resolveNow } from "~/lib/time";
  * second poll on its own cadence would mean a second data flow and a fetcher
  * for a panel that has no interactivity, and (c) piggybacking means the panel
  * can never be more stale than the file, so the staleness banner is about the
- * SWEEP only, with no MC-side caching to reason about on top of it.
+ * SWEEP only, with no Deck-side caching to reason about on top of it.
  * If the read ever shows up in a profile, an mtime+size memo (the
  * file-manifest-cache.server.ts idiom) drops in behind this function without
  * touching the route.
@@ -85,7 +85,7 @@ export async function loader() {
   // Faces: the cards are the only avatar consumer left, so build the
   // map from the rows that will actually render rather than from the window
   // list (which is empty on a tmux-disabled instance, and would have left
-  // a second user's panel on initials for agents MC can name perfectly well).
+  // a second user's panel on initials for agents Deck can name perfectly well).
   const avatars: Record<string, string> = {};
   if (activity !== null) {
     // Live and offline both carry rows now, so one loop covers both states.
@@ -153,8 +153,8 @@ export default function ActivityTab({ loaderData }: Route.ComponentProps) {
 
 /**
  * Scoped error boundary: a failure in this
- * route renders here, inside the shell - the sidebar and the rest of MC stay
- * usable. Real error text shown (tailnet-only internal tool).
+ * route renders here, inside the shell, so the sidebar and the rest of Deck
+ * stay usable. The panel shows the actual error text.
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (

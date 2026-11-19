@@ -2,7 +2,7 @@
  * pending-hold.test.ts - the hold itself, which the rest of the
  * suite deliberately turns down to its floor.
  *
- * WHY THIS FILE EXISTS. Submitting in MC does not send: usePendingBatch holds
+ * WHY THIS FILE EXISTS. Submitting in Deck does not send: usePendingBatch holds
  * the text and delivers once the user settles. Every other composer spec seeds
  * the minimum hold so it can test its own subject instead of waiting, which
  * leaves the hold - the product behaviour those tests are configured around -
