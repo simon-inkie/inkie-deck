@@ -68,6 +68,10 @@ images, code and notes in the review panel beside the thread.
 
 *Everything an agent produced, open beside the conversation about it.*
 
+![A second agent's thread with an inline carousel slide and a link to its launch config, beside the same config open as highlighted JSON](docs/images/code-preview.png)
+
+*Code opens with syntax highlighting, right next to the thread.*
+
 ## Keep the whole team on one board
 
 Every piece of work sits in one of five stages, each card showing its owner and
