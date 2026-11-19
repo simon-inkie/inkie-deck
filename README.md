@@ -40,9 +40,11 @@ Where it is today, plainly:
 
 | Harness | Today |
 | --- | --- |
-| Claude Code | Fully supported: one-command setup, generated persona files, persona verification, inbox delivery. |
-| Codex | Launch, resume and inbox delivery. Generated persona files and verification are being ported ([#214](https://github.com/simon-inkie/inkie-deck/issues/214)). |
-| Antigravity | Launch and inbox delivery. Persona files and verification are part of the same port ([#214](https://github.com/simon-inkie/inkie-deck/issues/214)). |
+| Claude Code | Fully supported: one-command setup, generated persona files, persona checks, live check, inbox delivery. |
+| Codex | Supported: `--runtime codex` creates the agent with an `AGENTS.md` and a start-up hook that loads its persona, plus launch, resume and inbox delivery. Live check is opt-in. |
+| Antigravity | Supported: `--runtime agy` creates the agent with a `GEMINI.md` built from its persona files, plus launch, resume and inbox delivery. Live check is opt-in. |
+
+Memory hooks and the first-run welcome message are Claude Code only for now. Many more harnesses are coming very soon.
 
 An Agent Client Protocol (ACP) client has also landed, the groundwork for
 plugging in any agent that speaks ACP.
@@ -150,8 +152,8 @@ Once the assistant starts, its first message asks what you do and what you would
 five-minute sandbox with fixture data, a production install, and live agents in
 tmux. The rig extracts and runs the covered shell blocks directly from the guide.
 
-Quick setup targets Claude Code today; see the harness table above for Codex
-and Antigravity. To add another agent,
+Quick setup starts a Claude Code agent. To add a Codex or Antigravity agent, run
+`create-agent.sh --runtime codex` or `--runtime agy`; see the harness table above. To add another agent,
 see [docs/adding-an-agent.md](docs/adding-an-agent.md).
 
 ## How this repository got its code

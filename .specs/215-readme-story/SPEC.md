@@ -61,7 +61,12 @@ any app behaviour, Nudges availability, the logo.
 - Supersedes: wording from 519b3a3 only.
 - Commits: 248a885 docs(readme): tighten copy, full-size video thumbnail, dedupe harness lines (#215)
 
+### 2026-11-19: harness table updated after the wiring port landed
+- What changed: the Codex and Antigravity rows now describe generated persona files, launch, resume and inbox delivery, and the Quick install note points at `create-agent.sh --runtime`.
+- Why: the cross-harness wiring (#214) merged, so the earlier "being ported" wording was no longer true.
+- Supersedes: the harness table rows from 519b3a3.
+- Commits: pending
+
 ## Follow-ups
 
-- Update the harness table when #214 lands.
 - Add the logo to the header once picked.
