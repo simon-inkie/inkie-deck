@@ -204,3 +204,13 @@ Not ported, deliberately:
   are uncommitted. Typecheck, boundaries, leak, licence, dash and diff checks
   passed.
 - Commits: none (working tree only).
+
+### 2026-11-19: runtime review follow-up
+- What changed: The Codex live probe uses the launch home and stops if provider
+  selection fails; read-only status checks the saved runtime's scaffold, so
+  first-run skips only complete agents. Gemini sync rejects whole-line markers
+  in includes without replacing the target, even inside Markdown code blocks.
+- Why: The probe could use the wrong Codex home, status missed runtime files,
+  and a marker copied from a Gemini source could corrupt the next sync.
+- Supersedes: nothing, additive.
+- Commits: pending

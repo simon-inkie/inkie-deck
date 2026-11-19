@@ -311,6 +311,23 @@ after="$(cat "$S_DIR/agent/GEMINI.md"; echo x)"
 [[ "$rc" -ne 0 && "$second" == "$after" ]] \
   && pass "sync leaves the original intact after a partial copy fails" || fail "sync partial copy" "rc=$rc"
 
+for marker in '<!-- END SYNCED:SOUL.md -->' '<!-- BEGIN SYNCED:SOUL.md -->'; do
+  for example in plain fenced; do
+    if [[ "$example" == fenced ]]; then
+      printf '```markdown\n%s\n```\n' "$marker" > "$S_DIR/agent/SOUL.md"
+    else
+      printf '%s\n' "$marker" > "$S_DIR/agent/SOUL.md"
+    fi
+    for attempt in 1 2; do
+      out="$(bash "$SYNC" "$S_DIR/agent/GEMINI.md" 2>&1)"; rc=$?
+      after="$(cat "$S_DIR/agent/GEMINI.md"; echo x)"
+      label="sync attempt $attempt rejects $example $marker without changing the target"
+      [[ "$rc" -ne 0 && "$second" == "$after" && "$out" == *"source $S_DIR/agent/SOUL.md contains a SYNCED fence: $marker"* ]] \
+        && pass "$label" || fail "$label" "rc=$rc $out"
+    done
+  done
+done
+
 echo
 echo "multi-harness: $PASS passed, $FAILS failed"
 [ "$FAILS" -eq 0 ]

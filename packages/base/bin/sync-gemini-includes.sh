@@ -68,7 +68,7 @@ sync_one() {
     return 1
   }
 
-  local regions=0 in_region=0 line raw_src src last
+  local regions=0 in_region=0 line raw_src src source_line
   local begin_re='^<!-- BEGIN SYNCED:([^[:space:]]+)([[:blank:]]+.*)?[[:blank:]]+-->$'
   local end_re='^<!-- END SYNCED:([^[:space:]]+)[[:blank:]]+-->$'
   # Outside a region: copy each line. On a BEGIN marker: copy it, splice in the
@@ -87,11 +87,15 @@ sync_one() {
           status=1
           break
         fi
-        cat -- "$src" || { status=1; break; }
-        last="$(tail -c 1 -- "$src")" || { status=1; break; }
-        if [[ -n "$last" ]]; then
-          printf '\n' || { status=1; break; }
-        fi
+        cat -- "$src" | (
+          while IFS= read -r source_line || [[ -n "$source_line" ]]; do
+            if [[ "$source_line" =~ $begin_re || "$source_line" =~ $end_re ]]; then
+              printf 'sync-gemini-includes: source %s contains a SYNCED fence: %s\n' "$src" "$source_line" >&2
+              exit 1
+            fi
+            printf '%s\n' "$source_line" || exit 1
+          done
+        ) || { status=1; break; }
       fi
     elif [[ "$line" =~ $end_re && "${BASH_REMATCH[1]}" == "$raw_src" ]]; then
       printf '%s\n' "$line" || { status=1; break; }

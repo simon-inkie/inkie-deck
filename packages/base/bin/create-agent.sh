@@ -92,7 +92,8 @@
 #                                complete: the kind and peer markers (written
 #                                last by a creation) AND the whole scaffold are
 #                                there: persona files, settings, boot phrase, role
-#                                brief, inbox directory. Add --kind and --peer to
+#                                brief, inbox directory, and files for the saved
+#                                .runtime. Add --kind and --peer to
 #                                require the intended ones. Anything else (a stopped
 #                                scaffold, a foreign, altered or unreadable home) is
 #                                incomplete and left alone for repair. Exit 0 for
@@ -1198,8 +1199,8 @@ refuse_if_occupied() {
 # --status: where this agent stands, read from the homes, and nothing written.
 # FAIL CLOSED. `complete` needs all of: a regular .kind naming a known kind (the
 # one given with --kind, if any), a .peer naming a valid agent (required, and
-# equal, when --peer is given), every persona file, .runtime and
-# .claude/settings.json present as readable regular files, the boot phrase in
+# equal, when --peer is given), readable regular files for the personas,
+# .runtime, .claude/settings.json and the saved runtime, the boot phrase in
 # IDENTITY.md, the stamped role brief in CLAUDE.md, and the inbox directory.
 # A marker alone proves nothing: a foreign, hand-made, altered or unreadable
 # home reads `incomplete`, and is left exactly as it is for repair.
@@ -1217,13 +1218,27 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   if [[ $any -eq 0 ]]; then say "absent"; exit "$EXIT_VERIFIED"; fi
 
   status_ok() {
-    local f kind peer
+    local f kind peer saved_runtime
+    local -a runtime_files=()
     [[ -d "$AGENT_HOME" && ! -L "$AGENT_HOME" ]] || return 1
     for f in "${PERSONA_FILES[@]}" .runtime .claude/settings.json .kind; do
       [[ -f "$AGENT_HOME/$f" && ! -L "$AGENT_HOME/$f" && -r "$AGENT_HOME/$f" ]] || return 1
     done
     [[ -d "$AGENT_HOME/.claude" && ! -L "$AGENT_HOME/.claude" ]] || return 1
     for f in "${PERSONA_FILES[@]}" .runtime .claude/settings.json; do [[ -s "$AGENT_HOME/$f" ]] || return 1; done
+    saved_runtime="$(tr -d '[:space:]' < "$AGENT_HOME/.runtime")" || return 1
+    case "$saved_runtime" in
+      claude) ;;
+      codex)
+        [[ -d "$AGENT_HOME/.codex" && ! -L "$AGENT_HOME/.codex" ]] || return 1
+        runtime_files=(AGENTS.md .codex/hooks.json .inbox-root)
+        ;;
+      agy) runtime_files=(GEMINI.md .inbox-root) ;;
+      *) return 1 ;;
+    esac
+    for f in ${runtime_files[@]+"${runtime_files[@]}"}; do
+      [[ -f "$AGENT_HOME/$f" && ! -L "$AGENT_HOME/$f" && -r "$AGENT_HOME/$f" && -s "$AGENT_HOME/$f" ]] || return 1
+    done
     CA_FILE="$AGENT_HOME/.claude/settings.json" node_run <<'JS' >/dev/null 2>&1 || return 1
 import * as fs from "node:fs";
 const parsed = JSON.parse(fs.readFileSync(process.env.CA_FILE, "utf8"));
@@ -1606,6 +1621,10 @@ fi
 if [[ "$RUNTIME" == claude ]]; then
   . "$SCRIPT_DIR/claude-binary-check.sh"
   warn_if_foreign_claude
+elif [[ "$RUNTIME" == codex ]]; then
+  . "$SCRIPT_DIR/runtime-launch.sh"
+  PROBE_CODEX_HOME="$(codex_launch_home_for_agent "$NAME")" || \
+    report_cannot_verify "Not probing $NAME because its Codex provider selection failed."
 fi
 
 PROBE_PROMPT="Answer from your own context, not by reading any files, and reply with exactly two lines and nothing else:
@@ -1642,6 +1661,7 @@ case "$RUNTIME" in
   agy)    PROBE_CMD=(agy ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT"); PROBE_LABEL="agy -p" ;;
 esac
 [[ "$RUNTIME" == claude ]] || PROBE_ENV=(env "AGENT_NAME=$NAME" "INBOX_ROOT=$INBOX_ROOT")
+[[ "$RUNTIME" != codex ]] || PROBE_ENV+=("CODEX_HOME=$PROBE_CODEX_HOME")
 PROBE_TIMEOUT_CMD=()
 command -v timeout >/dev/null 2>&1 && PROBE_TIMEOUT_CMD=(timeout "$PROBE_TIMEOUT")
 ( cd "$AGENT_HOME" && { [ -f .env.secrets ] && . ./.env.secrets; }; \

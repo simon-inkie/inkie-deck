@@ -63,7 +63,7 @@ function stubRuntime(b: Box, name: string, answers: boolean): void {
     : 'echo "name: x"; echo "boot phrase: NONE"';
   fs.writeFileSync(
     path.join(b.stubBin, name),
-    `#!/usr/bin/env bash\nprintf '%s|AGENT_NAME=%s|INBOX_ROOT=%s\\n' "$*" "$AGENT_NAME" "$INBOX_ROOT" >> ${JSON.stringify(b.probeLog)}\n${reply}\n`,
+    `#!/usr/bin/env bash\nprintf '%s|AGENT_NAME=%s|INBOX_ROOT=%s|CODEX_HOME=%s\\n' "$*" "$AGENT_NAME" "$INBOX_ROOT" "$CODEX_HOME" >> ${JSON.stringify(b.probeLog)}\n${reply}\n`,
     { mode: 0o755 },
   );
 }
@@ -198,6 +198,35 @@ describe("files per runtime", () => {
   });
 });
 
+describe("--status checks the saved runtime's scaffold", () => {
+  it.each([
+    { runtime: "codex", files: ["AGENTS.md", ".codex/hooks.json", ".inbox-root", ".runtime"] },
+    { runtime: "agy", files: ["GEMINI.md", ".inbox-root", ".runtime"] },
+  ])("reports incomplete when a $runtime file is missing, without repairing anything", ({ runtime, files }) => {
+    const b = box();
+    const name = "wren";
+    const statusArgs = ["--status", name, "--runtime", "claude", "--live-probe"];
+    expect(create(b, [name, "--kind", "member", "--runtime", runtime, "--no-verify"]).status).toBe(EXIT.CANNOT_VERIFY);
+    stubRuntime(b, runtime, true);
+    stubRuntime(b, "claude", true);
+    if (runtime === "agy") {
+      fs.appendFileSync(path.join(home(b, name), "SOUL.md"), "\nChanged after the last sync.\n");
+    }
+    const gemini = runtime === "agy" ? read(b, name, "GEMINI.md") : undefined;
+    expect(create(b, statusArgs)).toEqual({ status: EXIT.VERIFIED, output: "complete\n" });
+    for (const file of files) {
+      const target = path.join(home(b, name), file);
+      const backup = `${target}.backup`;
+      fs.renameSync(target, backup);
+      expect(create(b, statusArgs), file).toEqual({ status: EXIT.VERIFIED, output: "incomplete\n" });
+      expect(fs.existsSync(target), file).toBe(false);
+      fs.renameSync(backup, target);
+    }
+    if (gemini !== undefined) expect(read(b, name, "GEMINI.md")).toBe(gemini);
+    expect(probeCalls(b)).toBe("");
+  });
+});
+
 describe("verification for codex and agy", () => {
   it("codex: local checks pass, exit 4, and the live probe is NOT run by default", () => {
     const b = box();
@@ -289,9 +318,16 @@ describe("verification for codex and agy", () => {
     expect(read(b, "gale", "GEMINI.md")).toBe(gemini);
   });
 
-  it("codex --live-probe: VERIFIED when the reply carries the boot phrase, run as codex exec with the agent's env", () => {
+  it.each([false, true])("codex --live-probe: uses the launch home (per-agent home present: %s)", (perAgent) => {
     const b = box();
-    create(b, ["cobalt", "--runtime", "codex", "--no-verify"]);
+    expect(create(b, ["cobalt", "--runtime", "codex", "--no-verify"]).status).toBe(EXIT.CANNOT_VERIFY);
+    const defaultHome = path.join(b.home, ".codex");
+    const agentHome = path.join(home(b, "cobalt"), ".codex-home");
+    fs.mkdirSync(defaultHome);
+    if (perAgent) {
+      fs.mkdirSync(agentHome);
+      fs.writeFileSync(path.join(agentHome, "config.toml"), "");
+    }
     stubRuntime(b, "codex", true);
     const result = create(b, ["--verify-only", "cobalt", "--live-probe"]);
     expect(result.status).toBe(EXIT.VERIFIED);
@@ -299,6 +335,20 @@ describe("verification for codex and agy", () => {
     expect(call).toMatch(/^exec --skip-git-repo-check /);
     expect(call).toContain("AGENT_NAME=cobalt");
     expect(call).toContain(`INBOX_ROOT=${b.inboxRoot}`);
+    expect(call).toContain(`|CODEX_HOME=${perAgent ? agentHome : defaultHome}\n`);
+  });
+
+  it("codex --live-probe: does not ask the runtime when provider selection fails", () => {
+    const b = box();
+    expect(create(b, ["cobalt", "--runtime", "codex", "--no-verify"]).status).toBe(EXIT.CANNOT_VERIFY);
+    const providerDir = path.join(b.home, ".the-vault", "agents", "cobalt", "provider-switch");
+    fs.mkdirSync(providerDir, { recursive: true });
+    fs.writeFileSync(path.join(providerDir, "provider.json"), '{"provider":"azure"}');
+    stubRuntime(b, "codex", true);
+    const result = create(b, ["--verify-only", "cobalt", "--live-probe"]);
+    expect(result.status).toBe(EXIT.CANNOT_VERIFY);
+    expect(result.output).toContain("Codex provider selection failed");
+    expect(probeCalls(b)).toBe("");
   });
 
   it("codex --live-probe: FAILED when the reply does not carry it", () => {
@@ -402,6 +452,19 @@ describe("first-run.sh --runtime", () => {
       expect(read(b, name, ".runtime")).toBe("codex");
       expect(fs.existsSync(path.join(home(b, name), "AGENTS.md"))).toBe(true);
     }
+  });
+
+  it("does not count an incomplete Codex scaffold as an existing agent on a default-runtime rerun", () => {
+    const b = box();
+    const names = ["--assistant", "inkie", "--platform", "doctor", "--no-verify"];
+    expect(run(b, FIRST_RUN, [...names, "--runtime", "codex"]).status).toBe(EXIT.CANNOT_VERIFY);
+    expect(run(b, FIRST_RUN, names).output).toContain("already exist. Nothing to do.");
+    const hooks = path.join(home(b, "inkie"), ".codex", "hooks.json");
+    fs.unlinkSync(hooks);
+    const result = run(b, FIRST_RUN, names);
+    expect(result.status).toBe(EXIT.SCAFFOLD_ERROR);
+    expect(result.output).toContain("a name was refused. Nothing was created.");
+    expect(fs.existsSync(hooks)).toBe(false);
   });
 
   it("refuses an unknown runtime before creating anything", () => {
