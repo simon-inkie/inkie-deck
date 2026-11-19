@@ -1,5 +1,7 @@
-import { ChildProcess, type ExecFileException } from "node:child_process";
-import { constants } from "node:os";
+import { ChildProcess, spawnSync, type ExecFileException } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { constants, tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
@@ -23,14 +25,18 @@ function fakeChild(pid: number) {
 
 function fixture(status: () => string | undefined, {
   wedgedShutdown = false, ready = true, paneDead = "0", viewport = ">\n",
+  directory = "/unused", onLaunch,
+}: {
+  wedgedShutdown?: boolean; ready?: boolean; paneDead?: string; viewport?: string;
+  directory?: string; onLaunch?: (args: string[], closeControl: () => void) => void;
 } = {}) {
   const server = fakeChild(12346);
   const control = fakeChild(12347);
   const groupKill = vi.spyOn(process, "kill").mockReturnValue(true);
   function expectPrivateInvocation(file: string, args: string[], options: { env: NodeJS.ProcessEnv }) {
     expect(file).toBe("tmux");
-    expect(args.slice(1, 3)).toEqual(["-S", "/unused/tmux.sock"]);
-    expect(options.env).toEqual({ HOME: "/unused", PATH: "/usr/bin:/bin", TERM: "xterm", LANG: "C" });
+    expect(args.slice(1, 3)).toEqual(["-S", join(directory, "tmux.sock")]);
+    expect(options.env).toEqual({ HOME: directory, PATH: "/usr/bin:/bin", TERM: "xterm", LANG: "C" });
   }
   const execFile = vi.fn((file: string, args: string[], options: { env: NodeJS.ProcessEnv },
     callback: (error: ExecFileException | null, stdout: string) => void) => {
@@ -41,7 +47,7 @@ function fixture(status: () => string | undefined, {
       if (args[3] === "kill-server") {
         if (wedgedShutdown) return;
         server.close();
-        control.close();
+        if (control.child.exitCode === null) control.close();
       }
       callback(null, response);
     });
@@ -56,6 +62,7 @@ function fixture(status: () => string | undefined, {
   const spawn = vi.fn((file: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
     expectPrivateInvocation(file, args, options);
     if (args[0] === "-D") return server.child;
+    onLaunch?.(args, control.close);
     if (ready) queueMicrotask(() => control.child.stdout.write("%output %0 FIXTURE READY\\015\\012\n"));
     return control.child;
   });
@@ -73,7 +80,7 @@ function fixture(status: () => string | undefined, {
       }
     }, 20);
   });
-  const runner = runnerToStop = new TmuxRunner("/unused", { execFile, execFileSync, spawn } as unknown as
+  const runner = runnerToStop = new TmuxRunner(directory, { execFile, execFileSync, spawn } as unknown as
     NonNullable<ConstructorParameters<typeof TmuxRunner>[1]>);
   return { runner, server, control, groupKill, execFile, execFileSync };
 }
@@ -104,6 +111,58 @@ it("retries a failed probe and waits for a late exit status before closing outpu
   expect(execFile.mock.calls.map(([, args]) => args[3])).toEqual(["set-option", "display-message", "kill-server"]);
   expect(server.child.exitCode).toBe(0);
   expect(control.child.exitCode).toBe(0);
+});
+
+it.runIf(process.platform === "linux").each([
+  { scenario: "failed", code: 23, missing: "pane" },
+  { scenario: "failed", code: 23, missing: "session" },
+  { scenario: "missing", code: 127, missing: "session" },
+] as const)("reports the $scenario exit when the $missing disappears before polling", async ({ scenario, code, missing }) => {
+  const directory = mkdtempSync(join(tmpdir(), "r-"));
+  try {
+    const status = vi.fn(() => undefined);
+    let wrapperPid: number;
+    const { runner, groupKill } = fixture(status, {
+      directory, ready: false,
+      onLaunch(args, closeControl) {
+        const command = args.indexOf("/usr/bin/env");
+        const child = spawnSync(args[command]!, args.slice(command + 1), {
+          cwd: directory, stdio: "ignore", timeout: 2000, killSignal: "SIGKILL",
+        });
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(code);
+        wrapperPid = child.pid;
+        if (missing === "session") closeControl();
+      },
+    });
+    await expect(runner.launch({ scenario })).rejects.toMatchObject({ reason: "start-failed" });
+    await expect(runner.exited()).resolves.toEqual({ code, signal: null });
+    await expect(runner.write("no input")).resolves.toEqual({ status: "refused", reason: "not-running" });
+    await expect(runner.key("Enter")).resolves.toEqual({ status: "refused", reason: "not-running" });
+    expect(status).toHaveBeenCalledTimes(missing === "session" ? 0 : 1);
+    expect(groupKill).toHaveBeenCalledExactlyOnceWith(-wrapperPid!, "SIGKILL");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+it("uses a recorded zero exit when the pane vanishes after launch and drains output", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "r-"));
+  try {
+    const { runner, groupKill } = fixture(() => undefined, { directory });
+    const output = (async () => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of runner.output()) chunks.push(chunk);
+      return Buffer.concat(chunks).toString();
+    })();
+    await runner.launch({});
+    writeFileSync(join(directory, "fixture-exit"), `${panePid} 0 0\n`);
+    await expect(runner.exited()).resolves.toEqual({ code: 0, signal: null });
+    await expect(output).resolves.toBe("FIXTURE READY\r\nFIXTURE END\r\n");
+    expect(groupKill).toHaveBeenCalledExactlyOnceWith(-panePid, "SIGKILL");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 it.each([

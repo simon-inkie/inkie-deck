@@ -105,7 +105,10 @@ Requirements:
   Windows, later) and kills the group. This is a requirement to prove in
   tests, not an assumed guarantee.
 - `exited()` observes exit without initiating teardown. The tmux fixture
-  polls on its existing control connection until it sees a code or signal.
+  wrapper records the command's real exit and its pane PID atomically
+  before exiting. The runner polls its existing control connection to
+  observe pane death and uses the record even if the pane or session has
+  gone. Tmux can still report a signal when a stop kills the wrapper.
   The tmux contract bounds the exit wait at 30 seconds, with separate
   headroom for setup and assertions. It still requires exact codes for
   normal exit (0) and the failed fixture (23), and a non-zero code for the
@@ -223,7 +226,8 @@ exception. Injected tmux commands cover the private socket and environment,
 the dead pane and shell guards before polling catches up, a transient
 probe failure, delayed natural exit, late and missing status, the output
 drain, a reported kill signal, and forced shutdown when tmux does not report
-death or close on request.
+death or close on request. They also cover code 23, the missing executable's
+real code and code 0 when the pane or session disappears before status is read.
 
 ## Acceptance
 
@@ -425,4 +429,33 @@ Recommendations only.
   still need verification on Linux with a permitted private socket.
 - Supersedes: the previous 8 s exit and 12 s case budgets, not the forced
   stop policy or Linux CI requirement.
+- Commits: pending.
+
+### 2026-11-19: Pick up the lost fast-exit status
+- What changed: traced the failed fixture's 13 s unknown exit to the tmux
+  adapter's readiness timeout and subsequent stop fallback. Even with
+  `remain-on-exit` enabled, the adapter depends on live tmux replies for
+  both the pane PID and exit status.
+- Why: persist the fixture's real exit independently of the pane, and
+  exercise the disappearance before status polling without real tmux.
+- Supersedes: nothing, additive.
+- Commits: pending.
+
+### 2026-11-19: Preserve exit status beyond pane lifetime
+- What changed: the fixture-only tmux pane runs a wrapper that keeps the
+  command in its terminal process group and publishes its actual code or
+  signal and the group leader PID by atomic rename before exiting. The
+  runner recovers from loss of either the PID or status reply, still drains
+  control output, and checks for the record before returning unknown on stop.
+- Why: retaining the pane and polling its metadata did not provide an
+  independent record. Both launch failures and normal exit now have one;
+  the passive exit wait cannot trigger forced cleanup.
+- Verification: 25 runner tests passed, including fake tmux disappearance
+  with codes 23, 127 and 0. Eight real tmux cases were excluded. A native PTY
+  smoke test of the wrapper confirmed input, resize, the allowlisted
+  environment, final output and code 0. Typecheck, licence, direct dash scan
+  and `git diff --check` passed. The real tmux contract under parallel load
+  remains unverified. The separate reported 15 s `test/skeleton.test.ts`
+  timeout is pre-existing and was not changed or rerun.
+- Supersedes: reliance on tmux replies alone for PID and natural exit status.
 - Commits: pending.

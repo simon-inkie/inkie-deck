@@ -1,9 +1,11 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import {
   buildCaptureViewportArgs, buildSendKeysNamedArgs, buildSendKeysTextArgs,
   SHELL_PROMPT_RE, type PaneKey,
@@ -22,6 +24,7 @@ const exitProbeMs = 500;
 const stopWaitMs = 3000;
 const shutdownMs = 1000;
 const paneExitFormat = "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}";
+const exitWrapper = fileURLToPath(new URL("./fixture-exit.mjs", import.meta.url));
 const commandOptions = { encoding: "utf8", killSignal: "SIGKILL", timeout: commandMs } as const;
 const commands = { execFile, execFileSync, spawn };
 
@@ -52,18 +55,20 @@ function decodeOutput(text: string): Buffer {
 export class TmuxRunner extends FixtureRunner {
   readonly kind = "tmux";
   private readonly socket: string;
+  private readonly statusFile: string;
   private readonly env: NodeJS.ProcessEnv;
   private server?: ReturnType<typeof track>;
   private control?: ReturnType<typeof track>;
   private display?: (format: string, timeout: number) => Promise<string | undefined>;
   private poll?: NodeJS.Timeout;
   private stopTimer?: NodeJS.Timeout;
-  private paneDead = false;
+  private drainOutput = false;
   private disposing = false;
 
   constructor(private readonly directory: string, private readonly tmux = commands) {
     super(readinessMs);
     this.socket = join(directory, "tmux.sock");
+    this.statusFile = join(directory, "fixture-exit");
     this.env = fixtureEnvironment(directory);
   }
 
@@ -101,7 +106,8 @@ export class TmuxRunner extends FixtureRunner {
     const control = this.tmux.spawn("tmux", ["-N", "-S", this.socket, "-u", "-C", "new-session",
       "-s", session, "-n", window, "-c", this.directory,
       "-x", String(spec.cols ?? 80), "-y", String(spec.rows ?? 24),
-      "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), file, ...args,
+      "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
+      process.execPath, exitWrapper, this.statusFile, file, ...args,
     ], { env, stdio: ["pipe", "pipe", "ignore"] });
     this.control = track(control);
     control.stdin.on("error", () => {});
@@ -133,8 +139,14 @@ export class TmuxRunner extends FixtureRunner {
       if (output) this.data(decodeOutput(output[1]!));
     });
     const pid = await this.untilStarted(control, deadline, "find the fixture pane", async () => {
+      const recorded = this.readExit();
+      if (recorded) return recorded.pid;
       const pid = Number((await this.query("display-message", "-p", "-t", target, "#{pane_pid}")).trim());
       return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
+    }).catch((error: unknown) => {
+      const recorded = this.readExit();
+      if (recorded) return recorded.pid;
+      throw error;
     });
     this.schedulePoll();
     return pid;
@@ -159,26 +171,45 @@ export class TmuxRunner extends FixtureRunner {
     if (!this.disposing) this.poll = setTimeout(() => { void this.checkExit(); }, exitPollMs);
   }
 
-  private async checkExit(): Promise<void> {
-    let info: ExitInfo | undefined;
+  private readExit(): { pid: number; info: ExitInfo } | undefined {
     try {
-      const response = await this.display?.(paneExitFormat, exitProbeMs);
-      const [dead, status, signal] = response?.trimEnd().split(" ") ?? [];
-      if (dead === "1") {
-        this.paneDead = true;
-        const signalName = signal?.startsWith("SIG") ? signal : `SIG${signal}`;
-        const signalNumber = Number(signal) || constants.signals[signalName as NodeJS.Signals];
-        if (signalNumber && signalNumber > 0) info = { code: null, signal: signalNumber };
-        else if (status && /^\d+$/.test(status)) info = { code: Number(status), signal: null };
-      }
+      const fields = /^(\d+) (\d+) (\d+)\n$/.exec(readFileSync(this.statusFile, "utf8"));
+      if (!fields) return;
+      const pid = Number(fields[1]);
+      if (!Number.isSafeInteger(pid) || pid <= 1) return;
+      const code = Number(fields[2]);
+      const signal = Number(fields[3]);
+      return { pid, info: signal ? { code: null, signal } : { code, signal: null } };
+    } catch {
+      return;
+    }
+  }
+
+  private async checkExit(): Promise<void> {
+    let response: string | undefined;
+    try {
+      response = await this.display?.(paneExitFormat, exitProbeMs);
     } catch {}
     if (this.disposing) return;
+    const [dead, status, signal] = response?.trimEnd().split(" ") ?? [];
+    let info = dead === "0" ? undefined : this.readExit()?.info;
+    if (dead === "1" || info) this.drainOutput = true;
+    if (!info && dead === "1") {
+      const signalName = signal?.startsWith("SIG") ? signal : `SIG${signal}`;
+      const signalNumber = Number(signal) || constants.signals[signalName as NodeJS.Signals];
+      if (signalNumber && signalNumber > 0) info = { code: null, signal: signalNumber };
+      else if (status && /^\d+$/.test(status)) info = { code: Number(status), signal: null };
+    }
     if (info) await this.finish(info);
     else this.schedulePoll();
   }
 
   protected override onStopRequested(): void {
-    this.stopTimer = setTimeout(() => { void this.finish({ code: null, signal: null }); }, stopWaitMs);
+    this.stopTimer = setTimeout(() => {
+      const recorded = this.readExit();
+      if (recorded) this.drainOutput = true;
+      void this.finish(recorded?.info ?? { code: null, signal: null });
+    }, stopWaitMs);
   }
 
   protected async dispose(): Promise<void> {
@@ -187,7 +218,7 @@ export class TmuxRunner extends FixtureRunner {
     clearTimeout(this.stopTimer);
     const children = [this.server, this.control].filter((tracked) => tracked !== undefined);
     const closed = Promise.all(children.map((tracked) => tracked.closed)).then(() => {});
-    if (this.paneDead) await this.display?.("drained", commandMs).catch(() => {});
+    if (this.drainOutput) await this.display?.("drained", commandMs).catch(() => {});
     if (this.server && alive(this.server.child)) {
       await this.query("kill-server").catch(() => {});
     }
