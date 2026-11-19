@@ -144,4 +144,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   checks passed. Both default leak checks hit `spawnSync git EPERM`; the
   explicit working-tree file scan passed. The dash check timed out; a direct
   full-tree scan found no banned dashes.
-- Commits: pending
+- Commits: 523d594 refactor(runner): promote the runner out of tests for slice 2 (#240)
