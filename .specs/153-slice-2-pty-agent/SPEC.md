@@ -214,4 +214,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   four headless integration tests). Typecheck, boundaries, licence, library
   version, direct dash and whitespace checks passed. Leak scripts hit
   `spawnSync git EPERM`; the explicit working-tree file scan passed.
-- Commits: pending
+- Commits: 5bec1b0 feat(runner): route send, push and terminal view through the PTY runner for opted-in agents (#240)
