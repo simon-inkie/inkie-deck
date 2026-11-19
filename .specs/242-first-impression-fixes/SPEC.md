@@ -43,4 +43,4 @@ None for this copy-only change.
   version, dash and whitespace checks passed. Git discovery in the leak gate
   was blocked by the sandbox; an explicit list of regular files passed.
 - Supersedes: nothing, additive.
-- Commits: pending
+- Commits: ba0c957 docs: no-auth warning up front, honest breadth wording, drop pre-extraction copy (#242)
