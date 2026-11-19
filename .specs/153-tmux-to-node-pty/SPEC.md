@@ -23,6 +23,10 @@ input to a terminal is added. The slice also records an inventory of what
 a later live change would touch, and the drained-cutover rule any such
 change must follow.
 
+Linux validation here exercises the native PTY; this sandbox blocks the
+private Unix socket needed by tmux. The real tmux contract remains a CI
+requirement; local stubs are not a substitute for it.
+
 ## Motivation, briefly
 
 Deck infers from the screen whether a message landed and whether an agent
@@ -100,6 +104,15 @@ Requirements:
   PTY runner starts the child in its own process group (a job object on
   Windows, later) and kills the group. This is a requirement to prove in
   tests, not an assumed guarantee.
+- The tmux fixture bounds exit observation and teardown. If the pane's
+  exit status cannot be observed, `{ code: null, signal: null }` means
+  unknown, not success. The contract allows that result for a stopped pane,
+  but still requires exact codes for normal exit (0) and the failed fixture
+  (23), and a non-zero code for the missing fixture.
+- `exited()` waits up to three seconds for tmux to report exit before
+  forcing cleanup. A dead pane gets up to one second to publish its status.
+  Shutdown gives queued control output a chance to drain, then requests
+  server shutdown and forcibly kills any owned tmux process that stays up.
 - `caps.deliveryAck` and `caps.stateEvents` are false. A write is reported
   as written, never as delivered or accepted.
 
@@ -143,27 +156,33 @@ that platform. That note is evidence for that version and platform only.
 
 ## Touch-point inventory
 
-Paths beginning with `bin/` are in `packages/base`; `app/`, `scripts/` and
-`deploy/` below are in `packages/deck`. Nothing in this table changes in
-this slice.
+Paths beginning with `bin/` are in `packages/base`; `app/` and `deploy/`
+are in `packages/deck`. This is the inventory of live coupling and the
+configuration, verification and documentation that depend on it. The live
+paths are unchanged in this slice.
 
 | Touch point | Reads or writes today | Later action |
 | --- | --- | --- |
 | `bin/inbox-push` | Reads inbox and pane state; sends messages and Enter to an exact live pane. | Guard admission and replace tmux dispatch for migrated agents. Keep persisted messages. |
+| `bin/inbox` | Produces the single-line card payload sized for `inbox-push` and literal `send-keys`. | Revisit the transport-specific length and newline constraints separately from card rendering. |
 | `app/routes/threads.$agent.tsx`, `app/components/MessageBubble.tsx` | The route persists messages before wake/push, serves terminal snapshots and sends pane fingerprints to the chat view. The bubble uses changes as a working hint. | Guard dispatch and replace capture and the working hint for migrated agents, not persistence. |
 | `app/routes/api.tmux-send.tsx`, `app/lib/instance.server.ts` | Guard browser text and named-key submission; read the instance feature flag and agent/window identity. | Guard by ownership and input permission; retire the legacy endpoint only after tmux callers are gone. |
 | `app/lib/tmux.server.ts`, `app/lib/tmux-submit.ts` | List windows, capture rendered output, classify panes, wake/push and verify text and Enter against viewport samples. | Replace dispatch and capture; guard the tmux-only heuristics for legacy panes and retire them after cutover. |
 | `bin/stuck-pane-sweep.sh`, `bin/pane-idle` | Read pane state and terminal prompts; report stuck agents or send an escalation to a routing pane. `pane-idle` provides the shared shell classification. | Guard against acting on migrated agents, replace the state source and escalation dispatch, then retire the scrape-specific rules. |
 | `bin/activity-sweep.sh`, `app/lib/activity.server.ts`, `app/lib/activity.shared.ts` | Sweep panes and other signals into activity snapshots including busy/idle, context and recent work. Deck reads and interprets the snapshots. | Replace pane-derived fields at the producer; preserve the snapshot contract or migrate its readers together. |
-| `bin/activity`, `app/components/ActivityPanel.tsx`, `app/routes/tmux.tsx`, `app/routes/shell.tsx` | Read the activity view for agent status, context and escalations. The Team route joins it against tmux window names. | Replace the tmux window join; preserve non-pane context and stale/offline semantics, including for CLI readers. |
+| `bin/activity`, `app/components/ActivityPanel.tsx`, `app/routes/tmux.tsx`, `app/routes/shell.tsx` | Read the activity view for agent status, context and escalations. The Activity route (`/tmux`, formerly Team) joins it against tmux window names and the panel links to thread panes. | Replace the tmux window join and pane links; preserve non-pane context and stale/offline semantics, including for CLI readers. |
 | `app/lib/codex-quota-display.server.ts`, `app/lib/codex-quota-observer.server.ts`, `app/lib/codex-quota-store.server.ts`, `app/components/CodexQuotaStatus.tsx` | Read and store quota observations separately from terminal text; the layout surfaces the result. | Guard that runner changes preserve this independent source; do not replace it with terminal scraping. |
-| `app/components/TmuxPane.tsx`, `app/routes/tmux.tsx`, `app/routes/threads.$agent.tsx` | Poll loaders for viewport snapshots, display the panes and post terminal input to the tmux route. | Replace presentation and polling only with an authorised terminal transport; guard old input. |
-| `app/routes.ts`, `app/components/AppShell.tsx` | Register and link the Team and per-thread terminal surfaces. | Guard availability and retire tmux-specific links/routes once unused. |
+| `app/components/TmuxPane.tsx`, `app/routes/threads.$agent.tsx` | Poll the thread loader for viewport snapshots, display the pane and post terminal input to the tmux send action. | Replace presentation and polling only with an authorised terminal transport; guard old input. |
+| `app/routes.ts`, `app/components/AppShell.tsx` | Register and link the Activity and per-thread terminal surfaces. | Guard availability and retire tmux-specific links/routes once unused. |
 | `bin/boot-agents.sh`, `bin/workspace.sh`, `bin/claude-session.sh`, `bin/claude-binary-check.sh` | Own tmux workspace/agent start and resume; validate the CLI expected to run in a pane. | Guard single ownership during draining; replace migrated launch and resume paths. |
 | `bin/codex-provider-switch` | Reads pane identity, working directory and quiescence; interrupts, launches and checks the selected CLI in that pane. | Guard against operating on a migrated agent; replace only with equivalent ownership and rollback checks. |
 | `bin/create-agent.sh`, `app/lib/agent-model.server.ts`, `app/routes/api.agent-model.tsx`, `app/components/ModelSelector.tsx` | Create agent configuration or persist the next-launch model; do not switch an active pane through the model selector. | Preserve provisioning and persist-only behaviour; guard backend-specific identity assumptions. |
 | `app/lib/cron.server.ts`, `app/lib/cron-validate.ts`, `app/routes/scheduler.tsx`, `app/routes/api.cron.tsx` | Validate and store schedules; generated agent-mode jobs load a tmux buffer, paste and press Enter. Script-mode jobs are separate. | Replace agent-mode jobs and guard already-installed jobs during drain; leave script mode alone. |
-| `scripts/dev.mjs`, `deploy/deck.service`, setup and operator docs | Configure or describe tmux prerequisites and runtime assumptions. | Guard legacy setup while tmux is supported; retire its prerequisite and update the docs when it is removed. |
+| `packages/deck/scripts/dev.mjs`, `packages/deck/.env.example`, `deploy/deck.service` | Select the tmux session, gate the terminal in the development sandbox, and describe the host/session assumptions for deployment. | Keep the legacy gate and deployment requirements while tmux is supported. |
+| `INSTALL.md`, `README.md`, `docs/adding-an-agent.md`, `packages/base/README.md`, `packages/base/docs/{conformance,protocol,tooling-review}.md`, `packages/deck/package.json` | Describe the tmux prerequisite, setup, resume, screen-derived behaviour and protocol entry points. | Update published prerequisites, operational examples and package metadata when their behaviour changes. |
+| `packages/base/test/`, `packages/deck/test/`, `packages/deck/e2e/{setup.mjs,start-layout-server.sh,flows/tmux-tab.test.ts,layout/escalation-header.test.ts}` | Stub tmux subprocesses and assert the pane protocol, idle and push behaviour, route gates, terminal UI and scheduling; browser fixtures rely on the disabled or not-configured view. | Keep legacy coverage; add equivalent runner/transport coverage before changing the corresponding assumptions. |
+| `.github/workflows/ci.yml`, `.gitlab-ci.yml`, `scripts/lib-version-gate.mjs` | Supply tmux for the private contract suite; gate compatibility of the shared `pane-idle` library used by legacy scripts. | Keep tmux in CI while the adapter is supported and keep the library gate while its callers remain. |
+| `rig/stages/{02-toolchain,04-node20-floor,06-install-try-it,08-install-agents}.mjs`, `rig/{expected.mjs,lib/docrun.mjs,lib/images.mjs,stages/index.mjs,README.md,container-image-note.md}` | Check the documented tmux prerequisite and probe real panes in the isolated installation rig; encode the tool and image expectations. | Keep legacy install conformance separately from tests of any replacement backend. |
 
 ## Drained cutover rule
 
@@ -186,15 +205,22 @@ the user's) and `PtyRunner`:
 
 - delayed output is delivered in order and complete;
 - a failed launch is reported as a failure;
-- `cancel` interrupts the fixture's current task;
+- `cancel` interrupts the fixture's current task, and it remains cancelled
+  when the original completion deadline passes;
 - after `stop`, and after the fixture exits on its own, no child process
-  remains (checked by process group);
+  remains (checked by process group with a descendant that ignores SIGHUP
+  and SIGTERM);
 - `write` and `key` after exit are refused, and nothing reaches a shell;
 - `resize` is seen by the fixture.
 
 Plus: the fixture registry refuses a non-temporary path; the import-graph
-test; Deck runs with node-pty absent; the existing Deck and base test
-suites pass unchanged.
+test; the existing Deck and base test suites pass unchanged. The
+missing-dependency probe runs the gated Deck send action in memory without
+a listener and checks lazy load, missing or broken node-pty, and a spawn
+exception. Injected tmux commands cover the private socket and environment,
+the dead pane and shell guards before polling catches up, a transient
+probe failure, late and missing status, the output drain, a reported kill
+signal, and forced shutdown when tmux does not report death or close on request.
 
 ## Acceptance
 
@@ -277,3 +303,55 @@ Recommendations only.
   leak gate stopped before scanning with `spawnSync git EPERM`.
 - Supersedes: nothing, additive.
 - Commits: pending maintainer commit.
+
+- 2026-11-18: Wait for an exit status or signal before finalising a dead tmux pane; three simulated outcomes passed, but all 30 parallel suite runs were blocked by the sandbox's socket restriction.
+
+### 2026-11-18: Bound the tmux fixture lifecycle
+- What changed: bound startup, exit observation and private tmux shutdown,
+  preserving exact status and output checks where the fixture exits normally.
+- Why: a dead pane can lack status, and a private server or control client
+  that does not close can otherwise stall both the test and its teardown.
+- Timing: server and pane discovery share a four-second budget rather than
+  separate one-second windows; readiness gets five rather than three seconds
+  to allow for tmux startup and the fixture starting under load. Only the
+  live tmux contract gets a longer per-test budget (12 rather than 5 seconds)
+  to cover startup, exit and cleanup in one case. The per-command and hook
+  timeouts are unchanged.
+- Supersedes: the unbounded status wait in the preceding entry.
+- Commits: pending maintainer commit.
+
+### 2026-11-19: Review the fixture-only slice
+- What changed: picked up the implementation commit and the uncommitted
+  tmux lifecycle changes for review.
+- Why: check the contract and cleanup against isolated fixtures, verify the
+  pinned optional dependency offline, and finish the tmux inventory without
+  changing production or running the full suite.
+- Supersedes: nothing, additive.
+- Commits: pending.
+
+### 2026-11-19: Finish the runner contract and inventory
+- What changed: made cancellation observable through the missed completion
+  deadline, required a signal-resistant descendant for group cleanup, and
+  checked both text and named-key refusal. Stubs exercise the dead-pane and
+  shell guards before the exit poll. All tmux subprocesses use the private
+  socket and allowlisted environment. Launch failures stay typed even if
+  teardown fails. Completed the inventory, including the card payload,
+  environment, tests and installation rig.
+- Dependency: the lockfile pins the optional MIT `node-pty` at `1.1.0` and
+  `node-addon-api` at `7.1.1`; both are in the local pnpm store. The installed
+  Linux binding loads and runs the real fixture. No new dependency, stub
+  replacement, reinstall or fresh native build was needed. The absence,
+  broken binding and spawn error probes inject failures without launching
+  a native child. The Deck send action is called directly with tmux disabled
+  and subprocesses forbidden, not through a listener.
+- Verification and deviations: 18 runner tests passed, including all eight
+  native PTY cases and six tmux stub cases. All eight real tmux cases were
+  blocked before fixture launch by `Operation not permitted` on the private
+  Unix socket. Linux CI must still verify the real tmux contract. Typecheck,
+  licence, direct dash scan and diff checks passed. Both leak commands
+  stopped with `spawnSync git EPERM` before scanning. The full suite, clean
+  install, live Deck startup, live CLI conformance and non-Linux platforms
+  were not tested. No production routes or scripts changed.
+- Supersedes: the previous local verification results, not the scope or
+  acceptance criteria.
+- Commits: pending.

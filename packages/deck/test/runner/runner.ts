@@ -65,6 +65,8 @@ export abstract class FixtureRunner implements Runner {
   private readinessTail = "";
   protected pid?: number;
 
+  constructor(private readonly readinessTimeout = 3000) {}
+
   protected abstract start(spec: SessionSpec): Promise<number>;
   protected abstract dispose(): Promise<void>;
   protected abstract send(value: string, named: boolean): WriteResult;
@@ -74,7 +76,7 @@ export abstract class FixtureRunner implements Runner {
   async launch(spec: SessionSpec): Promise<SessionHandle> {
     if (this.state !== "new") throw new LaunchFailure("start-failed", "Runner is single-use.");
     this.state = "starting";
-    const timeout = setTimeout(() => this.ready.resolve(false), 3000);
+    const timeout = setTimeout(() => this.ready.resolve(false), this.readinessTimeout);
     try {
       this.starting = this.start(spec).then((pid) => { this.pid = pid; return pid; });
       const pid = await this.starting;
@@ -84,7 +86,12 @@ export abstract class FixtureRunner implements Runner {
       this.state = "running";
       return { pid };
     } catch (error) {
-      await this.stop("kill");
+      try {
+        await this.stop("kill");
+      } catch (cleanupError) {
+        throw new LaunchFailure(error instanceof LaunchFailure ? error.reason : "start-failed",
+          "Fixture launch and cleanup failed.", new AggregateError([error, cleanupError]));
+      }
       if (error instanceof LaunchFailure) throw error;
       throw new LaunchFailure("start-failed", "Could not start the fixture.", error);
     } finally {
@@ -108,6 +115,7 @@ export abstract class FixtureRunner implements Runner {
     this.state = "ended";
     this.ready.resolve(false);
     try {
+      await this.starting?.catch(() => {});
       try {
         if (this.pid !== undefined) signalGroup(this.pid, "SIGKILL");
       } finally {
