@@ -42,8 +42,20 @@ export function resetRuntime(root) {
   mkdirSync(p.runtimeDir, { recursive: true });
   cpSync(source, p.runtimeInbox, { recursive: true });
   mkdirSync(p.runtimeAttachments, { recursive: true });
-  // Seed the projects runtime dir from fixtures/projects.
-  cpSync(path.join(root, "fixtures", "projects"), p.runtimeProjects, { recursive: true });
+  // Demo attachments (the images and files the demo threads link to), when
+  // present. Same <agent>/mc/<file> shape the attachments route serves.
+  const demoAttachments = path.join(root, "fixtures", "demo-attachments");
+  if (existsSync(demoAttachments)) {
+    cpSync(demoAttachments, p.runtimeAttachments, { recursive: true });
+  }
+  // Seed the projects runtime dir from fixtures/demo-projects, falling back to
+  // fixtures/projects. The demo board is separate because the e2e suite counts
+  // the cards in fixtures/projects column by column.
+  const demoProjects = path.join(root, "fixtures", "demo-projects");
+  const projectsSource = existsSync(demoProjects)
+    ? demoProjects
+    : path.join(root, "fixtures", "projects");
+  cpSync(projectsSource, p.runtimeProjects, { recursive: true });
   // DATA_ROOT for MC state files (queue state) - must exist at boot.
   mkdirSync(p.runtimeData, { recursive: true });
   mkdirSync(p.runtimeWorkspace, { recursive: true });
