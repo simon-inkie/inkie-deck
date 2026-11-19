@@ -12,4 +12,3 @@ Test delayed output, failed launch, cancellation, process cleanup and input refu
 ## Origin and qualification
 
 Migrated from an internal tracker, expanded by maintainer direction on 18 November 2026. The existing investigation is background, not an accepted implementation contract. Native Windows, Linux and macOS acceptance requires separate evidence.
-

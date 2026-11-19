@@ -355,3 +355,18 @@ Recommendations only.
 - Supersedes: the previous local verification results, not the scope or
   acceptance criteria.
 - Commits: 622683a feat(runner): finish the fixture-only runner slice with stronger cleanup tests (#153)
+
+### 2026-11-19: Pick up the gate failures
+- What changed: removed the trailing blank line from the issue copy and
+  made the live tmux contract skip with a reason when a private Unix socket
+  probe gets a permission error. Other errors and contract assertions stay
+  unchanged.
+- Why: the clean-tree Deck run showed eight tmux launch failures. A direct
+  private socket probe confirmed `EPERM` before any fixture could run.
+- Verification: 26 runner tests passed when the private socket was allowed;
+  with binding denied, 18 passed and eight skipped with the stated reason.
+  The full Deck run timed out after reporting other sandbox failures in
+  unchanged suites. The dirty-tree guard separately rejected these edits.
+- Supersedes: the sandbox-only tmux launch failures in the local checks,
+  not the requirement to run the live contract in Linux CI.
+- Commits: pending.

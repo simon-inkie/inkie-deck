@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixtureEnvironment } from "./fixture-command.js";
 import { fixtureRegistry } from "./fixture-registry.js";
 import type { Runner } from "./runner.js";
@@ -26,8 +27,30 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
   let runner: Runner;
   let transcript: string;
   let drained: Promise<void>;
+  let tmuxSocketRestriction: string | undefined;
 
-  beforeEach(() => {
+  beforeAll(async () => {
+    if (kind !== "tmux") return;
+    const probeDirectory = mkdtempSync(join(tmpdir(), "r-"));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const server = createServer();
+        server.once("error", reject);
+        server.listen(join(probeDirectory, "tmux.sock"), () => {
+          server.close((error) => error ? reject(error) : resolve());
+        });
+      });
+    } catch (error) {
+      const { code } = error as NodeJS.ErrnoException;
+      if (code !== "EPERM" && code !== "EACCES") throw error;
+      tmuxSocketRestriction = `Permission denied for the private tmux Unix socket (${code}).`;
+    } finally {
+      rmSync(probeDirectory, { force: true, recursive: true });
+    }
+  });
+
+  beforeEach(({ skip }) => {
+    if (tmuxSocketRestriction) skip(tmuxSocketRestriction);
     directory = mkdtempSync(join(tmpdir(), "r-"));
     runner = fixtureRegistry(directory)(kind);
     transcript = "";
@@ -39,6 +62,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
   });
 
   afterEach(async () => {
+    if (tmuxSocketRestriction) return;
     try {
       await runner.stop("kill");
       await drained;
