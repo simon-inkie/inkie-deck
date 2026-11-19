@@ -1,0 +1,267 @@
+import { spawn } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join, parse } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { fixtureEnvironment } from "./fixture-command.js";
+import { fixtureRegistry } from "./fixture-registry.js";
+import { loadNodePty } from "./pty-runner.js";
+import type { Runner } from "./runner.js";
+
+const inCI = process.env.CI !== undefined;
+let nodePtyRestriction: string | undefined;
+if (process.platform === "linux" || inCI) {
+  try {
+    loadNodePty();
+  } catch (error) {
+    nodePtyRestriction = `${String(error)}\nRun pnpm install --frozen-lockfile with optional dependencies enabled to install node-pty.`;
+  }
+}
+
+it.runIf(inCI)("requires node-pty in CI", () => {
+  expect(nodePtyRestriction, nodePtyRestriction).toBeUndefined();
+});
+
+function groupMembers(group: number): number[] {
+  return readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)).flatMap((pid) => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const [state, , processGroup] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      return Number(processGroup) === group && state !== "Z" ? [Number(pid)] : [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return [];
+    }
+  });
+}
+
+describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s runner contract", (kind) => {
+  const exitTimeout = kind === "tmux" ? 30_000 : 4000;
+  const timeout = kind === "tmux" ? exitTimeout + 30_000 : 5000;
+  const waitTimeout = kind === "tmux" ? 10_000 : 1500;
+  const groupTimeout = kind === "tmux" ? waitTimeout : 1000;
+  let directory: string;
+  let runner: Runner;
+  let transcript: string;
+  let drained: Promise<void>;
+  let skipReason = kind === "pty" ? nodePtyRestriction : undefined;
+
+  beforeAll(async () => {
+    if (kind !== "tmux") return;
+    const probeDirectory = mkdtempSync(join(tmpdir(), "r-"));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const server = createServer();
+        server.once("error", reject);
+        server.listen(join(probeDirectory, "tmux.sock"), () => {
+          server.close((error) => error ? reject(error) : resolve());
+        });
+      });
+    } catch (error) {
+      const { code } = error as NodeJS.ErrnoException;
+      if (code !== "EPERM" && code !== "EACCES") throw error;
+      skipReason = `Permission denied for the private tmux Unix socket (${code}).`;
+    } finally {
+      rmSync(probeDirectory, { force: true, recursive: true });
+    }
+  }, timeout);
+
+  beforeEach(({ skip }) => {
+    if (skipReason) skip(skipReason);
+    directory = mkdtempSync(join(tmpdir(), "r-"));
+    runner = fixtureRegistry(directory)(kind);
+    transcript = "";
+    drained = (async () => {
+      const decoder = new TextDecoder();
+      for await (const chunk of runner.output()) transcript += decoder.decode(chunk, { stream: true });
+      transcript += decoder.decode();
+    })();
+  });
+
+  afterEach(async () => {
+    if (skipReason) return;
+    try {
+      await runner.stop("kill");
+      await drained;
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  }, timeout);
+
+  async function waitFor(text: string, timeout = waitTimeout) {
+    await vi.waitFor(() => expect(transcript).toContain(text), { timeout });
+  }
+
+  async function waitForExit() {
+    const timer = new AbortController();
+    try {
+      return await Promise.race([runner.exited(), delay(exitTimeout, undefined, { signal: timer.signal }).then(() => {
+        throw new Error(`${kind} runner did not report exit within ${exitTimeout} ms.`);
+      })]);
+    } finally {
+      timer.abort();
+    }
+  }
+
+  async function submit(text: string) {
+    expect(await runner.write(text)).toEqual({ status: "written" });
+    expect(await runner.key("Enter")).toEqual({ status: "written" });
+  }
+
+  it("waits for readiness and streams delayed bytes in order through exit", { timeout }, async () => {
+    expect(runner.kind).toBe(kind);
+    expect(runner.caps).toEqual({ terminalAttach: false, deliveryAck: false, stateEvents: false });
+    const launched = runner.launch({ scenario: "slow" });
+    expect(await runner.write("not ready")).toEqual({ status: "refused", reason: "not-running" });
+    await launched;
+    await waitFor("THIRD frame");
+    await submit("exit");
+    expect(await waitForExit()).toEqual({ code: 0, signal: null });
+    await drained;
+    expect(transcript).toBe("\x1b[?2004hFIXTURE READY\r\n>\r\nFIRST \\ frame\r\n" +
+      "SECOND \u00a3 frame\r\nTHIRD frame\r\nfixture@terminal:~$\r\nFIXTURE END\r\n");
+  });
+
+  it.each(["failed", "missing"] as const)("reports a %s launch without accepting input", { timeout }, async (scenario) => {
+    await expect(runner.launch({ scenario })).rejects.toMatchObject({ name: "LaunchFailure", reason: "start-failed" });
+    const { code } = await waitForExit();
+    if (scenario === "failed") expect(code).toBe(23);
+    else {
+      expect(code).not.toBeNull();
+      expect(code).toBeGreaterThan(0);
+    }
+    expect(await runner.write("not running")).toEqual({ status: "refused", reason: "not-running" });
+    expect(await runner.key("Enter")).toEqual({ status: "refused", reason: "not-running" });
+  });
+
+  it("resizes the terminal and handles fixture input", { timeout }, async () => {
+    await runner.launch({});
+    await runner.resize(96, 32);
+    await waitFor("SIZE 96x32");
+    await submit("confirm");
+    await waitFor("CONFIRM? [Enter/Escape]");
+    expect(await runner.key("Escape")).toEqual({ status: "written" });
+    await waitFor("DECLINED");
+    await submit(`\x1b[200~${"paste ".repeat(20)}\x1b[201~`);
+    await waitFor("[long paste]");
+    await submit("environment");
+    await waitFor(kind === "pty" ? "ENV HOME,LANG,PATH,PWD,TERM\r\n" : "ENV HOME,LANG,PATH,TERM\r\n");
+  });
+
+  it("cancels the active task without letting it finish", { timeout }, async () => {
+    await runner.launch({});
+    await submit("work");
+    await waitFor("TASK STARTED");
+    await runner.cancel();
+    await waitFor("TASK CANCELLED");
+    await waitFor("TASK DEADLINE", Math.max(waitTimeout, 3500));
+    expect(transcript).not.toContain("TASK FINISHED");
+  });
+
+  it.each(["graceful", "kill", "natural"] as const)("cleans the fixture process group on %s exit", { timeout }, async (mode) => {
+    const { pid } = await runner.launch({});
+    await submit("descendant");
+    await vi.waitFor(() => expect(transcript).toMatch(/DESCENDANT \d+\r\n/), { timeout: groupTimeout });
+    const descendant = Number(/DESCENDANT (\d+)\r\n/.exec(transcript)?.[1]);
+    expect(groupMembers(pid)).toEqual(expect.arrayContaining([pid, descendant]));
+
+    if (mode === "natural") {
+      await submit("exit");
+      expect(await waitForExit()).toEqual({ code: 0, signal: null });
+    } else await runner.stop(mode);
+    await drained;
+    const beforeRefusal = transcript;
+    const refused = { status: "refused", reason: "not-running" };
+    expect(await runner.write("must not reach a shell")).toEqual(refused);
+    expect(await runner.key("Enter")).toEqual(refused);
+    expect(transcript).toBe(beforeRefusal);
+    if (mode === "natural") expect(transcript).toContain("fixture@terminal:~$");
+    expect(transcript).not.toContain("must not reach a shell");
+    await vi.waitFor(() => expect(groupMembers(pid)).toEqual([]), { timeout: groupTimeout });
+  });
+});
+
+it.runIf(process.platform === "linux")("rejects the temp root, a non-temp path and a symlink escape", () => {
+  const directory = mkdtempSync(join(tmpdir(), "r-"));
+  try {
+    const outside = parse(directory).root;
+    const escape = join(directory, "escape");
+    symlinkSync(outside, escape, "junction");
+    for (const path of [tmpdir(), outside, escape]) {
+      expect(() => fixtureRegistry(path)).toThrow(/strictly inside the temporary directory/);
+    }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+it("requires an explicit runner selection", () => {
+  const directory = mkdtempSync(join(tmpdir(), "r-"));
+  try {
+    const select = fixtureRegistry(directory);
+    expect(() => Reflect.apply(select, undefined, [])).toThrow("Unknown fixture runner.");
+    expect(select("tmux").kind).toBe("tmux");
+    expect(select("pty").kind).toBe("pty");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+it.runIf(process.platform === "linux")("keeps Deck usable without node-pty and reports native launch failures", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "r-"));
+  try {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import Module, { syncBuiltinESMExports } from "node:module";
+      import childProcess from "node:child_process";
+      for (const name of ["spawn", "spawnSync", "execFile", "execFileSync"]) {
+        childProcess[name] = () => assert.fail("Unexpected subprocess in the dependency probe");
+      }
+      syncBuiltinESMExports();
+      const load = Module._load;
+      let attempts = 0;
+      let native = () => { throw Object.assign(new Error("node-pty is missing"), { code: "MODULE_NOT_FOUND" }); };
+      Module._load = function (name, ...args) {
+        if (name !== "node-pty") return load.call(this, name, ...args);
+        attempts++;
+        return native();
+      };
+      const { action } = await import("./app/routes/api.tmux-send.tsx");
+      const url = new URL("http://127.0.0.1:5174/api/tmux-send");
+      const request = new Request(url, {
+        method: "POST",
+        headers: { host: url.host, origin: url.origin, "sec-fetch-site": "same-origin" },
+        body: new URLSearchParams({ window: "fixture", key: "Enter" }),
+      });
+      assert.deepEqual(await action({ request }), { ok: false, error: "The terminal is not available on this instance." });
+      const { fixtureRegistry } = await import("./test/runner/fixture-registry.ts");
+      const select = fixtureRegistry(process.argv[1]);
+      const runner = select("pty");
+      assert.equal(attempts, 0);
+      await assert.rejects(runner.launch({}), { reason: "unavailable", message: /node-pty is missing/ });
+      assert.equal(attempts, 1);
+      native = () => { throw new Error("native binding could not load"); };
+      await assert.rejects(select("pty").launch({}), { reason: "unavailable", message: /binding could not load/ });
+      const failure = new Error("native spawn failed");
+      native = () => ({ spawn: () => { throw failure; } });
+      await assert.rejects(select("pty").launch({}), { reason: "start-failed", cause: failure });
+      assert.equal(attempts, 3);
+    `, directory], {
+      env: { ...fixtureEnvironment(directory), MC_TMUX_ENABLED: "0" },
+      stdio: ["ignore", "ignore", "pipe"], timeout: 4000, killSignal: "SIGKILL",
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Missing-dependency probe exited with ${signal ?? code}: ${stderr}`));
+      });
+    });
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});

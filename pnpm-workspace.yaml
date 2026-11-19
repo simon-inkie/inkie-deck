@@ -1,3 +1,6 @@
 packages:
   - packages/base
   - packages/deck
+
+onlyBuiltDependencies:
+  - node-pty
