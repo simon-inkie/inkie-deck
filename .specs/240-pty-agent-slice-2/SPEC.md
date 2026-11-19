@@ -350,4 +350,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   boot checks; no product change was needed. The first runner run exposed a
   test isolation gap: EEXIST recovery now remembers a locked fixture. Teardown
   now clears that temporary claim through recovery before removing its home.
-- Commits: pending
+- Commits: 64f6f47 fix(runner): base guards key on the .runner file, stop works after opt-in removal, recovery retried on start (#240)
