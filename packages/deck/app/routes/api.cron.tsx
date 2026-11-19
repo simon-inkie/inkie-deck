@@ -12,7 +12,8 @@
  * GET 404s and POST is refused. With no `crontab` on PATH, GET returns an
  * empty list with crontabOk: false and POST is refused before any write.
  *
- * The write path also requires local or explicitly enabled remote access.
+ * Writes require an allowed Host and same-origin proof, plus local or
+ * explicitly enabled remote access.
  * The crontab runner is never called here directly - cron.server.ts is the seam.
  * Zod-at-boundary, never-throws, degrades to { ok: false }.
  * ASCII only - no em-dashes.

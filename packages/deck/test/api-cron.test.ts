@@ -71,6 +71,7 @@ function restore(key: string, value: string | undefined): void {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", undefined);
+  vi.stubEnv("HOST", undefined);
   seam.crontabAvailable.mockReturnValue(true);
   writes.crontab.length = 0;
   writes.scripts.length = 0;
@@ -85,18 +86,18 @@ afterEach(() => {
 });
 
 /** Build a fake Request with form-encoded body. */
-function makeRequest(fields: Record<string, string>): Request {
+function makeRequest(fields: Record<string, string>, headers: Record<string, string>): Request {
   const body = new URLSearchParams(fields).toString();
-  return new Request("http://localhost/api/cron", {
+  const host = headers.host ?? "localhost:8123";
+  return new Request(`http://${host}/api/cron`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", host, ...headers },
     body,
   });
 }
 
-function runAction(fields: Record<string, string>, context: { socketAddress?: string } = { socketAddress: "127.0.0.1" }, forwardedFor?: string) {
-  const request = makeRequest(fields);
-  if (forwardedFor) request.headers.set("X-Forwarded-For", forwardedFor);
+function runAction(fields: Record<string, string>, context: { socketAddress?: string } = { socketAddress: "127.0.0.1" }, headers: Record<string, string> = {}) {
+  const request = makeRequest(fields, headers);
   return action({ request, params: {}, context } as unknown as Parameters<typeof action>[0]);
 }
 
@@ -116,8 +117,8 @@ const VALID_CREATE: Record<string, string> = {
   enabled: "true",
 };
 
-describe("api.cron action - socket guard", () => {
-  it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])("writes for direct loopback %s", async (socketAddress) => {
+describe("api.cron action - request guard", () => {
+  it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])("allows curl-style writes from direct loopback %s", async (socketAddress) => {
     await expect(runAction(VALID_CREATE, { socketAddress })).resolves.toMatchObject({ ok: true });
     expect(writes.crontab).toHaveLength(1);
   });
@@ -129,13 +130,45 @@ describe("api.cron action - socket guard", () => {
     { socketAddress: undefined },
     { socketAddress: undefined, forwardedFor: "127.0.0.1" },
   ])("returns 403 and writes nothing for %j", async ({ socketAddress, forwardedFor }) => {
-    await expect(runAction(VALID_CREATE, { socketAddress }, forwardedFor)).rejects.toMatchObject({ status: 403 });
+    const headers = forwardedFor ? { "X-Forwarded-For": forwardedFor } : undefined;
+    await expect(runAction(VALID_CREATE, { socketAddress }, headers)).rejects.toMatchObject({ status: 403 });
     expectNothingWritten();
   });
 
-  it("allows remote writes after explicit opt-in", async () => {
+  it.each<[string, Record<string, string>]>([
+    ["same-origin Fetch Metadata", { "sec-fetch-site": "same-origin" }],
+    ["direct browser navigation", { "sec-fetch-site": "none" }],
+    ["matching Origin without Fetch Metadata", { host: "[::1]:8123", origin: "http://[::1]:8123" }],
+  ])("writes with %s", async (_label, headers) => {
+    await expect(runAction(VALID_CREATE, undefined, headers)).resolves.toMatchObject({ ok: true });
+    expect(writes.crontab).toHaveLength(1);
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ["cross-site", { "sec-fetch-site": "cross-site", origin: "http://other.example" }],
+    ["same-site", { "sec-fetch-site": "same-site", origin: "http://localhost:8123" }],
+    ["mismatched Origin", { "sec-fetch-site": "same-origin", origin: "http://127.0.0.1:8123" }],
+    ["mismatched Origin port", { origin: "http://localhost:8124" }],
+    ["opaque Origin", { origin: "null" }],
+    ["rebound Host", { host: "other.example:8123", origin: "http://other.example:8123", "sec-fetch-site": "same-origin" }],
+  ])("returns 403 and writes nothing for %s", async (_label, headers) => {
+    await expect(runAction(VALID_CREATE, undefined, headers)).rejects.toMatchObject({ status: 403 });
+    expectNothingWritten();
+  });
+
+  it("allows remote writes only with opt-in, an allowed Host and origin proof", async () => {
     vi.stubEnv("MC_CRON_ALLOW_REMOTE_ADMIN", "1");
-    await expect(runAction(VALID_CREATE, { socketAddress: "192.0.2.10" })).resolves.toMatchObject({ ok: true });
+    vi.stubEnv("HOST", "deck.example.com");
+    const remote = { socketAddress: "192.0.2.10" };
+    const headers = { host: "deck.example.com:8123", origin: "http://deck.example.com:8123" };
+    await expect(runAction(VALID_CREATE, remote, { host: headers.host })).rejects.toMatchObject({ status: 403 });
+    await expect(runAction(VALID_CREATE, remote, { ...headers, "sec-fetch-site": "cross-site" }))
+      .rejects.toMatchObject({ status: 403 });
+    await expect(runAction(VALID_CREATE, remote, { host: "other.example", "sec-fetch-site": "same-origin" }))
+      .rejects.toMatchObject({ status: 403 });
+    expectNothingWritten();
+
+    await expect(runAction(VALID_CREATE, remote, headers)).resolves.toMatchObject({ ok: true });
     expect(writes.crontab).toHaveLength(1);
   });
 });

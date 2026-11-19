@@ -92,18 +92,18 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 /** Build a form-encoded POST at the scheduler route. */
-function makeRequest(fields: Record<string, string>): Request {
+function makeRequest(fields: Record<string, string>, headers: Record<string, string> = {}): Request {
   return new Request("http://localhost/scheduler", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", host: "localhost", ...headers },
     body: new URLSearchParams(fields).toString(),
   });
 }
 
 /** Invoke the route action with the arg shape react-router passes. */
-function runAction(fields: Record<string, string>, context: { socketAddress?: string } = { socketAddress: "127.0.0.1" }) {
+function runAction(fields: Record<string, string>, context: { socketAddress?: string } = { socketAddress: "127.0.0.1" }, headers?: Record<string, string>) {
   return action({
-    request: makeRequest(fields),
+    request: makeRequest(fields, headers),
     params: {},
     context,
   } as unknown as Parameters<typeof action>[0]);
@@ -112,7 +112,7 @@ function runAction(fields: Record<string, string>, context: { socketAddress?: st
 /** Invoke the route loader with the arg shape react-router passes. */
 function runLoader(socketAddress = "127.0.0.1") {
   return loader({
-    request: new Request("http://localhost/scheduler"),
+    request: new Request("http://localhost/scheduler", { headers: { host: "localhost" } }),
     params: {},
     context: { socketAddress },
   } as unknown as Parameters<typeof loader>[0]);
@@ -230,7 +230,7 @@ describe("scheduler loader - seam passthrough", () => {
   });
 });
 
-describe("scheduler - socket guard", () => {
+describe("scheduler - request guard", () => {
   it("shows nudges without write controls to a remote visitor", async () => {
     seam.listCrons.mockReturnValue([cronEntry()]);
     const loaderData = await runLoader("192.0.2.10");
@@ -240,20 +240,25 @@ describe("scheduler - socket guard", () => {
     }]);
     const html = renderToStaticMarkup(createElement(RouterProvider, { router }));
     expect(html).toContain("morning check-in");
-    expect(html).toContain("Nudges are read-only unless you connect directly from this machine or set MC_CRON_ALLOW_REMOTE_ADMIN=1 on the server.");
+    expect(html).toContain("Remote editing also requires MC_CRON_ALLOW_REMOTE_ADMIN=1 on the server.");
     expect(html).not.toMatch(/<form|<button/);
   });
 
   it.each(["create", "edit", "setEnabled", "delete", "run"])("refuses remote %s before the seam", async (intent) => {
     await expect(runAction({ ...validCreate(), intent, id: "abc123" }, { socketAddress: "192.0.2.10" }))
       .rejects.toMatchObject({ status: 403 });
-    for (const write of [seam.createCron, seam.updateCron, seam.setEnabled, seam.deleteCron]) {
-      expect(write).not.toHaveBeenCalled();
-    }
+    expectNoWrites();
   });
 
-  it("allows the dev adapter's direct loopback socket", async () => {
-    await expect(devSocketAddress.run("::1", () => runAction(validCreate(), {})))
+  it.each(["create", "edit", "setEnabled", "delete", "run"])("refuses cross-site %s before the seam", async (intent) => {
+    await expect(runAction({ ...validCreate(), intent, id: "abc123" }, undefined, { "sec-fetch-site": "cross-site" }))
+      .rejects.toMatchObject({ status: 403 });
+    expectNoWrites();
+  });
+
+  it("allows a same-origin write through the dev adapter's direct loopback socket", async () => {
+    const headers = { "sec-fetch-site": "same-origin", origin: "http://localhost" };
+    await expect(devSocketAddress.run("::1", () => runAction(validCreate(), {}, headers)))
       .resolves.toMatchObject({ ok: true });
   });
 });

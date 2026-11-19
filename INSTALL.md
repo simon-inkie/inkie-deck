@@ -1274,10 +1274,19 @@ sure it adds a forwarding header such as `X-Forwarded-For`, or disable
 Nudges: without that header Deck cannot distinguish the proxy from a local
 visitor.
 
+Writes also require a `Host` of `localhost`, a supported loopback IP, or
+the hostname configured in `HOST`. The browser's `Sec-Fetch-Site` must be
+`same-origin` or `none` if present, and any `Origin` must match the request
+`Host` (including the port). Command-line clients such as `curl` can omit
+both headers only on a direct loopback connection, so local scripts keep
+working.
+
 To allow remote writes deliberately, set `MC_CRON_ALLOW_REMOTE_ADMIN=1` in
 the server environment (or `packages/deck/.env` for the documented launcher)
-and restart Deck. Only do this behind access control you trust: anyone who
-can reach Deck can then schedule jobs as the user running it.
+and restart Deck. This does not bypass the Host or origin checks. A reverse
+proxy should validate and preserve the public Host rather than rewrite it to
+localhost. Only enable remote writes behind access control you trust: a
+visitor who passes those checks can schedule jobs as the user running Deck.
 
 To turn Nudges off entirely:
 
