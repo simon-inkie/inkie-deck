@@ -354,4 +354,4 @@ Recommendations only.
   were not tested. No production routes or scripts changed.
 - Supersedes: the previous local verification results, not the scope or
   acceptance criteria.
-- Commits: pending.
+- Commits: 622683a feat(runner): finish the fixture-only runner slice with stronger cleanup tests (#153)
