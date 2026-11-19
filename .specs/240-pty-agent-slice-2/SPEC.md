@@ -266,4 +266,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   direct dash and whitespace checks passed. The explicit working-tree leak
   scan passed; sandboxed Git calls blocked the default, history and
   commit-message modes.
-- Commits: pending
+- Commits: 098986b fix(runner): recover lock phase and failure latches after transient errors (#240)
