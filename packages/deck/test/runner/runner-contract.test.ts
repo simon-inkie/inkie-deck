@@ -214,8 +214,11 @@ it.runIf(process.platform === "linux")("keeps Deck usable without node-pty and r
         return native();
       };
       const { action } = await import("./app/routes/api.tmux-send.tsx");
-      const request = new Request("http://fixture.invalid/api/tmux-send", {
-        method: "POST", body: new URLSearchParams({ window: "fixture", key: "Enter" }),
+      const url = new URL("http://127.0.0.1:5174/api/tmux-send");
+      const request = new Request(url, {
+        method: "POST",
+        headers: { host: url.host, origin: url.origin, "sec-fetch-site": "same-origin" },
+        body: new URLSearchParams({ window: "fixture", key: "Enter" }),
       });
       assert.deepEqual(await action({ request }), { ok: false, error: "The terminal is not available on this instance." });
       const { fixtureRegistry } = await import("./test/runner/fixture-registry.ts");

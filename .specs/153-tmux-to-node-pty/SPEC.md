@@ -459,3 +459,16 @@ Recommendations only.
   timeout is pre-existing and was not changed or rerun.
 - Supersedes: reliance on tmux replies alone for PID and natural exit status.
 - Commits: pending.
+
+### 2026-11-19: Bring the dependency probe in line with the origin guard
+- What changed: reproduced the post-merge 403 in the missing-dependency
+  probe and gave its synthetic POST a loopback Host, matching Origin and
+  same-origin fetch metadata. No listener, application code or assertions
+  changed. No other branch-added test or probe calls a write route directly.
+- Why: the guard rejected the request before the terminal-disabled and
+  native failure assertions could run.
+- Verification: 97 runner and write-origin tests passed; eight real tmux
+  cases skipped because the sandbox denied the private Unix socket. Ten
+  voice-origin unit tests passed; the socket-based case was not run.
+  Typecheck, licence, direct dash scan and `git diff --check` passed.
+- Commits: pending.
