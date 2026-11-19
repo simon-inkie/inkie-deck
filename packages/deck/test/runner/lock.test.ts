@@ -96,6 +96,13 @@ describe.runIf(process.platform === "linux")("runner lock recovery", () => {
     expect(existsSync(file)).toBe(false);
   });
 
+  it("treats an externally removed claim as released", async () => {
+    const claim = claimRunnerLock(file, sessionId, Date.now());
+    rmSync(file);
+    await expect(claim.release()).resolves.toBeUndefined();
+    expect(existsSync(file)).toBe(false);
+  });
+
   it("reclaims a dead Deck's pre-spawn reservation but not a missing PID after the spawn boundary", async () => {
     crashClaim("reserved");
     await expect(recoverRunnerLock(file)).resolves.toBe("recovered");

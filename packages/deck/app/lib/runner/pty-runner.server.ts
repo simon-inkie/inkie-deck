@@ -61,6 +61,8 @@ export class PtyRunner extends BaseRunner {
     const { args, cwd, env } = spec;
     const command = resolveCommand(spec);
     this.beforeSpawn?.();
+    // A native spawn exception may follow child creation. Keep the spawning
+    // claim: without a PID, rolling it back cannot prove there is no child.
     const terminal = binding.spawn(command, args, {
       cwd, env: { ...env }, cols: spec.cols ?? 80, rows: spec.rows ?? 24, encoding: null,
     });

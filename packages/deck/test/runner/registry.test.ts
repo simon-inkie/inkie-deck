@@ -13,6 +13,7 @@ import { fixtureCommand, fixtureScreen } from "./fixture-command.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(), execFileSync: vi.fn(),
+  spawnSync: vi.fn((await importOriginal<typeof import("node:child_process")>()).spawnSync),
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
@@ -51,6 +52,10 @@ afterEach(async () => {
     const registry = new RunnerRegistry(env);
     await registry.stop(agent);
     await registry.stop(other);
+    if (registry.status(agent)?.state === "locked") {
+      rmSync(lock, { force: true });
+      await registry.recover();
+    }
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
@@ -135,7 +140,7 @@ describe.runIf(process.platform === "linux")("registry ownership", () => {
 
   it("clears a locked entry only after the claim is gone", async () => {
     addAgent(other);
-    const registry = stubRegistry({ listWindows: () => [other] });
+    const registry = stubRegistry({ listWindows: () => [agent, other] });
     writeFileSync(lock, "unreadable claim\n");
     await registry.recover();
     expect(registry.status(agent)).toMatchObject({ state: "locked" });
@@ -151,25 +156,26 @@ describe.runIf(process.platform === "linux")("registry ownership", () => {
       await claim.release();
     }
 
-    await registry.recover();
-    expect(registry.status(agent)).toBeUndefined();
+    // Start itself retries recovery, without a separate recover() call.
+    await expect(registry.start(agent)).rejects.toMatchObject({ reason: "tmux-active" });
+    expect(registry.status(agent)).not.toMatchObject({ state: "locked" });
     await expect(registry.start(other)).rejects.toMatchObject({ reason: "tmux-active" });
   });
 
-  it("keeps starts locked until the root scan can complete", async () => {
+  it("retries a failed root scan on start and stays locked if that retry fails", async () => {
     const registry = stubRegistry({ listWindows: () => [agent] });
     const denyScan = () => vi.mocked(readdirSync).mockImplementationOnce(() => { throw { code: "EACCES" }; });
-
     denyScan();
     await registry.recover();
+    denyScan();
     await expect(registry.start(agent)).rejects.toMatchObject({ reason: "locked" });
 
+    // A completed scan must not clear a newer concurrent scan failure.
     const retry = registry.recover();
     denyScan();
     await Promise.all([retry, registry.recover()]);
+    denyScan();
     await expect(registry.start(agent)).rejects.toMatchObject({ reason: "locked" });
-
-    await registry.recover();
     await expect(registry.start(agent)).rejects.toMatchObject({ reason: "tmux-active" });
   });
 
@@ -237,7 +243,7 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     expect(first.sessionId).toMatch(/^[a-f0-9-]{36}$/);
     expect(launchSpec).toHaveBeenCalledWith({
       command: "claude", args: ["--session-id", first.sessionId, "-n", agent], cwd: home,
-      env: { HOME: root, PATH: env.PATH, TERM: "xterm", LANG: "C", USER: env.USER,
+      env: { HOME: root, PATH: env.PATH, TERM: "xterm-256color", LANG: "C", USER: env.USER,
         CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR, MC_PTY_RUNNER: "1", AGENTS_HOME: root, INBOX_ROOT: inbox },
     });
     await stubRegistry().recover();
@@ -248,6 +254,33 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     await registry.start(agent);
     expect(JSON.parse(readFileSync(lock, "utf8")).sessionId).not.toBe(first.sessionId);
     expect(readFileSync(pin, "utf8")).toBe("saved-tmux-session\n");
+  });
+
+  it("recovers an existing stale claim once on start and retries the claim", async () => {
+    const claim = claimRunnerLock(lock, sessionId, Date.now());
+    claim.retain();
+    const record = JSON.parse(readFileSync(lock, "utf8"));
+    // A different boot cannot belong to any current process.
+    writeFileSync(lock, JSON.stringify({ ...record, bootId: sessionId }));
+    const registry = stubRegistry();
+    await registry.start(agent);
+    expect(registry.status(agent)).toEqual({ state: "running" });
+    expect(JSON.parse(readFileSync(lock, "utf8")).sessionId).not.toBe(sessionId);
+    await registry.stop(agent);
+  });
+
+  it("retries a transient recovery failure through start without restarting Deck", async () => {
+    const claim = claimRunnerLock(lock, sessionId, Date.now());
+    claim.retain();
+    const record = JSON.parse(readFileSync(lock, "utf8"));
+    writeFileSync(lock, JSON.stringify({ ...record, bootId: sessionId }));
+    const registry = stubRegistry();
+    vi.mocked(spawnSync).mockImplementationOnce(() => { throw { code: "ETIMEDOUT" }; });
+    await registry.recover();
+    expect(registry.status(agent)).toMatchObject({ state: "locked" });
+    await registry.start(agent);
+    expect(registry.status(agent)).toEqual({ state: "running" });
+    await registry.stop(agent);
   });
 
   it("persists replies from a PTY child without probing the marked recipient's tmux window", async () => {
@@ -315,6 +348,7 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     await registry.start(agent);
     const retained = join(home, "retained-lock");
     renameSync(lock, retained);
+    writeFileSync(lock, "replacement\n");
     try {
       await registry.write(agent, "exit23");
       await registry.key(agent, "Enter");

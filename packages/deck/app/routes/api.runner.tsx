@@ -33,7 +33,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     return data({ ok: false, error: "Invalid runner payload." }, { status: 400 });
   }
   const { agent, op } = parsed.data;
-  if (!isPtyOptedIn(process.env, agent)) {
+  if (!isPtyOptedIn(process.env, agent) && (op === "start" || !runnerRegistry.canControl(agent))) {
     return data({ ok: false, error: refusalMessage["not-opted-in"] }, { status: 403 });
   }
   try {

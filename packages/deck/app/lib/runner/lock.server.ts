@@ -84,6 +84,7 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
   }
 
   function unlinkOwned() {
+    if (!lstatSync(file, { throwIfNoEntry: false })) return;
     if (!sameLock(file, owned)) throw new Error("The runner lock changed owners.");
     unlinkSync(file);
   }

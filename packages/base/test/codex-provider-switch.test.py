@@ -100,15 +100,19 @@ class ProviderSwitchTests(unittest.TestCase):
         tmux.write_text('#!/bin/sh\ntouch "$TMUX_LOG"\nexit 1\n', encoding="utf-8")
         tmux.chmod(0o755)
         tmux_log = self.root / "tmux.log"
-        env = {**self.env, "MC_PTY_RUNNER": "1", "PROVIDER_SWITCH_TMUX_BIN": str(tmux), "TMUX_LOG": str(tmux_log)}
+        env = {**self.env, "PROVIDER_SWITCH_TMUX_BIN": str(tmux), "TMUX_LOG": str(tmux_log)}
         transaction = "11111111-1111-4111-8111-111111111111"
-        for args in (("prepare", "alex"), ("launch", "alex", transaction, "T" * 43)):
-            with self.subTest(command=args[0]):
-                result = subprocess.run([str(CLI), *args], env=env, text=True, capture_output=True)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("opted into the PTY runner", result.stderr)
-                self.assertFalse(tmux_log.exists())
-                self.assertFalse(self.state.exists())
+        env.pop("MC_PTY_RUNNER", None)
+        for marker in (".runner", ".runner.lock"):
+            (self.agent / ".runner").unlink(missing_ok=True)
+            (self.agent / marker).write_text("pty\n", encoding="utf-8")
+            for args in (("prepare", "alex"), ("launch", "alex", transaction, "T" * 43)):
+                with self.subTest(marker=marker, command=args[0]):
+                    result = subprocess.run([str(CLI), *args], env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("opted into the PTY runner", result.stderr)
+                    self.assertFalse(tmux_log.exists())
+                    self.assertFalse(self.state.exists())
 
     def test_validate_agent_rejects_shell_metacharacters(self):
         result = subprocess.run(

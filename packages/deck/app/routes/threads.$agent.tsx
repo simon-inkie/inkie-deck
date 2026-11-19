@@ -281,7 +281,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     ? ptyAllowed ? runnerRegistry.capture(agent) : undefined
     : captureTmuxPane(process.env, agent);
   const hint = pane === undefined ? null : classifyPaneHint(pane);
-  const runner = tmuxView && ptyAllowed && isPtyOptedIn(process.env, agent)
+  const runner = tmuxView && ptyAllowed && (isPtyOptedIn(process.env, agent) || runnerRegistry.canControl(agent))
     ? runnerRegistry.status(agent) ?? { state: "not-started" as const }
     : undefined;
   const tmux = tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
@@ -726,7 +726,7 @@ function RunnerControls({ agent, status }: { agent: string; status: SessionStatu
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const busy = fetcher.state !== "idle";
   const running = status.state === "running" || status.state === "quiet";
-  const canStart = status.state === "not-started" || status.state === "stopped" || status.state === "unavailable";
+  const canStart = status.state === "not-started" || status.state === "stopped" || status.state === "unavailable" || status.state === "locked";
   const canStop = running || status.state === "starting" || status.state === "cleanup-pending";
   const description = "reason" in status ? `${status.state}: ${status.reason}`
     : status.state === "stopped" && status.code !== null ? `stopped (code ${status.code})` : status.state.replace("-", " ");

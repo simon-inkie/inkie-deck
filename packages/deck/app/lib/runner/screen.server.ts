@@ -79,6 +79,8 @@ export function createRunnerScreen({ cols = 80, rows = 24 }: { cols?: number; ro
       if (disposed) return;
       const { byteLength } = chunk;
       pendingBytes += byteLength;
+      // Overflow disables this session's screen and automatic sends until a
+      // restart; rebuilding safely needs a complete fresh terminal snapshot.
       if (pendingBytes > maxPendingBytes) return dispose();
       try {
         terminal.write(chunk, () => { pendingBytes -= byteLength; });

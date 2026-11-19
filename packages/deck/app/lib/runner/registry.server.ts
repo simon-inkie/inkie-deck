@@ -16,7 +16,7 @@ import { createRunnerScreen, type RunnerScreen } from "./screen.server.js";
 
 const quietAfterMs = 10 * 60 * 1000;
 const lockName = ".runner.lock";
-const allowedEnv = ["HOME", "PATH", "TERM", "LANG", "USER", "CLAUDE_CONFIG_DIR", "MC_PTY_RUNNER"] as const;
+const allowedEnv = ["HOME", "PATH", "LANG", "USER", "CLAUDE_CONFIG_DIR", "MC_PTY_RUNNER"] as const;
 
 type ActiveSession = {
   state: "starting" | "running" | "stopping";
@@ -85,7 +85,7 @@ export function isPtyOptedIn(env: NodeJS.ProcessEnv, agent: string): boolean {
 }
 
 function launchEnvironment(env: NodeJS.ProcessEnv, home: string): Record<string, string> {
-  const childEnv: Record<string, string> = { AGENTS_HOME: dirname(home) };
+  const childEnv: Record<string, string> = { AGENTS_HOME: dirname(home), TERM: "xterm-256color" };
   for (const name of allowedEnv) {
     if (env[name] !== undefined) childEnv[name] = env[name];
   }
@@ -137,6 +137,11 @@ export class RunnerRegistry {
     }
   }
 
+  canControl(agent: string): boolean {
+    const session = this.session(agent);
+    return session !== undefined && ("runner" in session || session.state === "cleanup-pending");
+  }
+
   capture(agent: string): string | undefined {
     if (!isPtyOptedIn(this.env, agent)) return undefined;
     const session = this.session(agent);
@@ -153,9 +158,21 @@ export class RunnerRegistry {
   }
 
   async start(agent: string): Promise<void> {
+    return this.startAgent(agent, true);
+  }
+
+  private async startAgent(agent: string, retryRecovery: boolean): Promise<void> {
     if (shared.closing) throw new StartRefusal("shutting-down");
     const home = ptyRunnerEnabled(this.env) ? agentHome(this.env, agent) : undefined;
     if (!home || !optedIn(home)) throw new StartRefusal("not-opted-in");
+    if (retryRecovery && shared.recoveryFailed) {
+      await this.recover();
+      return this.startAgent(agent, false);
+    }
+    if (retryRecovery && shared.sessions.get(home)?.state === "locked") {
+      await this.recoverHome(home);
+      return this.startAgent(agent, false);
+    }
     if (shared.recoveryFailed) throw new StartRefusal("locked");
     for (const session of shared.sessions.values()) {
       if ("runner" in session) throw new StartRefusal("busy");
@@ -194,6 +211,10 @@ export class RunnerRegistry {
       lock = this.claimLock(home, sessionId);
     } catch (error) {
       screen.dispose();
+      if (retryRecovery && error instanceof StartRefusal && error.reason === "locked") {
+        await this.recoverHome(home);
+        return this.startAgent(agent, false);
+      }
       throw error;
     }
     const runner = new PtyRunner(lock.beforeSpawn);
@@ -326,6 +347,24 @@ export class RunnerRegistry {
       "runner" in session ? this.stopSession(session) : session.state === "cleanup-pending" ? session.retry() : undefined));
   }
 
+  private async recoverHome(home: string): Promise<void> {
+    const existing = shared.sessions.get(home);
+    if (existing && ("runner" in existing || existing.state === "cleanup-pending")) return;
+    try {
+      const result = await recoverRunnerLock(join(home, lockName));
+      if (shared.sessions.get(home) !== existing) return;
+      if (result === "recovered") {
+        shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
+      } else if (result === "absent" && existing?.state === "locked") {
+        shared.sessions.delete(home);
+      }
+    } catch {
+      if (shared.sessions.get(home) === existing) {
+        shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
+      }
+    }
+  }
+
   async recover(): Promise<void> {
     if (process.platform !== "linux") return;
     const previousFailure = shared.recoveryFailed;
@@ -341,21 +380,7 @@ export class RunnerRegistry {
     for (const entry of entries) {
       if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
       const home = join(root, entry.name);
-      const existing = shared.sessions.get(home);
-      if (existing && ("runner" in existing || existing.state === "cleanup-pending")) continue;
-      try {
-        const result = await recoverRunnerLock(join(home, lockName));
-        if (shared.sessions.get(home) !== existing) continue;
-        if (result === "recovered") {
-          shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
-        } else if (result === "absent" && existing?.state === "locked") {
-          shared.sessions.delete(home);
-        }
-      } catch {
-        if (shared.sessions.get(home) === existing) {
-          shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
-        }
-      }
+      await this.recoverHome(home);
     }
     if (shared.recoveryFailed === previousFailure) shared.recoveryFailed = false;
   }

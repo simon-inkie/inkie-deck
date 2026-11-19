@@ -141,6 +141,35 @@ let screenAvailable = false;
 try { ptyAvailable = process.platform === "linux" && Boolean(loadNodePty()); } catch {}
 try { screenAvailable = Boolean(createRequire(import.meta.url).resolve("@xterm/headless")); } catch {}
 
+it.runIf(ptyAvailable).each(["marker", "instance flag"])("keeps stop and cancel available after removing the %s", async (removed) => {
+  await expect(runOp("start")).resolves.toEqual({ ok: true });
+  if (removed === "marker") rmSync(join(agentHome, ".runner"));
+  else vi.stubEnv("MC_PTY_RUNNER", "0");
+  expect((await load()).tmux).toMatchObject({ runner: { state: "running" } });
+  await expect(runOp("start")).resolves.toMatchObject({ init: { status: 403 } });
+  await expect(runOp("cancel")).resolves.toEqual({ ok: true });
+  await expect(runOp("stop")).resolves.toEqual({ ok: true });
+  expect(runnerRegistry.status(agent)).toMatchObject({ state: "stopped" });
+  expect(existsSync(join(agentHome, ".runner.lock"))).toBe(false);
+});
+
+it.runIf(ptyAvailable)("keeps cleanup retries available after opt-out", async () => {
+  await runOp("start");
+  const lock = join(agentHome, ".runner.lock");
+  const owner = readFileSync(lock, "utf8");
+  // Replace the inode to force retryable cleanup without risking a live claim.
+  rmSync(lock);
+  writeFileSync(lock, "replacement\n");
+  rmSync(join(agentHome, ".runner"));
+  await expect(runOp("stop")).resolves.toMatchObject({ init: { status: 503 } });
+  expect((await load()).tmux).toMatchObject({ runner: { state: "cleanup-pending" } });
+  await expect(runOp("cancel")).resolves.toMatchObject({ init: { status: 409 } });
+  expect(readFileSync(lock, "utf8")).not.toBe(owner);
+  rmSync(lock);
+  await expect(runOp("stop")).resolves.toEqual({ ok: true });
+  expect(runnerRegistry.status(agent)).toMatchObject({ state: "stopped" });
+});
+
 it.runIf(ptyAvailable)("refuses a second launch and refuses sends when composer style is unavailable", async () => {
   await expect(runOp("start")).resolves.toEqual({ ok: true });
   const lock = join(agentHome, ".runner.lock");

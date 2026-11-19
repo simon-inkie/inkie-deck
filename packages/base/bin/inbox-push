@@ -180,12 +180,10 @@ emit() {
   esac
 }
 
-if [[ "${MC_PTY_RUNNER:-0}" == "1" ]]; then
-  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-launch.sh" || emit "skip:no-runtime-launch-lib"
-  declare -F agent_opts_into_pty >/dev/null || emit "skip:no-runtime-launch-lib"
-  if agent_opts_into_pty "$RECIPIENT"; then
-    emit "skip:pty-runner"
-  fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime-launch.sh" || emit "skip:no-runtime-launch-lib"
+declare -F agent_opts_into_pty >/dev/null || emit "skip:no-runtime-launch-lib"
+if agent_opts_into_pty "$RECIPIENT"; then
+  emit "skip:pty-runner"
 fi
 
 # --------------------------------------------------------------------------

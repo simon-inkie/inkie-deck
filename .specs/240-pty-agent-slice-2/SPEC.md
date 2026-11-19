@@ -9,6 +9,12 @@
 
 Slice 1 proved `Runner`, `PtyRunner` and `TmuxRunner` against a fixture, under `packages/deck/test/runner/`. This slice runs ONE real Claude Code agent on `PtyRunner`: an agent the operator opts in, in a fresh session Deck starts, with Deck's send route, message push and thread terminal view going through the runner for that agent only. Every other agent stays on tmux, unchanged. Linux only.
 
+Known limits: native spawn exceptions can retain an ambiguous lock, dev mode
+has no PTY lifecycle hooks, and screen overflow disables capture and automatic
+sends for the rest of that session. Use the production launcher for PTY.
+Escaped process groups and tmux windows on another socket are outside the
+current ownership checks. These accepted follow-ups are detailed in the Log.
+
 ## Scope
 
 In this slice:
@@ -19,9 +25,9 @@ In this slice:
    Verify: slice 1 contract suite against both runners, plus PTY readiness without a marker and silent-session cleanup.
 3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts`, the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time and a phase written before spawn.
    Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock reclaimed only when recovery proves there was no spawn or confirms the group is gone.
-4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR`, `MC_PTY_RUNNER` if set), the resolved `AGENTS_HOME` and the agent's `INBOX_ROOT`. No other `MC_*` values or tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
+4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR`, `MC_PTY_RUNNER` if set), fixed `TERM=xterm-256color`, the resolved `AGENTS_HOME` and the agent's `INBOX_ROOT`. No other `MC_*` values or tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
    Verify: env snapshot test; stub launch end to end.
-5. **Start, stop, interrupt.** `packages/deck/app/routes/api.runner.tsx`: POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, refused unless opted in. No auto-restart.
+5. **Start, stop, interrupt.** `packages/deck/app/routes/api.runner.tsx`: POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, start requires opt-in; stop and cancel remain available for an owned session or pending cleanup after opt-out. No auto-restart.
    Verify: route tests for each op and each refusal.
 6. **Screen buffer.** `@xterm/headless` fed from `output()`, scrollback 1000 lines (matches `TMUX_CAPTURE_SCROLLBACK_LINES`), memory only, never written to disk or logs.
    Verify: fixture output renders the same text the fixture drew.
@@ -33,7 +39,7 @@ In this slice:
    Verify: stub exits 23; stub hangs.
 10. **Deck shutdown.** `packages/deck/server/production.mjs` on SIGTERM/SIGINT: `stop("graceful")` for all sessions. On Deck start, stale-lock recovery uses Linux `flock` from util-linux. It only kills a verified group and requires the kernel to confirm the group is gone before releasing the lock. Restart survival is out.
     Verify: kill Deck with the stub running; no descendant remains.
-11. **Base script guards.** `packages/base/bin/inbox-push`: an opted-in recipient is not pushed; exits with a distinct persisted-not-pushed status. `packages/base/bin/boot-agents.sh`, `packages/base/bin/workspace.sh`: skip opted-in agents with a log line. `packages/base/bin/codex-provider-switch`: refuse.
+11. **Base script guards independent of the instance flag.** `packages/base/bin/inbox-push`: a recipient marked `pty` or holding `.runner.lock` is not pushed; exits with a distinct persisted-not-pushed status. `packages/base/bin/boot-agents.sh`, `packages/base/bin/workspace.sh`: skip marked or locked agents with a log line. `packages/base/bin/codex-provider-switch`: refuse.
     Verify: base tests with `.runner` present and absent, plus a PTY child running `inbox reply` against a marked recipient with a stubbed live tmux window.
 
 Not in this slice: more than one PTY agent; Codex or Antigravity on PTY (ACP, #154); browser keystroke streaming or WebSocket; resuming an existing conversation on PTY; restart survival; delivery acknowledgement from hooks; sweeps, activity and cron agent-mode rewired (they find no window and do nothing; documented); macOS and Windows; changing the default runner; authentication.
@@ -57,6 +63,8 @@ First try on a scratch agent (`packages/base/bin/create-agent.sh`), which has no
 | Secrets in terminal output | Buffer in memory only; served through the existing same-origin, `tmuxEnabled` loader; no worse than tmux capture today; Deck secrets never in child env |
 | Windows, macOS | Runner refuses non-Linux with a typed `unavailable`, as in slice 1 |
 | Resource use | One session; 1000-line buffer; output stream drained continuously; node-pty stays optional and lazy |
+| Descendants calling setsid | Known limit: descendants escaping the owned process group are not covered by group cleanup; stronger containment is a follow-up |
+| Tmux windows on another socket | Known limit: the window check probes one configured tmux socket only; the operator must drain other sockets before cutover |
 | node-pty missing | Opt-in shows "unavailable: <reason>"; tmux unaffected |
 
 ## Acceptance
@@ -267,3 +275,79 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   scan passed; sandboxed Git calls blocked the default, history and
   commit-message modes.
 - Commits: 098986b fix(runner): recover lock phase and failure latches after transient errors (#240)
+
+### 2026-11-19: Pick up the Opus review fixes
+- What changed: Reviewed the three major findings and six minor findings against
+  the current branch. Fix marker-based base guards, opt-out shutdown controls
+  and start-triggered recovery with focused regressions, then triage minors.
+- Why: Close the cutover and transient-recovery gaps without a live agent run
+  or changes outside this worktree. All validation remains offline.
+- Commits: pending
+
+### 2026-11-19: Fix the three Opus major findings
+- What changed: Base boot, workspace, inbox push and provider-switch guards now
+  honour a pty marker or any existing runner lock without MC_PTY_RUNNER and
+  without relying on the selected runtime. Case 67 now checks unflagged and
+  disabled-flag delivery, lock-only delivery and the unchanged unmarked path.
+  Launcher and provider-switch regressions use fake homes and tmux stubs.
+- Why: Major 1: operator shells, cron and existing agents must observe the same
+  drained cutover as Deck; an early marker removal must not bypass ownership.
+- What changed: Stop and cancel accept owned sessions and cleanup-pending
+  entries after either opt-in is removed. The loader keeps the controls visible;
+  starts still require opt-in. Route tests exercise both opt-outs, refused
+  starts, cancellation, stop and retryable cleanup without tmux fallback.
+- Why: Major 2: an operator must always be able to stop an owned PTY session.
+- What changed: Start retries a failed root scan or the target's locked state,
+  and recovers an EEXIST claim before one retry. Every retry rechecks shutdown,
+  opt-in, single-session admission and tmux ownership. Locked controls permit
+  Start to retry recovery. Regressions cover stale reservations, transient
+  recovery failure, absent locked claims and root scan failure through Start.
+- Why: Major 3: transient recovery failures must be retriable without restarting
+  Deck, while unrecoverable or competing claims still fail closed.
+- Supersedes: The instance-flag/runtime requirement for base guards and the
+  startup-only recovery behaviour in earlier entries.
+- Commits: pending
+
+### 2026-11-19: Triage the Opus minor findings
+- What changed: Fixed (a): a missing owned lock now counts as released after
+  process-group cleanup; replacement inodes are still refused. Added a direct
+  release regression and retained replacement-owner cleanup coverage.
+  Fixed (c): TERM is fixed to xterm-256color; the launch environment regression
+  supplies a different parent TERM and checks the fixed child value.
+- Why: Both changes are small and preserve the existing ownership guarantees.
+- What changed: Accepted follow-up (b): a native spawn exception after the
+  spawning phase retains the lock. The binding does not provide a reliable
+  no-child guarantee on exception, so rolling back could admit a second agent.
+  Accepted follow-up (d): dev lifecycle hooks need integration in the Vite
+  server process, beyond changing the launcher; production remains the PTY path.
+  Accepted follow-up (e): overflow remains fail-closed until session restart.
+  There is no fresh-capture source for this PTY, and replaying only later bytes
+  could misclassify a partially reconstructed composer. Safe rebuilding needs
+  a terminal redraw protocol and separate regression coverage.
+  Recorded (f): escaped setsid descendants and windows on another tmux socket
+  are known limits in the Risks table. Added nearby comments for (b), (d), (e).
+- Why: Keep this safety patch focused and explicitly retain uncertain ownership
+  and composer states rather than weakening refusal behaviour.
+- Commits: pending
+
+### 2026-11-19: Validate the Opus review fixes offline
+- What changed: Completed the requested local validation. Runner tests: 68
+  passed, 3 headless-screen cases skipped because @xterm/headless is unavailable.
+  The registry suite also passed all 14 tests after preserving concurrent
+  root-scan failure coverage. Base shell suites: 661 passed across every
+  packages/base/test/*.sh file. Python provider-switch suite: 15 passed.
+- Why: Verify the major regressions and cheap minor fixes with synthetic homes,
+  runtime stubs and private temporary tmux sockets, without a real agent,
+  database connection, network request or application listener.
+- Validation: pnpm typecheck, check:boundaries, check:licence and
+  check:lib-version passed. Direct scan of 582 tracked files found no banned
+  dashes; git diff --check passed. The working-tree leak script passed.
+  History and message leak scripts ran but failed with 343 blob findings and
+  82 message findings in existing, unchanged git history; history repair is
+  outside this patch. No staging, commits or pushes were performed.
+- Validation detail: The initial boot shell run inherited CODEX_HOME and failed
+  its Codex resume fixture. Rerunning with CODEX_HOME removed passed all 121
+  boot checks; no product change was needed. The first runner run exposed a
+  test isolation gap: EEXIST recovery now remembers a locked fixture. Teardown
+  now clears that temporary claim through recovery before removing its home.
+- Commits: pending

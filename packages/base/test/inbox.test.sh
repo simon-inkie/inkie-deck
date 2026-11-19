@@ -2112,9 +2112,9 @@ exit 1
 STUB
   chmod +x "$T/bin/tmux"
   if (
-    export AGENTS_HOME="$T" MC_PTY_RUNNER=1 TMUX_LOG="$T/tmux.log" PATH="$T/bin:$PATH"
+    export AGENTS_HOME="$T" TMUX_LOG="$T/tmux.log" PATH="$T/bin:$PATH"
     export INBOX_PUSH=1 INBOX_NO_PUSH=0 INBOX_PUSH_BIN="$BIN_DIR/inbox-push"
-    unset PANE_OVERRIDE PUSH_DRY_RUN
+    unset MC_PTY_RUNNER PANE_OVERRIDE PUSH_DRY_RUN
 
     push_rc=0
     verdict=$(AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
@@ -2125,9 +2125,18 @@ STUB
 
     push_rc=0
     verdict=$(MC_PTY_RUNNER=0 AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
+    [[ "$push_rc" -eq 2 && "$verdict" == "skip:pty-runner" && ! -e "$TMUX_LOG" ]] || exit 1
+
+    rm "$T/beta/.runner"
+    touch "$T/beta/.runner.lock"
+    verdict=$(AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
+    [[ "$push_rc" -eq 2 && "$verdict" == "skip:pty-runner" && ! -e "$TMUX_LOG" ]] || exit 1
+
+    rm "$T/beta/.runner.lock"
+    verdict=$(AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
     [[ "$push_rc" -eq 2 && "$verdict" == "skip:no-window" && -s "$TMUX_LOG" ]]
   ); then
-    ok "Case 67: PTY opt-in persists without contacting tmux; the instance flag is required"
+    ok "Case 67: marker or lock skips tmux without the flag; no marker or lock keeps tmux"
   else
     fail "Case 67: PTY persist-only delivery"
   fi

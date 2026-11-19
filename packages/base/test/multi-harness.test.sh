@@ -222,29 +222,42 @@ mkdir -p "$AGENTS_HOME/ptytest"
 printf 'pty\n' > "$AGENTS_HOME/ptytest/.runner"
 old_session=55555555-5555-4555-8555-555555555555
 printf '%s\n' "$old_session" > "$AGENTS_HOME/ptytest/.session-id"
-printf 'pty\n' > "$AGENTS_HOME/cobalt/.runner"
+unset MC_PTY_RUNNER
 
 for launcher in boot-agents.sh workspace.sh; do
   : > "$TMUX_LOG"
-  out=$(PATH="$STUB_PATH" MC_PTY_RUNNER=1 BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 WATCHER_ENABLED=0 \
+  out=$(PATH="$STUB_PATH" BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 WATCHER_ENABLED=0 \
     bash "$BIN_DIR/$launcher" ptytest cobalt 2>&1)
   rc=$?
   if [[ "$rc" -eq 0 && "$out" == *"skipping ptytest (opted into the PTY runner)"* ]] &&
     [[ "$(sent_to cobalt)" == *" codex Enter" && ! -e "$AGENTS_HOME/ptytest/.first-boot-done" ]] &&
     [[ "$(cat "$AGENTS_HOME/ptytest/.session-id")" == "$old_session" ]] &&
     ! grep -qF ptytest "$TMUX_LOG"; then
-    pass "$launcher skips a PTY target but launches a marked, ineligible runtime on tmux"
+    pass "$launcher skips a PTY target without the flag but launches an unmarked target on tmux"
   else
     fail "$launcher PTY skip" "rc=$rc $out $(cat "$TMUX_LOG")"
   fi
 
   : > "$TMUX_LOG"
-  out=$(PATH="$STUB_PATH" MC_PTY_RUNNER=1 bash "$BIN_DIR/$launcher" ptytest 2>&1)
+  out=$(PATH="$STUB_PATH" bash "$BIN_DIR/$launcher" ptytest 2>&1)
   rc=$?
   if [[ "$rc" -eq 0 && "$out" == *"skipping ptytest"* && ! -s "$TMUX_LOG" ]]; then
     pass "$launcher does not contact tmux when all targets opt in"
   else
     fail "$launcher PTY-only run" "rc=$rc $out $(cat "$TMUX_LOG")"
+  fi
+done
+
+rm "$AGENTS_HOME/ptytest/.runner"
+touch "$AGENTS_HOME/ptytest/.runner.lock"
+for launcher in boot-agents.sh workspace.sh; do
+  : > "$TMUX_LOG"
+  out=$(PATH="$STUB_PATH" bash "$BIN_DIR/$launcher" ptytest 2>&1)
+  rc=$?
+  if [[ "$rc" -eq 0 && "$out" == *"skipping ptytest"* && ! -s "$TMUX_LOG" ]]; then
+    pass "$launcher skips a locked target after its marker is removed"
+  else
+    fail "$launcher locked target" "rc=$rc $out $(cat "$TMUX_LOG")"
   fi
 done
 

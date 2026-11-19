@@ -46,18 +46,14 @@ def state_root() -> Path:
 
 
 def agent_opts_into_pty(home: Path) -> bool:
-    if os.environ.get("MC_PTY_RUNNER") != "1":
-        return False
+    lock_file = home / ".runner.lock"
     runner_file = home / ".runner"
-    runtime_file = home / ".runtime"
     try:
-        if not runner_file.is_file() or runner_file.read_text(encoding="utf-8").strip() != "pty":
-            return False
-        return not runtime_file.exists() or (
-            runtime_file.is_file() and runtime_file.read_text(encoding="utf-8").strip() == "claude"
-        )
+        if lock_file.exists() or lock_file.is_symlink():
+            return True
+        return runner_file.is_file() and runner_file.read_text(encoding="utf-8").strip() == "pty"
     except (OSError, UnicodeError):
-        return False
+        return True
 
 
 def validate_agent(agent: str) -> Path:
