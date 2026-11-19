@@ -2,7 +2,7 @@
  * tmux.server.ts - tmux pane capture (read) + send-keys (write) for the live
  * Team tab and per-thread terminal view.
  *
- * FIRST SUBPROCESS IN MC - the guard posture is the point of this module:
+ * FIRST SUBPROCESS IN DECK - the guard posture is the point of this module:
  *
  *   1. NO SHELL, EVER. Every invocation is execFileSync("tmux", argv) with
  *      a discrete argument array - there is no command string to inject
@@ -50,7 +50,7 @@ export const WINDOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
  * Subprocess hard deadline. execFileSync BLOCKS the event loop - a wedged tmux server (suspended laptop, dead socket)
- * would otherwise freeze every MC request, re-frozen each 1s poll tick.
+ * would otherwise freeze every Deck request, re-frozen each 1s poll tick.
  * capture-pane is ~ms when healthy; 500ms is generous, and a timeout
  * lands in the same degrade-to-empty path as every other failure.
  */
@@ -495,7 +495,7 @@ export function paneTextIsActive(viewport: string): boolean {
 }
 
 /**
- * The prompt glyphs MC recognises as a live agent composer: Claude Code's U+276F,
+ * The prompt glyphs Deck recognises as a live agent composer: Claude Code's U+276F,
  * Codex's U+203A, and agy / Gemini's ">". Consumers MUST gate the bare ">" on
  * agy's frame border (see isAgyPromptLine / lineHasPromptGlyph); a lone ">" is a
  * Bash PS2 continuation prompt as readily as an agy composer.
@@ -903,7 +903,7 @@ export function buildPaneWakePayload(fromUser: string): string {
 }
 
 /**
- * Wake an agent so it picks up a just-delivered MC message at once. The
+ * Wake an agent so it picks up a just-delivered Deck message at once. The
  * #78 Monitor-drop made hook-inject the sole DM surface, and hook-inject only
  * delivers on the agent's NEXT turn - an idle-but-alive agent takes no turn on
  * its own, so the DM would sit unseen. This fires a tmux send-keys poke,
@@ -946,7 +946,7 @@ export async function wakeIdleAgent(
 /**
  * Attachment markdown image reference inside a message body:
  *   ![alt](/attachments/<agent>/<thread>/<file>)
- * The URL segment is a WEB-relative HTTP route (MC serves it via
+ * The URL segment is a WEB-relative HTTP route (Deck serves it via
  * app/routes/attachments.$.tsx against ATTACHMENTS_ROOT). A browser resolves it
  * over HTTP; an agent reading the raw text in its pane cannot - it has no HTTP
  * client, it needs a real local filesystem path for its file/image-view tool.

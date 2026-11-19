@@ -9,10 +9,10 @@
  *     Picks which option set in the catalog applies to this agent.
  *   <AGENTS_ROOT>/<agent>/.model    - the exact string passed to the runtime's
  *     model flag and to in-session /model. MISSING = inherit the global
- *     default. MC is a WRITER of this file (atomic temp + rename) and a
+ *     default. Deck is a WRITER of this file (atomic temp + rename) and a
  *     reader for the configured-model display.
  *   <AGENTS_ROOT>/bin/model-catalog.json - option lists keyed by runtime,
- *     entries { id, label }. Platform-layer owned; MC only reads it.
+ *     entries { id, label }. Platform-layer owned; Deck only reads it.
  *
  * AGENTS_ROOT is a NEW env var (default ~/agents, tilde expanded) because the
  * existing INBOX_ROOT points at the silo tree, not the agent homes. Unlike the

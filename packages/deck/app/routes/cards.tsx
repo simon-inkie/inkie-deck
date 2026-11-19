@@ -180,7 +180,7 @@ export default function Cards({ loaderData }: Route.ComponentProps) {
 
 /**
  * Scoped error boundary: a failure here renders inside the
- * shell so the sidebar and the rest of MC stay usable.
+ * shell so the sidebar and the rest of Deck stay usable.
  */
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (

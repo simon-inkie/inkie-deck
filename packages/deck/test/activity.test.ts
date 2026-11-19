@@ -106,7 +106,7 @@ function liveDocument(): Record<string, unknown> {
             key: "inbox:alex.md:2026-07-30T09:58:58Z",
             at: "2026-07-30T09:58:58Z",
             kind: "inbox",
-            label: "Both done. MC restarted earlier (confirmed).",
+            label: "Both done. Deck restarted earlier (confirmed).",
             ref: "alex.md",
           },
         ],

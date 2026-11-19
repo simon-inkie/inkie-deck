@@ -1,12 +1,11 @@
 /**
  * safe-fs.server.ts
  *
- * Root-table write confinement for every MC filesystem write.
+ * Root-table write confinement for every Deck filesystem write.
  *
- * The old guard was a blunt substring ban on ".the-vault". That was a
- * build-era invariant (test inbox only) encoded at the wrong layer: production
- * MC points INBOX_ROOT at the real ~/.the-vault/agents and must write there.
- * The rework replaces deny-known-bad with allowlist confinement:
+ * Deck confines writes to configured roots rather than denying path substrings.
+ * The sandbox guard defaults to refusing ~/.the-vault for compatibility with
+ * older installs:
  *
  *   confineToRoot(targetPath, root, opts) - THE shared primitive. A path is
  *     permitted only if its fully-resolved realpath sits inside the resolved
@@ -15,7 +14,7 @@
  *   assertSafeWritePath(targetPath) - inbox surface guard: confinement against
  *     INBOX_ROOT plus the inbox WRITE-SHAPE rule (<agent>/inbox/<file>.md).
  *     Root confinement alone is NOT enough for the inbox root: the production
- *     root also holds memory/, MEMORY.md, live-state.json - files MC must
+ *     root also holds memory/, MEMORY.md, live-state.json - files Deck must
  *     never touch even though they are inside the root.
  *   assertNoLiveSiloRoot(rootReal, label) - the old ban's intent, relocated:
  *     when MC_SANDBOX_ONLY is set (tests/CI/dev), any root resolving inside
@@ -294,8 +293,8 @@ export function confineToRoot(
  * guard allowed e.g. "<root>/x.md").
  *
  * Layer 3 (optional, default-open): MC_INBOX_AGENT_ALLOWLIST - a comma-
- * separated list of agent names MC may write to. UNSET or empty = all agents
- * (MC messages are the operator's own messages, same
+ * separated list of agent names Deck may write to. UNSET or empty = all agents
+ * (Deck messages are the operator's own messages, same
  * trust as direct inbox DMs; the hook exists so the list can be flipped the
  * moment a concrete risk shows, without a code change).
  *
@@ -326,7 +325,7 @@ export function assertSafeWritePath(targetPath: string): string {
     throw new Error(
       `Refusing to write: resolved path "${finalResolved}" does not match the ` +
         `inbox write shape "<agent>/inbox/<file>.md" under root "${rootReal}". ` +
-        `MC writes thread files only - never memory, state, or ` +
+        `Deck writes thread files only - never memory, state, or ` +
         `anything else inside an agent silo.`
     );
   }
@@ -346,7 +345,7 @@ export function assertSafeWritePath(targetPath: string): string {
 /**
  * Parse MC_INBOX_AGENT_ALLOWLIST. Returns null when unset/empty (default-open:
  * all agents). Shared by the write guard (assertSafeWritePath) and the read
- * side (listAgents) so the UI never surfaces agents MC refuses to write to -
+ * side (listAgents) so the UI never surfaces agents Deck refuses to write to -
  * an inbox root can contain archived and scratch dirs (harness-*, archived-demo)
  * that are not conversation participants.
  */
@@ -364,7 +363,7 @@ export function getInboxAgentAllowlist(): Set<string> | null {
 // validateConfiguredRoots (boot-time fail-fast)
 // ---------------------------------------------------------------------------
 
-/** The declared root table: every MC write surface and its root env var. */
+/** The declared root table: every Deck write surface and its root env var. */
 const ROOT_ENV_VARS = [
   "INBOX_ROOT",
   "ATTACHMENTS_ROOT",
@@ -492,10 +491,10 @@ const _sleep = (ms: number): Promise<void> =>
 /**
  * Run fn() while holding a cross-process advisory lock on `${resolvedPath}.lock`.
  *
- * WHY: inbox thread files are written by THREE uncoordinated processes - the operator's
- * MC, a second user's MC, and the agent CLI (packages/base/bin/inbox).
- * Every MC write is a
- * full-file read-modify-write via atomicWrite (temp + rename); the rename swaps
+ * WHY: the operator's Deck instance, other instances and the agent CLI
+ * (packages/base/bin/inbox) can all write to the same inbox thread file.
+ * Each Deck write reads and replaces the whole file via atomicWrite
+ * (temp + rename); the rename swaps
  * the inode and ORPHANS any concurrent append, silently losing the message
  * (the P1 disappearing-message bug). atomicWrite stops torn files, not lost
  * updates, and nothing else serialises writers. This lock does.
@@ -505,7 +504,7 @@ const _sleep = (ms: number): Promise<void> =>
  *
  * PROTOCOL - MUST stay equivalent at the FILE level to the Python CLI
  * (packages/base/bin/inbox, inlined `inbox_lock`) and any other implementation
- * (the same `inbox_lock` contract, wherever it is implemented), or MC and the CLI will
+ * (the same `inbox_lock` contract, wherever it is implemented), or Deck and the CLI will
  * NOT mutually exclude:
  *   - lock path : "<resolvedPath>.lock"   (resolvedPath is the realpath-confined,
  *                 post-assertSafeWritePath inbox file - the SAME canonical path the

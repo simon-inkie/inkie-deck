@@ -240,7 +240,7 @@ describe("DEEPGRAM_API_KEY banned from app/ (TASK-433 FND-02)", () => {
 
 // ---------------------------------------------------------------------------
 // Suite 4: raw write primitives are banned from routes; every route
-// write goes through a confined seam (the plan's "every MC write is confined
+// write goes through a confined seam (the plan's "every Deck write is confined
 // to a declared root" claim, asserted at the import layer).
 // ---------------------------------------------------------------------------
 

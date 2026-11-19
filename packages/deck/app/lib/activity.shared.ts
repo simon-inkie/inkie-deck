@@ -3,7 +3,7 @@
  * panel.
  *
  * The producer is an external sweep script, a deterministic 60s
- * sweep that writes ONE file, `$ACTIVITY_ROOT/activity.json`. MC is a
+ * sweep that writes ONE file, `$ACTIVITY_ROOT/activity.json`. Deck is a
  * READ-ONLY consumer of it (the query CLI is the other one). This module owns
  * the wire types and every pure decision made about them; activity.server.ts
  * owns the env + fs half.
@@ -526,7 +526,7 @@ export function parseActivityDocument(text: string): ParseActivityResult {
 // Roster join
 // ---------------------------------------------------------------------------
 
-/** Signal used on rows MC synthesises for a live window the sweep did not cover. */
+/** Signal used on rows Deck synthesises for a live window the sweep did not cover. */
 export const NOT_SWEPT_SIGNAL = "not-swept";
 
 /**
@@ -543,7 +543,7 @@ export const NOT_SWEPT_SIGNAL = "not-swept";
  *
  * Order: swept agents first, in the file's own order (which is the sweep's tmux
  * window order), then any live window with no record. Keeping the file's order
- * primary means the panel stays stable and complete even when MC itself cannot
+ * primary means the panel stays stable and complete even when Deck itself cannot
  * reach tmux (windows === []).
  */
 export function activityRows(

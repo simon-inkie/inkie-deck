@@ -1,5 +1,5 @@
 /**
- * custom-answer.test.ts - Tests for applyCustomAnswer (MC #2: option C)
+ * custom-answer.test.ts - Tests for applyCustomAnswer (option C)
  *
  * Verifies:
  * - Backbone round-trip for the C-from-user path (apply -> serialize -> re-parse)

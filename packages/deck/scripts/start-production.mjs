@@ -145,7 +145,7 @@ pushWatcher.on("exit", (code) => {
 // default to 64KB. Behind the Tailscale serve proxy a client can accumulate a
 // large Cookie header (stale/duplicated cookies survive a hard-refresh), which
 // the 16KB default rejects with HTTP 431 "Request Header Fields Too Large"
-// before the app ever sees the request. MC sets no cookies of its own, so this
+// before the app ever sees the request. Deck sets no cookies of its own, so this
 // is tolerance, not a leak; the client-side fix is clearing site-data.
 // The app never reads the speech key; see scripts/voice-env.mjs.
 const appEnv = withVoiceDisabledReason({

@@ -3,7 +3,7 @@
  * file.
  *
  * ONE file, written by ONE external producer (a 60s sweep script), read
- * by TWO independent consumers: this seam and the `activity` query CLI. MC only
+ * by TWO independent consumers: this seam and the `activity` query CLI. Deck only
  * ever reads it. There is no write path in this module, deliberately: the pin
  * override the plan calls for (section 5) is the CLI's `activity pin`, and
  * adding a second writer to a file whose producer merges its own prior state
@@ -167,7 +167,7 @@ function offline(
  * next diagnosis start from scratch.
  *
  * A `swept` timestamp in the FUTURE is treated as fresh, not stale: negative
- * age means clock skew between the sweep host and MC (same box today, but the
+ * age means clock skew between the sweep host and Deck (same box today, but the
  * failure mode of calling a live engine dead is worse than the reverse, and the
  * banner would be nonsense - "offline since" a time that has not happened).
  */

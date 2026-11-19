@@ -16,7 +16,7 @@
  *
  * T-03-02 (Tampering): Writes target statePath under DATA_ROOT via the shared
  * confinement primitive + atomicWrite (this closed the one raw
- * atomicWrite bypass - every MC write is now confined to a declared root).
+ * atomicWrite bypass - every Deck write is now confined to a declared root).
  * assertSafeWritePath is NOT called - queue state is not inbox-shaped; it has
  * its own root (DATA_ROOT) in the root table.
  *
@@ -40,7 +40,7 @@ import {
 /**
  * Read process.env.DATA_ROOT and return it as an absolute path string.
  *
- * DATA_ROOT is the declared root for MC's own state files (queue state).
+ * DATA_ROOT is the declared root for Deck's own state files (queue state).
  * Explicit env, no derivation: throws if unset/empty/relative.
  */
 export function resolveDataRoot(): string {
@@ -48,7 +48,7 @@ export function resolveDataRoot(): string {
   if (!root || root.trim() === "") {
     throw new Error(
       "DATA_ROOT is required but not set. " +
-        "Set DATA_ROOT to an absolute path to MC's state directory " +
+        "Set DATA_ROOT to an absolute path to Deck's state directory " +
         "(e.g. <repo>/data). There is no default."
     );
   }

@@ -58,7 +58,7 @@ function el(testId: string): HTMLElement | null {
 function sidebarAgent(over: Partial<SidebarAgent> = {}): SidebarAgent {
   return {
     name: "summit",
-    preview: "Both done. MC restarted earlier.",
+    preview: "Both done. Deck restarted earlier.",
     lastTimestamp: "2026-07-30T09:58:58Z",
     hasUnhandled: false,
     hasUnread: false,
@@ -152,7 +152,7 @@ describe("Sidebar activity pill - absent when there is not", () => {
     expect(el("sidebar-dot-message-summit")).not.toBeNull();
     expect(el("sidebar-dot-decision-summit")).not.toBeNull();
     expect(container.textContent).toContain("summit");
-    expect(container.textContent).toContain("Both done. MC restarted earlier.");
+    expect(container.textContent).toContain("Both done. Deck restarted earlier.");
   });
 
   it("keeps the empty-list copy when there are no agents at all", () => {

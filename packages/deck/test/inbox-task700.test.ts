@@ -1,6 +1,6 @@
 /**
  * inbox-task700.test.ts - the P1 fix (a 3.6MB / 4029-block thread
- * spun MC on open, paying a full parse of every block TWICE per 3s poll).
+ * spun Deck on open, paying a full parse of every block TWICE per 3s poll).
  *
  * Four pieces, all proved here:
  *   1. readBlocksWindow parses ONLY the window's blocks (not the whole file).

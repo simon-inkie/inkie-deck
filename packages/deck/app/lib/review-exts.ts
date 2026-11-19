@@ -40,7 +40,7 @@
  *   id_rsa* / id_dsa* / id_ecdsa* / id_ed25519*
  *     SSH private key files. The matching covers "id_rsa", "id_rsa.pub" is
  *     harmless but denied here too (conservative - public keys are not secret
- *     but there is no reason to render them in MC).
+ *     but there is no reason to render them in Deck).
  *
  *   *.age
  *     Age-encrypted credential bundles (e.g. .db-creds.age). Extension not in
