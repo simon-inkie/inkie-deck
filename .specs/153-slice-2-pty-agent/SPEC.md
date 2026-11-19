@@ -179,3 +179,13 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   whitespace checks passed. Default leak commands hit `spawnSync git EPERM`;
   the explicit working-tree file scan passed.
 - Commits: 3293d06 feat(runner): PTY registry, opt-in, lock, launch environment and shutdown cleanup (#240)
+
+### 2026-11-19: Guard base scripts (build step 3)
+- What changed: `inbox-push` returns `skip:pty-runner` with exit 2. Boot and
+  workspace log and skip PTY targets before using tmux or changing their
+  session files. The provider switch refuses a PTY target at validation.
+- Why: Use the existing persist-only exit code with a distinct verdict, so the
+  inbox retains the full message without waking a draining tmux pane. The
+  guards use the instance flag and on-disk agent settings, not a launch
+  override or a live lock, so they also work before the first PTY start.
+- Commits: 0412b72 feat(base): skip and refuse PTY-runner agents in boot, push and provider switch (#240)

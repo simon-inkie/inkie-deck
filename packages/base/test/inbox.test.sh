@@ -2098,6 +2098,42 @@ REF_PAT='!\d+|(?<![A-Za-z0-9])ENG-\d+'
   rm -rf "$T"
 }
 
+{
+  T=$(mktemp -d)
+  make_inbox "$T" alpha
+  make_inbox "$T" beta
+  ln -s "$T/alpha/inbox/beta.md" "$T/beta/inbox/alpha.md"
+  mkdir -p "$T/bin"
+  printf 'pty\n' > "$T/beta/.runner"
+  cat > "$T/bin/tmux" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TMUX_LOG"
+exit 1
+STUB
+  chmod +x "$T/bin/tmux"
+  if (
+    export AGENTS_HOME="$T" MC_PTY_RUNNER=1 TMUX_LOG="$T/tmux.log" PATH="$T/bin:$PATH"
+    export INBOX_PUSH=1 INBOX_NO_PUSH=0 INBOX_PUSH_BIN="$BIN_DIR/inbox-push"
+    unset PANE_OVERRIDE PUSH_DRY_RUN
+
+    push_rc=0
+    verdict=$(AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
+    out=$(run_inbox "$T" alpha reply beta --subject "cutover" --body "Keep the full message.") || exit 1
+    [[ "$push_rc" -eq 2 && "$verdict" == "skip:pty-runner" && ! -e "$TMUX_LOG" ]] &&
+      [[ "$out" == *"push: skip:pty-runner (persisted, not pushed)"* ]] &&
+      grep -qxF 'Keep the full message.' "$T/beta/inbox/alpha.md" || exit 1
+
+    push_rc=0
+    verdict=$(MC_PTY_RUNNER=0 AGENT_NAME=alpha "$INBOX_PUSH_BIN" beta hello) || push_rc=$?
+    [[ "$push_rc" -eq 2 && "$verdict" == "skip:no-window" && -s "$TMUX_LOG" ]]
+  ); then
+    ok "Case 67: PTY opt-in persists without contacting tmux; the instance flag is required"
+  else
+    fail "Case 67: PTY persist-only delivery"
+  fi
+  rm -rf "$T"
+}
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

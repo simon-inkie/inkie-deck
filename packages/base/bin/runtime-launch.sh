@@ -18,6 +18,18 @@
 #
 # Requires AGENTS_HOME to be set by the caller.
 
+agent_opts_into_pty() {
+  [[ "${MC_PTY_RUNNER:-0}" == "1" ]] || return 1
+  local agent_home="$AGENTS_HOME/$1" runner runtime
+  [[ -f "$agent_home/.runner" ]] || return 1
+  runner="$(< "$agent_home/.runner")" || return 1
+  [[ "$runner" =~ ^[[:space:]]*pty[[:space:]]*$ ]] || return 1
+  [[ -e "$agent_home/.runtime" ]] || return 0
+  [[ -f "$agent_home/.runtime" ]] || return 1
+  runtime="$(< "$agent_home/.runtime")" || return 1
+  [[ "$runtime" =~ ^[[:space:]]*claude[[:space:]]*$ ]]
+}
+
 # agent_role <agent> -- the optional one-line role in $AGENTS_HOME/<agent>/.role.
 agent_role() {
   local file="$AGENTS_HOME/$1/.role"

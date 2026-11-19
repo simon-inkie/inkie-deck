@@ -204,6 +204,9 @@ printf '%s\n' "$*" >> "$TMUX_LOG"
 case "$1" in
   has-session) exit 1 ;;
   list-windows) for d in "$AGENTS_HOME"/*/; do basename "$d"; done ;;
+  list-panes)
+    if grep -q '^send-keys -t agents:cobalt ' "$TMUX_LOG"; then echo node; else echo bash; fi ;;
+  capture-pane) printf 'OpenAI Codex\n\342\200\272 \n' ;;
 esac
 exit 0
 STUB
@@ -212,6 +215,38 @@ PATH="$STUB_PATH" WATCHER_ENABLED=0 bash "$BIN_DIR/workspace.sh" claudia cobalt 
 ws_rc=$?
 [[ "$ws_rc" -eq 0 && "$(sent_to cobalt)" == *" codex Enter" && "$(sent_to gale)" == *" agy --conversation gale-conv-1 Enter" && "$(sent_to claudia)" == *" claude "* ]] \
   && pass "W6 workspace run: each pane is sent its own runtime's command" || fail "W6 workspace run" "rc=$ws_rc $(cat "$TMUX_LOG")"
+
+mkdir -p "$AGENTS_HOME/ptytest"
+: > "$AGENTS_HOME/ptytest/SOUL.md"
+: > "$AGENTS_HOME/ptytest/.auto-arm-watcher"
+printf 'pty\n' > "$AGENTS_HOME/ptytest/.runner"
+old_session=55555555-5555-4555-8555-555555555555
+printf '%s\n' "$old_session" > "$AGENTS_HOME/ptytest/.session-id"
+printf 'pty\n' > "$AGENTS_HOME/cobalt/.runner"
+
+for launcher in boot-agents.sh workspace.sh; do
+  : > "$TMUX_LOG"
+  out=$(PATH="$STUB_PATH" MC_PTY_RUNNER=1 BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 WATCHER_ENABLED=0 \
+    bash "$BIN_DIR/$launcher" ptytest cobalt 2>&1)
+  rc=$?
+  if [[ "$rc" -eq 0 && "$out" == *"skipping ptytest (opted into the PTY runner)"* ]] &&
+    [[ "$(sent_to cobalt)" == *" codex Enter" && ! -e "$AGENTS_HOME/ptytest/.first-boot-done" ]] &&
+    [[ "$(cat "$AGENTS_HOME/ptytest/.session-id")" == "$old_session" ]] &&
+    ! grep -qF ptytest "$TMUX_LOG"; then
+    pass "$launcher skips a PTY target but launches a marked, ineligible runtime on tmux"
+  else
+    fail "$launcher PTY skip" "rc=$rc $out $(cat "$TMUX_LOG")"
+  fi
+
+  : > "$TMUX_LOG"
+  out=$(PATH="$STUB_PATH" MC_PTY_RUNNER=1 bash "$BIN_DIR/$launcher" ptytest 2>&1)
+  rc=$?
+  if [[ "$rc" -eq 0 && "$out" == *"skipping ptytest"* && ! -s "$TMUX_LOG" ]]; then
+    pass "$launcher does not contact tmux when all targets opt in"
+  else
+    fail "$launcher PTY-only run" "rc=$rc $out $(cat "$TMUX_LOG")"
+  fi
+done
 
 provider_home="$AGENTS_HOME/cobalt/.codex-home"
 exported_home="$BOX/exported codex"
