@@ -225,4 +225,4 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   the flag and needs the agent root to find the recipient's `.runner`.
   The SPEC folder now matches the issue it tracks.
 - Supersedes: The earlier child environment allowlist; the opt-in is unchanged.
-- Commits: pending
+- Commits: 4af6d74 fix(runner): keep the inbox push guard working inside the PTY child, rename the SPEC folder (#240)
