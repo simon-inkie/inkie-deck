@@ -16,7 +16,7 @@ const compilerOptions = ts.getParsedCommandLineOfConfigFile(join(deck, "tsconfig
   onUnRecoverableConfigFileDiagnostic: (error) => { throw new Error(String(error.messageText)); },
 })!.options;
 
-it("isolates the promoted runner and keeps its fixtures out of production", () => {
+it("allows only the registry to import the PTY adapter in production", () => {
   const roots = [
     ...["app", "server", "scripts"].flatMap((directory) =>
       readdirSync(join(deck, directory), { recursive: true, encoding: "utf8" })
@@ -37,8 +37,8 @@ it("isolates the promoted runner and keeps its fixtures out of production", () =
       const dependency = resolved?.resolvedFileName;
       const target = dependency && relative(deck, dependency);
       if ((/^node-pty(?:\/|$)/.test(fileName) && importer !== pty) || target?.startsWith(fixtures) ||
-        target === registry || (target === pty && importer !== registry) ||
-        (target === core && importer !== pty && importer !== registry)) {
+        (target === pty && importer !== registry) ||
+        (target === core && ![pty, registry, join(runner, "lock.server.ts")].includes(importer))) {
         violations.push(`${importer} -> ${fileName}`);
       } else if (dependency && !resolved.isExternalLibraryImport && sourceFile.test(dependency)) {
         scan(dependency);

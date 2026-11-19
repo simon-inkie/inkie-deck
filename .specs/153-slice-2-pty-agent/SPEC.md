@@ -17,7 +17,7 @@ In this slice:
    Verify: unit tests for every combination; any other value means tmux.
 2. **Production runner module.** Move the interface and shared lifecycle from `packages/deck/test/runner/runner.ts` (former slice 1 path) to `packages/deck/app/lib/runner/runner.ts`; add `packages/deck/app/lib/runner/pty-runner.server.ts` with a launch spec (command, args, cwd, env) replacing fixture scenarios. PTY readiness becomes "spawned and produced output within 10 s", not `FIXTURE READY`. Process group kill, typed `LaunchFailure`, write refused after exit: all kept. Fixture tests reuse the same base.
    Verify: slice 1 contract suite against both runners, plus PTY readiness without a marker and silent-session cleanup.
-3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts` (planned), the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time.
+3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts`, the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time.
    Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock with dead pid is reclaimed only after the group is confirmed gone.
 4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR` if set, the agent's `INBOX_ROOT`). No `MC_*`, no tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
    Verify: env snapshot test; stub launch end to end.
@@ -71,6 +71,9 @@ First try on a scratch agent (`packages/base/bin/create-agent.sh`), which has no
 - For build step 1, run `pnpm -C packages/deck test test/runner`,
   `pnpm typecheck`, and `pnpm check:boundaries`. Run the repository licence,
   library version, dash, whitespace and leak checks.
+- For build step 2, run the same checks. The registry tests inject the stub
+  harness, mock tmux, and exercise both production shutdown signals without
+  binding a port.
 - Later steps add the automated checks listed in Scope. The manual try below
   requires those steps to be complete; do not run it for step 1.
 
@@ -101,17 +104,17 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
 4. **Routes and view** (items 5 to 8). After 2. Verify: route, driver and loader tests; manual try steps 1 to 4.
 5. **Real Claude run and SPEC close-out**: conformance note, docs line in `docs/adding-an-agent.md`, Log. After 3 and 4. Verify: full manual try.
 
-## Open decisions
+## Decisions
 
-1. Opt-in location: `.runner` file plus `MC_PTY_RUNNER`. Lean: yes; matches `.runtime`.
-2. Fresh session only, old `.session-id` untouched. Lean: yes; resume on PTY next slice.
-3. Add `@xterm/headless` (MIT) for the screen buffer. Lean: yes; raw bytes cannot be classified.
-4. Deck restart kills the PTY agent (no survival). Lean: accept for this slice.
-5. Reuse the "sent, could not confirm" UI wording when verification is unavailable. Lean: yes; no `packages/deck/app/components/TmuxPane.tsx` change.
+1. Yes: `.runner` file plus `MC_PTY_RUNNER`; matches `.runtime`.
+2. Yes: fresh session only, old `.session-id` untouched; resume on PTY next slice.
+3. Yes: add `@xterm/headless` (MIT) in build step 4; raw bytes cannot be classified.
+4. Yes: Deck restart kills the PTY agent; no survival.
+5. Yes: reuse the "sent, could not confirm" UI wording when verification is unavailable; no `packages/deck/app/components/TmuxPane.tsx` change.
 
 ## Follow-ups
 
-- Build plan steps 2 to 5 remain in #240; no production caller is added in step 1.
+- Build plan steps 3 to 5 remain in #240; step 2 adds lifecycle wiring but no start route or listener.
 
 ## Log
 
@@ -145,3 +148,34 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   explicit working-tree file scan passed. The dash check timed out; a direct
   full-tree scan found no banned dashes.
 - Commits: 523d594 refactor(runner): promote the runner out of tests for slice 2 (#240)
+
+### 2026-11-19: Pick up build step 2
+- What changed: Confirmed the five decisions and picked up the registry and
+  production lifecycle after the runner promotion.
+- Why: Keep the stub-only lifecycle work separate from send admission, screen
+  rendering and a live conformance try. The drained cutover still requires
+  the later script and route guards.
+- Commits: pending
+
+### 2026-11-19: Implement the registry and lifecycle (build step 2)
+- What changed: Added the process-wide registry, two opt-in checks, exclusive
+  lock, allowlisted launch, quiet and exit state, startup recovery and graceful
+  shutdown. The production launcher forwards shutdown signals to the server.
+  Output is drained without storage until the screen buffer step.
+- Why: Use `AGENTS_HOME` first, falling back to Deck's existing `AGENTS_ROOT`
+  convention. Take `INBOX_ROOT` from the agent's Claude settings, or its
+  `.inbox-root` if not set there; never substitute Deck's root. The PTY library
+  supplies `PWD` from the launch directory, not from Deck's environment.
+  A failed tmux probe that cannot prove absence refuses launch. Recovery uses
+  a separate exclusive guard and records Linux boot and process birth IDs to
+  avoid reclaiming a new owner's lock or killing a reused PID. Incomplete
+  locks and live groups without a verifiable leader stay locked and block
+  PTY starts; operator verification is required before removing the lock, any
+  abandoned recovery guard, and restarting. A group with no live members can
+  be reclaimed.
+- Validation: 84 focused tests passed, including no-descendant checks on
+  SIGTERM and SIGINT; 10 private tmux tests were skipped by the socket sandbox.
+  The offline build, typecheck, boundaries, licence, library version, dash and
+  whitespace checks passed. Default leak commands hit `spawnSync git EPERM`;
+  the explicit working-tree file scan passed.
+- Commits: pending

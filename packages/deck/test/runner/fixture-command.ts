@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { SessionSpec } from "../../app/lib/runner/runner.js";
 
 export interface FixtureSpec {
-  scenario?: "normal" | "slow" | "failed" | "missing" | "plain" | "silent";
+  scenario?: "normal" | "slow" | "failed" | "missing" | "plain" | "silent" | "registry";
   cols?: number;
   rows?: number;
 }

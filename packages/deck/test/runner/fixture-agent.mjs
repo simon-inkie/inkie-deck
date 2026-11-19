@@ -5,6 +5,10 @@ import { setTimeout as delay } from "node:timers/promises";
 const scenario = process.argv[2];
 if (scenario === "failed") process.exit(23);
 if (scenario === "slow") await delay(150);
+if (scenario === "detached") {
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+}
 
 const write = (text) => process.stdout.write(text);
 let input = "";
@@ -48,6 +52,10 @@ function submit(text) {
     write(`ENV ${Object.keys(process.env).sort().join(",")}\n`);
   } else if (text === "descendant") {
     void startDescendant();
+  } else if (text === "hang") {
+    return;
+  } else if (text === "exit23") {
+    process.exit(23);
   } else if (text === "exit") {
     write("fixture@terminal:~$\n");
     process.stdin.pause();
@@ -85,6 +93,8 @@ process.stdin.on("data", (chunk) => {
 
 if (scenario !== "silent") {
   write(scenario === "plain" ? ">\n" : "\x1b[?2004hFIXTURE READY\n>\n");
+}
+if (scenario !== "silent" && scenario !== "registry") {
   for (const text of ["FIRST \\ frame", "SECOND \u00a3 frame", "THIRD frame"]) {
     await delay(30);
     write(`${text}\n`);

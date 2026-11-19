@@ -171,8 +171,15 @@ function cleanup() {
   }
 }
 process.on("exit", cleanup);
-process.on("SIGINT", () => { cleanup(); process.exit(0); });
-process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+let stopping = false;
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    if (stopping) return;
+    stopping = true;
+    cleanup();
+    child.kill(signal);
+  });
+}
 
 child.on("exit", (code) => {
   cleanup();

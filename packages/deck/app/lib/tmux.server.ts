@@ -134,13 +134,29 @@ function runTmux(args: string[]): string | undefined {
  * Names that fail the ROSTER regex are dropped (they could not be captured
  * anyway - the validate-before-subprocess gate would reject them).
  */
-export function listTmuxWindows(env: NodeJS.ProcessEnv): string[] {
-  const out = runTmux(buildListArgs(resolveTmuxSession(env)));
+export function listTmuxWindows(env: NodeJS.ProcessEnv, requireKnown = false): string[] {
+  const args = buildListArgs(resolveTmuxSession(env));
+  const out = requireKnown ? listTmuxForOwnership(args) : runTmux(args);
   if (out === undefined) return [];
   return out
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "" && isValidWindowName(l));
+}
+
+function listTmuxForOwnership(args: string[]): string {
+  try {
+    return execFileSync("tmux", args, {
+      encoding: "utf8", timeout: TMUX_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, LC_ALL: "C" },
+    });
+  } catch (error) {
+    const result = error as { status?: number; stderr?: string };
+    if (result.status === 1 && /^(?:no server running on .+|no sessions|can't find session: .+|error connecting to .+ \(No such file or directory\))\s*$/.test(result.stderr ?? "")) {
+      return "";
+    }
+    throw new Error("Could not verify tmux window ownership.");
+  }
 }
 
 /**

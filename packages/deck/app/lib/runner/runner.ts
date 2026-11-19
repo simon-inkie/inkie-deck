@@ -74,12 +74,16 @@ export abstract class BaseRunner implements Runner {
   protected abstract interrupt(): void;
   protected onStopRequested(): void {}
 
-  async launch(spec: SessionSpec): Promise<SessionHandle> {
+  async launch(spec: SessionSpec, onSpawn?: (pid: number) => void): Promise<SessionHandle> {
     if (this.state !== "new") throw new LaunchFailure("start-failed", "Runner is single-use.");
     this.state = "starting";
     const timeout = setTimeout(() => this.ready.resolve(false), 10_000);
     try {
-      this.starting = this.start(spec).then((pid) => { this.pid = pid; return pid; });
+      this.starting = this.start(spec).then((pid) => {
+        this.pid = pid;
+        onSpawn?.(pid);
+        return pid;
+      });
       const pid = await this.starting;
       if (!await this.ready.promise || !this.inState("starting")) {
         throw new LaunchFailure("start-failed", "Session exited or did not become ready.");
@@ -144,7 +148,7 @@ export abstract class BaseRunner implements Runner {
     }
   }
 
-  output(): AsyncIterable<Uint8Array> { return this.stream; }
+  output(): Readable { return this.stream; }
 
   async resize(cols: number, rows: number): Promise<void> {
     if (this.state === "running") this.setSize(cols, rows);
