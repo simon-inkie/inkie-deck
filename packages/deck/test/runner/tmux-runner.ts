@@ -16,11 +16,9 @@ const window = "agent";
 const target = `=${session}:=${window}`;
 const startupMs = 4000;
 const readinessMs = 5000;
-const statusGraceMs = 1000;
-const exitWaitMs = 3000;
+const stopWaitMs = 3000;
 const shutdownMs = 1000;
 const outputBarrier = "fixture-output-drained";
-const unknownExit: ExitInfo = { code: null, signal: null };
 const commandOptions = { encoding: "utf8", killSignal: "SIGKILL", timeout: TMUX_EXEC_TIMEOUT_MS } as const;
 const commands = { execFile, execFileSync, spawn };
 
@@ -56,9 +54,8 @@ export class TmuxRunner extends FixtureRunner {
   private control?: ReturnType<typeof track>;
   private drainOutput?: () => Promise<void>;
   private poll?: NodeJS.Timeout;
-  private exitTimer?: NodeJS.Timeout;
-  private deadSince?: number;
-  private probeFailedSince?: number;
+  private stopTimer?: NodeJS.Timeout;
+  private paneDead = false;
   private disposing = false;
 
   constructor(private readonly directory: string, private readonly tmux = commands) {
@@ -151,37 +148,30 @@ export class TmuxRunner extends FixtureRunner {
     try {
       const [dead, status, signal] = (await this.query("display-message", "-p", "-t", target,
         "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}")).trimEnd().split(" ");
-      if (dead !== "0" && dead !== "1") throw new Error("tmux did not report pane state.");
-      this.probeFailedSince = undefined;
       if (dead === "1") {
-        this.deadSince ??= performance.now();
+        this.paneDead = true;
         const signalName = signal?.startsWith("SIG") ? signal : `SIG${signal}`;
         const signalNumber = Number(signal) || constants.signals[signalName as NodeJS.Signals];
         if (signalNumber && signalNumber > 0) info = { code: null, signal: signalNumber };
         else if (status && /^\d+$/.test(status)) info = { code: Number(status), signal: null };
       }
-    } catch {
-      this.probeFailedSince ??= performance.now();
-    }
+    } catch {}
     if (this.disposing) return;
-    const now = performance.now();
     if (info) await this.finish(info);
-    else if (now - (this.deadSince ?? this.probeFailedSince ?? now) >= statusGraceMs) await this.finish(unknownExit);
     else this.schedulePoll();
   }
 
-  override exited(): Promise<ExitInfo> {
-    if (!this.disposing) this.exitTimer ??= setTimeout(() => { void this.finish(unknownExit); }, exitWaitMs);
-    return super.exited();
+  protected override onStopRequested(): void {
+    this.stopTimer = setTimeout(() => { void this.finish({ code: null, signal: null }); }, stopWaitMs);
   }
 
   protected async dispose(): Promise<void> {
     this.disposing = true;
     clearTimeout(this.poll);
-    clearTimeout(this.exitTimer);
+    clearTimeout(this.stopTimer);
     const children = [this.server, this.control].filter((tracked) => tracked !== undefined);
     const closed = Promise.all(children.map((tracked) => tracked.closed)).then(() => {});
-    if (this.deadSince !== undefined) await this.drainOutput?.().catch(() => {});
+    if (this.paneDead) await this.drainOutput?.().catch(() => {});
     if (this.server && alive(this.server.child)) {
       await this.query("kill-server").catch(() => {});
     }

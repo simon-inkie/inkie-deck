@@ -104,15 +104,15 @@ Requirements:
   PTY runner starts the child in its own process group (a job object on
   Windows, later) and kills the group. This is a requirement to prove in
   tests, not an assumed guarantee.
-- The tmux fixture bounds exit observation and teardown. If the pane's
-  exit status cannot be observed, `{ code: null, signal: null }` means
-  unknown, not success. The contract allows that result for a stopped pane,
-  but still requires exact codes for normal exit (0) and the failed fixture
-  (23), and a non-zero code for the missing fixture.
-- `exited()` waits up to three seconds for tmux to report exit before
-  forcing cleanup. A dead pane gets up to one second to publish its status.
-  Shutdown gives queued control output a chance to drain, then requests
-  server shutdown and forcibly kills any owned tmux process that stays up.
+- `exited()` observes exit without initiating teardown. The tmux fixture
+  keeps polling until it sees a code or signal; contract tests bound their
+  own wait. The contract requires exact codes for normal exit (0) and the
+  failed fixture (23), and a non-zero code for the missing fixture.
+- An explicit tmux stop allows up to three seconds for status before forcing
+  cleanup. If status is still unavailable, `{ code: null, signal: null }`
+  after cleanup means unknown, not success. Shutdown gives queued control
+  output a chance to drain when the pane is known dead, then requests server
+  shutdown and forcibly kills any owned tmux process that stays up.
 - `caps.deliveryAck` and `caps.stateEvents` are false. A write is reported
   as written, never as delivered or accepted.
 
@@ -219,8 +219,9 @@ missing-dependency probe runs the gated Deck send action in memory without
 a listener and checks lazy load, missing or broken node-pty, and a spawn
 exception. Injected tmux commands cover the private socket and environment,
 the dead pane and shell guards before polling catches up, a transient
-probe failure, late and missing status, the output drain, a reported kill
-signal, and forced shutdown when tmux does not report death or close on request.
+probe failure, delayed natural exit, late and missing status, the output
+drain, a reported kill signal, and forced shutdown when tmux does not report
+death or close on request.
 
 ## Acceptance
 
@@ -369,4 +370,28 @@ Recommendations only.
   unchanged suites. The dirty-tree guard separately rejected these edits.
 - Supersedes: the sandbox-only tmux launch failures in the local checks,
   not the requirement to run the live contract in Linux CI.
+- Commits: pending.
+
+### 2026-11-19: Pick up the parallel exit flake
+- What changed: traced the reported natural-exit failure to the fixture
+  tmux adapter, whose passive exit wait can force cleanup and return unknown
+  before a poll obtains the status. The PTY adapter waits for its native
+  exit event. The contract cases already await the exit promise.
+- Why: separate passive observation from forced cleanup, and reproduce the
+  timing with injected tmux commands without running the full suite.
+- Supersedes: nothing, additive.
+- Commits: pending.
+
+### 2026-11-19: Wait for a reported natural exit
+- What changed: removed the passive tmux exit and probe grace deadlines.
+  Only an explicit stop arms forced cleanup. Contract cases bound their own
+  exit wait and retain the exact exit and process group cleanup assertions.
+- Why: all three fake-clock cases reproduced an unknown result before the
+  status arrived: a pane still running, a dead pane without status and failed
+  probes. All now wait for code 0 with no signal and then clean up the group.
+- Verification: 21 runner tests passed; eight real tmux cases skipped because
+  the sandbox denied the private Unix socket. Typecheck, licence, direct dash
+  scan and `git diff --check` passed. The full Deck suite was not run.
+- Supersedes: the passive exit and status grace deadlines in "Bound the tmux
+  fixture lifecycle", not its shutdown bounds or the Linux CI requirement.
 - Commits: pending.

@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "nod
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fixtureEnvironment } from "./fixture-command.js";
 import { fixtureRegistry } from "./fixture-registry.js";
@@ -23,6 +24,7 @@ function groupMembers(group: number): number[] {
 
 describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s runner contract", (kind) => {
   const timeout = kind === "tmux" ? 12000 : 5000;
+  const exitTimeout = kind === "tmux" ? 8000 : 4000;
   let directory: string;
   let runner: Runner;
   let transcript: string;
@@ -75,6 +77,17 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     await vi.waitFor(() => expect(transcript).toContain(text), { timeout });
   }
 
+  async function waitForExit() {
+    const timer = new AbortController();
+    try {
+      return await Promise.race([runner.exited(), delay(exitTimeout, undefined, { signal: timer.signal }).then(() => {
+        throw new Error(`${kind} runner did not report exit within ${exitTimeout} ms.`);
+      })]);
+    } finally {
+      timer.abort();
+    }
+  }
+
   async function submit(text: string) {
     expect(await runner.write(text)).toEqual({ status: "written" });
     expect(await runner.key("Enter")).toEqual({ status: "written" });
@@ -88,7 +101,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     await launched;
     await waitFor("THIRD frame");
     await submit("exit");
-    expect(await runner.exited()).toEqual({ code: 0, signal: null });
+    expect(await waitForExit()).toEqual({ code: 0, signal: null });
     await drained;
     expect(transcript).toBe("\x1b[?2004hFIXTURE READY\r\n>\r\nFIRST \\ frame\r\n" +
       "SECOND \u00a3 frame\r\nTHIRD frame\r\nfixture@terminal:~$\r\nFIXTURE END\r\n");
@@ -96,7 +109,7 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
 
   it.each(["failed", "missing"] as const)("reports a %s launch without accepting input", { timeout }, async (scenario) => {
     await expect(runner.launch({ scenario })).rejects.toMatchObject({ name: "LaunchFailure", reason: "start-failed" });
-    const { code } = await runner.exited();
+    const { code } = await waitForExit();
     if (scenario === "failed") expect(code).toBe(23);
     else {
       expect(code).not.toBeNull();
@@ -137,10 +150,10 @@ describe.runIf(process.platform === "linux").each(["tmux", "pty"] as const)("%s 
     const descendant = Number(/DESCENDANT (\d+)\r\n/.exec(transcript)?.[1]);
     expect(groupMembers(pid)).toEqual(expect.arrayContaining([pid, descendant]));
 
-    if (mode === "natural") await submit("exit");
-    else await runner.stop(mode);
-    const exit = await runner.exited();
-    if (mode === "natural") expect(exit).toEqual({ code: 0, signal: null });
+    if (mode === "natural") {
+      await submit("exit");
+      expect(await waitForExit()).toEqual({ code: 0, signal: null });
+    } else await runner.stop(mode);
     await drained;
     const beforeRefusal = transcript;
     const refused = { status: "refused", reason: "not-running" };

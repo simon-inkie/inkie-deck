@@ -72,6 +72,7 @@ export abstract class FixtureRunner implements Runner {
   protected abstract send(value: string, named: boolean): WriteResult;
   protected abstract setSize(cols: number, rows: number): void;
   protected abstract interrupt(): void;
+  protected onStopRequested(): void {}
 
   async launch(spec: SessionSpec): Promise<SessionHandle> {
     if (this.state !== "new") throw new LaunchFailure("start-failed", "Runner is single-use.");
@@ -169,6 +170,7 @@ export abstract class FixtureRunner implements Runner {
     }
     this.state = "stopping";
     signalGroup(this.pid, mode === "kill" ? "SIGKILL" : "SIGTERM");
+    this.onStopRequested();
     if (mode === "graceful") {
       const timer = new AbortController();
       try {

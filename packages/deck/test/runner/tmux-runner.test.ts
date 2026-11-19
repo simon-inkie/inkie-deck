@@ -1,5 +1,6 @@
 import { ChildProcess, type ExecFileException } from "node:child_process";
 import { constants } from "node:os";
+import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { TmuxRunner } from "./tmux-runner.js";
@@ -100,10 +101,37 @@ it("retries a failed probe and waits for a late exit status before closing outpu
   expect(control.child.exitCode).toBe(0);
 });
 
-it("settles with unknown status when a dead pane never reports its status", async () => {
+it.each([
+  { pending: "running", response: "0  \n", delayMs: 3500 },
+  { pending: "dead without status", response: "1  \n", delayMs: 1500 },
+  { pending: "unreachable", response: new Error("command timed out"), delayMs: 1500 },
+])("keeps waiting for natural exit while the pane is $pending", async ({ response, delayMs }) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    let status = response;
+    const { runner, groupKill } = fixture(() => status);
+    await runner.launch({});
+    const reported = vi.fn();
+    void runner.exited().then(reported, reported);
+
+    await vi.advanceTimersByTimeAsync(delayMs);
+    expect(reported).not.toHaveBeenCalled();
+    expect(groupKill).not.toHaveBeenCalled();
+
+    status = "1 0 \n";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(reported).toHaveBeenCalledExactlyOnceWith({ code: 0, signal: null });
+    expect(groupKill).toHaveBeenCalledWith(-panePid, "SIGKILL");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("settles with unknown status after stopping a pane that never reports its status", async () => {
   const { runner, groupKill } = fixture(() => "1  \n");
   await runner.launch({});
-  await expect(runner.exited()).resolves.toEqual({ code: null, signal: null });
+  await expect(runner.stop("kill")).resolves.toEqual({ code: null, signal: null });
   expect(groupKill).toHaveBeenCalledWith(-panePid, "SIGKILL");
 });
 
