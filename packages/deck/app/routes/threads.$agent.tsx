@@ -33,6 +33,7 @@ import { useFetcher, useFetchers, useLocation, useNavigate, useSearchParams } fr
 import type { Route } from "./+types/threads.$agent";
 import { RouteErrorPanel } from "~/components/RouteErrorPanel";
 import { makeStores } from "~/lib/stores.server";
+import { requireSameOriginWrite } from "~/lib/request-origin.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, tmuxEnabled } from "~/lib/instance.server";
 import { saveAttachment } from "~/lib/attachments.server";
@@ -181,7 +182,7 @@ export type IntentPayload = z.infer<typeof intentSchema>;
 // the work panel is fed by the SHELL loader now. This loader keeps listCards
 // only for the ticketColumns synergy-badge map.
 
-export async function loader({ params, request }: Route.LoaderArgs) {
+export async function loader({ params, request, context }: Route.LoaderArgs) {
   const { inbox } = makeStores(process.env);
   const agent = params.agent;
 
@@ -203,6 +204,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // messages, and the 1s poll would otherwise mark unseen messages read.
   // Render-is-the-receipt only counts when the messages actually render.
   if (!tmuxView) {
+    requireSameOriginWrite(request, context);
     try {
       await inbox.markRead(agent, user);
     } catch (err) {
@@ -309,7 +311,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
  *
  * Imports ONLY makeStores + zod + model types. No fs, no banned path strings.
  */
-export async function action({ request, params }: Route.ActionArgs) {
+export async function action({ request, params, context }: Route.ActionArgs) {
+  requireSameOriginWrite(request, context);
   const formData = await request.formData();
   const agent = params.agent;
 

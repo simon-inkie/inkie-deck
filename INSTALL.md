@@ -675,8 +675,8 @@ shell variable does not survive one.
 
 ### Reaching it from another machine
 
-When `HOST` is not loopback, anyone who can open this page can message your
-agents and, if enabled, create scheduled jobs on this machine.
+Anyone who can open Deck through an approved Host can message your agents.
+Scheduled jobs have a separate admin check, covered under Scheduled nudges.
 
 Skip this unless you need it. Deck binds loopback by default and that default
 is doing real work: **there is no authentication in front of the thing you are
@@ -691,6 +691,20 @@ echo "HOST=0.0.0.0" >> packages/deck/.env
 This is also the line a container image needs. A published port against a
 loopback bind is silent: you get a connection refused from a launcher that is
 still reporting a healthy start.
+
+Writes to agent threads, terminals, model settings, project cards and drafts
+require an approved `Host`. Deck accepts `localhost`, supported loopback IPs
+and the host configured in `HOST`. For other addresses, set `MC_ALLOWED_HOSTS`
+to a comma-separated list of trusted hostnames or IP addresses, without schemes
+or ports. A proxy or tunnel must preserve the public Host, including the port
+if present, so that it matches the browser's Origin. This does not enable remote
+Nudge editing or replace access control.
+
+Deck refuses cross-site and same-site writes, including opening a chat thread
+from another site because that page records a read receipt. Open the Deck home
+page first, then follow the thread link there. Clients that omit both `Origin`
+and `Sec-Fetch-Site` must connect directly over loopback. Drafts use these same
+checks rather than the separate voice origin allowlist.
 
 ### Build, and start
 
@@ -827,6 +841,7 @@ Then tell the proxy about the origin and the browser about the proxy, where
 the admin console show it:
 
 ```text
+MC_ALLOWED_HOSTS=<tailnet-host>
 VOICE_ALLOWED_ORIGINS=https://<tailnet-host>
 VOICE_PROXY_URL=wss://<tailnet-host>:8443/voice
 ```

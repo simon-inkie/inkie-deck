@@ -38,6 +38,7 @@ import { RouteErrorPanel } from "~/components/RouteErrorPanel";
 import { useFetcher, Link, useSearchParams } from "react-router";
 import { useCallback } from "react";
 import { makeStores } from "~/lib/stores.server";
+import { requireSameOriginWrite } from "~/lib/request-origin.server";
 import { resolveNow } from "~/lib/time";
 import { mcUser, filterCardsForInstance } from "~/lib/instance.server";
 import { listCards } from "~/lib/projects.server";
@@ -98,7 +99,8 @@ const homeActionSchema = z.discriminatedUnion("intent", [
 // Action
 // ---------------------------------------------------------------------------
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireSameOriginWrite(request, context);
   const formData = await request.formData();
   const raw = Object.fromEntries(formData);
   const parsed = homeActionSchema.safeParse(raw);

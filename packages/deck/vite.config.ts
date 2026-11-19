@@ -28,8 +28,8 @@ function deckDevSocket(): Plugin {
       server.middlewares.use(async (request, _response, next) => {
         const address = request.socket.remoteAddress;
         try {
-          const { devSocketAddress } = await server.ssrLoadModule("/app/lib/nudge-admin.server.ts") as
-            typeof import("./app/lib/nudge-admin.server");
+          const { devSocketAddress } = await server.ssrLoadModule("/app/lib/request-origin.server.ts") as
+            typeof import("./app/lib/request-origin.server");
           devSocketAddress.run(address, next);
         } catch (error) {
           next(error);
