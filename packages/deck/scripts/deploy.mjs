@@ -2,7 +2,7 @@
  * scripts/deploy.mjs - no-404-window redeploy of the MC production daemon.
  *
  * THE BUG THIS FIXES: `pnpm build` used to empty build/client and write fresh
- * hashed asset names. The production daemon (react-router-serve) serves build/client
+ * hashed asset names. The production daemon serves build/client
  * from disk LIVE while holding the prior server bundle in memory - so between
  * the build finishing and the restart completing, the live page's HTML still
  * pointed at the OLD hashes, which the build had just deleted -> 404 -> broken

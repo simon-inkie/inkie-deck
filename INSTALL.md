@@ -607,8 +607,8 @@ questions, and only the second one matters.
 
 Two things this tier does not do. It is reachable only from the machine it
 runs on (the dev server binds loopback, and a container port map published
-against it gets nothing); and it has no tmux, no agents and no clock that
-moves. For those, keep going.
+against it gets nothing); and it has no tmux, no agents, no Nudges and no
+clock that moves. For those, keep going.
 
 ## 4. Run it for real
 
@@ -674,6 +674,9 @@ The next tier has you opening terminals, and a name that only exists as a
 shell variable does not survive one.
 
 ### Reaching it from another machine
+
+When `HOST` is not loopback, anyone who can open this page can message your
+agents and, if enabled, create scheduled jobs on this machine.
 
 Skip this unless you need it. Deck binds loopback by default and that default
 is doing real work: **there is no authentication in front of the thing you are
@@ -1250,6 +1253,54 @@ The reply is now in the thread, which you can see from Deck:
 ```sh
 curl -sS http://localhost:4242/threads/inkie | grep -c 'the whole protocol'
 ```
+
+### Scheduled nudges
+
+The Nudges page (`/scheduler`, linked from the top bar) sends an agent a
+prompt, or runs a shell script, on a cron schedule. Each nudge is a line in the
+system crontab of the user Deck runs as, tagged `# MC-CRON:<id>`, plus a script
+in `~/agents/<agent>/bin/`. Lines without that tag are never touched. It needs
+`crontab` on `PATH`; without it the page says so and saves nothing. An agent
+nudge is pasted into the agent's window in the `agents` tmux session, and if
+that session is not running when it fires, the run is skipped and the page
+shows it as fired but not delivered.
+
+Nudges is on by default. To edit nudges, connect directly from the Deck
+machine over loopback (`127.0.0.1`, `::1` or `::ffff:127.0.0.1`). Other
+visitors can view the page but cannot change anything. Deck uses the socket
+address, never a forwarded address; requests carrying forwarding headers
+are read-only by default. If a reverse proxy connects over loopback, make
+sure it adds a forwarding header such as `X-Forwarded-For`, or disable
+Nudges: without that header Deck cannot distinguish the proxy from a local
+visitor.
+
+Writes also require a `Host` of `localhost`, a supported loopback IP, or
+the hostname configured in `HOST`. The browser's `Sec-Fetch-Site` must be
+`same-origin` or `none` if present, and any `Origin` must match the request
+`Host` (including the port). Command-line clients such as `curl` can omit
+both headers only on a direct loopback connection, so local scripts keep
+working.
+
+To allow remote writes deliberately, set `MC_CRON_ALLOW_REMOTE_ADMIN=1` in
+the server environment (or `packages/deck/.env` for the documented launcher)
+and restart Deck. This also accepts any IPv4 or bracketed IPv6 address in
+`Host`, including the LAN address when Deck binds to `0.0.0.0`. To allow
+extra hostnames, set `MC_CRON_ALLOWED_HOSTS` to a comma-separated list such as
+`deck.example.com,nudges.example.com`, without schemes or ports. The list is
+ignored without the remote opt-in, and unknown hostnames are still refused.
+The origin checks still apply. A reverse proxy should validate and preserve
+the public Host rather than rewrite it to localhost. Only enable remote
+writes behind access control you trust: a visitor who passes those checks can
+schedule jobs as the user running Deck.
+
+To turn Nudges off entirely:
+
+```sh
+echo "MC_CRON_ADMIN_ENABLED=0" >> packages/deck/.env
+```
+
+That removes the nav entry, makes the page and `api/cron` answer 404, and
+refuses every write. `pnpm dev` already turns it off for the sandbox.
 
 ### What is still missing, and it is the important part
 

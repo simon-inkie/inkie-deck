@@ -8,7 +8,12 @@
  *
  * GET - returns listCrons() result for the page loader.
  *
- * SEAM RULE: imports ONLY from ~/lib/cron.server + ~/lib/instance.server.
+ * Both are gated by cronAdminEnabled (on unless MC_CRON_ADMIN_ENABLED=0): off,
+ * GET 404s and POST is refused. With no `crontab` on PATH, GET returns an
+ * empty list with crontabOk: false and POST is refused before any write.
+ *
+ * Writes require an allowed Host and same-origin proof, plus local or
+ * explicitly enabled remote access.
  * The crontab runner is never called here directly - cron.server.ts is the seam.
  * Zod-at-boundary, never-throws, degrades to { ok: false }.
  * ASCII only - no em-dashes.
@@ -18,20 +23,28 @@ import { z } from "zod";
 import type { Route } from "./+types/api.cron";
 import {
   listCrons,
+  crontabAvailable,
   createCron,
   setEnabled,
   deleteCron,
 } from "~/lib/cron.server";
 import { cronAdminEnabled } from "~/lib/instance.server";
+import { requireNudgeAdmin } from "~/lib/nudge-admin.server";
 import { cronFormSchema } from "~/lib/cron-validate";
 
 // ---------------------------------------------------------------------------
-// Loader - read path (no gate: listing is harmless)
+// Loader - read path (same gate as the page: the list carries message bodies)
 // ---------------------------------------------------------------------------
 
 export async function loader(_args: Route.LoaderArgs) {
+  if (!cronAdminEnabled(process.env)) {
+    throw new Response("Not found", { status: 404 });
+  }
+  if (!crontabAvailable()) {
+    return { crons: [], crontabOk: false };
+  }
   const crons = listCrons();
-  return { crons };
+  return { crons, crontabOk: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -57,10 +70,11 @@ const deleteSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Action - write path (gated to the operator instance)
+// Action - write path (refused when the instance opted out)
 // ---------------------------------------------------------------------------
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireNudgeAdmin(request, context);
   // Server-side gate - refuses even if the endpoint is POSTed directly.
   if (!cronAdminEnabled(process.env)) {
     return {
@@ -68,7 +82,23 @@ export async function action({ request }: Route.ActionArgs) {
       error: "Cron admin is not available on this instance.",
     };
   }
+  if (!crontabAvailable()) {
+    return {
+      ok: false as const,
+      error: "crontab was not found on this machine, so nudges cannot be saved.",
+    };
+  }
+  try {
+    return await runIntent(request);
+  } catch (e) {
+    return {
+      ok: false as const,
+      error: `Could not update the crontab: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
 
+async function runIntent(request: Request) {
   const formData = await request.formData();
   const raw = Object.fromEntries(formData);
   const intent = raw["intent"];

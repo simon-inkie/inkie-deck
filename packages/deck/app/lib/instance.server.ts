@@ -16,6 +16,9 @@
  *   disable. Gates the nav item, the thread toggle, the /tmux route body,
  *   and the api/tmux-send action (server-side, not just UI).
  *
+ * - MC_CRON_ADMIN_ENABLED: the Nudges page. Default enabled; set "0" or
+ *   "false" to disable. See cronAdminEnabled below.
+ *
  * - ACTIVITY_ROOT / MC_ACTIVITY_ENABLED: the agent-activity panel.
  *   Presence of the root IS the gate; see activityEnabled below.
  *
@@ -94,17 +97,20 @@ export function modelSelectorEnabled(env: Env): boolean {
 }
 
 /**
- * Whether the cron admin page is enabled on this instance.
+ * Whether the Nudges page (/scheduler, api/cron) is enabled on this instance.
  *
- * Enabled for the known trusted principals by default. Writing the system
- * crontab is operator-grade, so the list is deliberately short. Set
- * MC_CRON_ADMIN_ENABLED=0 or "false" to explicitly disable on any instance.
+ * Default enabled, whatever MC_USER is. Nudges writes the crontab of the OS
+ * user the server runs as. MC_USER is a self-declared name, not an identity
+ * check, and Deck has no authentication: the protection is that the server
+ * binds to loopback, so only that machine can reach it. A per-name allowlist
+ * therefore protected nothing and hid the feature on ordinary installs. Set
+ * MC_CRON_ADMIN_ENABLED=0 or "false" (any case) to turn it off; that hides
+ * the nav entry, 404s the page and the api/cron read, and refuses every write.
+ * Any other value, including unset, leaves it on.
  */
 export function cronAdminEnabled(env: Env): boolean {
   const explicit = env["MC_CRON_ADMIN_ENABLED"]?.trim().toLowerCase();
-  if (explicit === "0" || explicit === "false") return false;
-  const user = mcUser(env);
-  return user === "alex" || user === "robin";
+  return !(explicit === "0" || explicit === "false");
 }
 
 /**
