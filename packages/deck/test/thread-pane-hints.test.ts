@@ -18,7 +18,9 @@ vi.mock("~/lib/tmux.server", async (importOriginal) => ({
 function load(search = "") {
   return loader({
     params: { agent: "demo" },
-    request: new Request(`http://localhost/threads/demo${search}`),
+    request: new Request(`http://localhost/threads/demo${search}`, {
+      headers: { host: "localhost", "sec-fetch-site": "same-origin" },
+    }),
   } as Parameters<typeof loader>[0]);
 }
 

@@ -45,10 +45,14 @@ function writes() {
   return exec.mock.calls.filter(([, args]) => args?.[0] === "send-keys").map(([, args]) => args);
 }
 
-async function post(fields: Record<string, string>) {
-  return action({ request: new Request("http://localhost/api/tmux-send", {
-    method: "POST", body: new URLSearchParams(fields),
-  }) } as Parameters<typeof action>[0]);
+function postBody(body: BodyInit) {
+  const url = new URL("http://localhost/api/tmux-send");
+  const request = new Request(url, { method: "POST", body, headers: { host: "localhost" } });
+  return action({ request, url, pattern: url.pathname, params: {}, context: { socketAddress: "127.0.0.1" } });
+}
+
+function post(fields: Record<string, string>) {
+  return postBody(new URLSearchParams(fields));
 }
 
 describe("pane named keys", () => {
@@ -162,13 +166,11 @@ describe("send API", () => {
   });
 
   it("returns HTTP 400 for repeated fields or malformed form data", async () => {
-    for (const request of [
-      new Request("http://localhost/api/tmux-send", {
-        method: "POST", body: new URLSearchParams([["window", "agent"], ["key", "Up"], ["key", "Down"]]),
-      }),
-      new Request("http://localhost/api/tmux-send", { method: "POST", body: "invalid" }),
+    for (const body of [
+      new URLSearchParams([["window", "agent"], ["key", "Up"], ["key", "Down"]]),
+      "invalid",
     ]) {
-      expect(await action({ request } as Parameters<typeof action>[0])).toMatchObject({ init: { status: 400 } });
+      expect(await postBody(body)).toMatchObject({ init: { status: 400 } });
     }
     expect(exec).not.toHaveBeenCalled();
   });

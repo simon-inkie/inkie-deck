@@ -24,11 +24,16 @@
  * ASCII only - no em-dashes.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
 import { action } from "../app/routes/threads.$agent";
+
+vi.mock("~/lib/tmux.server", () => ({
+  wakeIdleAgent: vi.fn(),
+  pushMessageToIdleAgent: vi.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Fixtures: an agent-authored block per thread, each with a distinct subject.
@@ -110,8 +115,8 @@ function composeRequest(agent: string, fields: Record<string, string>): Request 
   const body = new URLSearchParams({ intent: "compose", ...fields });
   return new Request(`http://localhost/threads/${agent}`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers: { host: "localhost", origin: "http://localhost" },
+    body,
   });
 }
 

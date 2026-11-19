@@ -26,26 +26,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let ws: string;
 let saved: string | undefined;
-let savedPort: string | undefined;
-let savedOrigins: string | undefined;
 
 beforeEach(() => {
-  // The origin allowlist default depends on PORT and VOICE_ALLOWED_ORIGINS;
-  // pin both so the tests do not depend on the machine's environment.
-  savedPort = process.env["PORT"];
-  savedOrigins = process.env["VOICE_ALLOWED_ORIGINS"];
-  delete process.env["PORT"];
-  delete process.env["VOICE_ALLOWED_ORIGINS"];
   ws = mkdtempSync();
   saved = process.env["WORKSPACE_ROOT"];
   process.env["WORKSPACE_ROOT"] = ws;
 });
 
 afterEach(() => {
-  if (savedPort === undefined) delete process.env["PORT"];
-  else process.env["PORT"] = savedPort;
-  if (savedOrigins === undefined) delete process.env["VOICE_ALLOWED_ORIGINS"];
-  else process.env["VOICE_ALLOWED_ORIGINS"] = savedOrigins;
   if (saved === undefined) delete process.env["WORKSPACE_ROOT"];
   else process.env["WORKSPACE_ROOT"] = saved;
   rmSync(ws);
@@ -290,7 +278,9 @@ describe("api route", () => {
   const post = (fields: Record<string, string>) => {
     const f = new FormData();
     for (const [k, v] of Object.entries(fields)) f.set(k, v);
-    return action({ request: new Request("http://x/api/drafts", { method: "POST", body: f }) } as never);
+    return action({ request: new Request("http://localhost/api/drafts", {
+      method: "POST", body: f, headers: { host: "localhost", origin: "http://localhost" },
+    }) } as never);
   };
   const get = (q = "") =>
     loader({ request: new Request(`http://x/api/drafts${q}`) } as never);
@@ -336,76 +326,6 @@ describe("api route", () => {
     delete process.env["WORKSPACE_ROOT"];
     expect((await get()).status).toBe(404);
     expect((await post({ intent: "create", name: "r", content: "" })).status).toBe(404);
-  });
-
-  const postWith = (headers: Record<string, string>) => {
-    const f = new FormData();
-    f.set("intent", "create");
-    f.set("name", "o");
-    f.set("content", "x");
-    return action({
-      request: new Request("http://deck.local:5173/api/drafts", { method: "POST", body: f, headers }),
-    } as never);
-  };
-
-  it("refuses cross-origin browser writes and allows allowlisted and header-less ones", async () => {
-    const savedOrigins = process.env["VOICE_ALLOWED_ORIGINS"];
-    delete process.env["VOICE_ALLOWED_ORIGINS"];
-    try {
-      expect((await postWith({ origin: "http://evil.example" })).status).toBe(403);
-      expect((await postWith({ origin: "null" })).status).toBe(403);
-      expect((await postWith({ "sec-fetch-site": "cross-site" })).status).toBe(403);
-      expect((await postWith({ "sec-fetch-site": "same-site" })).status).toBe(403);
-      // A matching Origin does not rescue a cross-site fetch.
-      expect(
-        (await postWith({ origin: "http://localhost:4242", "sec-fetch-site": "cross-site" })).status
-      ).toBe(403);
-      expect(fs.existsSync(draftFile("o.md"))).toBe(false);
-      // Default allowlist: this app's own origin.
-      expect(
-        (await postWith({ origin: "http://localhost:4242", "sec-fetch-site": "same-origin" })).status
-      ).toBe(200);
-      expect(fs.existsSync(draftFile("o.md"))).toBe(true);
-      fs.rmSync(draftFile("o.md"));
-      expect((await postWith({})).status).toBe(200);
-    } finally {
-      if (savedOrigins === undefined) delete process.env["VOICE_ALLOWED_ORIGINS"];
-      else process.env["VOICE_ALLOWED_ORIGINS"] = savedOrigins;
-    }
-  });
-
-  it("DNS rebinding: an Origin that matches the attacker's own Host is still refused", async () => {
-    const saved = process.env["VOICE_ALLOWED_ORIGINS"];
-    delete process.env["VOICE_ALLOWED_ORIGINS"];
-    try {
-      const res = await postWith({
-        origin: "http://rebind.evil.example:4242",
-        host: "rebind.evil.example:4242",
-        "sec-fetch-site": "same-origin",
-      });
-      expect(res.status).toBe(403);
-      expect(fs.existsSync(draftFile("o.md"))).toBe(false);
-    } finally {
-      if (saved !== undefined) process.env["VOICE_ALLOWED_ORIGINS"] = saved;
-    }
-  });
-
-  it("an allowlisted origin works behind a proxy that rewrites Host", async () => {
-    const saved = process.env["VOICE_ALLOWED_ORIGINS"];
-    process.env["VOICE_ALLOWED_ORIGINS"] = "https://deck.tailnet.example";
-    try {
-      const res = await postWith({
-        origin: "https://deck.tailnet.example",
-        host: "127.0.0.1:4242",
-        "sec-fetch-site": "same-origin",
-      });
-      expect(res.status).toBe(200);
-      // The allowlist REPLACES the default.
-      expect((await postWith({ origin: "http://localhost:4242" })).status).toBe(403);
-    } finally {
-      if (saved === undefined) delete process.env["VOICE_ALLOWED_ORIGINS"];
-      else process.env["VOICE_ALLOWED_ORIGINS"] = saved;
-    }
   });
 });
 

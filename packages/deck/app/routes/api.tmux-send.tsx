@@ -27,6 +27,7 @@ import {
   SEND_KEYS_MAX_LEN,
 } from "~/lib/tmux.server";
 import { tmuxEnabled } from "~/lib/instance.server";
+import { requireSameOriginWrite } from "~/lib/request-origin.server";
 
 const windowSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 const sendSchema = z.union([
@@ -43,7 +44,8 @@ const sendSchema = z.union([
   z.object({ window: windowSchema, key: z.enum(SEND_KEYS_ALLOWED_KEYS) }).strict(),
 ]);
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireSameOriginWrite(request, context);
   // Server-side gate, not just hidden UI - a tmux-disabled instance (such as a
   // second user's) refuses sends even if the endpoint is POSTed directly.
   if (!tmuxEnabled(process.env)) {

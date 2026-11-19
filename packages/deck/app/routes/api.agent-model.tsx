@@ -28,6 +28,7 @@
 import { z } from "zod";
 import { data } from "react-router";
 import type { Route } from "./+types/api.agent-model";
+import { requireSameOriginWrite } from "~/lib/request-origin.server";
 import { getAgentModelInfo, setAgentModel } from "~/lib/agent-model.server";
 import { modelSelectorEnabled } from "~/lib/instance.server";
 import { AGENT_NAME_RE } from "~/lib/safe-fs.server";
@@ -58,7 +59,8 @@ export async function loader({ request }: Route.LoaderArgs) {
   };
 }
 
-export async function action({ request }: Route.ActionArgs) {
+export async function action({ request, context }: Route.ActionArgs) {
+  requireSameOriginWrite(request, context);
   if (!modelSelectorEnabled(process.env)) {
     return data({ error: GATE_MESSAGE }, { status: 403 });
   }
