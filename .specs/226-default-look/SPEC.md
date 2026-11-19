@@ -30,14 +30,16 @@ Out of scope:
 - Changes to the palette, component type hierarchy or application behaviour.
 
 ## Test plan
-- No existing tests assert the changed CSS tokens or font links. Leave tests
-  unchanged and do not run the full suite.
-- Run `pnpm typecheck`, `node scripts/leak-gate.mjs`, `pnpm check:leaks`,
-  `pnpm check:licence`, `node packages/deck/scripts/check-dashes.mjs`, and
-  `git diff --check` from the repository root.
-- All requested checks passed. The leak and dash scripts needed unused child
-  stdin disabled in the sandbox; their scan logic was unchanged. No browser
-  or live service was used.
+- No existing tests assert the changed CSS tokens or font links, so none were
+  changed. The full required list was run from the repository root on a clean
+  tree: `pnpm typecheck`, `pnpm check:boundaries`, `node scripts/leak-gate.mjs`
+  (and `--self-test`), `pnpm check:leaks`, `pnpm check:licence`,
+  `pnpm check:lib-version`, `pnpm -C packages/deck check:dashes`,
+  `git diff --check origin/main...HEAD` and `pnpm test`.
+- Result: all exit 0; the full suite passed.
+- Browser check on a scratch copy: no request to a font CDN, bundled Inter
+  loads, no horizontal overflow at 1440 and 390 wide, brand colours unchanged.
+  The README screenshots were retaken in this look.
 
 ## Follow-ups
 None.
