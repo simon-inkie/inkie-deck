@@ -56,4 +56,4 @@ None.
   configuration or requiring a CDN. No in-repo font CSP needs changing;
   the same-origin files work with a self-only font policy.
 - Supersedes: nothing, additive
-- Commits: pending
+- Commits: 490e431 feat(ui): default to self-hosted Inter (#226)
