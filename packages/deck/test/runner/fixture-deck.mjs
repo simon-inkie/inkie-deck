@@ -4,12 +4,13 @@ import { Server } from "node:http";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { RunnerRegistry } from "../../app/lib/runner/registry.server.ts";
-import { fixtureCommand } from "./fixture-command.ts";
+import { fixtureCommand, fixtureScreen } from "./fixture-command.ts";
 
 const agent = "fixture-agent";
 const home = join(process.env.AGENTS_HOME, agent);
 const registry = new RunnerRegistry(process.env, {
   launchSpec: ({ cwd, env }) => ({ ...fixtureCommand(cwd, {}), env }),
+  createScreen: fixtureScreen,
   listWindows: () => [],
 });
 

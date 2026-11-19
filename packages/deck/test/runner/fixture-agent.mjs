@@ -70,7 +70,8 @@ function submit(text) {
 process.stdout.on("resize", () => write(`SIZE ${process.stdout.columns}x${process.stdout.rows}\n`));
 process.stdin.setRawMode(true);
 process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
+const screenScenario = scenario?.startsWith("screen");
+if (!screenScenario) process.stdin.on("data", (chunk) => {
   for (const char of chunk) {
     if (confirming) {
       if (char !== "\r" && char !== "\x1b") continue;
@@ -91,10 +92,54 @@ process.stdin.on("data", (chunk) => {
   }
 });
 
-if (scenario !== "silent") {
+if (screenScenario) {
+  const pasteStart = "\x1b[200~";
+  const pasteEnd = "\x1b[201~";
+  let notice = "FIXTURE READY";
+  let draft = "";
+  let dialog = scenario === "screen-dialog";
+  const paint = () => {
+    const shown = !draft ? "\x1b[2mTry a task\x1b[22m"
+      : scenario === "screen-placeholder" ? "[Pasted text #1]" : draft.replaceAll("\n", "\r\n  ");
+    const composer = `\u276f ${shown}\r\n${"\u2500".repeat(20)}`;
+    write(`\x1b[?2004h\x1b[2J\x1b[H${notice}\r\n${composer}\r\n${dialog ? "CONFIRM? [Enter/Escape]" : "\x1b[2;3H"}`);
+  };
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+    while (input) {
+      if (dialog && (input === "\x1b" || input === "\r")) {
+        notice = input === "\x1b" ? "DECLINED" : "CONFIRMED";
+        dialog = false;
+        input = "";
+      } else if (input.startsWith(pasteStart)) {
+        const end = input.indexOf(pasteEnd, pasteStart.length);
+        if (end < 0) break;
+        draft = input.slice(pasteStart.length, end);
+        input = input.slice(end + pasteEnd.length);
+        if (dialog) notice = "UNEXPECTED PASTE INTO DIALOG";
+      } else if (pasteStart.startsWith(input)) {
+        break;
+      } else if (input.startsWith("\r")) {
+        notice = `INPUT ${JSON.stringify(draft)}`;
+        draft = "";
+        dialog = scenario === "screen-unverified";
+        input = input.slice(1);
+      } else if (input.startsWith("\x03")) {
+        notice = "INTERRUPTED";
+        draft = "";
+        input = input.slice(1);
+      } else {
+        notice = "UNEXPECTED INPUT";
+        input = "";
+      }
+      paint();
+    }
+  });
+  paint();
+} else if (scenario !== "silent") {
   write(scenario === "plain" ? ">\n" : "\x1b[?2004hFIXTURE READY\n>\n");
 }
-if (scenario !== "silent" && scenario !== "registry") {
+if (!screenScenario && scenario !== "silent" && scenario !== "registry") {
   for (const text of ["FIRST \\ frame", "SECOND \u00a3 frame", "THIRD frame"]) {
     await delay(30);
     write(`${text}\n`);

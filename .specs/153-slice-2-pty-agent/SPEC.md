@@ -21,7 +21,7 @@ In this slice:
    Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock with dead pid is reclaimed only after the group is confirmed gone.
 4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR` if set, the agent's `INBOX_ROOT`). No `MC_*`, no tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
    Verify: env snapshot test; stub launch end to end.
-5. **Start, stop, interrupt.** New `packages/deck/app/routes/api.runner.tsx` (planned): POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, refused unless opted in. No auto-restart.
+5. **Start, stop, interrupt.** `packages/deck/app/routes/api.runner.tsx`: POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, refused unless opted in. No auto-restart.
    Verify: route tests for each op and each refusal.
 6. **Screen buffer.** `@xterm/headless` fed from `output()`, scrollback 1000 lines (matches `TMUX_CAPTURE_SCROLLBACK_LINES`), memory only, never written to disk or logs.
    Verify: fixture output renders the same text the fixture drew.
@@ -114,7 +114,9 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
 
 ## Follow-ups
 
-- Build plan steps 3 to 5 remain in #240; step 2 adds lifecycle wiring but no start route or listener.
+- Complete build step 5 after installing the declared screen dependency and
+  regenerating the lockfile. Run the stub screen tests before the maintainer's
+  manual try.
 
 ## Log
 
@@ -189,3 +191,27 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   guards use the instance flag and on-disk agent settings, not a launch
   override or a live lock, so they also work before the first PTY start.
 - Commits: 0412b72 feat(base): skip and refuse PTY-runner agents in boot, push and provider switch (#240)
+
+### 2026-11-19: Route the opted-in terminal (build step 4)
+- What changed: Added same-origin PTY lifecycle controls, an in-memory
+  `@xterm/headless` screen, and registry-backed terminal capture, sends,
+  inbox wakes and pushes. Reused the existing terminal component, submit
+  policy and message payloads. The registry still refuses a live tmux window
+  with the same name.
+- Why: Opted-in agents persist to the inbox without waking tmux until PTY
+  starts. A live PTY or lock also blocks tmux fallback if opt-in is removed
+  early; stop first, then remove the marker. The existing terminal gate
+  still applies. Automatic text delivery requires bracketed paste, a framed
+  Claude composer with known dim styling, and an exact visible match before
+  Enter. Opaque paste placeholders and changed dialogs are left untouched
+  after paste; the operator can inspect and use a named key intentionally.
+  Sends are bound to their original session and never replayed into a restart.
+- Dependency: Declared `@xterm/headless` 5.5.0 (MIT). Offline resolution failed
+  because pnpm has no cached metadata for it, so the lockfile is unchanged.
+  Without the dependency PTY start is refused before spawning. No live agent
+  was started.
+- Validation: 181 focused tests passed serially, 25 skipped (including the
+  four headless integration tests). Typecheck, boundaries, licence, library
+  version, direct dash and whitespace checks passed. Leak scripts hit
+  `spawnSync git EPERM`; the explicit working-tree file scan passed.
+- Commits: pending

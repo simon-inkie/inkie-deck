@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadNodePty } from "../../app/lib/runner/pty-runner.server.js";
 import { isPtyOptedIn, RunnerRegistry } from "../../app/lib/runner/registry.server.js";
 import { listTmuxWindows } from "../../app/lib/tmux.server.js";
-import { fixtureCommand } from "./fixture-command.js";
+import { fixtureCommand, fixtureScreen } from "./fixture-command.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(), execFileSync: vi.fn(),
@@ -92,6 +92,7 @@ if (process.platform === "linux") {
 function stubRegistry(options: ConstructorParameters<typeof RunnerRegistry>[1] = {}) {
   return new RunnerRegistry(env, {
     launchSpec: ({ cwd, env: childEnv }) => ({ ...fixtureCommand(cwd, { scenario: "registry" }), env: childEnv }),
+    createScreen: fixtureScreen,
     ...options,
   });
 }
@@ -183,7 +184,7 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     await start;
     vi.resetModules();
     const reloaded = await import("../../app/lib/runner/registry.server.js");
-    await expect(new reloaded.RunnerRegistry(env, { launchSpec }).start(agent)).rejects.toMatchObject({ reason: "busy" });
+    await expect(new reloaded.RunnerRegistry(env, { launchSpec, createScreen: fixtureScreen }).start(agent)).rejects.toMatchObject({ reason: "busy" });
     const first = JSON.parse(readFileSync(lock, "utf8"));
     expect(first).toMatchObject({ deckPid: process.pid, childPid: expect.any(Number), startedAt: expect.any(Number) });
     expect(statSync(lock).mode & 0o777).toBe(0o600);

@@ -30,6 +30,7 @@ export type SendKeysResult =
         | "text-too-long"
         | "window-not-live"
         | "text-send-failed"
+        | "unsafe-enter"
         | "enter-failed"
         | "retry-exhausted"
         | "unexpected-error";
@@ -57,9 +58,10 @@ export type SendKeysResult =
 
 export interface PaneSubmitDriver {
   capture(): PaneSnapshot | undefined;
-  sendText(text: string): boolean;
-  pressEnter(): boolean;
+  sendText(text: string): boolean | Promise<boolean>;
+  pressEnter(): boolean | Promise<boolean>;
   wait(ms: number): Promise<void>;
+  verifyPastedText?: boolean;
 }
 
 export type PaneSubmitTiming = {
@@ -216,7 +218,7 @@ export async function submitPaneText(
   const baselineWasActive = baseline.activity === "active";
   const evidence: VerificationEvidence = { payloadSeen: false };
 
-  if (!driver.sendText(payload)) {
+  if (!await driver.sendText(payload)) {
     return {
       status: "not-submitted",
       reason: "text-send-failed",
@@ -225,7 +227,19 @@ export async function submitPaneText(
     };
   }
   await driver.wait(timing.enterDelayMs);
-  if (!driver.pressEnter()) {
+  if (driver.verifyPastedText) {
+    const pasted = driver.capture();
+    if (pasted?.composer !== "staged" || !composerHoldsPayload(pasted.stagedText ?? "", payload, pasted.stagedRows)) {
+      return {
+        status: "not-submitted",
+        reason: "unsafe-enter",
+        error: "Text was pasted, but Enter was not sent because the composer could not be verified. Check the terminal before resending.",
+        enterAttempts: 0,
+      };
+    }
+    evidence.payloadSeen = true;
+  }
+  if (!await driver.pressEnter()) {
     return {
       status: "not-submitted",
       reason: "enter-failed",
@@ -251,7 +265,7 @@ export async function submitPaneText(
     return unconfirmedResult(state, 1, "Text sent, but a safe retry could not be proven.");
   }
 
-  if (!driver.pressEnter()) {
+  if (!await driver.pressEnter()) {
     return {
       status: "not-submitted",
       reason: "enter-failed",
