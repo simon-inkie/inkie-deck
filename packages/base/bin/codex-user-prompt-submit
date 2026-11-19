@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""
+codex-user-prompt-submit - Codex UserPromptSubmit hook: tell the agent, on the
+turn it happens, that someone has written to it.
+
+A Claude Code agent is usually told about new messages by its own hooks or a
+watcher; a Codex agent has neither unless something injects it. This hook runs
+before every prompt the agent receives and, ONLY when the inbox CLI reports
+unread messages, adds a short note saying who is waiting. Nothing is read or
+marked read: it runs `inbox unread`, which reports counts only.
+
+Prints exactly one JSON object:
+    {"suppressOutput": true,
+     "hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                            "additionalContext": "..."}}
+
+additionalContext is empty when nothing is unread, when AGENT_NAME or
+INBOX_ROOT is not set, or when anything goes wrong. It fails open and exits 0
+every time: a hook that blocks prompts would take the agent offline.
+
+Deliberately nothing else. Memory recall or other per-prompt context belongs
+in a hook of its own, so one failing cannot silence the other.
+"""
+import json
+import os
+import subprocess
+import sys
+
+SUMMARY_MAX = 600
+
+
+def emit(context: str = "") -> None:
+    sys.stdout.write(json.dumps({
+        "suppressOutput": True,
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": context,
+        },
+    }) + "\n")
+    sys.exit(0)
+
+
+def main() -> None:
+    try:
+        sys.stdin.read()  # the payload is not needed; drain it
+    except Exception:
+        pass
+    name = os.environ.get("AGENT_NAME")
+    if not name or not os.environ.get("INBOX_ROOT"):
+        emit("")
+    inbox = os.path.join(os.path.dirname(os.path.realpath(__file__)), "inbox")
+    try:
+        result = subprocess.run(
+            [inbox, "unread"], capture_output=True, text=True, timeout=3, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        emit("")
+    out = result.stdout.strip()
+    if not out or out == "no unread":
+        emit("")
+    if len(out) > SUMMARY_MAX:
+        out = out[:SUMMARY_MAX] + "\n[truncated; run `inbox unread`]"
+    emit(
+        "Unread inbox messages are waiting. Read them with `inbox read <name>` "
+        "and reply where you were asked something:\n" + out
+    )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        emit("")

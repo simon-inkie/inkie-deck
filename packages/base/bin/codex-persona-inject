@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""
+codex-persona-inject - Codex SessionStart hook: put the agent's persona into
+the session's context.
+
+Codex reads AGENTS.md from the directory it starts in, but has no @-import, so
+the persona files a Claude Code agent pulls in through CLAUDE.md never reach a
+Codex session on their own. This hook closes that gap. create-agent.sh wires it
+into the agent's .codex/hooks.json for the startup, resume and compact sources,
+so the persona is back in context after a compaction as well.
+
+Usage (as written into hooks.json by create-agent.sh):
+    codex-persona-inject --agent-home <absolute path to the agent's home>
+
+Reads the hook payload (JSON) on stdin and prints exactly one JSON object:
+    {"hookSpecificOutput": {"hookEventName": "SessionStart",
+                            "additionalContext": "..."}}
+
+What goes into the context, in this order:
+  1. a short start-up checklist naming the persona files by absolute path;
+  2. a read-only unread count from the inbox CLI beside this script (counts
+     only: nothing is printed or marked read);
+  3. IDENTITY.md, SOUL.md, USER.md and TOOLS.md, verbatim.
+
+IDENTITY.md comes first among the files because the boot phrase that
+create-agent.sh verifies is written at its end, and a cap must never be what
+removes it. The total is capped (CAP is in UTF-8 bytes; the limit in hooks.json is in approximate tokens, and 9000 bytes sits well under it). A
+file that does not fit is cut, and the cut is SAID in the context, with the
+path to read instead: a silently dropped persona is the exact failure the
+verification exists to catch.
+
+Fails open: any error prints an empty additionalContext and exits 0, because a
+broken hook must never stop the agent from starting. The reason goes to stderr,
+which Codex does not put into the model's context.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+CAP = 9000
+PERSONA_FILES = ("IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.md")
+INBOX_SUMMARY_MAX = 600
+
+
+def emit(context: str = "") -> None:
+    sys.stdout.write(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": context,
+        }
+    }) + "\n")
+    sys.exit(0)
+
+
+def note(message: str) -> None:
+    sys.stderr.write(f"codex-persona-inject: {message}\n")
+
+
+def parse_args(argv):
+    home = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--agent-home" and i + 1 < len(argv):
+            home = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+    return home
+
+
+def resolve_home(arg_home, payload):
+    """The agent's home: the stamped argument, else AGENTS_HOME/AGENT_NAME,
+    else the session's cwd when it holds an IDENTITY.md."""
+    if arg_home:
+        return arg_home
+    name = os.environ.get("AGENT_NAME")
+    agents_home = os.environ.get("AGENTS_HOME")
+    if name and agents_home:
+        return os.path.join(agents_home, name)
+    cwd = payload.get("cwd") or os.getcwd()
+    if os.path.isfile(os.path.join(cwd, "IDENTITY.md")):
+        return cwd
+    return None
+
+
+def inbox_summary(name: str) -> str:
+    inbox = os.path.join(os.path.dirname(os.path.realpath(__file__)), "inbox")
+    if not os.environ.get("INBOX_ROOT"):
+        return "Inbox check unavailable (INBOX_ROOT is not set); run `inbox unread` yourself."
+    try:
+        result = subprocess.run(
+            [inbox, "unread"],
+            env={**os.environ, "AGENT_NAME": name},
+            capture_output=True, text=True, timeout=3, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        note(f"inbox unread unavailable: {type(err).__name__}")
+        return "Inbox check unavailable; run `inbox unread` yourself."
+    out = result.stdout.strip()
+    if len(out) > INBOX_SUMMARY_MAX:
+        out = out[:INBOX_SUMMARY_MAX] + "\n[Summary truncated; run `inbox unread`.]"
+    return out or "no unread"
+
+
+def fit(text: str, budget: int) -> str:
+    """Cut text to at most budget UTF-8 bytes without splitting a character."""
+    data = text.encode("utf-8")
+    if len(data) <= budget:
+        return text
+    return data[:max(budget, 0)].decode("utf-8", errors="ignore")
+
+
+def main() -> None:
+    payload = {}
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                payload = {}
+    except Exception as err:  # a bad payload must not stop the persona
+        note(f"could not read the hook payload: {err}")
+
+    home = resolve_home(parse_args(sys.argv[1:]), payload)
+    if not home or not os.path.isdir(home):
+        note(f"no agent home found ({home!r}); injecting nothing")
+        emit("")
+    home = os.path.abspath(home)
+    name = os.environ.get("AGENT_NAME") or os.path.basename(home)
+    source = payload.get("source", "startup")
+
+    paths = "\n".join(os.path.join(home, f) for f in PERSONA_FILES)
+    header = (
+        f"STARTUP CHECKLIST for {name} ({source}). Before the first task:\n"
+        f"1. Your persona files are below. If any is marked as cut or missing, "
+        f"read it in full yourself:\n{paths}\n"
+        f"2. Read every unread inbox thread with `inbox read <name>` and answer "
+        f"where you were asked something.\n"
+        f"Unread inbox at session start (counts only, nothing marked read):\n"
+        f"{inbox_summary(name)}"
+    )
+
+    header = fit(header, CAP // 2)
+    parts = [header]
+    used = len(header.encode("utf-8"))
+    for index, filename in enumerate(PERSONA_FILES):
+        path = os.path.join(home, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.read().rstrip("\n")
+        except OSError:
+            content = f"[missing: {filename} could not be read]"
+        section = f"## {filename}\n\n{content}"
+        size = len(("\n\n" + section).encode("utf-8"))
+        if used + size <= CAP:
+            parts.append(section)
+            used += size
+            continue
+        # Over the cap: cut this file, say so, and name what was left out.
+        rest = list(PERSONA_FILES[index + 1:])
+        marker = f"\n[cut here to stay under {CAP} bytes; read {filename} in full]"
+        if rest:
+            marker += "\n[not included: " + ", ".join(rest) + "]"
+        room = CAP - used - len(("\n\n## " + filename + "\n\n").encode("utf-8")) - len(marker.encode("utf-8"))
+        fragment = fit(content, room)
+        if filename == "IDENTITY.md":
+            boot_stamp = re.search(r"^- \*\*Boot phrase:\*\* boot-[0-9a-f]{16}$", content, re.MULTILINE)
+            if boot_stamp and boot_stamp.end() > len(fragment):
+                stamp = "\n\n" + boot_stamp.group()
+                fragment = fit(content, room - len(stamp)).rstrip("\n") + stamp
+        parts.append(f"## {filename}\n\n{fragment}{marker}")
+        note(f"persona for {name} cut at {CAP} bytes in {filename}")
+        break
+
+    emit(fit("\n\n".join(parts), CAP))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as err:
+        note(f"fatal: {err}")
+        emit("")

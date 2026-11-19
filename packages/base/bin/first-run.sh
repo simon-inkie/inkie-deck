@@ -7,14 +7,20 @@
 #
 # Usage:
 #   bin/first-run.sh [--assistant <name>] [--platform <name>] [--model <id>]
-#                    [--no-verify] [--person <name>] [--agents-home <dir>]
-#                    [--inbox-root <dir>]
+#                    [--runtime claude|codex|agy] [--no-verify] [--live-probe]
+#                    [--person <name>] [--agents-home <dir>] [--inbox-root <dir>]
 #
 #   --assistant <name>   the agent you talk to (asked for, default "inkie")
 #   --platform <name>    the agent that changes the setup (asked for, default
 #                        "doctor")
 #   --model <id>         passed to create-agent.sh for both agents
+#   --runtime <runtime>  the agent CLI for both agents: claude (default), codex
+#                        or agy. Passed to create-agent.sh, which writes the
+#                        persona file that runtime reads.
 #   --no-verify          create without the boot phrase proof (exit 4)
+#   --live-probe         for codex and agy, also ask the model for the boot
+#                        phrase (off by default for those two; see
+#                        create-agent.sh). Claude Code is always asked.
 #   --person <name>      your name (your MC_USER), stamped into the role briefs
 #                        so the assistant can address you; default: $MC_USER
 #   --agents-home <dir>  where agent homes live (default: $AGENTS_HOME, then
@@ -37,6 +43,8 @@ CREATE="$SCRIPT_DIR/create-agent.sh"
 ASSISTANT=""
 PLATFORM=""
 MODEL=""
+RUNTIME=""
+LIVE_PROBE=0
 NO_VERIFY=0
 AGENTS_HOME_ARG=""
 INBOX_ROOT_ARG=""
@@ -62,10 +70,18 @@ while [[ $# -gt 0 ]]; do
     --agents-home) [[ $# -ge 2 ]] || fail "--agents-home needs a value"; AGENTS_HOME_ARG="$2"; shift 2 ;;
     --inbox-root)  [[ $# -ge 2 ]] || fail "--inbox-root needs a value";  INBOX_ROOT_ARG="$2";  shift 2 ;;
     --person)      [[ $# -ge 2 && -n "$2" ]] || fail "--person needs a name";       PERSON="$2";          shift 2 ;;
+    --runtime)     [[ $# -ge 2 && -n "$2" ]] || fail "--runtime needs a value";    RUNTIME="$2";         shift 2 ;;
+    --live-probe)  LIVE_PROBE=1; shift ;;
     --no-verify)   NO_VERIFY=1; shift ;;
     *)             fail "unknown argument: $1 (run with --help)" ;;
   esac
 done
+
+# Refuse a bad runtime before anything is created, not after the first agent.
+case "$RUNTIME" in
+  ""|claude|codex|agy) ;;
+  *) fail "--runtime '$RUNTIME' is not a supported runtime (use claude, codex or agy)" ;;
+esac
 
 # The person defaults to MC_USER when that is a plain name; otherwise none is
 # stamped and create-agent.sh says the First conversation section is left out.
@@ -187,6 +203,8 @@ fi
 
 ARGS=(${COMMON[@]+"${COMMON[@]}"})
 [[ -n "$MODEL" ]] && ARGS+=(--model "$MODEL")
+[[ -n "$RUNTIME" ]] && ARGS+=(--runtime "$RUNTIME")
+[[ $LIVE_PROBE -eq 1 ]] && ARGS+=(--live-probe)
 [[ $NO_VERIFY -eq 1 ]] && ARGS+=(--no-verify)
 [[ -n "$PERSON" ]] && ARGS+=(--person "$PERSON")
 

@@ -36,6 +36,7 @@ const SUITES = [
   "stuck-pane-sweep.test.sh",
   "boot-agents.test.sh",
   "claude-binary-check.test.sh",
+  "multi-harness.test.sh",
 ] as const;
 
 describe("ported shell suites", () => {
