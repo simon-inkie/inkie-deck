@@ -76,4 +76,4 @@ None.
   Validation used closed stdin and file-backed capture for sandboxed child
   processes that could not use Node's default sync subprocess pipes.
 - Supersedes: nothing, additive
-- Commits: pending
+- Commits: 4a406e7 fix(security): same-origin and host checks on routes that write to agents (#222)
