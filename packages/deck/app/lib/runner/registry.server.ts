@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import { ptyRunnerEnabled } from "../instance.server.js";
@@ -16,7 +16,7 @@ import { createRunnerScreen, type RunnerScreen } from "./screen.server.js";
 
 const quietAfterMs = 10 * 60 * 1000;
 const lockName = ".runner.lock";
-const allowedEnv = ["HOME", "PATH", "TERM", "LANG", "USER", "CLAUDE_CONFIG_DIR"] as const;
+const allowedEnv = ["HOME", "PATH", "TERM", "LANG", "USER", "CLAUDE_CONFIG_DIR", "MC_PTY_RUNNER"] as const;
 
 type ActiveSession = {
   state: "starting" | "running" | "stopping";
@@ -84,7 +84,7 @@ export function isPtyOptedIn(env: NodeJS.ProcessEnv, agent: string): boolean {
 }
 
 function launchEnvironment(env: NodeJS.ProcessEnv, home: string): Record<string, string> {
-  const childEnv: Record<string, string> = {};
+  const childEnv: Record<string, string> = { AGENTS_HOME: dirname(home) };
   for (const name of allowedEnv) {
     if (env[name] !== undefined) childEnv[name] = env[name];
   }

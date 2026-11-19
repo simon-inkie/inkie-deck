@@ -19,7 +19,7 @@ In this slice:
    Verify: slice 1 contract suite against both runners, plus PTY readiness without a marker and silent-session cleanup.
 3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts`, the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time.
    Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock with dead pid is reclaimed only after the group is confirmed gone.
-4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR` if set, the agent's `INBOX_ROOT`). No `MC_*`, no tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
+4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `TERM`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR`, `MC_PTY_RUNNER` if set), the resolved `AGENTS_HOME` and the agent's `INBOX_ROOT`. No other `MC_*` values or tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
    Verify: env snapshot test; stub launch end to end.
 5. **Start, stop, interrupt.** `packages/deck/app/routes/api.runner.tsx`: POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, refused unless opted in. No auto-restart.
    Verify: route tests for each op and each refusal.
@@ -34,7 +34,7 @@ In this slice:
 10. **Deck shutdown.** `packages/deck/server/production.mjs` on SIGTERM/SIGINT: `stop("graceful")` for all sessions. On Deck start, a stale lock's group is killed and the agent shown stopped. Restart survival is out.
     Verify: kill Deck with the stub running; no descendant remains.
 11. **Base script guards.** `packages/base/bin/inbox-push`: an opted-in recipient is not pushed; exits with a distinct persisted-not-pushed status. `packages/base/bin/boot-agents.sh`, `packages/base/bin/workspace.sh`: skip opted-in agents with a log line. `packages/base/bin/codex-provider-switch`: refuse.
-    Verify: base tests with `.runner` present and absent.
+    Verify: base tests with `.runner` present and absent, plus a PTY child running `inbox reply` against a marked recipient with a stubbed live tmux window.
 
 Not in this slice: more than one PTY agent; Codex or Antigravity on PTY (ACP, #154); browser keystroke streaming or WebSocket; resuming an existing conversation on PTY; restart survival; delivery acknowledgement from hooks; sweeps, activity and cron agent-mode rewired (they find no window and do nothing; documented); macOS and Windows; changing the default runner; authentication.
 
@@ -215,3 +215,14 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   version, direct dash and whitespace checks passed. Leak scripts hit
   `spawnSync git EPERM`; the explicit working-tree file scan passed.
 - Commits: 5bec1b0 feat(runner): route send, push and terminal view through the PTY runner for opted-in agents (#240)
+
+### 2026-11-19: Keep PTY replies persist-only during cutover
+- What changed: Pass `MC_PTY_RUNNER` and the resolved `AGENTS_HOME` to the
+  PTY child without forwarding secrets. Add a regression test that runs
+  `inbox reply` in the child. Move this SPEC to `.specs/240-pty-agent-slice-2/`;
+  #240 continues the work started in #153.
+- Why: PR #241 review found that `inbox-push` skipped the PTY guard without
+  the flag and needs the agent root to find the recipient's `.runner`.
+  The SPEC folder now matches the issue it tracks.
+- Supersedes: The earlier child environment allowlist; the opt-in is unchanged.
+- Commits: pending

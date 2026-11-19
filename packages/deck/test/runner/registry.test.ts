@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,7 +192,7 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     expect(launchSpec).toHaveBeenCalledWith({
       command: "claude", args: ["--session-id", first.sessionId, "-n", agent], cwd: home,
       env: { HOME: root, PATH: env.PATH, TERM: "xterm", LANG: "C", USER: env.USER,
-        CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR, INBOX_ROOT: inbox },
+        CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR, MC_PTY_RUNNER: "1", AGENTS_HOME: root, INBOX_ROOT: inbox },
     });
     await stubRegistry().recover();
     expect(running(first.childPid)).toBe(true);
@@ -202,6 +202,39 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     await registry.start(agent);
     expect(JSON.parse(readFileSync(lock, "utf8")).sessionId).not.toBe(first.sessionId);
     expect(readFileSync(pin, "utf8")).toBe("saved-tmux-session\n");
+  });
+
+  it("persists replies from a PTY child without probing the marked recipient's tmux window", async () => {
+    addAgent(other);
+    writeFileSync(join(root, other, ".runtime"), "claude\n");
+    mkdirSync(join(inbox, other, "inbox"), { recursive: true });
+    mkdirSync(join(inbox, agent, "inbox"), { recursive: true });
+    const thread = join(inbox, other, "inbox", `${agent}.md`);
+    symlinkSync(thread, join(inbox, agent, "inbox", `${other}.md`));
+
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "tmux"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> tmux.log\n[ "$1" = list-windows ] && printf '%s\\n' '${other}'\n`,
+      { mode: 0o755 });
+    env = { ...env, AGENTS_HOME: undefined, AGENTS_ROOT: root, PATH: `${bin}:/usr/bin:/bin` };
+    const inboxCli = fileURLToPath(new URL("../../../base/bin/inbox", import.meta.url));
+    const message = "Keep the full message.";
+    const registry = stubRegistry({
+      listWindows: () => [other],
+      launchSpec: (spec) => ({
+        ...spec, command: "/bin/bash",
+        args: ["-c", 'printf "ready\\n"; read -r && AGENT_NAME="$1" exec "$2" reply "$3" --subject cutover --body "$4" > reply.log',
+          "inbox-fixture", agent, inboxCli, other, message],
+      }),
+    });
+
+    await registry.start(agent);
+    expect(await registry.key(agent, "Enter")).toEqual({ status: "written" });
+    await vi.waitFor(() => expect(registry.status(agent)).toMatchObject({ state: "stopped", code: 0 }));
+    expect(readFileSync(thread, "utf8")).toContain(message);
+    expect(readFileSync(join(home, "reply.log"), "utf8")).toContain("push: skip:pty-runner (persisted, not pushed)");
+    expect(existsSync(join(home, "tmux.log"))).toBe(false);
   });
 
   it("makes an unanswered write quiet without stopping, then records exit 23 and refuses input", async () => {
