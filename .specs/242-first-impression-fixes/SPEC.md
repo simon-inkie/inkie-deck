@@ -74,4 +74,4 @@ None.
   working-tree leak scan passed. History and commit-message leak scans failed
   on existing reachable history; no Git history was changed by this work.
 - Supersedes: nothing, additive.
-- Commits: pending
+- Commits: b6fe31f fix: nested link on the home page, demo quick start, stale private wording, no-auth note in quick install (#242)
