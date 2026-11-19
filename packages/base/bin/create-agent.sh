@@ -38,7 +38,7 @@
 #                              [--inbox-root <path>]
 #                              [--agents-home <path>] [--no-install-path]
 #                              [--memory-root <path> | --no-memory]
-#   bin/create-agent.sh --verify-only <name>
+#   bin/create-agent.sh --verify-only <name> [--wire-memory]
 #   bin/create-agent.sh --check-name <name>
 #   bin/create-agent.sh --status <name>
 #   bin/create-agent.sh                          # interactive, prompts for a name
@@ -108,6 +108,8 @@
 #                                reported OFF and creation carries on. It never
 #                                changes the exit code.
 #   --no-memory                  leave memory off even if a checkout is present.
+#   --wire-memory                with --verify-only, wire memory only on success.
+#                                Claude re-checks of wired agents disable hooks.
 #
 # USER_NAME (environment, optional) is written into the agent's settings env
 # block when memory is on, so the memory prompts can name the person.
@@ -717,12 +719,14 @@ JS
 settings_is_contained() { contain_check scaffold; }
 memory_dir_is_clean() { contain_check tree; }
 
-# Before the install only: a brand-new agent home holds no settings.json.<x>
-# entries, so any that exist were put there by someone else and are the place a
-# planted link would hide. After the install the installer's own backup is
-# expected, so this is not part of memory_dir_is_clean.
+# A re-check can reuse the installer's own backup, already checked for links.
+# Other settings.json.<x> entries are unexpected before the install.
 no_foreign_settings_extras() {
-  [[ -z "$(list_settings_extras)" ]]
+  local file
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+    [[ $WIRE_MEMORY -eq 1 && "$file" == "$AGENT_HOME/.claude/settings.json.the-brain.bak" && -f "$file" ]] || return 1
+  done < <(list_settings_extras)
 }
 
 # Files the installer may leave beside settings.json (temporary, backup). Used
@@ -839,7 +843,7 @@ wire_memory() {
   if [[ -n "$missing" ]]; then
     MEMORY_REPORT="off (not built: missing${missing})"
     warn "memory is off: the memory layer checkout at $root is not built and installed."
-    warn "  Build it, then re-run its install command with --agent $NAME. Settings were not touched."
+    warn "  Build it, then re-check with --verify-only $NAME --wire-memory. Settings were not touched."
     return
   fi
 
@@ -851,14 +855,14 @@ wire_memory() {
     memory_skip "the agent's .claude is not contained, or holds a symlink or hard link; nothing written"
     warn "memory is off: $AGENT_HOME/.claude is outside the agent's own directory, or is or contains a"
     warn "  symlink or hard link. The memory install writes files there and would follow it. Remove the"
-    warn "  link, then run the install command with --agent $NAME."
+    warn "  link, then re-check with --verify-only $NAME --wire-memory."
     return
   fi
   if ! no_foreign_settings_extras; then
     memory_skip "unexpected settings.json.* entries in the agent's .claude; nothing written"
     warn "memory is off: $AGENT_HOME/.claude holds files named settings.json.<something> that this run"
-    warn "  did not create. The memory install writes files with such names. Remove them, then run the"
-    warn "  install command with --agent $NAME."
+    warn "  did not create. The memory install writes files with such names. Remove the unexpected"
+    warn "  files, then re-check with --verify-only $NAME --wire-memory."
     return
   fi
   routed="$(CA_SETTINGS="$AGENT_HOME/.claude/settings.json" node_run <<'JS'
@@ -871,7 +875,7 @@ JS
     memory_skip "settings env.AGENT_NAME is \"$routed\", not \"$NAME\""
     warn "memory is off: the agent's settings route memory to \"$routed\", not \"$NAME\"."
     warn "  Wiring it would seed one silo and send the hooks to another. Fix env.AGENT_NAME, then"
-    warn "  run the memory layer's install command with --agent $NAME. Settings were not touched."
+    warn "  re-check with --verify-only $NAME --wire-memory. Settings were not touched."
     return
   fi
 
@@ -904,13 +908,13 @@ JS
       memory_skip "memory install exited $status; settings restored, nothing wired"
       warn "memory is off: the memory layer's install command exited $status."
       warn "  The agent's settings were restored to what they were before. The silo may be partly"
-      warn "  seeded; the install command is idempotent, so fix the cause and run it again with"
-      warn "  --agent $NAME. Deck carries on."
+      warn "  seeded; the install command is idempotent. Fix the cause and re-check with"
+      warn "  --verify-only $NAME --wire-memory. Deck carries on."
     else
       memory_skip "PARTIAL: memory install exited $status and settings could NOT be restored"
       warn "memory is PARTLY wired: the install command exited $status and the previous settings"
       warn "  could not be put back. Check $AGENT_HOME/.claude/settings.json for memory hooks and"
-      warn "  remove them, or fix the cause and re-run the install command with --agent $NAME."
+      warn "  remove them, or fix the cause and re-check with --verify-only $NAME --wire-memory."
     fi
     return
   fi
@@ -941,6 +945,7 @@ ROLE=""
 RUNTIME="claude"
 VERIFY="auto"      # auto | yes | no
 VERIFY_ONLY=0
+WIRE_MEMORY=0
 INBOX_ROOT_ARG=""
 AGENTS_HOME_ARG=""
 INSTALL_PATH=1
@@ -980,6 +985,7 @@ while [[ $# -gt 0 ]]; do
     --no-install-path) INSTALL_PATH=0; shift ;;
     --memory-root)  [[ $# -ge 2 ]] || die_scaffold "--memory-root needs a value"; MEMORY_ROOT_ARG="$2";  shift 2 ;;
     --no-memory)    NO_MEMORY=1; shift ;;
+    --wire-memory)  WIRE_MEMORY=1; shift ;;
     --verify)       VERIFY="yes"; shift ;;
     --no-verify)    VERIFY="no"; shift ;;
     --verify-only)  VERIFY_ONLY=1; VERIFY="yes"; shift ;;
@@ -991,6 +997,9 @@ while [[ $# -gt 0 ]]; do
       NAME="$1"; shift ;;
   esac
 done
+
+[[ $WIRE_MEMORY -eq 0 || ( $VERIFY_ONLY -eq 1 && $NO_MEMORY -eq 0 ) ]] \
+  || die_scaffold "--wire-memory needs --verify-only and cannot be used with --no-memory"
 
 # ---------------------------------------------------------------------------
 # roots
@@ -1538,6 +1547,9 @@ memory_on_exit() {
   MEMORY_IN_EXIT=1
   exec 7>&1
   rm -f "${PROBE_OUT:-}" "${PROBE_ERR:-}"
+  if [[ $WIRE_MEMORY -eq 1 && $MEMORY_PENDING -eq 1 && $rc -ne $EXIT_VERIFIED ]]; then
+    memory_skip "verification did not pass; memory was not wired"
+  fi
   local show=$MEMORY_PRINT
   if [[ $MEMORY_PENDING -eq 1 ]]; then
     MEMORY_PENDING=0
@@ -1592,7 +1604,7 @@ on_signal() {
   exit "$code"
 }
 
-[[ "$VERIFY_ONLY" -eq 1 ]] || { MEMORY_PENDING=1; MEMORY_ARMED=1; }
+[[ $VERIFY_ONLY -eq 1 && $WIRE_MEMORY -eq 0 ]] || { MEMORY_PENDING=1; MEMORY_ARMED=1; }
 trap memory_on_exit EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
@@ -1656,7 +1668,14 @@ say "  one non-interactive turn, from $AGENT_HOME"
 # AGENT_NAME and INBOX_ROOT are set the way the launchers set them.
 PROBE_ENV=()
 case "$RUNTIME" in
-  claude) PROBE_CMD=(claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT"); PROBE_LABEL="claude -p" ;;
+  claude)
+    PROBE_CMD=(claude ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})
+    if [[ $VERIFY_ONLY -eq 1 ]] && { [[ $WIRE_MEMORY -eq 1 ]] ||
+      grep -Eq '/claude-code/bin/(user-prompt-submit|on-stop|on-pre-compact)\.sh' "$AGENT_HOME/.claude/settings.json" 2>/dev/null; }; then
+      PROBE_CMD+=(--settings '{"disableAllHooks":true}')
+    fi
+    PROBE_CMD+=(-p "$PROBE_PROMPT")
+    PROBE_LABEL="claude -p" ;;
   codex)  PROBE_CMD=(codex exec --skip-git-repo-check ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} "$PROBE_PROMPT"); PROBE_LABEL="codex exec" ;;
   agy)    PROBE_CMD=(agy ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} -p "$PROBE_PROMPT"); PROBE_LABEL="agy -p" ;;
 esac
@@ -1709,7 +1728,7 @@ if [[ $PROBE_STATUS -ne 0 ]]; then
   [[ $PROBE_STATUS -eq 124 ]] && detail="timed out after ${PROBE_TIMEOUT}s"
   lines=("The runtime did not answer ($detail).")
   [[ -n "$PROBE_STDERR" ]] && lines+=("" "It said:" "$PROBE_STDERR_SHOWN")
-  memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
+  memory_skip "verification did not pass, so memory was not wired; fix the agent, then re-check with --verify-only $NAME --wire-memory"
   report_cannot_verify "Ran \`$PROBE_LABEL\` from the agent home and got no usable reply." "${lines[@]}"
 fi
 
@@ -1725,7 +1744,7 @@ if [[ -z "${REPLY//[[:space:]]/}" ]]; then
   printf '  mechanism being tested, so the persona is unproven and treated as absent.\n'
   printf '\n'
   printf '  The files are at %s. Open a session there and see what it says it is.\n' "$AGENT_HOME"
-  memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
+  memory_skip "verification did not pass, so memory was not wired; fix the agent, then re-check with --verify-only $NAME --wire-memory"
   exit "$EXIT_FAILED"
 fi
 
@@ -1776,5 +1795,5 @@ esac
 printf '    - is anything assembling context with a size cap that silently drops\n'
 printf '      the persona when it is exceeded, rather than truncating and saying so?\n'
 printf '    - is a hook meant to inject this context installed, and did it run?\n'
-memory_skip "verification did not pass, so memory was not wired; fix the agent, then run the memory install command with --agent $NAME"
+memory_skip "verification did not pass, so memory was not wired; fix the agent, then re-check with --verify-only $NAME --wire-memory"
 exit "$EXIT_FAILED"

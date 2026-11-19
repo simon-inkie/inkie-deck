@@ -7,7 +7,7 @@
 #
 # Usage:
 #   bin/first-run.sh [--assistant <name>] [--platform <name>] [--model <id>]
-#                    [--runtime claude|codex|agy] [--no-verify] [--live-probe]
+#                    [--runtime claude|codex|agy] [--no-verify] [--live-probe] [--no-memory]
 #                    [--person <name>] [--agents-home <dir>] [--inbox-root <dir>]
 #
 #   --assistant <name>   the agent you talk to (asked for, default "inkie")
@@ -18,6 +18,7 @@
 #                        or agy. Passed to create-agent.sh, which writes the
 #                        persona file that runtime reads.
 #   --no-verify          create without the boot phrase proof (exit 4)
+#   --no-memory          do not wire memory into the starter agents
 #   --live-probe         for codex and agy, also ask the model for the boot
 #                        phrase (off by default for those two; see
 #                        create-agent.sh). Claude Code is always asked.
@@ -46,6 +47,7 @@ MODEL=""
 RUNTIME=""
 LIVE_PROBE=0
 NO_VERIFY=0
+NO_MEMORY=0
 AGENTS_HOME_ARG=""
 INBOX_ROOT_ARG=""
 PERSON=""
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --runtime)     [[ $# -ge 2 && -n "$2" ]] || fail "--runtime needs a value";    RUNTIME="$2";         shift 2 ;;
     --live-probe)  LIVE_PROBE=1; shift ;;
     --no-verify)   NO_VERIFY=1; shift ;;
+    --no-memory)   NO_MEMORY=1; shift ;;
     *)             fail "unknown argument: $1 (run with --help)" ;;
   esac
 done
@@ -206,6 +209,7 @@ ARGS=(${COMMON[@]+"${COMMON[@]}"})
 [[ -n "$RUNTIME" ]] && ARGS+=(--runtime "$RUNTIME")
 [[ $LIVE_PROBE -eq 1 ]] && ARGS+=(--live-probe)
 [[ $NO_VERIFY -eq 1 ]] && ARGS+=(--no-verify)
+[[ $NO_MEMORY -eq 1 ]] && ARGS+=(--no-memory)
 [[ -n "$PERSON" ]] && ARGS+=(--person "$PERSON")
 
 declare -A RC

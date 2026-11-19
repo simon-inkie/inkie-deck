@@ -12,6 +12,7 @@
 #   scripts/setup.sh [--yes] [--deck-home <dir>] [--agents-home <dir>]
 #                    [--assistant <name>] [--platform <name>] [--model <id>]
 #                    [--no-key | --key-stdin] [--replace-key]
+#                    [--memory | --no-memory] [--memory-root <dir>]
 #                    [--no-install] [--no-build] [--no-start]
 #
 #   --yes                accept the defaults for names (inkie, doctor) and
@@ -27,8 +28,12 @@
 #   --key-stdin          read one API key from stdin, never from an argument
 #   --replace-key        replace an existing stored key (needs a terminal or
 #                        --key-stdin). A rerun never replaces one otherwise.
-#   --no-install         skip pnpm install
-#   --no-build           skip pnpm build
+#   --memory             build the Brain and wire memory after verification
+#   --no-memory          do not install or wire memory (default)
+#   --memory-root <dir>  Brain checkout outside Deck (default: $MEMORY_LAYER_ROOT
+#                        or $HOME/inkie-the-brain)
+#   --no-install         skip Deck's pnpm install
+#   --no-build           skip Deck's pnpm build
 #   --no-start           do not start Deck or the agents
 #
 # Without a terminal on stdin, names (--yes, or both name flags) and a key
@@ -61,6 +66,8 @@ DECK_DIR="$REPO/packages/deck"
 ENV_FILE="$DECK_DIR/.env"
 CREATE="$BASE_BIN/create-agent.sh"
 FIRST_RUN="$BASE_BIN/first-run.sh"
+BRAIN_URL="https://github.com/simon-inkie/inkie-the-brain.git"
+BRAIN_REF="27a4a279b36f8e65be41d9044a6af857389ef124"
 # An override for tests, in the same spirit as the other scripts' *_OVERRIDE
 # seams; nothing in the documentation points at it.
 BOOT="${SETUP_BOOT_AGENTS:-$BASE_BIN/boot-agents.sh}"
@@ -70,6 +77,7 @@ KEY_RE='^[A-Za-z0-9_-]{8,256}$'
 
 YES=0; NO_KEY=0; KEY_STDIN=0; REPLACE_KEY=0
 NO_INSTALL=0; NO_BUILD=0; NO_START=0
+WITH_MEMORY=0; BRAIN_ROOT_ARG=""
 DECK_HOME_ARG=""; AGENTS_HOME_ARG=""; ASSISTANT_ARG=""; PLATFORM_ARG=""; MODEL=""
 
 say()  { printf '%s\n' "$*"; }
@@ -93,6 +101,9 @@ while [[ $# -gt 0 ]]; do
     --no-key)      NO_KEY=1; shift ;;
     --key-stdin)   KEY_STDIN=1; shift ;;
     --replace-key) REPLACE_KEY=1; shift ;;
+    --memory)      WITH_MEMORY=1; shift ;;
+    --no-memory)   WITH_MEMORY=0; shift ;;
+    --memory-root) [[ $# -ge 2 && -n "$2" && "$2" != -* ]] || usage_error "--memory-root needs a directory"; BRAIN_ROOT_ARG="$2"; shift 2 ;;
     --no-install)  NO_INSTALL=1; shift ;;
     --no-build)    NO_BUILD=1; shift ;;
     --no-start)    NO_START=1; shift ;;
@@ -243,7 +254,7 @@ PORT_VALUE="${RV:-4242}"
 
 DECK_SESSION_UP=0
 tmux has-session -t "$DECK_SESSION" >/dev/null 2>&1 && DECK_SESSION_UP=1
-if (: < "/dev/tcp/127.0.0.1/$PORT_VALUE") 2>/dev/null && [[ $DECK_SESSION_UP -eq 0 && $NO_START -eq 0 ]]; then
+if [[ $DECK_SESSION_UP -eq 0 && $NO_START -eq 0 ]] && (: < "/dev/tcp/127.0.0.1/$PORT_VALUE") 2>/dev/null; then
   fail "something is already listening on 127.0.0.1:$PORT_VALUE and it is not setup's own \"$DECK_SESSION\" tmux session. Stop it, or set PORT."
 fi
 
@@ -408,8 +419,15 @@ assert_outside_git() {
 
 LOCK="$AGENTS_HOME/.setup-key-lock"
 LOCK_HELD=0
+MEMORY_PREPARING=0
 release_lock() { [[ $LOCK_HELD -eq 0 ]] || { rmdir -- "$LOCK" 2>/dev/null; LOCK_HELD=0; }; }
-trap release_lock EXIT
+setup_cleanup() {
+  release_lock
+  if [[ $MEMORY_PREPARING -eq 1 ]]; then
+    note "memory unchanged (Brain preparation was interrupted; no hooks were changed)"
+  fi
+}
+trap setup_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 lock_message() {
@@ -568,15 +586,104 @@ if [[ $NO_BUILD -eq 0 ]]; then
   run_logged "pnpm build" setup-build.log pnpm build || fail "pnpm build failed; see $LOG_DIR/setup-build.log"
 fi
 
+brain_build_complete() {
+  local root="$1" hook
+  [[ -f "$root/scripts/install.sh" && -x "$root/node_modules/.bin/tsx" ]] || return 1
+  for hook in user-prompt-submit on-stop on-pre-compact; do
+    [[ -f "$root/dist/claude-code/bin/$hook.sh" ]] || return 1
+  done
+}
+
+prepare_memory() {
+  local version root repo origin top dirty head log="$LOG_DIR/setup-memory.log" scratch
+  MEMORY_REASON="not requested"
+  [[ $WITH_MEMORY -eq 1 ]] || return 1
+  MEMORY_REASON="the Brain needs jq; run 'sudo apt-get install jq' (Debian/Ubuntu) or 'brew install jq' (macOS), then rerun setup"
+  command -v jq >/dev/null 2>&1 || return 1
+  MEMORY_REASON="the Brain needs Node 22 or newer"
+  version="$(node --version 2>/dev/null)"
+  [[ "$version" =~ ^v([0-9]+)\. ]] && (( BASH_REMATCH[1] >= 22 )) || return 1
+  MEMORY_REASON="pnpm is required to build the Brain"
+  command -v pnpm >/dev/null 2>&1 || return 1
+  MEMORY_REASON="the Brain needs the Claude Code CLI; install it and sign in"
+  command -v claude >/dev/null 2>&1 || return 1
+
+  root="${BRAIN_ROOT_ARG:-${MEMORY_LAYER_ROOT:-$HOME/inkie-the-brain}}"
+  MEMORY_REASON="use an absolute Brain checkout path outside Deck: $root"
+  [[ "$root" == /* && "/$root/" != */../* ]] || return 1
+  root="$(node --input-type=module - "$root" <<'JS'
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+let dir = resolve(process.argv[2]);
+const tail = [];
+while (!existsSync(dir)) {
+  tail.unshift(basename(dir));
+  dir = dirname(dir);
+}
+console.log(join(realpathSync(dir), ...tail));
+JS
+)" || return 1
+  repo="$(cd -P -- "$REPO" && pwd -P)" || return 1
+  [[ "$root" != / && "$root" != "$repo" && "$root" != "$repo/"* && "$repo" != "$root/"* ]] || return 1
+
+  if [[ -e "$root/dist" || -L "$root/dist" ]]; then MEMORY_STATUS="unchanged"; fi
+  if [[ -e "$root" || -L "$root" ]]; then
+    MEMORY_REASON="$root is not a checkout of the public Brain repository; nothing changed there"
+    [[ -f "$root/scripts/install.sh" ]] || return 1
+    top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [[ "$top" == "$root" ]] || return 1
+    origin="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
+    [[ "${origin%.git}" == "${BRAIN_URL%.git}" ]] || return 1
+    MEMORY_REASON="$root has local changes or could not be checked; nothing changed there"
+    dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$root" status --porcelain 2>/dev/null)" || return 1
+    [[ -z "$dirty" ]] || return 1
+  fi
+
+  if [[ "$MEMORY_STATUS" == unchanged ]]; then
+    MEMORY_REASON="existing build at $root is not usable at the pinned revision; choose an unused --memory-root to build there instead"
+    head="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null)" || return 1
+    [[ "$head" == "$BRAIN_REF" ]] && brain_build_complete "$root" || return 1
+    say "setup: reusing the pinned Brain build at $root"
+    BUILT_BRAIN="$root"
+    return 0
+  fi
+
+  MEMORY_REASON="could not open the Brain build log at $log"
+  mkdir -p "$LOG_DIR" && [[ ! -d "$log" ]] || return 1
+  scratch="$(mktemp "$LOG_DIR/setup-memory.XXXXXX")" || return 1
+  mv -f -- "$scratch" "$log" || { rm -f -- "$scratch"; return 1; }
+  say "setup: preparing the Brain at $root (log: $log)"
+  MEMORY_REASON="could not clone the Brain; check your network and see $log"
+  [[ -d "$root" ]] || GIT_TERMINAL_PROMPT=0 git clone -- "$BRAIN_URL" "$root" >> "$log" 2>&1 || return 1
+  MEMORY_REASON="could not check out the pinned Brain revision; see $log"
+  git -C "$root" rev-parse --verify "$BRAIN_REF^{commit}" >> "$log" 2>&1 \
+    || GIT_TERMINAL_PROMPT=0 git -C "$root" fetch --no-tags "$BRAIN_URL" "$BRAIN_REF" >> "$log" 2>&1 || return 1
+  git -C "$root" checkout --detach "$BRAIN_REF" >> "$log" 2>&1 || return 1
+  MEMORY_REASON="the Brain dependency install or build failed; see $log"
+  (cd "$root" && pnpm install --frozen-lockfile && pnpm build) >> "$log" 2>&1 || return 1
+  MEMORY_REASON="the Brain build is incomplete; see $log"
+  brain_build_complete "$root" || return 1
+  BUILT_BRAIN="$root"
+}
+
+BUILT_BRAIN=""
+MEMORY_STATUS="off"
+MEMORY_PREPARING=$WITH_MEMORY
+if ! prepare_memory; then say "setup: memory $MEMORY_STATUS ($MEMORY_REASON)"; fi
+MEMORY_PREPARING=0
+memory_env=(MEMORY_LAYER_ROOT="$BUILT_BRAIN")
+[[ -z "$BUILT_BRAIN" ]] || memory_env+=(USER_NAME="$MC_USER_VALUE")
+
 # The effective settings go to every child explicitly, so Deck, the scaffold,
 # boot and the inbox CLI cannot disagree. The key is not among them.
 child_env=(AGENTS_HOME="$AGENTS_HOME" AGENTS_ROOT="$AGENTS_HOME" INBOX_ROOT="$INBOX_ROOT_VALUE" MC_USER="$MC_USER_VALUE")
 
 FR_ARGS=(--agents-home "$AGENTS_HOME" --inbox-root "$INBOX_ROOT_VALUE" --person "$MC_USER_VALUE" --no-verify)
+[[ -z "$BUILT_BRAIN" ]] || FR_ARGS+=(--no-memory)
 [[ -z "$EXISTING_A" ]] && FR_ARGS+=(--assistant "$A_NAME")
 [[ -z "$EXISTING_P" ]] && FR_ARGS+=(--platform "$P_NAME")
 [[ -n "$MODEL" ]] && FR_ARGS+=(--model "$MODEL")
-env "${child_env[@]}" "$FIRST_RUN" "${FR_ARGS[@]}" < /dev/null
+env "${child_env[@]}" "${memory_env[@]}" "$FIRST_RUN" "${FR_ARGS[@]}" < /dev/null
 fr=$?
 # --no-verify returning 4 (created, unverified) or 0 (nothing to do) is success.
 case "$fr" in 0|4) ;; *) fail "first-run.sh failed (exit $fr); the agents were not all created" ;; esac
@@ -698,7 +805,10 @@ release_lock
 
 # Verify both starters (never reached while a key marker is pending: B stopped).
 verify_one() {
-  env "${child_env[@]}" "$CREATE" --verify-only "$1" "${CREATE_COMMON[@]}" < /dev/null
+  local memory_args=()
+  [[ -z "$BUILT_BRAIN" ]] || memory_args+=(--wire-memory)
+  env "${child_env[@]}" "${memory_env[@]}" "$CREATE" --verify-only "$1" \
+    "${CREATE_COMMON[@]}" ${memory_args[@]+"${memory_args[@]}"} < /dev/null
 }
 # With no agent CLI on PATH there is nothing to ask: say so once, plainly, at
 # the end, instead of two near-identical CANNOT VERIFY reports.

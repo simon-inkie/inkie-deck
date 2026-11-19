@@ -37,6 +37,10 @@ Add whatever helps you do your job. This is your cheat sheet.
 
 ## Shared tooling (if you're running more than one agent)
 
+If the Brain is wired into your Claude Code settings, look in
+`~/.the-brain/agents/<your-agent-name>/memory/` for your silo's saved memory.
+Use `env.AGENT_NAME` in `.claude/settings.json` to identify your silo.
+
 If you have shared infrastructure across a team of agents (a memory/recall system, a
 read-only production database CLI, a shared vault), list the actual commands and their
 guardrails here rather than assuming every agent rediscovers them. Two conventions

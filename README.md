@@ -109,8 +109,10 @@ open source long-term memory for AI coding agents, in use since April 2026:
   the whole team should know.
 - **Filesystem-first.** Plain files you can read, edit and back up.
 
-Deck's quick setup does not install the Brain yet. If you have it built, the
-agent scaffold can wire it into each new agent: see
+Run `scripts/setup.sh --memory` to give both starter agents their own
+observation silo. Observations appear after compaction, and each costs a model
+call through the signed-in `claude` CLI. The basic loop does not set up
+semantic search or a shared vault. For the manual route, see
 [give the agent a memory loop](INSTALL.md#optional-give-the-agent-a-memory-loop).
 
 ## Why I built it

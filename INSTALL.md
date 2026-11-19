@@ -57,10 +57,10 @@ wrong, the rig goes red.
   belief rather than an observation.
 - Blocks tagged `sh-manual` are not executed either: a container has no
   systemd user manager, and a second Deck would collide with the one the run
-  already started. They were run by hand when written, and can drift without
-  the rig going red. They are in [Keep it running](#keep-it-running), and in
-  the [Windows section](#windows-via-wsl), where the ones that only make sense
-  under WSL were not run by hand at all, because nothing here runs Windows.
+  already started. These blocks can drift without the rig going red. They are
+  in [Keep it running](#keep-it-running), the [Windows section](#windows-via-wsl)
+  and the [optional Brain step](#optional-give-the-agent-a-memory-loop), which
+  needs a signed-in CLI to verify.
 - Blocks tagged `powershell` are the Windows side of that section. A Linux
   container cannot run them, so they are neither executed nor measured.
 
@@ -326,7 +326,7 @@ suites and the leak gate shell out to git against the repository root.
 
 **Prerequisites for the agents:** an agent CLI, installed and signed in. Quick setup uses [Claude Code](https://github.com/anthropics/claude-code). The agent scaffold, the launchers and the persona check also support [Codex](https://github.com/openai/codex) and [Antigravity](https://antigravity.google/docs/install?tab=cli) (`agy`), per agent, with `create-agent.sh --runtime codex` or `--runtime agy`; see "Codex and Antigravity agents" below for what differs.
 
-Four more tools matter for one thing each, and are easy to miss because every
+These tools matter for specific tasks, and are easy to miss because every
 machine that has run this so far already had them:
 
 | tool | needed for | without it |
@@ -335,6 +335,7 @@ machine that has run this so far already had them:
 | python3 | the `inbox` CLI, which is how an agent replies (PyYAML, `python3-yaml`, for decision cards) | Deck runs fine; your agents cannot answer, or cannot send a card |
 | tmux | tier 3, the live agent sessions | Deck degrades to a viewer over files |
 | xxd | the `inbox` suite only, nothing at runtime | one test stops with `xxd: command not found` |
+| jq | the Brain's optional memory hooks | live recall does not update; Quick setup skips memory wiring |
 
 On Ubuntu or Debian, as root. If you are not root, type `sudo -i` for a root
 shell first, paste the block, `exit`, and set the `export` line again in your
@@ -343,7 +344,7 @@ The block is:
 
 ```sh
 apt-get update
-apt-get install -y ca-certificates curl git ripgrep python3 python3-yaml tmux xxd
+apt-get install -y ca-certificates curl git jq ripgrep python3 python3-yaml tmux xxd
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 corepack enable
@@ -357,7 +358,7 @@ the Node instructions until you have it.
 On macOS, unverified here, the equivalent is roughly:
 
 ```zsh
-brew install node@22 ripgrep python3 tmux
+brew install node@22 jq ripgrep python3 tmux
 corepack enable
 ```
 
@@ -434,10 +435,9 @@ anything is installed.
 It does not install system packages (it names what is missing and points at
 section 1, and never runs `sudo`), does not install, sign in to or pay for your
 model CLI, and never answers that CLI's own prompts (sign-in, folder trust, key
-approval). Those stay with you. It does not connect mail or a calendar, and it
-does not install the memory loop (see [Optional: give the agent a memory
-loop](#optional-give-the-agent-a-memory-loop)). On Windows, finish the [WSL
-prerequisites](#windows-via-wsl) first; setup adds nothing Windows-specific.
+approval). Those stay with you. It does not connect mail or a calendar. On
+Windows, finish the [WSL prerequisites](#windows-via-wsl) first; setup adds
+nothing Windows-specific.
 
 For no prompts, accept the defaults and skip the key:
 
@@ -450,6 +450,19 @@ both agents exist, Deck is running at `http://127.0.0.1:4242`, and the agents
 are not started. Install and sign in to the model CLI, then run it again. That
 is also the rig's measured case (see [How this document is
 tested](#how-this-document-is-tested)).
+
+Add `--memory` to install [the Brain](https://github.com/simon-inkie/inkie-the-brain)
+and wire each starter after its persona check. Setup prints the checkout path
+(`$HOME/inkie-the-brain` by default). Use `--memory-root <absolute-path>` or
+`MEMORY_LAYER_ROOT` for a clean checkout of the public Brain outside Deck.
+`--no-memory` is the default and does not remove existing hooks. If `jq` is
+missing or the Brain cannot be built, setup continues without wiring it and
+prints why. A rerun reuses a verified build at the pinned revision instead of
+rebuilding files that existing hooks may use. If an existing build cannot be
+verified, setup leaves it and its hooks unchanged; use an unused
+`--memory-root` path for a fresh build. See
+[the manual memory step](#optional-give-the-agent-a-memory-loop) for the
+requirements and cost. Deck's own prerequisites still apply.
 
 The flags are `--yes`, `--deck-home <dir>` (default `$HOME/deck`),
 `--agents-home <dir>` (default `$HOME/agents`), `--assistant <name>`,
@@ -1001,18 +1014,40 @@ is the set of directories under `INBOX_ROOT`.
 
 ### Optional: give the agent a memory loop
 
-Memory is optional, and Deck works the same without it. If you have the
-separate memory-layer project checked out and built (its own README covers
-that, and its basic loop needs only the model CLI you already have: no extra
-key, no Docker), tell `create-agent.sh` where it is, before creating agents:
+The Brain keeps observations in each agent's own silo under
+`~/.the-brain/agents/<name>/memory/observations/`. Observations appear after a
+compaction: send a real message, then try `/compact`. Each observation costs
+a model call (Haiku by default) through the signed-in `claude` CLI. If you
+stored an Anthropic API key for the agent, that call can bill the key. The
+basic loop needs no Docker, embeddings key or semantic search. Keep Deck's
+inbox separate from `~/.the-brain/agents`; agents with the same name in two
+Deck installs under one home share a silo.
+
+For a manual fresh install, use this in place of the earlier `first-run.sh`
+block. It needs git, network access, Node 22 or newer, pnpm and `jq` (see
+[system packages](#1-prerequisites)). Run from the Deck checkout and use an
+unused checkout path outside it. The commit pin matches Quick setup and will
+be replaced by a release tag when available.
 
 ```sh-manual
-export MEMORY_LAYER_ROOT=$HOME/src/memory-layer   # any name, any place
-export USER_NAME=$(id -un)                        # optional, names you in memory prompts
-packages/base/bin/create-agent.sh wren --role "keeps the notes"
+export AGENTS_HOME="$HOME/agents"
+export INBOX_ROOT="$HOME/deck/inbox"
+brain_root="$HOME/inkie-the-brain"
+command -v jq >/dev/null && command -v claude >/dev/null &&
+  git clone https://github.com/simon-inkie/inkie-the-brain.git "$brain_root" &&
+  git -C "$brain_root" checkout --detach 27a4a279b36f8e65be41d9044a6af857389ef124 &&
+  (cd "$brain_root" && pnpm install --frozen-lockfile && pnpm build) &&
+  MEMORY_LAYER_ROOT="$brain_root" USER_NAME="$(id -un)" packages/base/bin/first-run.sh
 ```
 
-For each agent that wires the memory hooks into that agent's own
+If the Brain step fails, run the earlier `first-run.sh` block with `--no-memory`.
+For agents that already exist, use Quick setup with `--memory`, or set
+`MEMORY_LAYER_ROOT` to the built checkout and run
+`packages/base/bin/create-agent.sh --verify-only <name> --wire-memory` for each
+agent. Memory re-checks run with hooks disabled so they do not add probe
+memories, even if you did not request memory on this run.
+
+The scaffold wires memory hooks into each agent's own
 `.claude/settings.json` (not your global one, see the checks below), records `USER_NAME` there, and
 seeds the agent's memory silo, by running the checkout's own non-interactive
 install command. The silo is picked by the `AGENT_NAME` Deck already writes
@@ -1031,15 +1066,14 @@ created exactly as before. Memory never changes the exit code. The reasons:
   installed (settings are not touched);
 - the agent's `.claude/settings.json` already says `env.AGENT_NAME` is another
   agent, which would seed one memory silo and send the hooks to a different
-  one (settings are not touched; fix the name and run the checkout's install
-  command with `--agent <name>`);
+  one (settings are not touched; fix the name and re-check with `--wire-memory`);
 - the persona check failed or the model CLI errored, so a broken agent is not
-  wired (once fixed, run the checkout's install command with `--agent <name>`);
+  wired (once fixed, re-check with `--wire-memory`);
 - the checkout's install command failed. Deck puts the agent's previous
   settings back, so no hooks are left active, and says so. If it cannot put
   them back the line starts `off (PARTIAL: ...)`: open the agent's
   `.claude/settings.json` and remove the memory hooks, or fix the cause and
-  re-run the install command. The silo may be partly seeded; the command is
+  re-check with `--wire-memory`. The silo may be partly seeded; the installer is
   idempotent;
 - the run was interrupted (Ctrl-C, SIGTERM, SIGHUP). The last line always says
   what state that left: before wiring nothing is wired; during the install the
@@ -1051,10 +1085,10 @@ created exactly as before. Memory never changes the exit code. The reasons:
   checkout's install command writes a temporary file and a backup beside
   `settings.json` and follows links, so a planted link could redirect a write
   onto another file, such as a global settings file. Nothing is written;
-  remove the link and run the install command with `--agent <name>`;
+  remove the link and re-check with `--wire-memory`;
 - the agent's `.claude` already holds files named `settings.json.<something>`
-  that this run did not create. A new agent has none, and that is where a
-  planted link would hide. Remove them and run the install command.
+  that this run did not create. A re-check accepts the Brain's existing backup
+  only if it is a regular file with no symlink or hard link.
 
 Deck checks again after the install and, if a link appeared meanwhile, reports
 `PARTIAL` rather than `on`. That later check runs after the install's write, so
