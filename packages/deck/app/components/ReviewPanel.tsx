@@ -27,6 +27,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useFetcher } from "react-router";
 import { X } from "lucide-react";
+import { ALL_REVIEW_EXTS, extKind, extToLang, stripQueryHash } from "~/lib/review-exts";
 import { Markdown } from "./Markdown";
 import { CodeView } from "./CodeView";
 
@@ -286,6 +287,13 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
 
   const name = basename(docParam);
   const basePath = docBasePath(docParam);
+  const attachmentName = isAttachment ? basename(stripQueryHash(docParam)) : "";
+  const lastDot = attachmentName.lastIndexOf(".");
+  const attachmentExt = lastDot > 0 ? attachmentName.slice(lastDot).toLowerCase() : "";
+  const isCode = isAttachment
+    ? ALL_REVIEW_EXTS.has(attachmentExt) && extKind(attachmentExt) === "code"
+    : fileKind === "code";
+  const codeLang = isAttachment ? extToLang(attachmentExt) : fileLang;
 
   // Images are rendered via <img> and never need a text fetch, so they are
   // never "loading" in the text-fetch sense.
@@ -351,7 +359,7 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
                 className="h-full min-h-[60vh] w-full rounded-md border border-border bg-white"
               />
             )
-            : fileKind === "code"
+            : isCode
             ? (
               // Code files rendered through CodeView (syntax-highlighted).
               // Negative margin (-1rem all sides) cancels the parent px-4 py-4
@@ -359,7 +367,7 @@ function PanelContentImpl({ docParam, onClose, onOpenDoc }: PanelContentProps) {
               // (full-bleed, like a real editor pane). Markdown docs keep their
               // padding via the else branch below - no regression there.
               <div style={{ overflow: "hidden", margin: "-1rem" }}>
-                <CodeView content={textContent} lang={fileLang} />
+                <CodeView content={textContent} lang={codeLang} />
               </div>
             )
             : (

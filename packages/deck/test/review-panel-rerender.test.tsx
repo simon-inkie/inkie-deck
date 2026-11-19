@@ -64,11 +64,14 @@ import { ReviewPanel, PanelContent } from "~/components/ReviewPanel";
 
 const DOC_A = "/attachments/doc-a.md";
 const DOC_B = "/attachments/doc-b.md";
+const DOC_JSON = "/attachments/config.JSON?v=2#source";
 const CONTENT_A = "ALPHA DOC BODY";
 const CONTENT_B = "BRAVO DOC BODY";
+const CONTENT_JSON = '{\n  "example": "<script>example</script>"\n}';
 
 function contentFor(url: string): string {
   if (url === DOC_B) return CONTENT_B;
+  if (url === DOC_JSON) return CONTENT_JSON;
   return CONTENT_A;
 }
 
@@ -152,14 +155,25 @@ function ThreadViewStub() {
   );
 }
 
-async function renderThreadView() {
+async function renderThreadView(doc = DOC_A) {
   const Stub = createRoutesStub([{ path: "/threads/:agent", Component: ThreadViewStub }]);
   await act(async () => {
     root = createRoot(container);
-    root.render(<Stub initialEntries={[`/threads/x?doc=${DOC_A}`]} />);
+    root.render(<Stub initialEntries={[`/threads/x?doc=${encodeURIComponent(doc)}`]} />);
   });
   await flush();
 }
+
+describe("ReviewPanel attachment rendering", () => {
+  it("renders JSON attachments as code without changing their text", async () => {
+    await renderThreadView(DOC_JSON);
+
+    const code = container.querySelector("pre code.language-json");
+    expect(code?.textContent).toBe(CONTENT_JSON);
+    expect(code?.querySelector("script")).toBeNull();
+    expect(bodyText()).toBe("");
+  });
+});
 
 describe("TASK-705: ReviewPanel render-cascade", () => {
   it("does NOT re-parse the open doc on an unrelated composer keystroke", async () => {
