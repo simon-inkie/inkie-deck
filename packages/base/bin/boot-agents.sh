@@ -596,9 +596,6 @@ tmux start-server 2>/dev/null || true
 # "tmux focus-events off" hint. tmux has no per-session form of this option
 # (it is a server option), so it applies to the tmux server these scripts use.
 tmux set -g focus-events on 2>/dev/null || true
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-  tmux new-session -d -s "$SESSION" -n "${AGENTS[0]}" -c "$AGENTS_HOME/${AGENTS[0]}" || { echo "boot-agents: session creation failed" >&2; exit 1; }
-fi
 
 # Launch an agent if it is not already running. Echoes "launched" or "skipped".
 launch_agent() {
@@ -617,7 +614,9 @@ launch_agent() {
   # Per-agent model override (selector): $AGENTS_HOME/<a>/.model -> --model flag.
   # Absent = no flag = inherit the global default. Applies to all runtimes.
   model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
-  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
+  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    tmux new-session -d -s "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  elif ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
     tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
   fi
   if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then

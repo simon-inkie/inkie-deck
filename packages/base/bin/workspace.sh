@@ -186,16 +186,17 @@ warn_if_foreign_claude
 tmux start-server 2>/dev/null || true
 tmux set -g focus-events on 2>/dev/null || true
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-  FIRST="${AGENTS[0]}"
-  tmux new-session -d -s "$SESSION" -n "$FIRST" -c "$AGENTS_HOME/$FIRST"
-  start_agent "$FIRST"
-  start_watcher "$FIRST"
-
-  for agent in "${AGENTS[@]:1}"; do
+  session_created=0
+  for agent in "${AGENTS[@]}"; do
     if agent_opts_into_pty "$agent"; then
       continue
     fi
-    tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    if [[ $session_created -eq 0 ]]; then
+      tmux new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      session_created=1
+    else
+      tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    fi
     start_agent "$agent"
     start_watcher "$agent"
   done
@@ -210,8 +211,15 @@ tmux set -g allow-passthrough on 2>/dev/null || true
 
 # Add any missing agent windows
 for agent in "${AGENTS[@]}"; do
+  if agent_opts_into_pty "$agent"; then
+    continue
+  fi
   if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$agent"; then
-    tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+      tmux new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    else
+      tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    fi
     start_agent "$agent"
     start_watcher "$agent"
   fi

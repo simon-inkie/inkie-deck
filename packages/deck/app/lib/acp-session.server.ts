@@ -83,7 +83,8 @@ const incoming = methods.client.session;
 const environment = ["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"];
 const explicitDeckVariables = new Set(["INBOX_ROOT", "DATA_ROOT", "GOOGLE_GENERATIVE_AI_API_KEY"]);
 const deckVariable = /^(?:MC_|DECK_|INKIE_|DEEPGRAM_)/i;
-const FATAL_EXTENSION_RE = /(?:^|\/)(?:error|fatal)$/i;
+const FATAL_EXTENSION_RE = /(?:^|[/:])(?:error|fatal)$/i;
+const MAX_PENDING_PERMISSIONS = 16;
 // Strict limit-exhaustion matcher (does NOT trip on generic "quota endpoint unavailable").
 const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limit(?:ed|s)?|quota[-_ ]?(?:exceeded|exhausted|reached)|usage[-_ ]?(?:limit|exhausted)|too many requests)\b/i;
 const KNOWN_SESSION_UPDATES = new Set([
@@ -185,7 +186,11 @@ export class AcpSession {
     }));
     this.owned.on("error", () => {
       if (this.owned.pid === undefined) {
-        options.onSpawnFailed?.();
+        try {
+          options.onSpawnFailed?.();
+        } catch {
+          // Never let a lock-write failure prevent session teardown.
+        }
       }
       this.stop("disconnected", "Agent process error");
     });
@@ -384,9 +389,12 @@ export class AcpSession {
     bytes: Buffer,
     requestId?: JsonRpcId,
   ): void {
+    const paramObj = isObject(params) ? params : undefined;
+    const isExplicitFatal = paramObj?.fatal === true;
+    const isExplicitRecoverable = paramObj?.recoverable === true;
     const classification: ExtensionClassification = requestId !== undefined
       ? "blocking"
-      : FATAL_EXTENSION_RE.test(method)
+      : isExplicitFatal || (FATAL_EXTENSION_RE.test(method) && !isExplicitRecoverable)
         ? "fatal"
         : "non-blocking";
 
@@ -481,6 +489,9 @@ export class AcpSession {
       this.handleUnknownExtension(value.method, value.params, frame.bytes);
     } else if (typeof value.method === "string" && rpcId(value.id) && value.id !== null) {
       if (value.method === incoming.update) return reject("invalid update envelope");
+      // Never allow an unsupported request to collide with a live or previously seen client request ID
+      if (this.requests.has(value.id)) return reject("duplicate request id");
+      this.requests.add(value.id);
       this.handleUnknownExtension(value.method, value.params, frame.bytes, value.id);
     } else {
       reject("unexpected JSON-RPC message");
@@ -609,6 +620,10 @@ export class AcpSession {
   private permissionRequest(request: JsonRpcId, params: unknown, bytes: Buffer): void {
     if (this.requests.has(request)) return this.violate(bytes, "duplicate permission request");
     this.requests.add(request);
+    if (this.permissions.size >= MAX_PENDING_PERMISSIONS) {
+      this.permissionResponse(request);
+      return this.violate(bytes, "too many pending permissions");
+    }
     if (validPayload(params, "RequestPermissionRequest")) {
       const { sessionId, toolCall, options } = params as RequestPermissionRequest;
       if (this.sessionId && sessionId === this.sessionId && this.finishPrompt &&

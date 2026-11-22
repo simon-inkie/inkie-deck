@@ -77,12 +77,19 @@ export function sanitizePathEnv(rawPath?: string): string {
   return parts.length > 0 ? parts.join(":") : "/usr/local/bin:/usr/bin:/bin";
 }
 
-export function statExecutableIdentity(executablePath: string): { dev: number; ino: number } {
+export interface ExecutableIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+}
+
+export function statExecutableIdentity(executablePath: string): ExecutableIdentity {
   const info = lstatSync(executablePath);
   if (!info.isFile()) {
     throw new LaunchFailure("unavailable", `Pinned executable '${executablePath}' is not a regular file.`);
   }
-  return { dev: info.dev, ino: info.ino };
+  return { dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs };
 }
 
 export function buildConstrainedProbeEnv(
@@ -316,7 +323,10 @@ export async function probeAgyVersion(
     });
     let stdout = "";
     let settled = false;
+    let groupCleaned = false;
     const cleanupGroup = () => {
+      if (groupCleaned) return;
+      groupCleaned = true;
       if (child.pid) signalGroup(child.pid, "SIGKILL");
     };
     const onAbort = () => {

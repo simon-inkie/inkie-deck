@@ -1,5 +1,6 @@
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -412,5 +413,151 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     });
     const hugeRes = await acpAction({ request: hugeReq, params: {}, context: {} } as never);
     expect((hugeRes as { init?: ResponseInit }).init?.status).toBe(413);
+  });
+
+  it("Round 3 (Majors 1, 3, 4, 6): missing/stale resume, in-home symlink & hardlink protection, in-place rewrite refusal, and locked-start cancellation", async () => {
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
+    const noResScript = join(root, "r3-nores.mjs");
+    writeFileSync(
+      noResScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-fresh" } });
+      `),
+    );
+
+    const reg = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [noResScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+
+    // Major 3a: resume: true with missing checkpoint fails fast instead of starting session/new
+    await expect(reg.start(agent, { resume: true })).rejects.toThrow(/No valid saved session checkpoint/);
+
+    // Major 3b: stale .acp-last-session is cleared when a non-resume agent starts
+    writeFileSync(join(agentHome, ".acp-last-session"), "stale-session-id\n");
+    await reg.start(agent);
+    expect(reg.lastSessionId(agent)).toBeUndefined();
+    await reg.stop(agent);
+
+    // Major 4: in-home symlink AND hard-linked .acp-last-session NEVER truncate their target file
+    const inHomeTarget = join(agentHome, "precious-notes.txt");
+    writeFileSync(inHomeTarget, "IN_HOME_SAFE");
+    symlinkSync(inHomeTarget, join(agentHome, ".acp-last-session"));
+
+    const resScript = join(root, "r3-res.mjs");
+    writeFileSync(
+      resScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-sym" } });
+      `),
+    );
+    const regSym = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [resScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    await regSym.start(agent);
+    await regSym.stop(agent);
+    expect(readFileSync(inHomeTarget, "utf8")).toBe("IN_HOME_SAFE");
+
+    // Hard link to in-home file also refused without truncation
+    rmSync(join(agentHome, ".acp-last-session"), { force: true });
+    linkSync(inHomeTarget, join(agentHome, ".acp-last-session"));
+    await regSym.start(agent);
+    await regSym.stop(agent);
+    expect(readFileSync(inHomeTarget, "utf8")).toBe("IN_HOME_SAFE");
+    rmSync(join(agentHome, ".acp-last-session"), { force: true });
+
+    // Major 6: in-place executable rewrite between probe and launch is refused
+    const fakeBin = join(root, "mutable-agy");
+    writeFileSync(fakeBin, "#!/bin/sh\necho 1.5.14\n", { mode: 0o755 });
+    const regRewrite = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: fakeBin, args: [] },
+      execVersion: () => {
+        writeFileSync(fakeBin, "#!/bin/sh\necho 1.5.14\n# rewritten in place\n", { mode: 0o755 });
+        return { status: 0, stdout: "1.5.14\n", stderr: "" };
+      },
+      listWindows: () => [],
+    });
+    await expect(regRewrite.start(agent)).rejects.toThrow(/changed between version probe and launch/);
+
+    // Major 1: Stop cancels an in-flight Start even when target previously had 'locked' status
+    writeFileSync(join(agentHome, ".runner.lock"), "{corrupt-json");
+    await reg.recover();
+    expect(reg.status(agent)?.state).toBe("locked");
+    rmSync(join(agentHome, ".runner.lock"), { force: true });
+
+    const slowProbe = join(root, "r3-slow-probe");
+    writeFileSync(slowProbe, "#!/bin/sh\nsleep 10\necho 1.5.14\n", { mode: 0o755 });
+    const regLocked = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: slowProbe, args: [] },
+      listWindows: () => [],
+    });
+    const startP = regLocked.start(agent);
+    await delay(60);
+    await regLocked.stop(agent);
+    await expect(startP).rejects.toThrow();
+  });
+
+  it("Round 3 (Majors 7 & 8): session/update:fatal terminates turn, recoverable stays non-blocking, duplicate RPC ID & permission cap enforced", async () => {
+    // Major 8: session/update:fatal is fatal, while recoverable: true error notification is non-blocking
+    const nestedFatalScript = join(root, "r3-nested-fatal.mjs");
+    writeFileSync(
+      nestedFatalScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-nf" } });
+        else if (msg.method === "session/prompt") {
+          send({ jsonrpc: "2.0", method: "_ext/error", params: { recoverable: true } });
+          setTimeout(() => {
+            send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s-nf", update: { sessionUpdate: "fatal", code: "x" } } });
+          }, 20);
+        }
+      `),
+    );
+    const nfSess = await AcpSession.start(
+      { executable: process.execPath, args: [nestedFatalScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root },
+    );
+    expect(await nfSess.prompt("go")).toBe("failed");
+    expect(nfSess.state.kind).toBe("failed");
+    const extLog = readFileSync(join(nfSess.records.directory, "extensions.ndjson"), "utf8");
+    expect(extLog).toContain('"extensionName":"_ext/error"');
+    expect(extLog).toContain('"classification":"non-blocking"');
+    expect(extLog).toContain('"extensionName":"session/update:fatal"');
+    expect(extLog).toContain('"classification":"fatal"');
+    await nfSess.close();
+
+    // Major 7: unsupported request colliding with live permission RPC ID is rejected (violation), and permission flood is capped
+    const floodPermScript = join(root, "r3-perm-cap.mjs");
+    writeFileSync(
+      floodPermScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-pc" } });
+        else if (msg.method === "session/prompt") {
+          // 1 live permission on id 10, then an unsupported request reusing id 10, then 22 more permissions exceeding cap + violationLimit
+          send({ jsonrpc: "2.0", id: 10, method: "session/request_permission", params: { sessionId: "s-pc", toolCall: { toolCallId: "t0", title: "T" }, options: [{ optionId: "y", name: "Y", kind: "allow_once" }] } });
+          send({ jsonrpc: "2.0", id: 10, method: "_ext/unknown_req", params: {} });
+          for (let i = 11; i < 35; i++) {
+            send({ jsonrpc: "2.0", id: i, method: "session/request_permission", params: { sessionId: "s-pc", toolCall: { toolCallId: "t" + i, title: "T" }, options: [{ optionId: "y", name: "Y", kind: "allow_once" }] } });
+          }
+        }
+      `),
+    );
+    const capSess = await AcpSession.start(
+      { executable: process.execPath, args: [floodPermScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root },
+    );
+    expect(await capSess.prompt("flood")).toBe("failed");
+    expect(capSess.state.kind).toBe("failed");
+    await capSess.close();
   });
 });

@@ -275,21 +275,21 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   }
 
   const latestBlock = blocks[blocks.length - 1];
-  const awaitingAgent = !tmuxView && startIndex + blocks.length === totalCount &&
+  const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
+  const awaitingAgent = !acpActive && !tmuxView && startIndex + blocks.length === totalCount &&
     latestBlock?.header.from === user;
-  const needsPane = tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);
+  const needsPane = !acpActive && tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);
   const pty = needsPane && runnerRegistry.handlesTerminal(agent);
   const ptyAllowed = pty && canWriteFromRequest(request, context);
   const pane = !needsPane ? undefined : pty
     ? ptyAllowed ? runnerRegistry.capture(agent) : undefined
     : captureTmuxPane(process.env, agent);
   const hint = pane === undefined ? null : classifyPaneHint(pane);
-  const runner = tmuxView && ptyAllowed && (isPtyOptedIn(process.env, agent) || runnerRegistry.canControl(agent))
+  const runner = !acpActive && tmuxView && ptyAllowed && (isPtyOptedIn(process.env, agent) || runnerRegistry.canControl(agent))
     ? runnerRegistry.status(agent) ?? { state: "not-started" as const }
     : undefined;
-  const tmux = tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
+  const tmux = !acpActive && tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
   const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
-  const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
   const acp = acpActive
     ? {
       status: acpRunnerRegistry.status(agent) ?? { state: "stopped" as const, code: null, exitedAt: 0 },

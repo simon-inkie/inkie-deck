@@ -96,7 +96,7 @@ export function AcpThreadView({
     return () => clearInterval(timer);
   }, [status.state, refresh]);
 
-  const postOp = useCallback(async (body: Record<string, unknown>) => {
+  const postOp = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     setErrorBanner(null);
     setBusyOp(true);
     try {
@@ -108,10 +108,14 @@ export function AcpThreadView({
       const payload = await res.json().catch(() => ({ ok: false, error: "Request failed." }));
       if (!res.ok || !payload.ok) {
         setErrorBanner(payload.error ?? "ACP operation failed.");
+        await refresh();
+        return false;
       }
       await refresh();
+      return true;
     } catch {
       setErrorBanner("Network error while calling ACP endpoint.");
+      return false;
     } finally {
       setBusyOp(false);
     }
@@ -126,10 +130,15 @@ export function AcpThreadView({
     if (!status.capabilities) return [];
     const caps: string[] = [];
     if (status.capabilities.loadSession) caps.push("loadSession");
-    const sc = status.capabilities.sessionCapabilities as Record<string, unknown> | undefined;
-    if (sc && typeof sc === "object") {
-      for (const k of Object.keys(sc)) {
-        if (sc[k]) caps.push(`session.${k}`);
+    for (const [group, prefix] of [
+      [status.capabilities.sessionCapabilities, "session"],
+      [status.capabilities.promptCapabilities, "prompt"],
+      [status.capabilities.mcpCapabilities, "mcp"],
+    ] as const) {
+      if (group && typeof group === "object") {
+        for (const [k, v] of Object.entries(group as Record<string, unknown>)) {
+          if (v) caps.push(`${prefix}.${k}`);
+        }
       }
     }
     return caps;
@@ -285,8 +294,9 @@ export function AcpThreadView({
             e.preventDefault();
             const text = promptText.trim();
             if (!text) return;
-            setPromptText("");
-            void postOp({ op: "prompt", text });
+            void postOp({ op: "prompt", text }).then((ok) => {
+              if (ok) setPromptText("");
+            });
           }}
           className="flex flex-col gap-2"
         >
