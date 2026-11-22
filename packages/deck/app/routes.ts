@@ -16,6 +16,7 @@ export default [
   // Read/write tmux send seam - both tmux homes POST here (send-keys v1).
   route("api/tmux-send", "routes/api.tmux-send.tsx"),
   route("api/runner", "routes/api.runner.tsx"),
+  route("api/acp", "routes/api.acp.tsx"),
   // Cron admin seam (read + write) - gated to the operator instance server-side.
   route("api/cron", "routes/api.cron.tsx"),
   // Thread-view load-older pagination (chunked lazy-load).

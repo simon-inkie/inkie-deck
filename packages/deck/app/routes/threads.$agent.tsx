@@ -79,6 +79,9 @@ import {
   buildPanePushPayload, buildPaneWakePayload, captureTmuxPane, wakeIdleAgent, pushMessageToIdleAgent,
 } from "~/lib/tmux.server";
 import { isPtyOptedIn, runnerRegistry, type SessionStatus } from "~/lib/runner/registry.server";
+import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
+import { antigravityUsageReading, isAcpOptedIn } from "~/lib/runner/acp-manifest";
+import { AcpThreadView } from "~/components/AcpThreadView";
 import { classifyPaneHint } from "~/lib/pane-hints";
 import { TmuxPane } from "~/components/TmuxPane";
 import { Button } from "~/components/ui/button";
@@ -286,6 +289,16 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     : undefined;
   const tmux = tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
   const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
+  const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
+  const acp = acpActive
+    ? {
+      status: acpRunnerRegistry.status(agent) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
+      events: acpRunnerRegistry.events(agent),
+      lastSessionId: acpRunnerRegistry.lastSessionId(agent) ?? null,
+      usageReading: antigravityUsageReading(),
+      canWrite: canWriteFromRequest(request, context),
+    }
+    : undefined;
 
   return {
     agent,
@@ -303,6 +316,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     hint,
     agentPaneHash,
     user,
+    acp,
   };
 }
 
@@ -1469,7 +1483,19 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         {/* Terminal mode - the agent's live pane replaces
             the message history. v2: the pane is read/write - sendTarget wires
             the compose row to send-keys into this agent's live session. */}
-        {tmux !== undefined ? (
+        {loaderData.acp !== undefined ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-4" data-testid="thread-acp-view">
+            <AcpThreadView
+              key={agent}
+              agent={agent}
+              initialStatus={loaderData.acp.status}
+              initialEvents={loaderData.acp.events}
+              initialLastSessionId={loaderData.acp.lastSessionId}
+              initialUsageReading={loaderData.acp.usageReading}
+              canWrite={loaderData.acp.canWrite}
+            />
+          </div>
+        ) : tmux !== undefined ? (
           <div className="flex min-h-0 flex-1 flex-col px-6 py-4" data-testid="thread-tmux-view">
             {tmux.runner && <RunnerControls key={agent} agent={agent} status={tmux.runner} />}
             <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={!tmux.pty || tmux.runner ? agent : undefined} hint={hint} />
