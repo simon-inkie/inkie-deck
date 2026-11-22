@@ -38,7 +38,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
     shuttingDown = true;
     server?.close();
     void runnerLifecycle.shutdown().catch(() => {
-      console.error("[prod] Could not stop the PTY runner safely.");
+      console.error("[prod] Could not stop the runner safely.");
       process.exitCode = 1;
     });
   });

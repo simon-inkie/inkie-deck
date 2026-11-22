@@ -182,7 +182,7 @@ done
     });
 
     await reg.start(agent);
-    expect(reg.status(agent)).toEqual({ state: "running" });
+    expect(reg.status(agent)).toMatchObject({ state: "running" });
 
     // Verify .runner.lock exists on disk and contains childPid
     expect(existsSync(lockFile)).toBe(true);
@@ -327,7 +327,7 @@ rl.on("line", (line) => {
     const extEvents = eventsEmitted.filter((e) => e.type === "unknown_extension_notification");
     expect(extEvents).toHaveLength(0);
 
-    // Verify structured event was logged to extensions.ndjson in run records
+    // Verify structured event was logged to extensions.ndjson in run records (sanitised, no raw params)
     const extLogPath = join(session.records.directory, "extensions.ndjson");
     expect(existsSync(extLogPath)).toBe(true);
     const content = readFileSync(extLogPath, "utf8").trim();
@@ -335,11 +335,189 @@ rl.on("line", (line) => {
     const parsed = JSON.parse(content);
     expect(parsed).toMatchObject({
       v: 1,
+      session: "s-ext-1",
       extensionName: "_custom_extension/event",
       method: "_custom_extension/event",
-      params: { payload: "foo" },
+      classification: "non-blocking",
+      paramsSummary: "keys:[payload]",
+    });
+    expect(content).not.toContain('"foo"');
+
+    await session.close();
+  });
+
+  it("Major 2: reserves starting state during negotiation, blocks concurrent second home, and aborts on stop()", async () => {
+    let releaseNegotiation!: () => void;
+    let abortedObserved = false;
+    const reg = new AcpRunnerRegistry(env, {
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      startSession: async (_adapter, options) => {
+        options.signal?.addEventListener("abort", () => {
+          abortedObserved = true;
+          releaseNegotiation();
+        });
+        await new Promise<void>((resolve) => { releaseNegotiation = resolve; });
+        throw new Error("aborted during negotiation");
+      },
     });
 
-    await session.cancel();
+    const startPromise = reg.start(agent);
+    await delay(50);
+
+    // Status is visibly 'starting' during negotiation
+    expect(reg.status(agent)).toMatchObject({ state: "starting" });
+
+    // Second home is refused as 'busy' (enforces one-ACP-agent limit)
+    await expect(reg.start(otherAgent)).rejects.toMatchObject({
+      name: "StartRefusal",
+      reason: "busy",
+    });
+
+    // stop() aborts the in-flight start cleanly
+    await reg.stop(agent);
+    await expect(startPromise).rejects.toThrow();
+    expect(abortedObserved).toBe(true);
+    expect(existsSync(lockFile)).toBe(false);
+  });
+
+  it("Major 3: pre-spawn failure releases .runner.lock cleanly and terminal negotiation does not publish running", async () => {
+    const missingDataRoot = join(root, "does-not-exist-root");
+    const reg = new AcpRunnerRegistry(env, {
+      dataRoot: missingDataRoot,
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+    });
+
+    // Pre-spawn AcpRecords construction fails because dataRoot does not exist
+    await expect(reg.start(agent)).rejects.toThrow();
+    // Lock must NOT be stranded on disk
+    expect(existsSync(lockFile)).toBe(false);
+
+    // Terminal negotiation ('unsupported') must reject start() and not leave status running
+    const reg2 = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      startSession: async () => ({
+        state: { kind: "unsupported" },
+        capabilities: {},
+        pid: undefined,
+        exited: Promise.resolve(),
+        exitInfo: { code: 0, signal: null },
+        close: async () => {},
+        cancel: async () => {},
+      } as unknown as AcpSession),
+    });
+
+    await expect(reg2.start(agent)).rejects.toThrowError(LaunchFailure);
+    expect(existsSync(lockFile)).toBe(false);
+    expect(reg2.status(agent)?.state).not.toBe("running");
+  });
+
+  it("Major 4: injects DECK_PTY_SESSION_ID ownership marker into ACP child environment", async () => {
+    const markerScript = join(root, "marker-agent.mjs");
+    writeFileSync(
+      markerScript,
+      `
+import readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } }) + "\\n");
+  } else if (msg.method === "session/new") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-marker" } }) + "\\n");
+  } else if (msg.method === "session/prompt") {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId: "s-marker", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: process.env.DECK_PTY_SESSION_ID || "MISSING" } } }
+    }) + "\\n");
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } }) + "\\n");
+  }
+});
+`,
+      { mode: 0o755 },
+    );
+
+    const events: any[] = [];
+    const session = await AcpSession.start(
+      { executable: process.execPath, args: [markerScript], version: "1.5.0" },
+      { cwd: root, dataRoot: root, sessionMarker: "11111111-2222-4333-8444-555555555555", onEvent: (e) => events.push(e) },
+    );
+    expect(await session.prompt("check marker")).toBe("completed");
+    expect(events.some((e) => e.view?.kind === "text" && e.view.excerpt === "11111111-2222-4333-8444-555555555555")).toBe(true);
+    await session.close();
+  });
+
+  it("Major 6 & 7: classifies blocking unknown request (-32601 + error card) and bounds extensions.ndjson", async () => {
+    const blockingScript = join(root, "blocking-ext-agent.mjs");
+    writeFileSync(
+      blockingScript,
+      `
+import readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin });
+let gotMethodNotFound = false;
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } }) + "\\n");
+  } else if (msg.method === "session/new") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-block" } }) + "\\n");
+  } else if (msg.method === "session/prompt") {
+    // Send a blocking unknown request with an id
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "ext/unknown_prompt", params: { secret: "top-secret-token" } }) + "\\n");
+    // Wait briefly for -32601 reply before completing turn
+    setTimeout(() => {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { stopReason: gotMethodNotFound ? "end_turn" : "refusal" } }) + "\\n");
+    }, 80);
+  } else if (msg.id === 99 && msg.error && msg.error.code === -32601) {
+    gotMethodNotFound = true;
+  }
+});
+`,
+      { mode: 0o755 },
+    );
+
+    const events: any[] = [];
+    const session = await AcpSession.start(
+      { executable: process.execPath, args: [blockingScript], version: "1.5.0" },
+      { cwd: root, dataRoot: root, extensionsBytes: 512, onEvent: (e) => events.push(e) },
+    );
+    const outcome = await session.prompt("trigger blocking ext");
+    expect(outcome).toBe("completed");
+
+    // Blocking request must emit plain fixed-text action card
+    expect(events.some((e) => e.class === "action" && e.type === "extension.blocking" && e.title === "Something went wrong")).toBe(true);
+
+    // extensions.ndjson must log classification=blocking and MUST NOT contain raw secret value
+    const extLogPath = join(session.records.directory, "extensions.ndjson");
+    const content = readFileSync(extLogPath, "utf8");
+    expect(content).toContain('"classification":"blocking"');
+    expect(content).not.toContain("top-secret-token");
+
+    await session.close();
+  });
+
+  it("Major 1: entry.server runnerLifecycle delegates recover and shutdown to acpRunnerRegistry", async () => {
+    const entry = await import("../../app/entry.server.js");
+    const { acpRunnerRegistry } = await import("../../app/lib/runner/acp-registry.server.js");
+    const { runnerRegistry } = await import("../../app/lib/runner/registry.server.js");
+    const recoverAcp = vi.spyOn(acpRunnerRegistry, "recover").mockResolvedValue();
+    const recoverPty = vi.spyOn(runnerRegistry, "recover").mockResolvedValue();
+    const shutdownAcp = vi.spyOn(acpRunnerRegistry, "shutdown").mockResolvedValue();
+    const shutdownPty = vi.spyOn(runnerRegistry, "shutdown").mockResolvedValue();
+    try {
+      await entry.runnerLifecycle.recover();
+      expect(recoverAcp).toHaveBeenCalledTimes(1);
+      expect(recoverPty).toHaveBeenCalledTimes(1);
+
+      await entry.runnerLifecycle.shutdown();
+      expect(shutdownAcp).toHaveBeenCalledTimes(1);
+      expect(shutdownPty).toHaveBeenCalledTimes(1);
+    } finally {
+      recoverAcp.mockRestore();
+      recoverPty.mockRestore();
+      shutdownAcp.mockRestore();
+      shutdownPty.mockRestore();
+    }
   });
 });

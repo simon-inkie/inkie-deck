@@ -4,10 +4,15 @@ import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import { ServerRouter, type EntryContext } from "react-router";
 import { runnerRegistry } from "./lib/runner/registry.server.js";
+import { acpRunnerRegistry } from "./lib/runner/acp-registry.server.js";
 
 export const runnerLifecycle = {
-  recover: () => runnerRegistry.recover(),
-  shutdown: () => runnerRegistry.shutdown(),
+  recover: async () => {
+    await Promise.all([runnerRegistry.recover(), acpRunnerRegistry.recover()]);
+  },
+  shutdown: async () => {
+    await Promise.all([runnerRegistry.shutdown(), acpRunnerRegistry.shutdown()]);
+  },
 };
 
 export const streamTimeout = 5_000;

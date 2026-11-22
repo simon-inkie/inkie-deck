@@ -42,21 +42,25 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
   });
 
   describe("Semver parsing and floor comparison", () => {
-    it("parses valid semver versions", () => {
-      expect(parseSemver("1.5.0")).toEqual({ major: 1, minor: 5, patch: 0 });
-      expect(parseSemver("v1.5.14")).toEqual({ major: 1, minor: 5, patch: 14 });
-      expect(parseSemver("  2.0.1-beta.1  ")).toEqual({ major: 2, minor: 0, patch: 1 });
+    it("parses valid semver versions and rejects leading zeros", () => {
+      expect(parseSemver("1.5.0")).toEqual({ major: 1, minor: 5, patch: 0, prerelease: [] });
+      expect(parseSemver("v1.5.14")).toEqual({ major: 1, minor: 5, patch: 14, prerelease: [] });
+      expect(parseSemver("  2.0.1-beta.1  ")).toEqual({ major: 2, minor: 0, patch: 1, prerelease: ["beta", "1"] });
       expect(parseSemver("invalid")).toBeNull();
       expect(parseSemver("1.5")).toBeNull();
+      expect(parseSemver("01.5.0")).toBeNull();
+      expect(parseSemver("1.5.0-01")).toBeNull();
     });
 
-    it("compares semver versions against floor", () => {
+    it("compares semver versions against floor including prerelease precedence", () => {
       expect(compareSemver("1.5.0", "1.5.0")).toBe(0);
       expect(compareSemver("1.5.14", "1.5.0")).toBe(1);
       expect(compareSemver("1.6.0", "1.5.0")).toBe(1);
       expect(compareSemver("2.0.0", "1.5.0")).toBe(1);
       expect(compareSemver("1.4.9", "1.5.0")).toBe(-1);
       expect(compareSemver("0.9.0", "1.5.0")).toBe(-1);
+      expect(compareSemver("1.5.0-rc.1", "1.5.0")).toBe(-1);
+      expect(compareSemver("1.5.1-rc.1", "1.5.0")).toBe(1);
     });
   });
 
@@ -120,14 +124,43 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
       expect(resolved).toBe(binPath);
     });
 
-    it("resolves executable from PATH", () => {
+    it("resolves executable from trusted absolute PATH and rejects relative PATH or agent-home binaries", () => {
       const binDir = join(tempDir, "bin");
       mkdirSync(binDir, { recursive: true });
       const binPath = join(binDir, "agy");
       writeFileSync(binPath, "#!/bin/sh\necho 1.5.14\n", { mode: 0o755 });
 
-      const resolved = resolveAcpExecutable("agy", { PATH: binDir }, tempDir);
+      const resolved = resolveAcpExecutable("agy", { PATH: binDir }, agentsHome);
       expect(resolved).toBe(binPath);
+
+      // Major 5 guard: reject relative PATH entries like '.'
+      expect(() => resolveAcpExecutable("agy", { PATH: "." }, agentsHome)).toThrowError(LaunchFailure);
+
+      // Major 5 guard: reject executable inside agent home
+      const homeBin = join(agentsHome, "agy");
+      writeFileSync(homeBin, "#!/bin/sh\necho 1.5.14\n", { mode: 0o755 });
+      expect(() => resolveAcpExecutable("agy", { PATH: agentsHome }, agentsHome)).toThrowError(LaunchFailure);
+    });
+
+    it("runs version probe with constrained environment excluding Deck secrets", () => {
+      let seenEnv: NodeJS.ProcessEnv | undefined;
+      checkAgyVersion("dummy", "1.5.0", {
+        env: {
+          PATH: "/usr/bin",
+          HOME: tempDir,
+          DEEPGRAM_API_KEY: "secret-key",
+          DECK_TOKEN: "secret-token",
+          MC_ACP_RUNNER: "1",
+        },
+        exec: (_cmd, _args, opts) => {
+          seenEnv = opts?.env;
+          return { status: 0, stdout: "1.5.14\n", stderr: "" };
+        },
+      });
+      expect(seenEnv?.PATH).toBe("/usr/bin");
+      expect(seenEnv?.DEEPGRAM_API_KEY).toBeUndefined();
+      expect(seenEnv?.DECK_TOKEN).toBeUndefined();
+      expect(seenEnv?.MC_ACP_RUNNER).toBeUndefined();
     });
 
     it("throws LaunchFailure if not executable or not in PATH", () => {

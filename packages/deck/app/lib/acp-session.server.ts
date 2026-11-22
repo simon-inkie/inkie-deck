@@ -7,11 +7,12 @@ import type {
   AgentCapabilities, AnyMessage, AnyResponse, ClientConnection, JsonRpcId, RequestPermissionRequest,
   SessionNotification, ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
-import { AcpRecords, type RecordOptions } from "./acp-records.server";
+import { AcpRecords, summarizeExtensionParams, type RecordOptions } from "./acp-records.server";
 import { isObject, LineFramer, promptSettlement, responseEnvelope, rpcId, validPayload } from "./acp-wire.server";
 import { createEventSource, displayText, printableId, projectDisplay } from "./deck-event";
 import type { DeckEvent, DisplayProjection, Outcome } from "./deck-event";
-import { antigravityUsageReading, type UsageReading } from "./runner/acp-manifest";
+import { antigravityUsageReading, type ExtensionClassification, type UsageReading } from "./runner/acp-manifest";
+import { ptySessionEnv } from "./runner/lock.server";
 
 export type AcpAdapter = {
   executable: string;
@@ -28,7 +29,11 @@ type Options = RecordOptions & {
   maxLineBytes?: number;
   violationLimit?: number;
   cancelMs?: number;
+  sessionMarker?: string;
+  resumeSessionId?: string;
+  signal?: AbortSignal;
   onEvent?: (event: DeckEvent) => void;
+  onBeforeSpawn?: () => void;
   onSpawn?: (pid: number) => void;
 };
 
@@ -63,14 +68,19 @@ const incoming = methods.client.session;
 const environment = ["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"];
 const explicitDeckVariables = new Set(["INBOX_ROOT", "DATA_ROOT", "GOOGLE_GENERATIVE_AI_API_KEY"]);
 const deckVariable = /^(?:MC_|DECK_|INKIE_|DEEPGRAM_)/i;
+const FATAL_EXTENSION_RE = /(?:^|\/)(?:error|fatal)$/i;
+const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limit|quota|limit[-_ ]?exceeded|exhausted|too many requests|429)\b/i;
 let generation = 0;
 
-function childEnvironment(adapter: AcpAdapter): NodeJS.ProcessEnv {
+function childEnvironment(adapter: AcpAdapter, sessionMarker?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.create(null);
   for (const key of [...environment, ...(adapter.environment ?? [])]) {
     if (deckVariable.test(key) || explicitDeckVariables.has(key)) continue;
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
+  }
+  if (sessionMarker) {
+    env[ptySessionEnv] = sessionMarker;
   }
   return env;
 }
@@ -78,6 +88,20 @@ function childEnvironment(adapter: AcpAdapter): NodeJS.ProcessEnv {
 function positive(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new Error(`Invalid ${label}`);
   return value;
+}
+
+function isAuthRequiredError(error: unknown): boolean {
+  if (!isObject(error)) return false;
+  if (error.code === -32000) return true;
+  if (typeof error.message === "string" && /auth(?:entication)?\s+required/i.test(error.message)) return true;
+  return false;
+}
+
+function isLimitError(error: unknown): boolean {
+  if (!isObject(error)) return false;
+  if (error.code === 429 || error.code === -32029) return true;
+  if (typeof error.message === "string" && LIMIT_ERROR_RE.test(error.message)) return true;
+  return false;
 }
 
 export class AcpSession {
@@ -101,9 +125,13 @@ export class AcpSession {
   private makeEvent = createEventSource({ kind: "session", generation: this.generation }, randomUUID);
   private finishPrompt?: (outcome: Outcome) => void;
   private turnQueue: Promise<unknown> = Promise.resolve();
+  private queuedPrompts = 0;
   private cancelTimer?: NodeJS.Timeout;
   private cancelling = false;
   private groupStopped = false;
+  private processExit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
+  private authRequiredFlag = false;
+  private lastContextUsage?: { used: number; size: number };
 
   private constructor(readonly adapter: AcpAdapter, private readonly options: Options) {
     if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("ACP needs a POSIX process group");
@@ -111,14 +139,22 @@ export class AcpSession {
     this.framer = new LineFramer(positive(options.maxLineBytes ?? 1024 * 1024, "ACP line limit"));
     this.violationLimit = positive(options.violationLimit ?? 5, "ACP violation limit");
     this.cancelMs = positive(options.cancelMs ?? 1000, "ACP cancellation timeout");
+    // Construct records BEFORE onBeforeSpawn and spawn so pre-spawn failures never strand the runner lock.
     this.records = new AcpRecords(options.dataRoot, `acp-${randomUUID()}-${this.generation}`, options);
+    options.onBeforeSpawn?.();
     this.owned = spawn(adapter.executable, adapter.args, {
-      cwd: options.cwd, env: childEnvironment(adapter), detached: true, stdio: ["pipe", "pipe", "ignore"],
+      cwd: options.cwd, env: childEnvironment(adapter, options.sessionMarker), detached: true, stdio: ["pipe", "pipe", "ignore"],
     });
     if (this.owned.pid !== undefined) options.onSpawn?.(this.owned.pid);
-    this.closePromise = new Promise((resolve) => this.owned.once("close", () => resolve()));
+    this.closePromise = new Promise((resolve) => this.owned.once("close", (code, signal) => {
+      this.processExit = { code, signal };
+      resolve();
+    }));
     this.owned.on("error", () => this.stop("disconnected", "Agent process error"));
-    this.owned.once("exit", () => this.killGroup());
+    this.owned.once("exit", (code, signal) => {
+      this.processExit = { code, signal };
+      this.killGroup();
+    });
     this.owned.stdin.on("error", () => this.stop("disconnected", "Agent stdin closed"));
     let controller!: ReadableStreamDefaultController<AnyMessage>;
     const readable = new ReadableStream<AnyMessage>({ start: (stream) => { controller = stream; } });
@@ -134,26 +170,47 @@ export class AcpSession {
   }
 
   static async start(adapter: AcpAdapter, options: Options): Promise<AcpSession> {
+    if (options.signal?.aborted) {
+      throw new Error("ACP session start aborted before spawn");
+    }
     const owner = new AcpSession(adapter, options);
+    const onAbort = () => owner.stop("disconnected", "ACP session start cancelled");
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     const startupTimer = setTimeout(() => owner.stop("failed", "ACP session setup timed out"), 5000);
     try {
       const negotiated = await owner.connection.agent.request(initialize, {
         protocolVersion: PROTOCOL_VERSION, clientCapabilities: {},
       });
-      if (negotiated.protocolVersion !== PROTOCOL_VERSION) {
+      if (options.signal?.aborted) {
+        owner.stop("disconnected", "ACP session start cancelled");
+      } else if (negotiated.protocolVersion !== PROTOCOL_VERSION) {
         owner.stop("unsupported", "ACP protocol version");
       } else {
         owner.advertised = negotiated.agentCapabilities ?? {};
         if (options.requireCapability === "session/load" && !owner.advertised.loadSession) {
           owner.stop("unsupported", options.requireCapability);
+        } else if (options.resumeSessionId && owner.supportsResume()) {
+          const resumeMethod = owner.advertised.sessionCapabilities?.resume ? "session/resume" : "session/load";
+          await owner.connection.agent.request(resumeMethod as typeof session.new, {
+            cwd: options.cwd,
+            sessionId: options.resumeSessionId,
+            mcpServers: [],
+          } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
         } else {
           await owner.connection.agent.request(session.new, { cwd: options.cwd, mcpServers: [] });
         }
       }
-    } catch {
-      owner.stop("failed", "ACP session setup failed");
+    } catch (error) {
+      if (isAuthRequiredError(error)) {
+        owner.authRequiredFlag = true;
+        owner.emitAuthRequired();
+        owner.stop("failed", "Authentication required");
+      } else if (!terminal(owner.current)) {
+        owner.stop("failed", "ACP session setup failed");
+      }
     } finally {
       clearTimeout(startupTimer);
+      options.signal?.removeEventListener("abort", onAbort);
     }
     if (terminal(owner.current)) await owner.closePromise;
     return owner;
@@ -163,13 +220,28 @@ export class AcpSession {
   get capabilities(): AgentCapabilities { return structuredClone(this.advertised); }
   get pid(): number | undefined { return this.owned.pid; }
   get exited(): Promise<void> { return this.closePromise; }
+  get exitInfo(): { code: number | null; signal: NodeJS.Signals | null } { return { ...this.processExit }; }
+  get activeSessionId(): string | undefined { return this.sessionId; }
+  get queuedCount(): number { return this.queuedPrompts; }
+  get authRequired(): boolean { return this.authRequiredFlag; }
+  get contextUsage(): { used: number; size: number } | undefined {
+    return this.lastContextUsage ? { ...this.lastContextUsage } : undefined;
+  }
+
+  supportsResume(): boolean {
+    return Boolean(this.advertised.sessionCapabilities?.resume || this.advertised.loadSession);
+  }
 
   usageReading(): UsageReading {
     return antigravityUsageReading();
   }
 
   prompt(text: string): Promise<Outcome> {
-    const turn = this.turnQueue.then(() => this.runPrompt(text));
+    this.queuedPrompts += 1;
+    const turn = this.turnQueue.then(async () => {
+      this.queuedPrompts = Math.max(0, this.queuedPrompts - 1);
+      return this.runPrompt(text);
+    });
     this.turnQueue = turn;
     return turn;
   }
@@ -197,6 +269,19 @@ export class AcpSession {
   async close(): Promise<void> {
     this.stop("disconnected", "Session closed");
     await this.closePromise;
+  }
+
+  private emitAuthRequired(): void {
+    try {
+      this.emit({
+        class: "action",
+        type: "auth.required",
+        title: "Sign in required",
+        view: { kind: "text", excerpt: "Sign in with `agy acp --login` in a terminal." },
+      });
+    } catch {
+      // Best-effort event emission during teardown.
+    }
   }
 
   private async runPrompt(text: string): Promise<Outcome> {
@@ -235,6 +320,60 @@ export class AcpSession {
     }
   }
 
+  private handleUnknownExtension(
+    method: string,
+    params: unknown,
+    bytes: Buffer,
+    requestId?: JsonRpcId,
+  ): void {
+    const classification: ExtensionClassification = requestId !== undefined
+      ? "blocking"
+      : FATAL_EXTENSION_RE.test(method)
+        ? "fatal"
+        : "non-blocking";
+
+    this.records.frame("in", bytes);
+    this.records.unknownExtension({
+      v: 1,
+      ts: new Date().toISOString(),
+      session: this.sessionId ?? null,
+      extensionName: method,
+      method,
+      classification,
+      paramsSummary: summarizeExtensionParams(params),
+    });
+
+    if (requestId !== undefined) {
+      // Reply method-not-found so the agent does not hang waiting on an unsupported request.
+      void this.send({
+        jsonrpc: "2.0",
+        id: requestId,
+        error: { code: -32601, message: "Method not found" },
+      }).catch(() => this.stop("disconnected", "Could not reply to unknown request"));
+    }
+
+    if (classification === "blocking" || classification === "fatal") {
+      try {
+        this.emit({
+          class: "action",
+          type: "extension.blocking",
+          title: "Something went wrong",
+          view: {
+            kind: "text",
+            excerpt: classification === "blocking"
+              ? "The agent sent an unsupported request that blocked progress."
+              : "An unsupported agent message interrupted the turn.",
+          },
+        });
+      } catch {
+        // Ignore emit error during shutdown.
+      }
+      if (classification === "fatal" && this.finishPrompt) {
+        this.settle("failed", "Unsupported fatal agent message");
+      }
+    }
+  }
+
   private receive(fromGeneration: number, frame: Frame): void {
     const reject = (issue: string) => this.violate(frame.bytes, issue);
     if (fromGeneration !== this.generation) return reject("stale generation");
@@ -256,19 +395,15 @@ export class AcpSession {
     } else if (value.method === incoming.requestPermission && rpcId(value.id) && value.id !== null) {
       this.permissionRequest(value.id, value.params, frame.bytes);
     } else if (typeof value.method === "string" && !("id" in value)) {
+      if (value.method === incoming.requestPermission) return reject("invalid permission request envelope");
       if (this.adapter.knownExtensions?.includes(value.method)) {
         this.records.frame("in", frame.bytes);
         return;
       }
-      this.records.frame("in", frame.bytes);
-      this.records.unknownExtension({
-        v: 1,
-        ts: new Date().toISOString(),
-        session: this.sessionId,
-        extensionName: value.method,
-        method: value.method,
-        params: value.params,
-      });
+      this.handleUnknownExtension(value.method, value.params, frame.bytes);
+    } else if (typeof value.method === "string" && rpcId(value.id) && value.id !== null) {
+      if (value.method === incoming.update) return reject("invalid update envelope");
+      this.handleUnknownExtension(value.method, value.params, frame.bytes, value.id);
     } else {
       reject("unexpected JSON-RPC message");
     }
@@ -278,8 +413,9 @@ export class AcpSession {
     const method = this.pending.get(response.id);
     if (!method) return this.violate(bytes, "unknown or already answered response id");
     if (method === session.prompt) {
+      const errorObj = "error" in response ? response.error : undefined;
       const result = "result" in response ? promptSettlement(response.result)
-        : { outcome: "failed" as const, reason: "JSON-RPC error" };
+        : { outcome: "failed" as const, reason: isLimitError(errorObj) ? "Usage limit reached" : "JSON-RPC error" };
       if (!this.finishPrompt || !result || this.permissions.size) return this.violate(bytes, "invalid prompt response or outstanding permission");
       this.pending.delete(response.id);
       if (result.outcome === "invalid") {
@@ -289,6 +425,14 @@ export class AcpSession {
       } else {
         this.records.frame("in", bytes);
         this.wire.enqueue(response);
+        if (errorObj && isLimitError(errorObj)) {
+          this.emit({
+            class: "action",
+            type: "usage.exhausted",
+            title: "Usage limit reached",
+            view: { kind: "text", excerpt: "Agent turn failed because a usage or rate limit was reached." },
+          });
+        }
         this.settle(result.outcome, result.reason);
       }
       return;
@@ -297,12 +441,20 @@ export class AcpSession {
       if (method === initialize && !validPayload(response.result, "InitializeResponse")) {
         return this.violate(bytes, "invalid initialise response");
       }
-      if (method === session.new) {
+      if (method === session.new || method === "session/resume" || method === "session/load") {
         const result = response.result;
-        if (!isObject(result) || !validPayload(result, "NewSessionResponse") || !printableId(result.sessionId, 128)) {
-          return this.violate(bytes, "invalid new session response");
+        if (method === session.new) {
+          if (!isObject(result) || !validPayload(result, "NewSessionResponse") || !printableId(result.sessionId, 128)) {
+            return this.violate(bytes, "invalid new session response");
+          }
+          this.sessionId = result.sessionId;
+        } else {
+          const resumedId = isObject(result) && typeof result.sessionId === "string" && printableId(result.sessionId, 128)
+            ? result.sessionId
+            : this.options.resumeSessionId;
+          if (!resumedId) return this.violate(bytes, "invalid resume session response");
+          this.sessionId = resumedId;
         }
-        this.sessionId = result.sessionId;
         this.makeEvent = createEventSource({ kind: "session", session: this.sessionId, generation: this.generation }, randomUUID);
         this.current = reduce(this.current, { kind: "ready" });
       }
@@ -335,6 +487,21 @@ export class AcpSession {
           excerpt += (excerpt ? "; " : "") + displayText(content, 500 - excerpt.length);
         }
         this.emit({ class: "happened", type: "plan.updated", title: "Plan updated", view: { kind: "text", excerpt } });
+        break;
+      }
+      case "usage_update": {
+        const used = typeof update.used === "number" && Number.isFinite(update.used) ? update.used : undefined;
+        const size = typeof update.size === "number" && Number.isFinite(update.size) ? update.size : undefined;
+        if (used !== undefined && size !== undefined && size > 0) {
+          this.lastContextUsage = { used, size };
+          const pct = Math.min(100, Math.round((used / size) * 100));
+          this.emit({
+            class: "happened",
+            type: "usage.updated",
+            title: "Context usage",
+            view: { kind: "text", excerpt: `Context: ${used} / ${size} tokens (${pct}%)` },
+          });
+        }
         break;
       }
     }
