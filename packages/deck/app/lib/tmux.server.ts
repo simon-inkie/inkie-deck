@@ -134,13 +134,29 @@ function runTmux(args: string[]): string | undefined {
  * Names that fail the ROSTER regex are dropped (they could not be captured
  * anyway - the validate-before-subprocess gate would reject them).
  */
-export function listTmuxWindows(env: NodeJS.ProcessEnv): string[] {
-  const out = runTmux(buildListArgs(resolveTmuxSession(env)));
+export function listTmuxWindows(env: NodeJS.ProcessEnv, requireKnown = false): string[] {
+  const args = buildListArgs(resolveTmuxSession(env));
+  const out = requireKnown ? listTmuxForOwnership(args) : runTmux(args);
   if (out === undefined) return [];
   return out
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "" && isValidWindowName(l));
+}
+
+function listTmuxForOwnership(args: string[]): string {
+  try {
+    return execFileSync("tmux", args, {
+      encoding: "utf8", timeout: TMUX_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, LC_ALL: "C" },
+    });
+  } catch (error) {
+    const result = error as { status?: number; stderr?: string };
+    if (result.status === 1 && /^(?:no server running on .+|no sessions|can't find session: .+|error connecting to .+ \(No such file or directory\))\s*$/.test(result.stderr ?? "")) {
+      return "";
+    }
+    throw new Error("Could not verify tmux window ownership.");
+  }
 }
 
 /**
@@ -554,7 +570,7 @@ function findPromptLineIndex(lines: string[]): number {
  * draft ending in a glyph would read as a clean composer and an unsafe send
  * would be authorised. Returns -1 when no line opens a composer.
  */
-function findComposerOpenIndex(lines: string[]): number {
+export function findComposerOpenIndex(lines: string[]): number {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (line === undefined) continue;
@@ -650,7 +666,7 @@ function composerIsClean(viewport: string, rawViewport?: string): boolean {
 
 const COMPOSER_LOWER_BORDER_RE = /^\s*[─━═╌╍┄┅]{3,}\s*$/u;
 
-function findComposerLowerBorderIndex(lines: string[], promptIndex: number): number {
+export function findComposerLowerBorderIndex(lines: string[], promptIndex: number): number {
   for (let index = promptIndex + 1; index < lines.length; index++) {
     if (COMPOSER_LOWER_BORDER_RE.test(lines[index] ?? "")) return index;
   }
@@ -881,6 +897,11 @@ export function paneAcceptsSendLive(env: NodeJS.ProcessEnv, window: string): boo
 
 export type WakeResult = { woke: boolean; reason: "sent" | "active" | "send-failed" };
 
+export function buildPaneWakePayload(fromUser: string): string {
+  const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
+  return `[inbox from ${tag}] new message in Inkie Deck, check your inbox  [reply via inbox: inbox reply ${tag}]`;
+}
+
 /**
  * Wake an agent so it picks up a just-delivered Deck message at once. The
  * #78 Monitor-drop made hook-inject the sole DM surface, and hook-inject only
@@ -916,9 +937,7 @@ export async function wakeIdleAgent(
   fromUser: string
 ): Promise<WakeResult> {
   if (!paneAcceptsSendLive(env, window)) return { woke: false, reason: "active" };
-  const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
-  const text = `[inbox from ${tag}] new message in Inkie Deck, check your inbox  [reply via inbox: inbox reply ${tag}]`;
-  const res = await sendKeysToWindow(env, window, text);
+  const res = await sendKeysToWindow(env, window, buildPaneWakePayload(fromUser));
   return res.status === "submitted"
     ? { woke: true, reason: "sent" }
     : { woke: false, reason: "send-failed" };
@@ -1165,6 +1184,11 @@ export function buildPanePayload(
   );
 }
 
+export function buildPanePushPayload(fromUser: string, text: string, dictated: boolean): string {
+  const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
+  return buildPanePayload(tag, resolveAndRewriteAttachmentPaths(text), [...text].length, dictated);
+}
+
 export async function pushMessageToIdleAgent(
   env: NodeJS.ProcessEnv,
   window: string,
@@ -1174,18 +1198,7 @@ export async function pushMessageToIdleAgent(
   driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
 ): Promise<PushResult> {
   try {
-    const tag = isValidWindowName(fromUser) ? fromUser : "inkie-deck";
-    // Rewrite web-relative /attachments/ image refs to real filesystem paths
-    // BEFORE the length cap (the absolute path is longer than the URL, so it
-    // must be counted against the cap). Degrades to the unchanged text if
-    // ATTACHMENTS_ROOT is unset (never crashes the push).
-    const body = resolveAndRewriteAttachmentPaths(text);
-    // Report the PRE-rewrite length in CODE POINTS: that is what the recipient
-    // sees in the stored thread when they follow the nudge and read it, and it
-    // is the unit both a human reader and the Python tooling use. The cap keeps
-    // UTF-16 units; see buildPanePayload on why these are two different numbers.
-    const safe = buildPanePayload(tag, body, [...text].length, dictated);
-    return await sendKeysToWindow(env, window, safe, driver);
+    return await sendKeysToWindow(env, window, buildPanePushPayload(fromUser, text, dictated), driver);
   } catch {
     return {
       status: "not-submitted",

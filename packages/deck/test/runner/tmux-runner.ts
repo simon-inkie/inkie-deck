@@ -10,14 +10,13 @@ import {
   buildCaptureViewportArgs, buildSendKeysNamedArgs, buildSendKeysTextArgs,
   SHELL_PROMPT_RE, type PaneKey,
 } from "../../app/lib/tmux.server.js";
-import { fixtureCommand, fixtureEnvironment } from "./fixture-command.js";
-import { FixtureRunner, type ExitInfo, type SessionSpec, type WriteResult } from "./runner.js";
+import { BaseRunner, type ExitInfo, type SessionSpec, type WriteResult } from "../../app/lib/runner/runner.js";
+import { fixtureEnvironment } from "./fixture-command.js";
 
 const session = "fixture";
 const window = "agent";
 const target = `=${session}:=${window}`;
 const startupMs = 10_000;
-const readinessMs = 10_000;
 const commandMs = 2000;
 const exitPollMs = 15;
 const exitProbeMs = 500;
@@ -52,7 +51,7 @@ function decodeOutput(text: string): Buffer {
   ), "latin1");
 }
 
-export class TmuxRunner extends FixtureRunner {
+export class TmuxRunner extends BaseRunner {
   readonly kind = "tmux";
   private readonly socket: string;
   private readonly statusFile: string;
@@ -64,9 +63,10 @@ export class TmuxRunner extends FixtureRunner {
   private stopTimer?: NodeJS.Timeout;
   private drainOutput = false;
   private disposing = false;
+  private readinessTail = "";
 
   constructor(private readonly directory: string, private readonly tmux = commands) {
-    super(readinessMs);
+    super();
     this.socket = join(directory, "tmux.sock");
     this.statusFile = join(directory, "fixture-exit");
     this.env = fixtureEnvironment(directory);
@@ -94,7 +94,7 @@ export class TmuxRunner extends FixtureRunner {
   }
 
   protected async start(spec: SessionSpec): Promise<number> {
-    const { file, args, env } = fixtureCommand(this.directory, spec);
+    const { command, args, cwd, env } = spec;
     const deadline = performance.now() + startupMs;
     this.server = track(this.tmux.spawn("tmux", ["-D", "-S", this.socket, "-f", "/dev/null", "-u"], {
       cwd: this.directory, env, stdio: "ignore",
@@ -104,10 +104,10 @@ export class TmuxRunner extends FixtureRunner {
       return true;
     });
     const control = this.tmux.spawn("tmux", ["-N", "-S", this.socket, "-u", "-C", "new-session",
-      "-s", session, "-n", window, "-c", this.directory,
+      "-s", session, "-n", window, "-c", cwd,
       "-x", String(spec.cols ?? 80), "-y", String(spec.rows ?? 24),
       "/usr/bin/env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
-      process.execPath, exitWrapper, this.statusFile, file, ...args,
+      process.execPath, exitWrapper, this.statusFile, command, ...args,
     ], { env, stdio: ["pipe", "pipe", "ignore"] });
     this.control = track(control);
     control.stdin.on("error", () => {});
@@ -136,7 +136,11 @@ export class TmuxRunner extends FixtureRunner {
     };
     lines.on("line", (line) => {
       const output = /^%output %\d+ (.*)$/.exec(line);
-      if (output) this.data(decodeOutput(output[1]!));
+      if (!output) return;
+      const chunk = decodeOutput(output[1]!);
+      const text = this.readinessTail + chunk.toString("ascii");
+      this.data(chunk, text.includes("FIXTURE READY\r\n"));
+      this.readinessTail = text.slice(-32);
     });
     const pid = await this.untilStarted(control, deadline, "find the fixture pane", async () => {
       const recorded = this.readExit();

@@ -45,6 +45,17 @@ def state_root() -> Path:
     ).resolve()
 
 
+def agent_opts_into_pty(home: Path) -> bool:
+    lock_file = home / ".runner.lock"
+    runner_file = home / ".runner"
+    try:
+        if lock_file.exists() or lock_file.is_symlink():
+            return True
+        return runner_file.is_file() and runner_file.read_text(encoding="utf-8").strip() == "pty"
+    except (OSError, UnicodeError):
+        return True
+
+
 def validate_agent(agent: str) -> Path:
     if not AGENT_RE.fullmatch(agent):
         raise SwitchError("invalid agent name")
@@ -52,6 +63,8 @@ def validate_agent(agent: str) -> Path:
     home = (root / agent).resolve()
     if home.parent != root or not home.is_dir():
         raise SwitchError("agent home does not exist")
+    if agent_opts_into_pty(home):
+        raise SwitchError(f"{agent} opted into the PTY runner; provider switch refused")
     return home
 
 

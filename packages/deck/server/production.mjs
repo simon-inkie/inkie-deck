@@ -12,6 +12,7 @@ const [{ default: express }, { default: compression }, { default: morgan }, { cr
   ]);
 
 const build = await import(pathToFileURL(path.resolve(process.argv[2] ?? "build/server/index.js")).href);
+const { runnerLifecycle } = build.entry.module;
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || "4242");
 const app = express();
@@ -29,10 +30,23 @@ app.all("*", createRequestHandler({
   getLoadContext: (request) => ({ socketAddress: request.socket.remoteAddress }),
 }));
 
-warnNetworkBind("prod", host);
-const server = app.listen(port, host, () => {
-  console.log(`[prod] listening on ${host}, port ${server.address().port}`);
-});
+let server;
+let shuttingDown = false;
 for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.once(signal, () => server.close());
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    server?.close();
+    void runnerLifecycle.shutdown().catch(() => {
+      console.error("[prod] Could not stop the PTY runner safely.");
+      process.exitCode = 1;
+    });
+  });
+}
+await runnerLifecycle.recover();
+if (!shuttingDown) {
+  warnNetworkBind("prod", host);
+  server = app.listen(port, host, () => {
+    console.log(`[prod] listening on ${host}, port ${server.address().port}`);
+  });
 }

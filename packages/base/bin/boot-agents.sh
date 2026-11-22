@@ -580,6 +580,17 @@ if [[ "${BOOT_AGENTS_LIB_ONLY:-0}" == "1" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+TMUX_AGENTS=()
+for agent in "${AGENTS[@]}"; do
+  if agent_opts_into_pty "$agent"; then
+    echo "boot-agents: skipping $agent (opted into the PTY runner)" >&2
+  else
+    TMUX_AGENTS+=("$agent")
+  fi
+done
+[[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
+AGENTS=("${TMUX_AGENTS[@]}")
+
 tmux start-server 2>/dev/null || true
 # Turn on focus-events before any pane starts, so Claude Code does not show its
 # "tmux focus-events off" hint. tmux has no per-session form of this option
