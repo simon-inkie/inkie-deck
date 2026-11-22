@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
   closeSync, constants, fstatSync, ftruncateSync, lstatSync, openSync,
-  readFileSync, unlinkSync, writeSync,
+  readdirSync, readFileSync, readSync, unlinkSync, writeSync,
 } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { signalGroup } from "./runner.js";
@@ -18,6 +18,8 @@ interface LockRecord {
 }
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const maxLockBytes = 4096;
+export const ptySessionEnv = "DECK_PTY_SESSION_ID";
 
 export function hasCode(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === code;
@@ -136,10 +138,13 @@ function validPid(pid: unknown): pid is number {
 
 function readLock(fd: number): LockRecord {
   const stat = fstatSync(fd);
-  if (!stat.isFile() || stat.size > 4096 || stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0) {
+  if (!stat.isFile() || stat.size > maxLockBytes || stat.uid !== process.getuid?.() || (stat.mode & 0o022) !== 0) {
     throw new Error("Invalid runner lock.");
   }
-  const record = JSON.parse(readFileSync(fd, "utf8")) as Partial<LockRecord> | null;
+  const bytes = Buffer.alloc(maxLockBytes + 1);
+  const length = readSync(fd, bytes, 0, bytes.length, 0);
+  if (length !== stat.size) throw new Error("Invalid runner lock.");
+  const record = JSON.parse(bytes.toString("utf8", 0, length)) as Partial<LockRecord> | null;
   if (!record || !validPid(record.deckPid) ||
       !(record.childPid === null || validPid(record.childPid)) ||
       typeof record.deckBirth !== "string" || !/^\d+$/.test(record.deckBirth) ||
@@ -152,6 +157,30 @@ function readLock(fd: number): LockRecord {
     throw new Error("Invalid runner lock.");
   }
   return record as LockRecord;
+}
+
+function verifyGroup(record: LockRecord, group: number): boolean {
+  if (record.childBirth === null) return false;
+  const leader = processInfo(group);
+  if (leader) return leader.birth === record.childBirth && leader.group === group && leader.session === group;
+
+  // Once the leader is gone, the numeric group and session IDs can belong to
+  // a reused PID. Match the launch UUID inherited by the remaining members.
+  const marker = `${ptySessionEnv}=${record.sessionId}`;
+  const leaderBirth = BigInt(record.childBirth);
+  let witness: { pid: number; birth: string } | undefined;
+  for (const entry of readdirSync("/proc")) {
+    const pid = Number(entry);
+    if (!validPid(pid)) continue;
+    const member = processInfo(pid);
+    if (member?.group !== group || !live(member.state)) continue;
+    if (member.session !== group || member.birth === undefined || BigInt(member.birth) < leaderBirth) return false;
+    if (!readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(marker)) return false;
+    witness = { pid, birth: member.birth };
+  }
+  if (!witness) return false;
+  const member = processInfo(witness.pid);
+  return member?.birth === witness.birth && member.group === group && member.session === group && live(member.state);
 }
 
 export async function recoverRunnerLock(file: string): Promise<"absent" | "recovered" | "unrecovered"> {
@@ -171,16 +200,21 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
     }
     const owned = fstatSync(fd);
     if (!sameLock(file, owned)) return "unrecovered";
-    const record = readLock(fd);
-    if (record.bootId === bootId()) {
-      const deck = processInfo(record.deckPid);
-      if (deck?.birth === record.deckBirth && live(deck.state)) return "unrecovered";
+    const snapshot = readLock(fd);
+    if (snapshot.bootId === bootId()) {
+      const deck = processInfo(snapshot.deckPid);
+      if (deck?.birth === snapshot.deckBirth && live(deck.state)) return "unrecovered";
+      // The writer can update the same inode until it exits. Only use the
+      // phase and child fields read after checking the owner's identity.
+      const record = readLock(fd);
+      if (record.deckPid !== snapshot.deckPid || record.deckBirth !== snapshot.deckBirth ||
+          record.bootId !== snapshot.bootId || record.sessionId !== snapshot.sessionId ||
+          record.startedAt !== snapshot.startedAt) return "unrecovered";
       if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;
         if (groupExists(group)) {
-          const leader = processInfo(group);
-          if (!leader || leader.birth !== record.childBirth || leader.group !== group || leader.session !== group) {
+          if (!verifyGroup(record, group)) {
             throw new Error("Could not verify the stale PTY process group.");
           }
           signalGroup(group, "SIGKILL");

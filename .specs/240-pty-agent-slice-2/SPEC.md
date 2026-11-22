@@ -25,7 +25,7 @@ In this slice:
    Verify: slice 1 contract suite against both runners, plus PTY readiness without a marker and silent-session cleanup.
 3. **Session registry** `packages/deck/app/lib/runner/registry.server.ts`, the only production importer of `PtyRunner` (import-graph test updated to say so). One `globalThis` map per Deck process, so a dev reload cannot create a second. Lock file `$AGENTS_HOME/<agent>/.runner.lock` created exclusively: Deck pid, child pid, session id, start time and a phase written before spawn.
    Verify: second start refused; start refused while a tmux window of that name is live (`listTmuxWindows` in `packages/deck/app/lib/tmux.server.ts`); stale lock reclaimed only when recovery proves there was no spawn or confirms the group is gone.
-4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR`, `MC_PTY_RUNNER` if set), fixed `TERM=xterm-256color`, the resolved `AGENTS_HOME` and the agent's `INBOX_ROOT`. No other `MC_*` values or tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
+4. **Launch real Claude or a stub.** Command `claude --session-id <fresh UUID> -n <agent>`, cwd the agent home, environment an explicit allowlist (`HOME`, `PATH`, `LANG`, `USER`, `CLAUDE_CONFIG_DIR`, `MC_PTY_RUNNER` if set), fixed `TERM=xterm-256color`, the resolved `AGENTS_HOME`, the agent's `INBOX_ROOT` and the generated UUID as `DECK_PTY_SESSION_ID`. No other `MC_*` values or tokens from Deck's env. The fresh id is stored in the lock, never in `.session-id`, so tmux can resume the old conversation on the way back. Tests inject the stub (`packages/deck/test/runner/fixture-agent.mjs`) through the registry constructor, never through env or a file.
    Verify: env snapshot test; stub launch end to end.
 5. **Start, stop, interrupt.** `packages/deck/app/routes/api.runner.tsx`: POST `{agent, op: start|stop|cancel}`, `requireSameOriginWrite` as in `packages/deck/app/routes/api.tmux-send.tsx`, start requires opt-in; stop and cancel remain available for an owned session or pending cleanup after opt-out. No auto-restart.
    Verify: route tests for each op and each refusal.
@@ -352,3 +352,13 @@ MC_PTY_RUNNER=1 pnpm -C packages/deck start
   now clears that temporary claim through recovery before removing its home.
 - Commits: f906fe6 test(base): reset push_rc before each invocation in the PTY guard case (#240)
 - What changed: Reset push_rc before every Case 67 push invocation; checked the other Case 6x tests for the same pattern. Why: Prevent a stale failure status from making an assertion pass. Commits: pending.
+
+### 2026-11-22: Address the CodeRabbit lock and shutdown findings
+- Keep recovery fail-closed across an in-place claim update and refresh cached
+  locked agents before blocking an unrelated start. Verify a leaderless group
+  using the generated session UUID inherited by its members. Legacy or
+  unreadable member environments leave the claim locked while the kernel
+  still sees the group. Bound shutdown fixture waits and force cleanup on
+  failure.
+- Supersedes: The earlier recovery limit for groups with no verifiable leader.
+- Commits: pending.

@@ -3,11 +3,13 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { claimRunnerLock } from "../../app/lib/runner/lock.server.js";
+import { claimRunnerLock, hasCode } from "../../app/lib/runner/lock.server.js";
 import { loadNodePty } from "../../app/lib/runner/pty-runner.server.js";
 import { isPtyOptedIn, RunnerRegistry } from "../../app/lib/runner/registry.server.js";
+import { signalGroup } from "../../app/lib/runner/runner.js";
 import { listTmuxWindows } from "../../app/lib/tmux.server.js";
 import { fixtureCommand, fixtureScreen } from "./fixture-command.js";
 
@@ -123,6 +125,51 @@ function running(pid: number): boolean {
   return state !== undefined && state !== "Z" && state !== "X";
 }
 
+async function withDeadline<T>(promise: Promise<T>, timeout: number, message: string): Promise<T> {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([promise, delay(timeout, undefined, { signal: timer.signal }).then(() => {
+      throw new Error(message);
+    })]);
+  } finally {
+    timer.abort();
+  }
+}
+
+function recordedFixturePid(): number | undefined {
+  try {
+    const { childPid } = JSON.parse(readFileSync(lock, "utf8"));
+    return Number.isInteger(childPid) && childPid > 1 ? childPid : undefined;
+  } catch (error) {
+    if (!hasCode(error, "ENOENT") && !(error instanceof SyntaxError)) throw error;
+    return undefined;
+  }
+}
+
+async function forceFixtureExit(childPid?: number, descendant?: number) {
+  const pids = new Set<number>();
+  for (const entry of readdirSync(home)) {
+    const marker = /^descendant-(\d+)$/.exec(entry);
+    if (marker) pids.add(Number(marker[1]));
+  }
+  if (descendant !== undefined) pids.add(descendant);
+  if (childPid !== undefined) {
+    pids.add(childPid);
+    if ([...pids].some((pid) => running(pid) && Number(processStat(pid)[2]) === childPid)) {
+      signalGroup(childPid, "SIGKILL");
+    }
+  }
+  for (const pid of pids) {
+    if (pid <= 1 || !running(pid)) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (!hasCode(error, "ESRCH")) throw error;
+    }
+  }
+  await vi.waitFor(() => expect([...pids].filter(running)).toEqual([]), { timeout: 1500 });
+}
+
 describe.runIf(process.platform === "linux")("registry ownership", () => {
   it("refuses a live tmux window, an unknown probe and an exclusive lock", async () => {
     const registry = stubRegistry();
@@ -160,6 +207,24 @@ describe.runIf(process.platform === "linux")("registry ownership", () => {
     await expect(registry.start(agent)).rejects.toMatchObject({ reason: "tmux-active" });
     expect(registry.status(agent)).not.toMatchObject({ state: "locked" });
     await expect(registry.start(other)).rejects.toMatchObject({ reason: "tmux-active" });
+  });
+
+  it("refreshes an opted-out agent's cached claim before blocking an unrelated start", async () => {
+    addAgent(other);
+    const listWindows = vi.fn(() => [other]);
+    const registry = stubRegistry({ listWindows });
+    writeFileSync(lock, "unreadable claim\n");
+    await registry.recover();
+    rmSync(join(home, ".runner"));
+    await expect(registry.start(agent)).rejects.toMatchObject({ reason: "not-opted-in" });
+
+    await expect(registry.start(other)).rejects.toMatchObject({ reason: "locked" });
+    expect(listWindows).not.toHaveBeenCalled();
+    expect(readFileSync(lock, "utf8")).toBe("unreadable claim\n");
+
+    rmSync(lock);
+    await expect(registry.start(other)).rejects.toMatchObject({ reason: "tmux-active" });
+    expect(registry.status(agent)).toBeUndefined();
   });
 
   it("retries a failed root scan on start and stays locked if that retry fails", async () => {
@@ -241,6 +306,8 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     expect(first).toMatchObject({ deckPid: process.pid, childPid: expect.any(Number), startedAt: expect.any(Number), phase: "spawning" });
     expect(statSync(lock).mode & 0o777).toBe(0o600);
     expect(first.sessionId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(readFileSync(`/proc/${first.childPid}/environ`, "utf8").split("\0"))
+      .toContain(`DECK_PTY_SESSION_ID=${first.sessionId}`);
     expect(launchSpec).toHaveBeenCalledWith({
       command: "claude", args: ["--session-id", first.sessionId, "-n", agent], cwd: home,
       env: { HOME: root, PATH: env.PATH, TERM: "xterm-256color", LANG: "C", USER: env.USER,
@@ -374,6 +441,7 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
     let stderr = "";
     deck.stderr?.on("data", (chunk) => { stderr += String(chunk); });
     const exited = once(deck, "exit");
+    void exited.catch(() => {});
     let fixture: { childPid: number; descendant: number } | undefined;
     deck.on("message", (message) => { fixture = message as typeof fixture; });
     try {
@@ -381,13 +449,19 @@ describe.runIf(ptyAvailable)("with the PTY stub", () => {
       expect(running(fixture!.childPid)).toBe(true);
       expect(running(fixture!.descendant)).toBe(true);
       deck.kill(signal);
-      await expect(exited).resolves.toEqual([0, null]);
+      await expect(withDeadline(exited, 3000, `Deck did not exit after ${signal}.`)).resolves.toEqual([0, null]);
       expect(existsSync(lock)).toBe(false);
       expect(running(fixture!.childPid)).toBe(false);
       expect(running(fixture!.descendant)).toBe(false);
-    } finally {
-      deck.kill("SIGTERM");
-      await exited;
+    } catch (failure) {
+      deck.kill("SIGKILL");
+      try {
+        await withDeadline(exited, 1500, "Deck did not exit after SIGKILL.").finally(() =>
+          forceFixtureExit(fixture?.childPid ?? recordedFixturePid(), fixture?.descendant));
+      } catch (cleanupFailure) {
+        throw new AggregateError([failure, cleanupFailure], "Deck shutdown and fixture cleanup failed.");
+      }
+      throw failure;
     }
   }, 10_000);
 });

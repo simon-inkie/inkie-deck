@@ -9,7 +9,7 @@ import {
   listTmuxWindows, SEND_KEYS_ENTER_DELAY_MS, SEND_KEYS_VERIFY_DELAYS_MS, type PaneKey,
 } from "../tmux.server.js";
 import { submitPaneText, type SendKeysResult } from "../tmux-submit.js";
-import { claimRunnerLock, hasCode, recoverRunnerLock } from "./lock.server.js";
+import { claimRunnerLock, hasCode, ptySessionEnv, recoverRunnerLock } from "./lock.server.js";
 import { PtyRunner } from "./pty-runner.server.js";
 import { LaunchFailure, type SessionSpec, type WriteResult } from "./runner.js";
 import { createRunnerScreen, type RunnerScreen } from "./screen.server.js";
@@ -165,13 +165,12 @@ export class RunnerRegistry {
     if (shared.closing) throw new StartRefusal("shutting-down");
     const home = ptyRunnerEnabled(this.env) ? agentHome(this.env, agent) : undefined;
     if (!home || !optedIn(home)) throw new StartRefusal("not-opted-in");
-    if (retryRecovery && shared.recoveryFailed) {
-      await this.recover();
-      return this.startAgent(agent, false);
-    }
-    if (retryRecovery && shared.sessions.get(home)?.state === "locked") {
-      await this.recoverHome(home);
-      return this.startAgent(agent, false);
+    if (retryRecovery) {
+      const retryRoot = shared.recoveryFailed;
+      if (retryRoot) await this.recover();
+      const lockedHomes = Array.from(shared.sessions).filter(([, session]) => session.state === "locked");
+      for (const [lockedHome] of lockedHomes) await this.recoverHome(lockedHome);
+      if (retryRoot || lockedHomes.length > 0) return this.startAgent(agent, false);
     }
     if (shared.recoveryFailed) throw new StartRefusal("locked");
     for (const session of shared.sessions.values()) {
@@ -197,7 +196,8 @@ export class RunnerRegistry {
       command: "claude", args: ["--session-id", sessionId, "-n", agent],
       cwd: home, env: launchEnvironment(this.env, home),
     };
-    const launchSpec = this.options.launchSpec?.(spec) ?? spec;
+    const configured = this.options.launchSpec?.(spec) ?? spec;
+    const launchSpec = { ...configured, env: { ...configured.env, [ptySessionEnv]: sessionId } };
     let screen: RunnerScreen;
     try {
       screen = (this.options.createScreen ?? createRunnerScreen)(launchSpec);
