@@ -1,14 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
-import { AGENT_NAME_RE } from "../safe-fs.server.js";
+import { AGENT_NAME_RE, confineToRoot } from "../safe-fs.server.js";
 import { listTmuxWindows } from "../tmux.server.js";
 import {
-  antigravity1Manifest, isAcpOptedIn, probeAgyVersion, resolveAcpExecutable,
+  antigravity1Manifest,
+  isAcpOptedIn,
+  probeAgyVersion,
+  resolveAcpExecutable,
+  statExecutableIdentity,
   type AcpAdapterManifest,
 } from "./acp-manifest.js";
 import { claimRunnerLock, hasCode, recoverRunnerLock } from "./lock.server.js";
@@ -29,6 +42,7 @@ export type AcpActiveSession = {
   settled: Promise<void>;
   stopPromise?: Promise<void>;
   events: DeckEvent[];
+  pendingPermissions: Map<string, DeckEvent>;
 };
 
 export type AcpCleanupSession = {
@@ -77,9 +91,19 @@ function agentHome(env: NodeJS.ProcessEnv, agent: string): string | undefined {
   }
 }
 
+function homeWantsAcp(home: string): boolean {
+  try {
+    const info = lstatSync(join(home, ".runner"), { throwIfNoEntry: false });
+    if (!info || !info.isFile()) return false;
+    return readFileSync(join(home, ".runner"), "utf8").trim() === "acp";
+  } catch {
+    return false;
+  }
+}
+
 function readStoredSessionId(home: string): string | undefined {
   try {
-    const file = join(home, lastSessionName);
+    const file = confineToRoot(join(home, lastSessionName), home, { label: "ACP session file", forWrite: false });
     const stat = lstatSync(file, { throwIfNoEntry: false });
     if (!stat || !stat.isFile()) return undefined;
     const value = readFileSync(file, "utf8").trim();
@@ -89,12 +113,31 @@ function readStoredSessionId(home: string): string | undefined {
   }
 }
 
+/**
+ * Major 4: Write .acp-last-session strictly confined inside home with O_NOFOLLOW
+ * so a symlink in the workspace can NEVER be truncated or overwritten outside home.
+ */
 function writeStoredSessionId(home: string, sessionId: string): void {
   try {
-    const file = join(home, lastSessionName);
-    writeFileSync(file, sessionId + "\n", { mode: 0o600 });
+    const file = confineToRoot(join(home, lastSessionName), home, { label: "ACP session file", forWrite: true });
+    const existing = lstatSync(file, { throwIfNoEntry: false });
+    if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+      return;
+    }
+    const flags =
+      fsConstants.O_WRONLY |
+      fsConstants.O_CREAT |
+      fsConstants.O_TRUNC |
+      (fsConstants.O_NOFOLLOW ?? 0);
+    const fd = openSync(file, flags, 0o600);
+    try {
+      const bytes = Buffer.from(sessionId + "\n", "utf8");
+      writeSync(fd, bytes, 0, bytes.length, 0);
+    } finally {
+      closeSync(fd);
+    }
   } catch {
-    // Non-fatal persistence failure.
+    // Refuse symlink/invalid targets silently without crashing session startup.
   }
 }
 
@@ -118,6 +161,7 @@ export interface AcpRegistryOptions {
     onEvent?: (event: DeckEvent) => void;
     onBeforeSpawn?: () => void;
     onSpawn?: (pid: number) => void;
+    onSpawnFailed?: () => void;
   }) => Promise<AcpSession>;
 }
 
@@ -145,16 +189,30 @@ export class AcpRunnerRegistry {
     return session !== undefined && ("abortController" in session || session.state === "cleanup-pending");
   }
 
+  /**
+   * Major 2: Expose active session ONLY while state === "running" (never during "stopping" grace period).
+   */
   getActiveSession(agent: string): AcpSession | undefined {
     const entry = this.session(agent);
-    if (!entry || !("abortController" in entry)) return undefined;
+    if (!entry || !("abortController" in entry) || entry.state !== "running") return undefined;
     return entry.session;
   }
 
+  /**
+   * Major 2: Return retained events plus any pending (unanswered) permission cards that are
+   * protected from 500-event ring eviction.
+   */
   events(agent: string): DeckEvent[] {
     const entry = this.session(agent);
     if (!entry) return [];
-    if ("abortController" in entry) return [...entry.events];
+    if ("abortController" in entry) {
+      const seen = new Set(entry.events.map((e: DeckEvent) => e.id));
+      const protectedPending: DeckEvent[] = [];
+      for (const perm of entry.pendingPermissions.values()) {
+        if (!seen.has(perm.id)) protectedPending.push(perm);
+      }
+      return [...protectedPending, ...entry.events];
+    }
     if (entry.state === "stopped" && entry.events) return [...entry.events];
     return [];
   }
@@ -191,15 +249,19 @@ export class AcpRunnerRegistry {
     if (retryRecovery) {
       const retryRoot = shared.recoveryFailed;
       if (retryRoot) await this.recover();
-      const lockedHomes = Array.from(shared.sessions).filter(([, session]) => session.state === "locked");
-      for (const [lockedHome] of lockedHomes) await this.recoverHome(lockedHome);
-      if (retryRoot || lockedHomes.length > 0) return this.startAgent(agent, false, startOpts);
+      const targetEntry = shared.sessions.get(home);
+      if (targetEntry?.state === "locked") await this.recoverHome(home);
+      if (retryRoot || targetEntry?.state === "locked") return this.startAgent(agent, false, startOpts);
     }
 
     if (shared.recoveryFailed) throw new StartRefusal("locked");
-    for (const session of shared.sessions.values()) {
+
+    // Major 8: Check active ACP sessions across all homes (single-ACP-agent limit),
+    // but check `locked` ONLY for this home (so an unrelated malformed PTY home cannot block ACP).
+    for (const [entryHome, session] of shared.sessions.entries()) {
       if ("abortController" in session) throw new StartRefusal("busy");
-      if (session.state === "locked" || session.state === "cleanup-pending") throw new StartRefusal("locked");
+      if (session.state === "cleanup-pending") throw new StartRefusal("locked");
+      if (entryHome === home && session.state === "locked") throw new StartRefusal("locked");
     }
 
     if (process.platform !== "linux") {
@@ -215,8 +277,8 @@ export class AcpRunnerRegistry {
     let resolveSettled!: () => void;
     const settledPromise = new Promise<void>((resolve) => { resolveSettled = resolve; });
 
-    // Reserve 'starting' synchronously BEFORE any async probe, lock, or spawn so concurrent starts
-    // across any home are refused as 'busy' and stop()/shutdown() can cancel in-flight starts.
+    // Reserve 'starting' synchronously BEFORE any async probe, recovery, lock, or spawn so
+    // concurrent starts are refused as 'busy' and stop()/shutdown() can cancel in-flight starts.
     const activeSession: AcpActiveSession = {
       state: "starting",
       pid: 0,
@@ -225,6 +287,7 @@ export class AcpRunnerRegistry {
       abortController,
       settled: settledPromise,
       events: [],
+      pendingPermissions: new Map(),
     };
     shared.sessions.set(home, activeSession);
 
@@ -236,20 +299,28 @@ export class AcpRunnerRegistry {
     };
 
     let executable: string;
+    let execIdentity: { dev: number; ino: number };
     let detectedVersion: string;
     try {
       executable = resolveAcpExecutable(manifest.executableName, this.env, home);
+      execIdentity = statExecutableIdentity(executable);
       const versionInfo = await probeAgyVersion(executable, manifest.semverFloor, {
         allowMismatch: this.options.allowVersionMismatch,
         cwd: home,
         env: this.env,
         extraEnvAllowlist: manifest.envAllowlist,
+        signal: abortController.signal,
         exec: this.options.execVersion,
       });
       detectedVersion = versionInfo.version;
       if (abortController.signal.aborted || shared.closing) {
         clearReservation();
         throw new StartRefusal("shutting-down");
+      }
+      // Major 7: Re-verify opt-in AFTER async version probe (catches cutover to tmux mid-probe)
+      if (!this.isOptedIn(agent)) {
+        clearReservation();
+        throw new StartRefusal("not-opted-in");
       }
     } catch (error) {
       clearReservation();
@@ -261,17 +332,41 @@ export class AcpRunnerRegistry {
     try {
       lock = this.claimLock(home, sessionId);
     } catch (error) {
-      clearReservation();
       if (retryRecovery && error instanceof StartRefusal && error.reason === "locked") {
-        await this.recoverHome(home);
-        return this.startAgent(agent, false, startOpts);
+        // Major 6: Keep the 'starting' reservation alive while recovering stale lock so stop() cannot miss us!
+        try {
+          await recoverRunnerLock(join(home, lockName));
+        } catch {
+          clearReservation();
+          shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
+          throw new StartRefusal("locked");
+        }
+        if (abortController.signal.aborted || shared.closing) {
+          clearReservation();
+          throw new StartRefusal("shutting-down");
+        }
+        try {
+          lock = this.claimLock(home, sessionId);
+        } catch (retryErr) {
+          clearReservation();
+          throw retryErr;
+        }
+      } else {
+        clearReservation();
+        throw error;
       }
-      throw error;
     }
 
-    // Re-check tmux window absence AFTER acquiring .runner.lock to close the cutover race.
+    // Major 7 & 9: Re-verify opt-in, tmux window absence, and pinned executable identity AFTER lock claim.
     try {
+      if (!this.isOptedIn(agent)) {
+        throw new StartRefusal("not-opted-in");
+      }
       this.assertNoTmuxWindow(agent);
+      const currentIdentity = statExecutableIdentity(executable);
+      if (currentIdentity.dev !== execIdentity.dev || currentIdentity.ino !== execIdentity.ino) {
+        throw new LaunchFailure("unavailable", "ACP executable changed between version probe and launch.");
+      }
     } catch (error) {
       await lock.release().catch(() => lock.retain());
       clearReservation();
@@ -286,7 +381,6 @@ export class AcpRunnerRegistry {
       knownExtensions: manifest.knownExtensions,
     };
 
-    let beforeSpawnCalled = false;
     const resumeSessionId = startOpts.resume ? readStoredSessionId(home) : undefined;
     const sessionOptions = {
       cwd: home,
@@ -295,18 +389,27 @@ export class AcpRunnerRegistry {
       resumeSessionId,
       signal: abortController.signal,
       onEvent: (event: DeckEvent) => {
+        // Major 2: Track pending permissions separately so 500-event ring eviction never loses an open permission
+        if (event.type === "permission.requested") {
+          activeSession.pendingPermissions.set(event.id, event);
+        } else if (event.type === "permission.answered" && event.answers) {
+          activeSession.pendingPermissions.delete(event.answers);
+        }
         activeSession.events.push(event);
         if (activeSession.events.length > MAX_EVENTS_PER_SESSION) {
           activeSession.events.shift();
         }
       },
       onBeforeSpawn: () => {
-        beforeSpawnCalled = true;
         lock.beforeSpawn();
       },
       onSpawn: (pid: number) => {
         activeSession.pid = pid;
         lock.spawned(pid);
+      },
+      onSpawnFailed: () => {
+        // Major 5: Confirmed failed exec with no PID -> revert 'spawning' to 'reserved' so lock.release() succeeds cleanly
+        lock.failedBeforeSpawn();
       },
     };
 
@@ -318,7 +421,7 @@ export class AcpRunnerRegistry {
         session = await AcpSession.start(adapter, sessionOptions);
       }
     } catch (error) {
-      await this.cleanupFailedStart(home, activeSession, lock, beforeSpawnCalled);
+      await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
       throw error;
     }
@@ -326,7 +429,7 @@ export class AcpRunnerRegistry {
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
       await session.close().catch(() => {});
-      await this.cleanupFailedStart(home, activeSession, lock, beforeSpawnCalled);
+      await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
       if (terminalKind === "unsupported") {
         throw new LaunchFailure("unavailable", "Agent does not support the required ACP protocol version or capability.");
@@ -336,14 +439,15 @@ export class AcpRunnerRegistry {
 
     if (abortController.signal.aborted || shared.closing) {
       await session.close().catch(() => {});
-      await this.cleanupFailedStart(home, activeSession, lock, beforeSpawnCalled);
+      await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
       throw new StartRefusal("shutting-down");
     }
 
     activeSession.session = session;
     activeSession.state = "running";
-    if (session.activeSessionId) {
+    // Major 3 & 4: Persist .acp-last-session ONLY when agent advertised resume/load capability, using O_NOFOLLOW
+    if (session.activeSessionId && session.supportsResume?.()) {
       writeStoredSessionId(home, session.activeSessionId);
     }
 
@@ -368,7 +472,6 @@ export class AcpRunnerRegistry {
     home: string,
     activeSession: AcpActiveSession,
     lock: ReturnType<typeof claimRunnerLock>,
-    beforeSpawnCalled: boolean,
   ): Promise<void> {
     if (activeSession.pid > 0) {
       signalGroup(activeSession.pid, "SIGKILL");
@@ -385,18 +488,12 @@ export class AcpRunnerRegistry {
         });
       }
     } catch {
-      // Uncertain ownership or group still alive: retain a retryable cleanup-pending entry
-      // instead of swallowing the failure and stranding .runner.lock.
       let pending: Promise<void> | undefined;
       const cleanup: AcpCleanupSession = {
         state: "cleanup-pending",
         retry: () => pending ??= (async () => {
           if (activeSession.pid > 0) signalGroup(activeSession.pid, "SIGKILL");
-          if (!beforeSpawnCalled && activeSession.pid === 0) {
-            await lock.release();
-          } else {
-            await lock.release();
-          }
+          await lock.release();
           shared.sessions.set(home, {
             state: "stopped",
             code: activeSession.session?.exitInfo.code ?? null,
@@ -467,19 +564,22 @@ export class AcpRunnerRegistry {
       activeSession.abortController.abort();
       if (activeSession.pid > 0) {
         signalGroup(activeSession.pid, "SIGTERM");
-        let stopped = false;
-        for (let i = 0; i < 20; i++) {
+        // Major 6: Stop polling as soon as child exit resolves so we never signal a recycled group ID
+        let exited = false;
+        const exitWatch = activeSession.session?.exited?.then(() => { exited = true; }).catch(() => { exited = true; });
+        void exitWatch;
+        for (let i = 0; i < 20 && !exited; i++) {
           try {
             process.kill(-activeSession.pid, 0);
             await delay(25);
           } catch (err) {
             if (hasCode(err, "ESRCH")) {
-              stopped = true;
+              exited = true;
               break;
             }
           }
         }
-        if (!stopped) {
+        if (!exited) {
           signalGroup(activeSession.pid, "SIGKILL");
         }
       }
@@ -530,6 +630,8 @@ export class AcpRunnerRegistry {
     for (const entry of entries) {
       if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
       const home = join(root, entry.name);
+      // Major 8: Only recover homes that opt into ACP (do not touch unrelated PTY homes)
+      if (!homeWantsAcp(home)) continue;
       await this.recoverHome(home);
     }
     if (shared.recoveryFailed === previousFailure) shared.recoveryFailed = false;

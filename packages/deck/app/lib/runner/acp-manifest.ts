@@ -70,6 +70,21 @@ const DECK_VAR_RE = /^(?:MC_|DECK_|INKIE_|DEEPGRAM_)/i;
 const MAX_PROBE_BYTES = 8 * 1024;
 const PROBE_TIMEOUT_MS = 5_000;
 
+export function sanitizePathEnv(rawPath?: string): string {
+  const parts = (rawPath ?? "/usr/local/bin:/usr/bin:/bin")
+    .split(":")
+    .filter((dir) => dir.length > 0 && isAbsolute(dir));
+  return parts.length > 0 ? parts.join(":") : "/usr/local/bin:/usr/bin:/bin";
+}
+
+export function statExecutableIdentity(executablePath: string): { dev: number; ino: number } {
+  const info = lstatSync(executablePath);
+  if (!info.isFile()) {
+    throw new LaunchFailure("unavailable", `Pinned executable '${executablePath}' is not a regular file.`);
+  }
+  return { dev: info.dev, ino: info.ino };
+}
+
 export function buildConstrainedProbeEnv(
   sourceEnv: NodeJS.ProcessEnv = process.env,
   extraAllowlist: readonly string[] = [],
@@ -78,7 +93,9 @@ export function buildConstrainedProbeEnv(
   for (const key of [...BASE_PROBE_ENV_KEYS, ...extraAllowlist]) {
     if (DECK_VAR_RE.test(key) || EXPLICIT_DECK_VARS.has(key)) continue;
     const value = sourceEnv[key];
-    if (value !== undefined) env[key] = value;
+    if (value !== undefined) {
+      env[key] = key === "PATH" ? sanitizePathEnv(value) : value;
+    }
   }
   return env;
 }
@@ -202,6 +219,7 @@ export interface VersionProbeOptions {
   env?: NodeJS.ProcessEnv;
   extraEnvAllowlist?: readonly string[];
   timeoutMs?: number;
+  signal?: AbortSignal;
   exec?: (cmd: string, args: string[], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
     status: number | null;
     stdout: string;
@@ -280,6 +298,9 @@ export async function probeAgyVersion(
   semverFloor: string,
   options: VersionProbeOptions = {},
 ): Promise<{ version: string; ok: boolean }> {
+  if (options.signal?.aborted) {
+    throw new LaunchFailure("start-failed", "Antigravity version probe aborted.");
+  }
   if (options.exec) {
     return checkAgyVersion(executable, semverFloor, options);
   }
@@ -295,15 +316,25 @@ export async function probeAgyVersion(
     });
     let stdout = "";
     let settled = false;
+    const cleanupGroup = () => {
+      if (child.pid) signalGroup(child.pid, "SIGKILL");
+    };
+    const onAbort = () => {
+      cleanupGroup();
+      finish(new Error("Antigravity version probe aborted."));
+    };
     const finish = (err?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      cleanupGroup();
       if (err) rejectOut(err);
       else resolveOut(stdout.trim());
     };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => {
-      if (child.pid) signalGroup(child.pid, "SIGKILL");
+      cleanupGroup();
       finish(new Error("Antigravity version probe timed out."));
     }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
@@ -313,10 +344,14 @@ export async function probeAgyVersion(
     });
     child.on("error", (err) => finish(err));
     child.on("close", (code) => {
+      cleanupGroup();
       if (code !== 0) finish(new Error(`Version probe exited with status ${code ?? "null"}.`));
       else finish();
     });
   }).catch((err) => {
+    if (options.signal?.aborted) {
+      throw new LaunchFailure("start-failed", "Antigravity version probe aborted.", err);
+    }
     if (options.allowMismatch) return null;
     throw new LaunchFailure("unavailable", "Could not verify Antigravity version.", err);
   });

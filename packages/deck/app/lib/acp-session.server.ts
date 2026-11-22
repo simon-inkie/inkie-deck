@@ -11,8 +11,22 @@ import { AcpRecords, summarizeExtensionParams, type RecordOptions } from "./acp-
 import { isObject, LineFramer, promptSettlement, responseEnvelope, rpcId, validPayload } from "./acp-wire.server";
 import { createEventSource, displayText, printableId, projectDisplay } from "./deck-event";
 import type { DeckEvent, DisplayProjection, Outcome } from "./deck-event";
-import { antigravityUsageReading, type ExtensionClassification, type UsageReading } from "./runner/acp-manifest";
+import {
+  antigravityUsageReading,
+  sanitizePathEnv,
+  type ExtensionClassification,
+  type UsageReading,
+} from "./runner/acp-manifest";
 import { ptySessionEnv } from "./runner/lock.server";
+
+export const MAX_QUEUED_PROMPTS = 8;
+
+export class PromptQueueFullError extends Error {
+  constructor(limit = MAX_QUEUED_PROMPTS) {
+    super(`ACP prompt queue limit reached (max ${limit}).`);
+    this.name = "PromptQueueFullError";
+  }
+}
 
 export type AcpAdapter = {
   executable: string;
@@ -35,6 +49,7 @@ type Options = RecordOptions & {
   onEvent?: (event: DeckEvent) => void;
   onBeforeSpawn?: () => void;
   onSpawn?: (pid: number) => void;
+  onSpawnFailed?: () => void;
 };
 
 type TerminalState = "failed" | "disconnected" | "unsupported";
@@ -69,7 +84,21 @@ const environment = ["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"];
 const explicitDeckVariables = new Set(["INBOX_ROOT", "DATA_ROOT", "GOOGLE_GENERATIVE_AI_API_KEY"]);
 const deckVariable = /^(?:MC_|DECK_|INKIE_|DEEPGRAM_)/i;
 const FATAL_EXTENSION_RE = /(?:^|\/)(?:error|fatal)$/i;
-const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limit|quota|limit[-_ ]?exceeded|exhausted|too many requests|429)\b/i;
+// Strict limit-exhaustion matcher (does NOT trip on generic "quota endpoint unavailable").
+const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limit(?:ed|s)?|quota[-_ ]?(?:exceeded|exhausted|reached)|usage[-_ ]?(?:limit|exhausted)|too many requests)\b/i;
+const KNOWN_SESSION_UPDATES = new Set([
+  "agent_message_chunk",
+  "user_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+  "plan",
+  "available_commands_update",
+  "current_mode_update",
+  "usage_update",
+  "config_option_update",
+  "session_info_update",
+]);
 let generation = 0;
 
 function childEnvironment(adapter: AcpAdapter, sessionMarker?: string): NodeJS.ProcessEnv {
@@ -77,7 +106,9 @@ function childEnvironment(adapter: AcpAdapter, sessionMarker?: string): NodeJS.P
   for (const key of [...environment, ...(adapter.environment ?? [])]) {
     if (deckVariable.test(key) || explicitDeckVariables.has(key)) continue;
     const value = process.env[key];
-    if (value !== undefined) env[key] = value;
+    if (value !== undefined) {
+      env[key] = key === "PATH" ? sanitizePathEnv(value) : value;
+    }
   }
   if (sessionMarker) {
     env[ptySessionEnv] = sessionMarker;
@@ -124,11 +155,13 @@ export class AcpSession {
   private sessionId?: string;
   private makeEvent = createEventSource({ kind: "session", generation: this.generation }, randomUUID);
   private finishPrompt?: (outcome: Outcome) => void;
+  private activePromptRpcId?: JsonRpcId;
   private turnQueue: Promise<unknown> = Promise.resolve();
   private queuedPrompts = 0;
   private cancelTimer?: NodeJS.Timeout;
   private cancelling = false;
   private groupStopped = false;
+  private intentionalClose = false;
   private processExit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
   private authRequiredFlag = false;
   private lastContextUsage?: { used: number; size: number };
@@ -150,7 +183,12 @@ export class AcpSession {
       this.processExit = { code, signal };
       resolve();
     }));
-    this.owned.on("error", () => this.stop("disconnected", "Agent process error"));
+    this.owned.on("error", () => {
+      if (this.owned.pid === undefined) {
+        options.onSpawnFailed?.();
+      }
+      this.stop("disconnected", "Agent process error");
+    });
     this.owned.once("exit", (code, signal) => {
       this.processExit = { code, signal };
       this.killGroup();
@@ -162,7 +200,12 @@ export class AcpSession {
     this.connection = client().connect({
       readable,
       writable: new WritableStream<AnyMessage>({ write: (message) => {
-        if ("method" in message && "id" in message) this.pending.set(message.id, message.method);
+        if ("method" in message && "id" in message) {
+          this.pending.set(message.id, message.method);
+          if (message.method === session.prompt) {
+            this.activePromptRpcId = message.id;
+          }
+        }
         return this.send(message);
       } }),
     });
@@ -189,13 +232,22 @@ export class AcpSession {
         owner.advertised = negotiated.agentCapabilities ?? {};
         if (options.requireCapability === "session/load" && !owner.advertised.loadSession) {
           owner.stop("unsupported", options.requireCapability);
-        } else if (options.resumeSessionId && owner.supportsResume()) {
-          const resumeMethod = owner.advertised.sessionCapabilities?.resume ? "session/resume" : "session/load";
-          await owner.connection.agent.request(resumeMethod as typeof session.new, {
-            cwd: options.cwd,
-            sessionId: options.resumeSessionId,
-            mcpServers: [],
-          } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
+        } else if (options.resumeSessionId) {
+          // Major 3: never silently fall back to session/new when resume was explicitly requested
+          if (!owner.supportsResume()) {
+            owner.stop("unsupported", "Agent does not advertise resume capability");
+          } else {
+            // Major 3: bind sessionId BEFORE session/load or session/resume so replay updates arriving
+            // ahead of the response pass sessionId validation and are retained in the transcript.
+            owner.sessionId = options.resumeSessionId;
+            owner.makeEvent = createEventSource({ kind: "session", session: owner.sessionId, generation: owner.generation }, randomUUID);
+            const resumeMethod = owner.advertised.sessionCapabilities?.resume ? "session/resume" : "session/load";
+            await owner.connection.agent.request(resumeMethod as typeof session.new, {
+              cwd: options.cwd,
+              sessionId: options.resumeSessionId,
+              mcpServers: [],
+            } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
+          }
         } else {
           await owner.connection.agent.request(session.new, { cwd: options.cwd, mcpServers: [] });
         }
@@ -237,12 +289,16 @@ export class AcpSession {
   }
 
   prompt(text: string): Promise<Outcome> {
+    if (terminal(this.current)) return Promise.resolve(this.current.kind);
+    if (this.queuedPrompts >= MAX_QUEUED_PROMPTS) {
+      return Promise.reject(new PromptQueueFullError(MAX_QUEUED_PROMPTS));
+    }
     this.queuedPrompts += 1;
     const turn = this.turnQueue.then(async () => {
       this.queuedPrompts = Math.max(0, this.queuedPrompts - 1);
       return this.runPrompt(text);
     });
-    this.turnQueue = turn;
+    this.turnQueue = turn.catch(() => {});
     return turn;
   }
 
@@ -259,14 +315,16 @@ export class AcpSession {
   }
 
   answerPermission(event: string, option: string): boolean {
+    if (terminal(this.current) || this.cancelling) return false;
     const permission = this.permissions.get(event);
     const selected = permission?.choices.get(option);
-    if (!permission || selected === undefined || this.cancelling) return false;
+    if (!permission || selected === undefined) return false;
     this.reply(event, permission, selected);
     return true;
   }
 
   async close(): Promise<void> {
+    this.intentionalClose = true;
     this.stop("disconnected", "Session closed");
     await this.closePromise;
   }
@@ -368,8 +426,10 @@ export class AcpSession {
       } catch {
         // Ignore emit error during shutdown.
       }
-      if (classification === "fatal" && this.finishPrompt) {
-        this.settle("failed", "Unsupported fatal agent message");
+      if (classification === "fatal") {
+        // Major 1: fatally terminate the session (closing RPC, permissions, and child process)
+        // so NO subsequent prompt can overlap the open RPC and no late reply can settle a second turn.
+        this.stop("failed", "Unsupported fatal agent message");
       }
     }
   }
@@ -385,6 +445,24 @@ export class AcpSession {
     if (responseEnvelope(value)) return this.response(value, frame.bytes);
     if ("result" in value || "error" in value) return reject("invalid response envelope");
     if (value.method === incoming.update && !("id" in value)) {
+      // Major 10: classify unknown sessionUpdate variants under Decision 3 before schema violation
+      if (
+        isObject(value.params) &&
+        typeof value.params.sessionId === "string" &&
+        this.sessionId &&
+        value.params.sessionId === this.sessionId &&
+        isObject(value.params.update) &&
+        typeof value.params.update.sessionUpdate === "string" &&
+        !KNOWN_SESSION_UPDATES.has(value.params.update.sessionUpdate)
+      ) {
+        const variant = value.params.update.sessionUpdate;
+        if (this.adapter.knownExtensions?.includes(`session/update:${variant}`) || this.adapter.knownExtensions?.includes(variant)) {
+          this.records.frame("in", frame.bytes);
+          return;
+        }
+        this.handleUnknownExtension(`session/update:${variant}`, value.params.update, frame.bytes);
+        return;
+      }
       if (!validPayload(value.params, "SessionNotification")) return reject("invalid update schema");
       const params = value.params as SessionNotification;
       if (!this.sessionId || params.sessionId !== this.sessionId) return reject("wrong update session");
@@ -413,11 +491,16 @@ export class AcpSession {
     const method = this.pending.get(response.id);
     if (!method) return this.violate(bytes, "unknown or already answered response id");
     if (method === session.prompt) {
+      // Major 1: verify response.id matches the exact active prompt RPC id
+      if (this.activePromptRpcId !== undefined && response.id !== this.activePromptRpcId) {
+        return this.violate(bytes, "stale prompt response id");
+      }
       const errorObj = "error" in response ? response.error : undefined;
       const result = "result" in response ? promptSettlement(response.result)
         : { outcome: "failed" as const, reason: isLimitError(errorObj) ? "Usage limit reached" : "JSON-RPC error" };
       if (!this.finishPrompt || !result || this.permissions.size) return this.violate(bytes, "invalid prompt response or outstanding permission");
       this.pending.delete(response.id);
+      this.activePromptRpcId = undefined;
       if (result.outcome === "invalid") {
         this.wire.enqueue({ jsonrpc: "2.0", id: response.id, error: { code: -32602, message: "Invalid stop reason" } });
         this.settle(result.outcome, result.reason);
@@ -438,8 +521,17 @@ export class AcpSession {
       return;
     }
     if ("result" in response) {
-      if (method === initialize && !validPayload(response.result, "InitializeResponse")) {
-        return this.violate(bytes, "invalid initialise response");
+      if (method === initialize) {
+        // Minor 1: missing or wrong protocolVersion transitions to 'unsupported' (not generic 'failed')
+        if (isObject(response.result) && response.result.protocolVersion !== PROTOCOL_VERSION) {
+          this.records.frame("in", bytes);
+          this.pending.delete(response.id);
+          this.stop("unsupported", "ACP protocol version");
+          return;
+        }
+        if (!validPayload(response.result, "InitializeResponse")) {
+          return this.violate(bytes, "invalid initialise response");
+        }
       }
       if (method === session.new || method === "session/resume" || method === "session/load") {
         const result = response.result;
@@ -448,6 +540,7 @@ export class AcpSession {
             return this.violate(bytes, "invalid new session response");
           }
           this.sessionId = result.sessionId;
+          this.makeEvent = createEventSource({ kind: "session", session: this.sessionId, generation: this.generation }, randomUUID);
         } else {
           const resumedId = isObject(result) && typeof result.sessionId === "string" && printableId(result.sessionId, 128)
             ? result.sessionId
@@ -455,7 +548,6 @@ export class AcpSession {
           if (!resumedId) return this.violate(bytes, "invalid resume session response");
           this.sessionId = resumedId;
         }
-        this.makeEvent = createEventSource({ kind: "session", session: this.sessionId, generation: this.generation }, randomUUID);
         this.current = reduce(this.current, { kind: "ready" });
       }
     }
@@ -562,6 +654,7 @@ export class AcpSession {
     this.cancelling = false;
     const finish = this.finishPrompt;
     this.finishPrompt = undefined;
+    this.activePromptRpcId = undefined;
     this.current = reduce(this.current, { kind: "settle", outcome });
     finish?.(outcome);
     this.emit({ class: outcome === "completed" || outcome === "cancelled" ? "happened" : "action",
@@ -575,16 +668,35 @@ export class AcpSession {
 
   private stop(state: TerminalState, reason: string): void {
     if (terminal(this.current)) return;
+    const wasReady = this.current.kind === "idle" || this.current.kind === "settled" || this.current.kind === "busy" || this.current.kind === "waiting";
     this.current = reduce(this.current, { kind: "stop", state });
     const finish = this.finishPrompt;
     this.finishPrompt = undefined;
+    this.activePromptRpcId = undefined;
     clearTimeout(this.cancelTimer);
+
+    // Major 2: close all open permission cards before clearing permissions so thread UI never shows stale enabled buttons
+    for (const [id, permission] of this.permissions) {
+      try {
+        this.emit({
+          class: "happened",
+          type: "permission.answered",
+          answers: id,
+          title: "Permission closed on disconnect",
+          view: permission.view,
+        });
+      } catch {
+        // Best-effort during teardown.
+      }
+    }
     this.permissions.clear();
     this.pending.clear();
     this.connection.close();
     this.killGroup();
     if (finish) void this.exited.then(() => finish(state));
-    if (state !== "disconnected" || finish) {
+    // Emit disconnect card on unexpected idle exit as well as mid-turn disconnect (Minor 1)
+    const emitDisconnectCard = state === "disconnected" && (Boolean(finish) || (wasReady && !this.intentionalClose));
+    if (state !== "disconnected" || emitDisconnectCard) {
       const type = state === "disconnected" ? "turn.disconnected" : state === "failed" ? "session.failed" : "session.unsupported";
       try {
         this.emit({ class: "action", type, title: reason, view: { kind: "turn", outcome: state, reason } });

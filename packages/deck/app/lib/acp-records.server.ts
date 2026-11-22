@@ -18,13 +18,15 @@ export type RecordOptions = {
   maxExtensionRecordBytes?: number;
 };
 
-export function summarizeExtensionParams(params: unknown, maxLen = 512): string | null {
+export function summarizeExtensionParams(params: unknown): string | null {
   if (params === undefined || params === null) return null;
-  if (typeof params !== "object") return `<${typeof params}>`;
-  if (Array.isArray(params)) return `<array:${params.length}>`;
-  const keys = Object.keys(params as Record<string, unknown>).slice(0, 32);
-  const summary = `keys:[${keys.map((k) => k.replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 64)).join(",")}]`;
-  return summary.slice(0, maxLen);
+  if (typeof params === "string") return `string(len:${params.length})`;
+  if (typeof params === "number" || typeof params === "boolean") return typeof params;
+  if (Array.isArray(params)) return `array(len:${params.length})`;
+  if (typeof params === "object") {
+    return `object(keys:${Object.keys(params as Record<string, unknown>).length})`;
+  }
+  return `<${typeof params}>`;
 }
 
 export class AcpRecords {

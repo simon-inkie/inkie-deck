@@ -119,7 +119,21 @@ export function AcpThreadView({
 
   const { cards, answeredIds } = useMemo(() => deriveAcpCards(events), [events]);
   const isActive = status.state === "running" || status.state === "starting";
-  const showResume = Boolean(lastSessionId && (status.supportsResume || status.state === "stopped"));
+  const canStop = isActive || status.state === "cleanup-pending";
+  // Major 3: Registry persists lastSessionId ONLY for agents advertising resume/load capability
+  const showResume = Boolean(lastSessionId && !isActive && status.state !== "cleanup-pending");
+  const advertisedCapNames = useMemo(() => {
+    if (!status.capabilities) return [];
+    const caps: string[] = [];
+    if (status.capabilities.loadSession) caps.push("loadSession");
+    const sc = status.capabilities.sessionCapabilities as Record<string, unknown> | undefined;
+    if (sc && typeof sc === "object") {
+      for (const k of Object.keys(sc)) {
+        if (sc[k]) caps.push(`session.${k}`);
+      }
+    }
+    return caps;
+  }, [status.capabilities]);
 
   return (
     <section data-testid="acp-thread-view" className="flex flex-col gap-4 p-4">
@@ -139,11 +153,16 @@ export function AcpThreadView({
           <div data-testid="acp-quota-reading" className="text-xs text-muted-foreground">
             Quota ({usageReading.source}): {usageReading.state}
           </div>
+          {advertisedCapNames.length > 0 && (
+            <div data-testid="acp-capabilities" className="text-xs text-muted-foreground">
+              Capabilities: {advertisedCapNames.join(", ")}
+            </div>
+          )}
         </div>
 
         {canWrite && (
           <div className="flex flex-wrap items-center gap-2">
-            {!isActive && (
+            {!isActive && status.state !== "cleanup-pending" && (
               <button
                 type="button"
                 disabled={busyOp}
@@ -153,7 +172,7 @@ export function AcpThreadView({
                 Start
               </button>
             )}
-            {!isActive && showResume && (
+            {showResume && (
               <button
                 type="button"
                 disabled={busyOp}
@@ -173,14 +192,14 @@ export function AcpThreadView({
                 Interrupt
               </button>
             )}
-            {isActive && (
+            {canStop && (
               <button
                 type="button"
                 disabled={busyOp}
                 onClick={() => void postOp({ op: "stop" })}
                 className="rounded border px-3 py-1 text-xs font-medium"
               >
-                Stop
+                {status.state === "cleanup-pending" ? "Retry cleanup" : "Stop"}
               </button>
             )}
           </div>
@@ -234,9 +253,9 @@ export function AcpThreadView({
               {ev.view.kind === "permission" && (
                 <div className="mt-2 flex flex-col gap-2">
                   <div className="text-xs">Tool: {ev.view.tool}</div>
-                  {isAnswered ? (
+                  {isAnswered || status.state !== "running" ? (
                     <div data-testid="acp-permission-resolved" className="text-xs text-muted-foreground">
-                      Resolved
+                      {isAnswered ? "Resolved" : "Closed"}
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-2">

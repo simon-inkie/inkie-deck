@@ -603,6 +603,11 @@ fi
 # Launch an agent if it is not already running. Echoes "launched" or "skipped".
 launch_agent() {
   local a="$1" target="$SESSION:$1" runtime model_flag=""
+  # Re-check runner marker/lock right before tmux admission to close the cutover race.
+  if agent_opts_into_pty "$a"; then
+    echo "skipped"
+    return 0
+  fi
   local provider_switch_lock
   provider_switch_lock="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/provider-switch-lock"
   if [[ -x "$provider_switch_lock" ]] && "$provider_switch_lock" active "$a"; then

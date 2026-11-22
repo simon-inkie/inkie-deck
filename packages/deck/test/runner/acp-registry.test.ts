@@ -339,9 +339,10 @@ rl.on("line", (line) => {
       extensionName: "_custom_extension/event",
       method: "_custom_extension/event",
       classification: "non-blocking",
-      paramsSummary: "keys:[payload]",
+      paramsSummary: "object(keys:1)",
     });
     expect(content).not.toContain('"foo"');
+    expect(content).not.toContain('"payload"');
 
     await session.close();
   });

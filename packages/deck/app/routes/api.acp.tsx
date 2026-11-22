@@ -1,11 +1,14 @@
 import { data } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/api.acp";
+import { MAX_QUEUED_PROMPTS } from "~/lib/acp-session.server";
 import { requireSameOriginWrite } from "~/lib/request-origin.server";
 import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
 import { antigravityUsageReading, isAcpOptedIn } from "~/lib/runner/acp-manifest";
 import { StartRefusal } from "~/lib/runner/registry.server";
 import { AGENT_NAME_RE } from "~/lib/safe-fs.server";
+
+const MAX_BODY_BYTES = 64 * 1024;
 
 const postPayload = z.discriminatedUnion("op", [
   z.object({
@@ -43,6 +46,43 @@ const refusalMessage: Record<StartRefusal["reason"], string> = {
   "shutting-down": "Deck is shutting down.",
 };
 
+async function readBoundedJson(request: Request): Promise<{ ok: true; value: unknown } | { ok: false; status: number; error: string }> {
+  const clHeader = request.headers.get("content-length");
+  if (clHeader !== null && Number(clHeader) > MAX_BODY_BYTES) {
+    return { ok: false, status: 413, error: "Request body exceeds 64 KiB limit." };
+  }
+  const reader = request.body?.getReader();
+  if (!reader) {
+    try {
+      const text = await request.text();
+      if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
+        return { ok: false, status: 413, error: "Request body exceeds 64 KiB limit." };
+      }
+      return { ok: true, value: JSON.parse(text) };
+    } catch {
+      return { ok: false, status: 400, error: "Invalid ACP runner payload." };
+    }
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel().catch(() => {});
+      return { ok: false, status: 413, error: "Request body exceeds 64 KiB limit." };
+    }
+    chunks.push(value);
+  }
+  try {
+    const raw = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+    return { ok: true, value: JSON.parse(raw) };
+  } catch {
+    return { ok: false, status: 400, error: "Invalid ACP runner payload." };
+  }
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const agent = url.searchParams.get("agent") ?? "";
@@ -65,7 +105,11 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (request.method !== "POST") {
     return data({ ok: false, error: "Use POST to control an ACP session." }, { status: 405, headers: { Allow: "POST" } });
   }
-  const parsed = postPayload.safeParse(await request.json().catch(() => undefined));
+  const rawBody = await readBoundedJson(request);
+  if (!rawBody.ok) {
+    return data({ ok: false, error: rawBody.error }, { status: rawBody.status });
+  }
+  const parsed = postPayload.safeParse(rawBody.value);
   if (!parsed.success) {
     return data({ ok: false, error: "Invalid ACP runner payload." }, { status: 400 });
   }
@@ -95,6 +139,10 @@ export async function action({ request, context }: Route.ActionArgs) {
       const session = acpRunnerRegistry.getActiveSession(agent);
       if (!session || session.state.kind === "disconnected" || session.state.kind === "failed" || session.state.kind === "unsupported") {
         return data({ ok: false, error: "The ACP session is not running." }, { status: 409 });
+      }
+      // Major 11: Enforce strict prompt queue cap with HTTP 429 backpressure
+      if (session.queuedCount >= MAX_QUEUED_PROMPTS) {
+        return data({ ok: false, error: `Prompt queue is full (max ${MAX_QUEUED_PROMPTS}).` }, { status: 429 });
       }
       const wasBusy = session.state.kind === "busy" || session.state.kind === "waiting" || session.queuedCount > 0;
       void session.prompt(body.text).catch(() => {});

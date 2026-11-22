@@ -113,6 +113,13 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
         throw error;
       }
     },
+    failedBeforeSpawn() {
+      if (record.childPid !== null) return;
+      if (record.phase === "spawning") {
+        record.phase = "reserved";
+        persist();
+      }
+    },
     spawned(pid: number) {
       record.childPid = pid;
       record.childBirth = processInfo(pid)?.birth ?? null;

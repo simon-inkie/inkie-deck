@@ -192,6 +192,9 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   start_watcher "$FIRST"
 
   for agent in "${AGENTS[@]:1}"; do
+    if agent_opts_into_pty "$agent"; then
+      continue
+    fi
     tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     start_agent "$agent"
     start_watcher "$agent"
