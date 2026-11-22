@@ -18,7 +18,7 @@ type Schema = {
   minLength?: number;
 };
 
-const { $defs: definitions } = createRequire(import.meta.url)("@agentclientprotocol/sdk/schema/schema.json") as {
+const { $defs: definitions } = createRequire(import.meta.url)("@agentclientprotocol/sdk/schema/v1/schema.unstable.json") as {
   $defs: Record<string, Schema>;
 };
 

@@ -11,12 +11,14 @@ import { AcpRecords, type RecordOptions } from "./acp-records.server";
 import { isObject, LineFramer, promptSettlement, responseEnvelope, rpcId, validPayload } from "./acp-wire.server";
 import { createEventSource, displayText, printableId, projectDisplay } from "./deck-event";
 import type { DeckEvent, DisplayProjection, Outcome } from "./deck-event";
+import { antigravityUsageReading, type UsageReading } from "./runner/acp-manifest";
 
 export type AcpAdapter = {
   executable: string;
   args: readonly string[];
   version: string;
   environment?: readonly string[];
+  knownExtensions?: readonly string[];
 };
 
 type Options = RecordOptions & {
@@ -27,6 +29,7 @@ type Options = RecordOptions & {
   violationLimit?: number;
   cancelMs?: number;
   onEvent?: (event: DeckEvent) => void;
+  onSpawn?: (pid: number) => void;
 };
 
 type TerminalState = "failed" | "disconnected" | "unsupported";
@@ -81,7 +84,7 @@ export class AcpSession {
   readonly records: AcpRecords;
   readonly generation = ++generation;
   private readonly owned: ChildProcessByStdio<Writable, Readable, null>;
-  private readonly exited: Promise<void>;
+  private readonly closePromise: Promise<void>;
   private readonly connection: ClientConnection;
   private readonly wire: ReadableStreamDefaultController<AnyMessage>;
   private readonly pending = new Map<JsonRpcId, string>();
@@ -102,7 +105,7 @@ export class AcpSession {
   private cancelling = false;
   private groupStopped = false;
 
-  private constructor(adapter: AcpAdapter, private readonly options: Options) {
+  private constructor(readonly adapter: AcpAdapter, private readonly options: Options) {
     if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("ACP needs a POSIX process group");
     if (!isAbsolute(adapter.executable) || !isAbsolute(options.cwd)) throw new Error("ACP needs absolute executable and working directory paths");
     this.framer = new LineFramer(positive(options.maxLineBytes ?? 1024 * 1024, "ACP line limit"));
@@ -112,7 +115,8 @@ export class AcpSession {
     this.owned = spawn(adapter.executable, adapter.args, {
       cwd: options.cwd, env: childEnvironment(adapter), detached: true, stdio: ["pipe", "pipe", "ignore"],
     });
-    this.exited = new Promise((resolve) => this.owned.once("close", () => resolve()));
+    if (this.owned.pid !== undefined) options.onSpawn?.(this.owned.pid);
+    this.closePromise = new Promise((resolve) => this.owned.once("close", () => resolve()));
     this.owned.on("error", () => this.stop("disconnected", "Agent process error"));
     this.owned.once("exit", () => this.killGroup());
     this.owned.stdin.on("error", () => this.stop("disconnected", "Agent stdin closed"));
@@ -151,13 +155,18 @@ export class AcpSession {
     } finally {
       clearTimeout(startupTimer);
     }
-    if (terminal(owner.current)) await owner.exited;
+    if (terminal(owner.current)) await owner.closePromise;
     return owner;
   }
 
   get state(): State { return { ...this.current }; }
   get capabilities(): AgentCapabilities { return structuredClone(this.advertised); }
   get pid(): number | undefined { return this.owned.pid; }
+  get exited(): Promise<void> { return this.closePromise; }
+
+  usageReading(): UsageReading {
+    return antigravityUsageReading();
+  }
 
   prompt(text: string): Promise<Outcome> {
     const turn = this.turnQueue.then(() => this.runPrompt(text));
@@ -187,7 +196,7 @@ export class AcpSession {
 
   async close(): Promise<void> {
     this.stop("disconnected", "Session closed");
-    await this.exited;
+    await this.closePromise;
   }
 
   private async runPrompt(text: string): Promise<Outcome> {
@@ -246,6 +255,20 @@ export class AcpSession {
       this.update(update);
     } else if (value.method === incoming.requestPermission && rpcId(value.id) && value.id !== null) {
       this.permissionRequest(value.id, value.params, frame.bytes);
+    } else if (typeof value.method === "string" && !("id" in value)) {
+      if (this.adapter.knownExtensions?.includes(value.method)) {
+        this.records.frame("in", frame.bytes);
+        return;
+      }
+      this.records.frame("in", frame.bytes);
+      this.records.unknownExtension({
+        v: 1,
+        ts: new Date().toISOString(),
+        session: this.sessionId,
+        extensionName: value.method,
+        method: value.method,
+        params: value.params,
+      });
     } else {
       reject("unexpected JSON-RPC message");
     }

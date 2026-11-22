@@ -20,7 +20,7 @@ export type WriteResult = { status: "written" } | {
 export type StopMode = "graceful" | "kill";
 
 export interface Runner {
-  readonly kind: "tmux" | "pty";
+  readonly kind: "tmux" | "pty" | "acp";
   readonly caps: { terminalAttach: boolean; deliveryAck: false; stateEvents: false };
   launch(spec: SessionSpec): Promise<SessionHandle>;
   write(text: string): Promise<WriteResult>;

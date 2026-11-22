@@ -51,7 +51,7 @@ def agent_opts_into_pty(home: Path) -> bool:
     try:
         if lock_file.exists() or lock_file.is_symlink():
             return True
-        return runner_file.is_file() and runner_file.read_text(encoding="utf-8").strip() == "pty"
+        return runner_file.is_file() and runner_file.read_text(encoding="utf-8").strip() in ("pty", "acp")
     except (OSError, UnicodeError):
         return True
 

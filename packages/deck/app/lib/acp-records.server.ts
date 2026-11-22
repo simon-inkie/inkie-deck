@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DeckEvent } from "./deck-event";
+import type { UnknownExtensionRecord } from "./runner/acp-manifest";
 import { confineToRoot } from "./safe-fs.server";
 
 const sessionName = /^acp-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}-[1-9][0-9]*$/;
@@ -15,6 +16,7 @@ export class AcpRecords {
   private readonly root: string;
   private readonly raw: string;
   private readonly journal: string;
+  private readonly extensions: string;
   private readonly rawLimit: number;
   private readonly expires: NodeJS.Timeout;
   private rawSize = 0;
@@ -36,7 +38,8 @@ export class AcpRecords {
     this.directory = safeDirectory;
     this.raw = confined(path.join(this.directory, "raw.ndjson"), this.directory);
     this.journal = confined(path.join(this.directory, "display.ndjson"), this.directory);
-    for (const file of [this.raw, this.journal]) fs.writeFileSync(file, "", { mode: 0o600, flag: "wx" });
+    this.extensions = confined(path.join(this.directory, "extensions.ndjson"), this.directory);
+    for (const file of [this.raw, this.journal, this.extensions]) fs.writeFileSync(file, "", { mode: 0o600, flag: "wx" });
     this.expires = setTimeout(() => {
       try { this.expireRaw(); } catch { return; }
     }, age).unref();
@@ -74,6 +77,12 @@ export class AcpRecords {
   event(event: DeckEvent): void {
     const file = this.recordPath(this.journal);
     if (!file) throw new Error("Missing ACP display journal");
+    fs.appendFileSync(file, JSON.stringify(event) + "\n");
+  }
+
+  unknownExtension(event: UnknownExtensionRecord): void {
+    const file = this.recordPath(this.extensions);
+    if (!file) throw new Error("Missing ACP extension log file");
     fs.appendFileSync(file, JSON.stringify(event) + "\n");
   }
 
