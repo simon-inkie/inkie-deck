@@ -127,8 +127,16 @@ get_runtime() {
 
 # Indirection point so the test suite can stub the pane check without a live
 # tmux target.
+tmux_base() {
+  if [[ -n "${BASE_TMUX_SOCKET:-}" ]]; then
+    tmux -S "$BASE_TMUX_SOCKET" "$@"
+  else
+    tmux "$@"
+  fi
+}
+
 codex_pane_current_command() {
-  tmux list-panes -t "$1" -F '#{pane_current_command}' 2>/dev/null
+  tmux_base list-panes -t "$1" -F '#{pane_current_command}' 2>/dev/null
 }
 
 # codex_pane_has_update_dialog <pane_text> -- return 0 iff the pane is CURRENTLY
@@ -239,10 +247,10 @@ codex_pane_has_update_dialog() {
 # than falling off the end of the function.
 codex_dismiss_update_dialog_if_present() {
   local target="$1" pane
-  pane="$(tmux capture-pane -t "$target" -p 2>/dev/null)"
+  pane="$(tmux_base capture-pane -t "$target" -p 2>/dev/null)"
   codex_pane_has_update_dialog "$pane" || return 1
   echo "boot-agents: codex update-available dialog detected on $target -- selecting 'Skip until next version' (3)" >&2
-  tmux send-keys -t "$target" "3"
+  tmux_base send-keys -t "$target" "3"
   return 0
 }
 
@@ -433,7 +441,7 @@ codex_verify_resume_or_fallback() {
     # Invariant 2: positively check the tmux target exists before considering
     # a fallback send at all. An inconclusive result is evidence the pane
     # could not be observed, never evidence the session was bad.
-    if ! tmux list-panes -t "$target" >/dev/null 2>&1; then
+    if ! tmux_base list-panes -t "$target" >/dev/null 2>&1; then
       echo "boot-agents: $a's tmux target $target could not be located at all (tmux list-panes failed) after an inconclusive check on $sid -- the window itself is very likely gone, not just the codex session inside it. Not attempting a fallback send into a target that does not exist, and not touching $sid's session file (zero evidence the session was at fault). Escalating so an operator, or a later run of this script, recreates the window; this function does not create tmux windows itself." >&2
       return 1
     fi
@@ -448,7 +456,7 @@ codex_verify_resume_or_fallback() {
   # its full provider envelope (name, role, auto-mode config, secrets, and model).
   local fallback_command
   fallback_command="$(codex_launch_command "$a" "$role" "$codex_home" "" "$model_flag")"
-  tmux send-keys -t "$target" "$fallback_command" Enter
+  tmux_base send-keys -t "$target" "$fallback_command" Enter
   local send_rc=$?
   if [[ "$send_rc" -ne 0 ]]; then
     echo "boot-agents: $a's fallback codex re-send into $target itself FAILED (tmux send-keys exited $send_rc) -- the target is likely gone too, a worse problem than a bad session. Not quarantining $sid: the fallback never landed, and there is still no positive evidence the session was at fault. Escalating for an operator." >&2
@@ -479,10 +487,10 @@ fi
 
 pane_readiness() {
   local target="$1" runtime="$2" pane cmd composer raw line previous="" anchored=0
-  pane=$(tmux capture-pane -t "$target" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
+  pane=$(tmux_base capture-pane -t "$target" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
   pane=$(printf '%s\n' "$pane" | tail -n 30)
   if pane_has_codex_approval_dialog "$pane"; then echo "approval prompt: answer manually"; return 1; fi
-  cmd=$(tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null) || { echo "process unavailable"; return 1; }
+  cmd=$(tmux_base list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null) || { echo "process unavailable"; return 1; }
   case "$cmd" in
     node|claude|codex|"${runtime##*/}") ;;
     *) echo "runtime not running"; return 1 ;;
@@ -506,7 +514,7 @@ pane_readiness() {
     [[ "$anchored" -eq 1 ]] || { echo "composer unconfirmed"; return 1; }
   fi
   if printf '%s\n' "$composer" | sed -E -e 's/^[[:space:]]*(❯|›|>)[[:space:]]*//' -e $'s/\xc2\xa0//g' | grep -q '[^[:space:]]'; then
-    raw=$(tmux capture-pane -t "$target" -p -e 2>/dev/null) || { echo "composer unconfirmed"; return 1; }
+    raw=$(tmux_base capture-pane -t "$target" -p -e 2>/dev/null) || { echo "composer unconfirmed"; return 1; }
     raw=$(raw_line_for "$raw" "$composer")
     printf '%s' "$raw" | grep -qF "$(printf '\033[2m')" || { echo "composer contains text or menu selection"; return 1; }
   fi
@@ -537,7 +545,7 @@ manual_prompt_reason() {
 
 existing_readiness() {
   local pane reason
-  pane=$(tmux capture-pane -t "$1" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
+  pane=$(tmux_base capture-pane -t "$1" -p 2>/dev/null) || { echo "pane unavailable"; return 1; }
   pane=$(printf '%s\n' "$pane" | tail -n 30)
   if reason=$(manual_prompt_reason "$pane"); then echo "$reason"; return 1; fi
   # launch_agent already confirmed a running runtime. Busy output and a banner
@@ -561,7 +569,7 @@ wait_for_readiness() {
   case "$budget" in ''|*[!0-9]*|0) budget=45 ;; esac
   for ((attempt=0; attempt<budget; attempt++)); do
     if reason=$(pane_readiness "$target" "$runtime"); then return 0; fi
-    pane=$(tmux capture-pane -t "$target" -p 2>/dev/null | tail -n 30)
+    pane=$(tmux_base capture-pane -t "$target" -p 2>/dev/null | tail -n 30)
     if prompt=$(manual_prompt_reason "$pane"); then
       reason="$prompt"
       break
@@ -591,15 +599,28 @@ done
 [[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
 AGENTS=("${TMUX_AGENTS[@]}")
 
-# Major 1: Pin Base tmux operations to the canonical default socket (never inherit a private $TMUX or $TMUX_TMPDIR)
-# so Base and Deck always inspect the exact same tmux server regardless of launch environment.
+# Major 1 (Round 9): Pin Base tmux operations to one explicit socket path (-S) and record it in
+# $AGENTS_HOME/.base-tmux-socket so Deck always inspects the exact same tmux server regardless of environment.
+BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
+BASE_TMUX_SOCKET_FILE="$AGENTS_HOME/.base-tmux-socket"
 unset TMUX TMUX_PANE TMUX_TMPDIR
 
-tmux start-server 2>/dev/null || true
+record_base_tmux_socket() {
+  local sock_dir tmp_file
+  sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
+  [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
+  tmp_file="${BASE_TMUX_SOCKET_FILE}.tmp.$$"
+  if printf '%s\n' "$BASE_TMUX_SOCKET" > "$tmp_file" 2>/dev/null; then
+    mv -f "$tmp_file" "$BASE_TMUX_SOCKET_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
+  fi
+}
+
+record_base_tmux_socket
+tmux_base start-server 2>/dev/null || true
 # Turn on focus-events before any pane starts, so Claude Code does not show its
 # "tmux focus-events off" hint. tmux has no per-session form of this option
 # (it is a server option), so it applies to the tmux server these scripts use.
-tmux set -g focus-events on 2>/dev/null || true
+tmux_base set -g focus-events on 2>/dev/null || true
 
 # Launch an agent if it is not already running. Echoes "launched" or "skipped".
 launch_agent() {
@@ -619,22 +640,27 @@ launch_agent() {
   # Absent = no flag = inherit the global default. Applies to all runtimes.
   model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
   local created_window=0
-  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-    tmux new-session -d -s "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
+    record_base_tmux_socket
+    if ! tmux_base new-session -d -s "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null; then
+      echo "boot-agents: session creation failed" >&2
+      return 1
+    fi
     created_window=1
-  elif ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
-    tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  elif ! tmux_base list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
+    record_base_tmux_socket
+    tmux_base new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
     created_window=1
   fi
   # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, remove the fresh window and refuse send-keys.
   if agent_opts_into_pty "$a"; then
     if [[ $created_window -eq 1 ]]; then
-      tmux kill-window -t "$target" 2>/dev/null || true
+      tmux_base kill-window -t "$target" 2>/dev/null || true
     fi
     echo "skipped"
     return 0
   fi
-  if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then
+  if tmux_base list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then
     echo "skipped"; return
   fi
   if [[ "$runtime" == "claude" ]]; then
@@ -656,7 +682,7 @@ launch_agent() {
     }
     local first_prompt
     first_prompt="$(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$a")"
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $first_prompt" Enter || return 1
+    tmux_base send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $first_prompt" Enter || return 1
     # The first message is already on its way, so the pane may be busy at once.
     [[ -n "$first_prompt" ]] && { echo "launched:first-boot"; return; }
   elif [[ "$runtime" == "codex" ]]; then
@@ -674,7 +700,7 @@ launch_agent() {
     sid="$(codex_latest_session_for_workspace "$a" "$codex_home")"
     local codex_cmd
     codex_cmd="$(codex_launch_command "$a" "$role" "$codex_home" "$sid" "$model_flag")"
-    tmux send-keys -t "$target" "$codex_cmd" Enter || return 1
+    tmux_base send-keys -t "$target" "$codex_cmd" Enter || return 1
     # A selected id is not a promise the resume succeeded, so verify the pane
     # and recover it if it did not come up (codex_verify_resume_or_fallback,
     # above). The same call dismisses Codex's update-available dialog, which
@@ -692,13 +718,13 @@ launch_agent() {
     cid="$(agy_latest_conversation_for_workspace "$a")"
     agy_sync_includes "$a"
     agy_cmd="$(agy_launch_command "$a" "$role" "$cid" "$model_flag")"
-    tmux send-keys -t "$target" "$agy_cmd" Enter || return 1
+    tmux_base send-keys -t "$target" "$agy_cmd" Enter || return 1
   else
     # Any other runtime: launch it plainly. If it needs env vars set before
     # the process starts rather than after, set them here explicitly -- some
     # runtimes only apply hook-declared env to their own shell tool calls, not
     # to the process itself, so a hook-only approach can silently under-scope.
-    tmux send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a $runtime $model_flag" Enter || return 1
+    tmux_base send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a $runtime $model_flag" Enter || return 1
   fi
   echo "launched"
 }
@@ -779,14 +805,14 @@ for a in "${FRESH[@]}"; do
   target="$SESSION:$a"
   confirmed=0; monitor_reason=""
   monitor_pattern='^[^[:alnum:]]*(Monitor\(|Monitor started([[:space:]]|$))'
-  baseline=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
+  baseline=$(tmux_base capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
   # Send once: repeated prompts can create duplicate watchers. Poll only.
   if ! monitor_reason=$(wait_for_readiness "$target" "$(get_runtime "$a")"); then
     echo "boot-agents: $a monitor waiting: $monitor_reason" >&2
-  elif tmux send-keys -t "$target" "arm your monitor" && sleep 0.7 && tmux send-keys -t "$target" Enter; then
+  elif tmux_base send-keys -t "$target" "arm your monitor" && sleep 0.7 && tmux_base send-keys -t "$target" Enter; then
     for poll in 1 2 3 4; do
       sleep 8
-      observed=$(tmux capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
+      observed=$(tmux_base capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
       if [[ "$observed" -gt "$baseline" ]]; then
         confirmed=1
         break
@@ -807,17 +833,16 @@ for a in "${FRESH[@]}"; do
 done
 
 # tmux quality-of-life (no-op if already set)
-tmux set -g mouse on 2>/dev/null || true
-tmux set -g set-titles on 2>/dev/null || true
-tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
-tmux set -g allow-passthrough on 2>/dev/null || true
+tmux_base set -g mouse on 2>/dev/null || true
+tmux_base set -g set-titles on 2>/dev/null || true
+tmux_base set -g set-titles-string "#{window_name}" 2>/dev/null || true
+tmux_base set -g allow-passthrough on 2>/dev/null || true
 
 echo "boot-agents: $LAUNCHED launched and ready, $ARMED monitors armed, $ALREADY_UP already up and ready, $WAITING waiting, $FAILED failed"
-
 echo "boot-agents: waiting-detail: prompts=$PROMPT_WAITING other=$OTHER_WAITING"
 
 BOOT_RC=0
 [[ "$WAITING" -eq 0 ]] || BOOT_RC=3
 [[ "$FAILED" -eq 0 ]] || BOOT_RC=1
-if [[ "$ATTACH" -eq 1 ]]; then tmux attach -t "$SESSION"; fi
+if [[ "$ATTACH" -eq 1 ]]; then tmux_base attach -t "$SESSION"; fi
 exit "$BOOT_RC"

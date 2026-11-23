@@ -1057,6 +1057,7 @@ boot_fixture() {
   output=$(bash -c '
     tmux() {
       printf "%s\n" "$*" >> "$BOOT_BOX/log"
+      while [[ "${1:-}" == "-S" ]]; do shift 2; done
       case "$1" in
         start-server|set) return 0 ;;
         has-session) [[ "$BOOT_SCENARIO" != session-fail ]] ;;

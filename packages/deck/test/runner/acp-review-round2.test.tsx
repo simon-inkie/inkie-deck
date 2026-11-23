@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -924,18 +925,173 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(rawFailEvents.some((e) => e.type === "extension.blocking")).toBe(true);
     await rawFailSess.close();
 
-    // Round 8 Major 4: Non-permanent shutdown({ permanent: false }) (Vite in-process restart) stops sessions without latching closing=true
+    // Round 8 Major 4 & Round 9 Major 2:
+    // (a) Concurrent shutdown() calls share ONE in-flight promise and reject new Starts immediately while draining.
+    // (b) Permanent shutdown blocks Start until reopen() is called for a fresh Vite server instance.
+    const slowCloseScript = join(root, "r9-slow-close.mjs");
+    writeFileSync(
+      slowCloseScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-slow" } });
+      `),
+    );
     const regRestart = new AcpRunnerRegistry(env, {
       dataRoot: root,
-      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [rawFailScript] },
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
       execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       listWindows: () => [],
     });
     const s1 = await regRestart.start(agent);
-    await regRestart.shutdown({ permanent: false });
+    let releaseSlowClose!: () => void;
+    const origClose = s1.close.bind(s1);
+    s1.close = async () => {
+      await new Promise<void>((r) => { releaseSlowClose = r; });
+      return origClose();
+    };
+    let close1Done = false;
+    let close2Done = false;
+    const pClose1 = regRestart.shutdown({ permanent: false }).then(() => { close1Done = true; });
+    const pClose2 = regRestart.shutdown({ permanent: false }).then(() => { close2Done = true; });
+    await delay(20);
+    // Neither concurrent shutdown call may finish before ACP teardown completes, and Start MUST be refused mid-shutdown
+    expect(close1Done).toBe(false);
+    expect(close2Done).toBe(false);
+    await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "shutting-down" });
+    releaseSlowClose();
+    await Promise.all([pClose1, pClose2]);
+    expect(close1Done).toBe(true);
+    expect(close2Done).toBe(true);
     expect(s1.state.kind).toBe("disconnected");
+
+    // Permanent shutdown latches closing=true until reopen() is invoked for a fresh server
+    await regRestart.shutdown({ permanent: true });
+    await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "shutting-down" });
+    regRestart.reopen();
     const s2 = await regRestart.start(agent);
     expect(s2.state.kind).toBe("idle");
     await regRestart.stop(agent);
+
+    // Round 9 Major 1: Explicit .base-tmux-socket + grouped sessions (`list-windows -a`) + usual-dir scan when absent
+    const tmuxStubDir = join(root, "tmux-stub-bin");
+    mkdirSync(tmuxStubDir, { recursive: true });
+    const privateSockDir = join(root, "private-tmux-dir");
+    const uidDir = join(privateSockDir, `tmux-${process.getuid?.() ?? 1000}`);
+    mkdirSync(uidDir, { recursive: true });
+    const recordedSock = join(uidDir, "base-explicit");
+    writeFileSync(recordedSock, "stub-sock");
+    const stubTmuxPath = join(tmuxStubDir, "tmux");
+    writeFileSync(
+      stubTmuxPath,
+      `#!/usr/bin/env bash
+sock=""
+if [[ "$1" == "-S" ]]; then
+  sock="$2"
+  shift 2
+fi
+if [[ "$1" == "list-windows" && "$2" == "-a" ]]; then
+  if [[ "$sock" == "${recordedSock}" ]]; then
+    echo "${agent}"
+    exit 0
+  fi
+  echo "no server running on /tmp/tmux-0/default" >&2
+  exit 1
+fi
+echo "can't find session: agents" >&2
+exit 1
+`,
+    );
+    chmodSync(stubTmuxPath, 0o755);
+    // Case A: .base-tmux-socket points to recordedSock (grouped session only; -t agents fails) -> refused!
+    writeFileSync(join(root, ".base-tmux-socket"), `${recordedSock}\n`);
+    const regExplicitSock = new AcpRunnerRegistry(
+      { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: `${tmuxStubDir}:${process.env.PATH ?? ""}` },
+      {
+        dataRoot: root,
+        manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
+        execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      },
+    );
+    await expect(regExplicitSock.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Case B: .base-tmux-socket ABSENT, socket exists in TMUX_TMPDIR/tmux-<uid>/ -> discovered & refused!
+    rmSync(join(root, ".base-tmux-socket"), { force: true });
+    const regFallbackScan = new AcpRunnerRegistry(
+      {
+        AGENTS_HOME: root,
+        MC_ACP_RUNNER: "1",
+        HOME: root,
+        TMUX_TMPDIR: privateSockDir,
+        PATH: `${tmuxStubDir}:${process.env.PATH ?? ""}`,
+      },
+      {
+        dataRoot: root,
+        manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
+        execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      },
+    );
+    await expect(regFallbackScan.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Round 9 Minor 1: Capability-gated Resume (canResume turns false after downgraded refusal, UI hides Resume button)
+    const downgradedScript = join(root, "r9-downgraded.mjs");
+    writeFileSync(
+      downgradedScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: false } } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-dg" } });
+      `),
+    );
+    writeFileSync(join(agentHome, ".acp-last-session"), "kept-valid-checkpoint\n");
+    const regCapGate = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [downgradedScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    await expect(regCapGate.start(agent, { resume: true })).rejects.toThrow();
+    expect(regCapGate.lastSessionId(agent)).toBe("kept-valid-checkpoint");
+    expect(regCapGate.canResume(agent)).toBe(false);
+    const hiddenResumeHtml = renderToStaticMarkup(
+      <AcpThreadView
+        agent={agent}
+        initialStatus={{ state: "stopped" }}
+        initialEvents={[]}
+        initialLastSessionId="kept-valid-checkpoint"
+        initialCanResume={false}
+        initialUsageReading={antigravityUsageReading()}
+        canWrite={true}
+      />,
+    );
+    expect(hiddenResumeHtml).not.toContain("Resume last session");
+
+    // Round 9 Minor 2: Non-blocking unknown advisory notification goes to extensions.ndjson ONLY, never raw.ndjson
+    const advScript = join(root, "r9-advisory.mjs");
+    writeFileSync(
+      advScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-adv" } });
+        else if (msg.method === "session/prompt") {
+          send({ jsonrpc: "2.0", method: "vendor/notice", params: { secretToken: "ADV_SECRET_TOKEN_99" } });
+          send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
+        }
+      `),
+    );
+    const advRoot = join(root, "adv-records");
+    mkdirSync(advRoot, { recursive: true });
+    const advEvents: DeckEvent[] = [];
+    const advSess = await AcpSession.start(
+      { executable: process.execPath, args: [advScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: advRoot, onEvent: (e) => advEvents.push(e) },
+    );
+    expect(await advSess.prompt("send advisory")).toBe("completed");
+    await advSess.close();
+    expect(advEvents.some((e) => e.type === "extension.blocking")).toBe(false);
+    const extLog = readFileSync(join(advSess.records.directory, "extensions.ndjson"), "utf8");
+    const rawLog = readFileSync(join(advSess.records.directory, "raw.ndjson"), "utf8");
+    expect(extLog).toContain("vendor/notice");
+    expect(extLog).not.toContain("ADV_SECRET_TOKEN_99");
+    expect(rawLog).not.toContain("ADV_SECRET_TOKEN_99");
+    expect(rawLog).not.toContain("vendor/notice");
   });
 });

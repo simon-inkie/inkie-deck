@@ -208,6 +208,7 @@ export class AcpSession {
   private processExit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
   private authRequiredFlag = false;
   private resumeRejectedFlag = false;
+  private negotiatedFlag = false;
   private unsupportedReasonText?: string;
   private lastContextUsage?: { used: number; size: number };
 
@@ -279,6 +280,7 @@ export class AcpSession {
         owner.stop("unsupported", "ACP protocol version");
       } else {
         owner.advertised = negotiated.agentCapabilities ?? {};
+        owner.negotiatedFlag = true;
         if (options.requireCapability === "session/load" && !owner.advertised.loadSession) {
           owner.stop("unsupported", options.requireCapability);
         } else if (options.resumeSessionId) {
@@ -338,6 +340,7 @@ export class AcpSession {
   get queuedCount(): number { return this.queuedPrompts; }
   get authRequired(): boolean { return this.authRequiredFlag; }
   get resumeRejected(): boolean { return this.resumeRejectedFlag; }
+  get negotiated(): boolean { return this.negotiatedFlag; }
   get unsupportedReason(): string | undefined { return this.unsupportedReasonText; }
   get contextUsage(): { used: number; size: number } | undefined {
     return this.lastContextUsage ? { ...this.lastContextUsage } : undefined;
@@ -526,10 +529,14 @@ export class AcpSession {
       }
     }
 
-    try {
-      this.records.frame("in", bytes);
-    } catch {
-      // Best-effort raw frame logging; ENOSPC must not abort handling of an unknown extension.
+    // Minor 2 (Round 9): Non-blocking unknown advisory notifications go to extensions.ndjson ONLY
+    // (bounded sanitized summary), never into raw.ndjson.
+    if (classification !== "non-blocking") {
+      try {
+        this.records.frame("in", bytes);
+      } catch {
+        // Best-effort raw frame logging; ENOSPC must not abort handling of an unknown extension.
+      }
     }
     this.records.unknownExtension({
       v: 1,

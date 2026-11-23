@@ -33,6 +33,8 @@
  * ASCII only - no em-dashes.
  */
 import { execFileSync } from "node:child_process";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { resolveAttachmentsRoot } from "./attachments.server.js";
 import { IDLE_PROMPT_RE, SHELL_PROMPT_RE } from "./pane-prompts.js";
@@ -162,11 +164,145 @@ function listTmuxForOwnership(args: string[], env: NodeJS.ProcessEnv): string {
     });
   } catch (error) {
     const result = error as { status?: number; stderr?: string };
-    if (result.status === 1 && /^(?:no server running on .+|no sessions|can't find session: .+|error connecting to .+ \(No such file or directory\))\s*$/.test(result.stderr ?? "")) {
+    if (
+      result.status === 1 &&
+      /^(?:no server running on .+|no sessions|can't find session: .+|error connecting to .+ \((?:No such file or directory|Connection refused)\))\s*$/.test(
+        result.stderr ?? "",
+      )
+    ) {
       return "";
     }
     throw new Error("Could not verify tmux window ownership.");
   }
+}
+
+function parseWindowList(out: string): string[] {
+  return out
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && isValidWindowName(l));
+}
+
+function readRecordedBaseTmuxSocket(agentsRootDir: string | undefined): string | undefined {
+  if (!agentsRootDir) return undefined;
+  try {
+    const stateFile = path.join(agentsRootDir, ".base-tmux-socket");
+    const st = lstatSync(stateFile, { throwIfNoEntry: false });
+    if (!st || st.isSymbolicLink() || !st.isFile() || st.size <= 0 || st.size > 4096) return undefined;
+    const raw = readFileSync(stateFile, "utf8").trim();
+    if (!raw || !raw.startsWith("/") || /[\r\n\0]/.test(raw)) return undefined;
+    return raw;
+  } catch {
+    return undefined;
+  }
+}
+
+function discoverUsualTmuxSockets(env: NodeJS.ProcessEnv): string[] {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const uidDirName = uid !== undefined ? `tmux-${uid}` : undefined;
+  const dirs = new Set<string>();
+  const sockets = new Set<string>();
+
+  const envBaseSock = (env["BASE_TMUX_SOCKET"] ?? "").trim();
+  if (envBaseSock.startsWith("/")) sockets.add(envBaseSock);
+
+  const envTmux = (env["TMUX"] ?? "").trim();
+  if (envTmux) {
+    const sockPart = envTmux.split(",")[0]?.trim() ?? "";
+    if (sockPart.startsWith("/")) sockets.add(sockPart);
+  }
+
+  const pushDir = (baseDir: string | undefined, includeDirect = false) => {
+    const trimmed = (baseDir ?? "").trim();
+    if (!trimmed || !trimmed.startsWith("/")) return;
+    if (includeDirect) dirs.add(trimmed);
+    if (uidDirName) dirs.add(path.join(trimmed, uidDirName));
+  };
+
+  pushDir(env["TMUX_TMPDIR"], true);
+  pushDir(env["TMPDIR"], false);
+  pushDir(env["XDG_RUNTIME_DIR"], false);
+  pushDir("/tmp", false);
+  pushDir("/dev/shm", false);
+  pushDir(os.tmpdir(), false);
+
+  for (const dir of dirs) {
+    try {
+      const dirStat = lstatSync(dir, { throwIfNoEntry: false });
+      if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
+      for (const entry of readdirSync(dir)) {
+        const candidate = path.join(dir, entry);
+        const st = lstatSync(candidate, { throwIfNoEntry: false });
+        if (!st || st.isSymbolicLink()) continue;
+        // Accept both real Unix sockets and regular stub state files in tmux-<uid> dirs.
+        if (st.isSocket() || st.isFile()) {
+          sockets.add(candidate);
+        }
+      }
+    } catch {
+      // Unreadable directory (e.g. another user's permissions) - skip.
+    }
+  }
+
+  return Array.from(sockets);
+}
+
+/**
+ * Major 1 (Round 9): Comprehensive ownership window discovery across:
+ * 1. Explicit Base socket recorded in $AGENTS_HOME/.base-tmux-socket (`-S <sock> list-windows -a`),
+ * 2. Every tmux socket found in usual tmux directories (catches pre-upgrade private TMUX_TMPDIR sockets),
+ * 3. Current env server AND canonical default socket (`list-windows -a` scans ALL sessions including grouped sessions).
+ */
+export function listAllTmuxWindowsForOwnership(
+  env: NodeJS.ProcessEnv,
+  agentsRootDir?: string,
+): string[] {
+  const found = new Set<string>();
+  const queriedSockets = new Set<string>();
+
+  const queryServerAllSessions = (queryEnv: NodeJS.ProcessEnv, socketPath?: string) => {
+    const args = socketPath
+      ? ["-S", socketPath, "list-windows", "-a", "-F", "#{window_name}"]
+      : ["list-windows", "-a", "-F", "#{window_name}"];
+    const effectiveEnv = socketPath ? { ...queryEnv } : queryEnv;
+    if (socketPath) {
+      delete effectiveEnv["TMUX"];
+      delete effectiveEnv["TMUX_PANE"];
+      delete effectiveEnv["TMUX_TMPDIR"];
+    }
+    for (const win of parseWindowList(listTmuxForOwnership(args, effectiveEnv))) {
+      found.add(win);
+    }
+  };
+
+  // 1. Explicit Base socket written at window creation
+  const recordedSocket = readRecordedBaseTmuxSocket(agentsRootDir);
+  if (recordedSocket) {
+    queriedSockets.add(recordedSocket);
+    queryServerAllSessions(env, recordedSocket);
+  }
+
+  // 2. Current env's tmux server (all sessions, including grouped sessions)
+  queryServerAllSessions(env);
+
+  // 3. Canonical default socket with TMUX/TMUX_PANE/TMUX_TMPDIR stripped
+  if (env["TMUX"] || env["TMUX_TMPDIR"] || resolveTmuxSession(env) !== "agents") {
+    const defaultEnv: NodeJS.ProcessEnv = { ...env, MC_TMUX_SESSION: "agents" };
+    delete defaultEnv["TMUX"];
+    delete defaultEnv["TMUX_PANE"];
+    delete defaultEnv["TMUX_TMPDIR"];
+    queryServerAllSessions(defaultEnv);
+  }
+
+  // 4. Scan usual tmux socket directories (catches pre-upgrade launchers under different TMUX_TMPDIR
+  //    or non-default socket names when .base-tmux-socket is absent or stale)
+  for (const sock of discoverUsualTmuxSockets(env)) {
+    if (queriedSockets.has(sock)) continue;
+    queriedSockets.add(sock);
+    queryServerAllSessions(env, sock);
+  }
+
+  return Array.from(found);
 }
 
 /**

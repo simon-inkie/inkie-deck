@@ -123,6 +123,7 @@ rm -f "$AGENTS_HOME/cobalt/.inbox-root"
 cat > "$BOX/stubs/tmux" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TMUX_LOG"
+while [[ "${1:-}" == "-S" ]]; do shift 2; done
 case "$1" in
   has-session) exit 1 ;;
   list-windows) for d in "$AGENTS_HOME"/*/; do basename "$d"; done ;;
@@ -148,7 +149,7 @@ printf 'Gale is new\n' > "$AGENTS_HOME/gale/IDENTITY.md"
 printf '# gale\n<!-- BEGIN SYNCED:IDENTITY.md (generated) -->\nstale\n<!-- END SYNCED:IDENTITY.md -->\n' > "$AGENTS_HOME/gale/GEMINI.md"
 hist_line "hi" 1 "$AGENTS_HOME/gale" "gale-conv-1" > "$AGY_HISTORY_FILE"
 
-sent_to() { grep -E "^send-keys -t agents:$1 " "$TMUX_LOG" | head -1; }
+sent_to() { grep -E "^(-S [^ ]+ )?send-keys -t agents:$1 " "$TMUX_LOG" | head -1; }
 
 : > "$TMUX_LOG"
 PATH="$STUB_PATH" BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 CODEX_RESUME_VERIFY_SECS=0 \
@@ -168,6 +169,7 @@ if grep -q 'stub must not run' "$BOX/boot.out"; then fail "B5 boot: no runtime b
 cat > "$BOX/stubs/tmux" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TMUX_LOG"
+while [[ "${1:-}" == "-S" ]]; do shift 2; done
 case "$1" in
   list-windows) for d in "$AGENTS_HOME"/*/; do basename "$d"; done ;;
   list-panes) echo agy ;;
@@ -177,7 +179,7 @@ exit 0
 STUB
 : > "$TMUX_LOG"
 PATH="$STUB_PATH" BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 bash "$BIN_DIR/boot-agents.sh" gale >"$BOX/boot2.out" 2>&1
-if grep -q '^send-keys' "$TMUX_LOG"; then fail "B6 boot: a running agy pane is not relaunched" "$(cat "$TMUX_LOG")"; else pass "B6 boot: a running agy pane is not relaunched"; fi
+if grep -qE '^(-S [^ ]+ )?send-keys' "$TMUX_LOG"; then fail "B6 boot: a running agy pane is not relaunched" "$(cat "$TMUX_LOG")"; else pass "B6 boot: a running agy pane is not relaunched"; fi
 
 # W1-W3: workspace.sh dry run prints the same commands, one per runtime. The
 # boot above used claudia's day-one message; reset it so W4 can see whether the
@@ -201,11 +203,12 @@ out="$(PATH="$STUB_PATH" WORKSPACE_DRY_RUN=1 bash "$BIN_DIR/workspace.sh" --runt
 cat > "$BOX/stubs/tmux" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TMUX_LOG"
+while [[ "${1:-}" == "-S" ]]; do shift 2; done
 case "$1" in
   has-session) exit 1 ;;
   list-windows) for d in "$AGENTS_HOME"/*/; do basename "$d"; done ;;
   list-panes)
-    if grep -q '^send-keys -t agents:cobalt ' "$TMUX_LOG"; then echo node; else echo bash; fi ;;
+    if grep -qE '^(-S [^ ]+ )?send-keys -t agents:cobalt ' "$TMUX_LOG"; then echo node; else echo bash; fi ;;
   capture-pane) printf 'OpenAI Codex\n\342\200\272 \n' ;;
 esac
 exit 0

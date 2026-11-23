@@ -151,7 +151,7 @@ launch_command() {
 start_agent() {
   local agent="$1" command
   command="$(launch_command "$agent")" || return 0
-  tmux send-keys -t "$SESSION:$agent" "$command" Enter
+  tmux_base send-keys -t "$SESSION:$agent" "$command" Enter
 }
 
 # Dry run: print what would be sent to each agent's pane, start nothing.
@@ -175,37 +175,55 @@ start_watcher() {
   [[ ! -x "$WATCHER_SCRIPT" ]] && return
   local target="$SESSION:$agent"
   # Slim side pane (15%) for the watcher; -d keeps focus on the agent pane.
-  tmux split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
+  tmux_base split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
 }
 
 # Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 
-# Major 1: Pin Base tmux operations to the canonical default socket (never inherit a private $TMUX or $TMUX_TMPDIR)
-# so Base and Deck always inspect the exact same tmux server regardless of launch environment.
+# Major 1 (Round 9): Pin Base tmux operations to one explicit socket path (-S) and record it in
+# $AGENTS_HOME/.base-tmux-socket so Deck always inspects the exact same tmux server regardless of environment.
+BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
+BASE_TMUX_SOCKET_FILE="$AGENTS_HOME/.base-tmux-socket"
 unset TMUX TMUX_PANE TMUX_TMPDIR
+
+tmux_base() {
+  tmux -S "$BASE_TMUX_SOCKET" "$@"
+}
+
+record_base_tmux_socket() {
+  local sock_dir tmp_file
+  sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
+  [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
+  tmp_file="${BASE_TMUX_SOCKET_FILE}.tmp.$$"
+  if printf '%s\n' "$BASE_TMUX_SOCKET" > "$tmp_file" 2>/dev/null; then
+    mv -f "$tmp_file" "$BASE_TMUX_SOCKET_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
+  fi
+}
 
 # Create the base session if it doesn't exist
 # Before any pane starts, so Claude Code shows no "focus-events off" hint.
-tmux start-server 2>/dev/null || true
-tmux set -g focus-events on 2>/dev/null || true
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+record_base_tmux_socket
+tmux_base start-server 2>/dev/null || true
+tmux_base set -g focus-events on 2>/dev/null || true
+if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
   session_created=0
   for agent in "${AGENTS[@]}"; do
     if agent_opts_into_pty "$agent"; then
       continue
     fi
+    record_base_tmux_socket
     if [[ $session_created -eq 0 ]]; then
-      tmux new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      tmux_base new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
       session_created=1
     else
-      tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      tmux_base new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     fi
     # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, tear down the empty window and skip launch.
     if agent_opts_into_pty "$agent"; then
-      tmux kill-window -t "$SESSION:$agent" 2>/dev/null || true
+      tmux_base kill-window -t "$SESSION:$agent" 2>/dev/null || true
       # If killing the only window removed the session, reset session_created so subsequent agents can start cleanly.
-      if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+      if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
         session_created=0
       fi
       continue
@@ -217,24 +235,25 @@ fi
 
 # Enable mouse scroll + click, and terminal title passthrough
 # (must be after session exists -- tmux server has to be running)
-tmux set -g mouse on 2>/dev/null || true
-tmux set -g set-titles on 2>/dev/null || true
-tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
-tmux set -g allow-passthrough on 2>/dev/null || true
+tmux_base set -g mouse on 2>/dev/null || true
+tmux_base set -g set-titles on 2>/dev/null || true
+tmux_base set -g set-titles-string "#{window_name}" 2>/dev/null || true
+tmux_base set -g allow-passthrough on 2>/dev/null || true
 
 # Add any missing agent windows
 for agent in "${AGENTS[@]}"; do
   if agent_opts_into_pty "$agent"; then
     continue
   fi
-  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$agent"; then
-    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-      tmux new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+  if ! tmux_base list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$agent"; then
+    record_base_tmux_socket
+    if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
+      tmux_base new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     else
-      tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      tmux_base new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     fi
     if agent_opts_into_pty "$agent"; then
-      tmux kill-window -t "$SESSION:$agent" 2>/dev/null || true
+      tmux_base kill-window -t "$SESSION:$agent" 2>/dev/null || true
       continue
     fi
     start_agent "$agent"
@@ -242,11 +261,11 @@ for agent in "${AGENTS[@]}"; do
   fi
 done
 
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
   exit 0
 fi
 
-LIVE_WINDOWS="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null || true)"
+LIVE_WINDOWS="$(tmux_base list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null || true)"
 [[ -n "$LIVE_WINDOWS" ]] || exit 0
 
 if [[ $WINDOWED -eq 1 ]]; then
@@ -259,7 +278,7 @@ if [[ $WINDOWED -eq 1 ]]; then
     printf '%s\n' "$LIVE_WINDOWS" | grep -qx "$agent" || continue
     wt.exe -w new --title "$agent" \
       wsl.exe -d Ubuntu --cd "$AGENTS_HOME/$agent" -- \
-      bash -c "tmux new-session -t $SESSION \\; select-window -t $agent" \
+      bash -c "tmux -S $(printf '%q' "$BASE_TMUX_SOCKET") new-session -t $SESSION \\; select-window -t $agent" \
       >/dev/null 2>&1 &
     spawned=$((spawned + 1))
     sleep 0.5  # stagger so wt.exe instances don't race each other
@@ -277,5 +296,5 @@ else
     fi
   done
   [[ -n "$TARGET_AGENT" ]] || exit 0
-  exec tmux new-session -t "$SESSION" \; select-window -t "$TARGET_AGENT"
+  exec tmux -S "$BASE_TMUX_SOCKET" new-session -t "$SESSION" \; select-window -t "$TARGET_AGENT"
 fi

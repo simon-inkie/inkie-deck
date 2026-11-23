@@ -294,6 +294,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       status: acpRunnerRegistry.status(agent) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
       events: acpRunnerRegistry.events(agent),
       lastSessionId: acpRunnerRegistry.lastSessionId(agent) ?? null,
+      canResume: acpRunnerRegistry.canResume(agent),
       usageReading: antigravityUsageReading(),
       canWrite: canWriteFromRequest(request, context),
     }
@@ -1494,6 +1495,7 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
               initialStatus={loaderData.acp.status}
               initialEvents={loaderData.acp.events}
               initialLastSessionId={loaderData.acp.lastSessionId}
+              initialCanResume={loaderData.acp.canResume}
               initialUsageReading={loaderData.acp.usageReading}
               canWrite={loaderData.acp.canWrite}
             />

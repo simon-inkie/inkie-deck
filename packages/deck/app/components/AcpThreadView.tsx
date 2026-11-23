@@ -17,6 +17,7 @@ export interface AcpThreadViewProps {
   initialStatus: AcpThreadStatus;
   initialEvents: DeckEvent[];
   initialLastSessionId: string | null;
+  initialCanResume?: boolean;
   initialUsageReading: UsageReading;
   canWrite: boolean;
 }
@@ -63,12 +64,14 @@ export function AcpThreadView({
   initialStatus,
   initialEvents,
   initialLastSessionId,
+  initialCanResume = true,
   initialUsageReading,
   canWrite,
 }: AcpThreadViewProps) {
   const [status, setStatus] = useState<AcpThreadStatus>(initialStatus);
   const [events, setEvents] = useState<DeckEvent[]>(initialEvents);
   const [lastSessionId, setLastSessionId] = useState<string | null>(initialLastSessionId);
+  const [canResume, setCanResume] = useState<boolean>(initialCanResume);
   const [usageReading, setUsageReading] = useState<UsageReading>(initialUsageReading);
   const [promptText, setPromptText] = useState("");
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
@@ -83,6 +86,7 @@ export function AcpThreadView({
         setStatus(payload.status);
         setEvents(payload.events ?? []);
         setLastSessionId(payload.lastSessionId ?? null);
+        if (typeof payload.canResume === "boolean") setCanResume(payload.canResume);
         if (payload.usageReading) setUsageReading(payload.usageReading);
       }
     } catch {
@@ -124,8 +128,8 @@ export function AcpThreadView({
   const { cards, answeredIds } = useMemo(() => deriveAcpCards(events), [events]);
   const isActive = status.state === "running" || status.state === "starting";
   const canStop = isActive || status.state === "cleanup-pending";
-  // Major 3: Registry persists lastSessionId ONLY for agents advertising resume/load capability
-  const showResume = Boolean(lastSessionId && !isActive && status.state !== "cleanup-pending");
+  // Minor 1 (Round 9): Gate Resume button on BOTH saved checkpoint AND capability support
+  const showResume = Boolean(lastSessionId && canResume && !isActive && status.state !== "cleanup-pending");
   const advertisedCapNames = useMemo(() => {
     if (!status.capabilities) return [];
     const caps: string[] = [];

@@ -18,7 +18,7 @@ import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
 import { AGENT_NAME_RE } from "../safe-fs.server.js";
-import { listTmuxWindows, resolveTmuxSession } from "../tmux.server.js";
+import { listAllTmuxWindowsForOwnership, listTmuxWindows, resolveTmuxSession } from "../tmux.server.js";
 import {
   antigravity1Manifest,
   isAcpOptedIn,
@@ -79,10 +79,30 @@ const globals = globalThis as typeof globalThis & {
   [registryKey]?: {
     sessions: Map<string, AcpActiveSession | AcpCleanupSession | AcpInactiveSession>;
     closing: boolean;
+    shutdownInFlight: number;
+    shutdownPromise?: Promise<void>;
     recoveryFailed: false | symbol;
+    resumeSupport: Map<string, { supported: boolean; executableKey: string }>;
   };
 };
-const shared = globals[registryKey] ??= { sessions: new Map(), closing: false, recoveryFailed: false };
+const shared: NonNullable<(typeof globals)[typeof registryKey]> = globals[registryKey] ??= {
+  sessions: new Map(),
+  closing: false,
+  shutdownInFlight: 0,
+  shutdownPromise: undefined,
+  recoveryFailed: false,
+  resumeSupport: new Map(),
+};
+if (typeof shared.shutdownInFlight !== "number") shared.shutdownInFlight = 0;
+if (!shared.resumeSupport) shared.resumeSupport = new Map();
+
+function isShuttingDown(): boolean {
+  return shared.closing || shared.shutdownInFlight > 0;
+}
+
+function executableKey(id: ExecutableIdentity): string {
+  return `${id.dev}:${id.ino}:${id.size}:${id.mtimeMs}:${id.sha256}`;
+}
 
 function agentsRoot(env: NodeJS.ProcessEnv): string {
   return resolveAgentsRoot({ AGENTS_ROOT: env.AGENTS_HOME?.trim() || env.AGENTS_ROOT });
@@ -296,6 +316,34 @@ export class AcpRunnerRegistry {
     return home ? readStoredSessionId(home) : undefined;
   }
 
+  /**
+   * Minor 1 (Round 9): Gate Resume offer on BOTH saved checkpoint AND advertised capability.
+   * After a known capability refusal on the currently installed binary identity, return false
+   * while preserving the saved checkpoint; re-enable automatically if the binary changes.
+   */
+  canResume(agent: string): boolean {
+    const home = agentHome(this.env, agent);
+    if (!home || !readStoredSessionId(home)) return false;
+    const recorded = shared.resumeSupport.get(home);
+    if (!recorded || recorded.supported) return true;
+    try {
+      const manifest = this.options.manifest ?? antigravity1Manifest;
+      const currentExec = resolveAcpExecutable(manifest.executableName, this.env, home);
+      return executableKey(statExecutableIdentity(currentExec)) !== recorded.executableKey;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Major 2 (Round 9): Clear the permanent closing latch ONLY when a fresh Vite server instance configures.
+   */
+  reopen(): void {
+    if (shared.shutdownInFlight === 0) {
+      shared.closing = false;
+    }
+  }
+
   status(agent: string): AcpSessionStatus | undefined {
     const session = this.session(agent);
     if (!session) return undefined;
@@ -312,7 +360,7 @@ export class AcpRunnerRegistry {
   }
 
   async start(agent: string, options: { resume?: boolean } = {}): Promise<AcpSession> {
-    if (shared.closing) throw new StartRefusal("shutting-down");
+    if (isShuttingDown()) throw new StartRefusal("shutting-down");
     const home = this.isOptedIn(agent) ? agentHome(this.env, agent) : undefined;
     if (!home) throw new StartRefusal("not-opted-in");
 
@@ -367,7 +415,7 @@ export class AcpRunnerRegistry {
     try {
       if (shared.recoveryFailed) {
         await this.recover();
-        if (abortController.signal.aborted || shared.closing) {
+        if (abortController.signal.aborted || isShuttingDown()) {
           clearReservation();
           throw new StartRefusal("shutting-down");
         }
@@ -384,7 +432,7 @@ export class AcpRunnerRegistry {
           clearReservation({ state: "locked", reason: "Could not safely recover the runner lock." });
           throw new StartRefusal("locked");
         }
-        if (abortController.signal.aborted || shared.closing) {
+        if (abortController.signal.aborted || isShuttingDown()) {
           clearReservation();
           throw new StartRefusal("shutting-down");
         }
@@ -411,7 +459,7 @@ export class AcpRunnerRegistry {
         exec: this.options.execVersion,
       });
       detectedVersion = versionInfo.version;
-      if (abortController.signal.aborted || shared.closing) {
+      if (abortController.signal.aborted || isShuttingDown()) {
         clearReservation();
         throw new StartRefusal("shutting-down");
       }
@@ -436,7 +484,7 @@ export class AcpRunnerRegistry {
           clearReservation({ state: "locked", reason: "Could not safely recover the runner lock." });
           throw new StartRefusal("locked");
         }
-        if (abortController.signal.aborted || shared.closing) {
+        if (abortController.signal.aborted || isShuttingDown()) {
           clearReservation();
           throw new StartRefusal("shutting-down");
         }
@@ -540,6 +588,12 @@ export class AcpRunnerRegistry {
     }
 
     activeSession.session = session;
+    if (session.negotiated) {
+      shared.resumeSupport.set(home, {
+        supported: Boolean(session.supportsResume?.()),
+        executableKey: executableKey(execIdentity),
+      });
+    }
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
       // Major 2: Clear stale checkpoint ONLY when resume was explicitly rejected for lockedResumeSessionId
@@ -556,7 +610,7 @@ export class AcpRunnerRegistry {
       throw new LaunchFailure("start-failed", `ACP session negotiation ended in state '${terminalKind}'.`);
     }
 
-    if (abortController.signal.aborted || shared.closing) {
+    if (abortController.signal.aborted || isShuttingDown()) {
       await session.close().catch(() => {});
       await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
@@ -579,24 +633,33 @@ export class AcpRunnerRegistry {
   }
 
   private assertNoTmuxWindow(agent: string): void {
-    const list = this.options.listWindows ?? listTmuxWindows;
-    const configuredSession = resolveTmuxSession(this.env);
-    const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
     let windows: string[];
     try {
-      windows = list(this.env, true);
-      // Major 1: Base's boot-agents.sh & workspace.sh clear TMUX, TMUX_PANE, and TMUX_TMPDIR so they
-      // always target the canonical default socket's "agents" session. Always check that canonical
-      // socket whenever Deck uses a different session name, TMUX, or TMUX_TMPDIR.
-      if (configuredSession !== "agents" || hasCustomSocketEnv) {
-        const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
-        delete baseDefaultEnv.TMUX;
-        delete baseDefaultEnv.TMUX_PANE;
-        delete baseDefaultEnv.TMUX_TMPDIR;
-        windows = [...windows, ...list(baseDefaultEnv, true)];
-      }
-      if (configuredSession !== "agents" && hasCustomSocketEnv) {
-        windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
+      if (this.options.listWindows) {
+        const list = this.options.listWindows;
+        const configuredSession = resolveTmuxSession(this.env);
+        const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
+        windows = list(this.env, true);
+        if (configuredSession !== "agents" || hasCustomSocketEnv) {
+          const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
+          delete baseDefaultEnv.TMUX;
+          delete baseDefaultEnv.TMUX_PANE;
+          delete baseDefaultEnv.TMUX_TMPDIR;
+          windows = [...windows, ...list(baseDefaultEnv, true)];
+        }
+        if (configuredSession !== "agents" && hasCustomSocketEnv) {
+          windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
+        }
+      } else {
+        // Major 1 (Round 9): Check explicit Base socket state file (.base-tmux-socket), ALL sessions
+        // including grouped sessions (`list-windows -a`), AND usual tmux socket dirs when absent.
+        let root: string | undefined;
+        try {
+          root = realpathSync(agentsRoot(this.env));
+        } catch {
+          root = agentsRoot(this.env);
+        }
+        windows = listAllTmuxWindowsForOwnership(this.env, root);
       }
     } catch {
       throw new StartRefusal("tmux-unknown");
@@ -723,8 +786,32 @@ export class AcpRunnerRegistry {
     if (options.permanent !== false) {
       shared.closing = true;
     }
-    await Promise.all(Array.from(shared.sessions.values(), (session) =>
-      "abortController" in session ? this.stopSession(session) : session.state === "cleanup-pending" ? session.retry() : undefined));
+    shared.shutdownInFlight += 1;
+    const drain = async () => {
+      while (true) {
+        const pending = Array.from(shared.sessions.values()).filter(
+          (session) => "abortController" in session || session.state === "cleanup-pending",
+        );
+        if (pending.length === 0) break;
+        await Promise.all(
+          pending.map((session) =>
+            "abortController" in session
+              ? this.stopSession(session)
+              : session.state === "cleanup-pending"
+                ? session.retry().catch(() => {})
+                : undefined,
+          ),
+        );
+      }
+    };
+    const inFlight = (shared.shutdownPromise ??= drain().finally(() => {
+      shared.shutdownPromise = undefined;
+    }));
+    try {
+      await inFlight;
+    } finally {
+      shared.shutdownInFlight = Math.max(0, shared.shutdownInFlight - 1);
+    }
   }
 
   private async recoverHome(home: string): Promise<void> {

@@ -17,6 +17,12 @@ try {
   // Not a git checkout (CI tarball etc.) - stamp stays "dev".
 }
 
+const activeServersKey = Symbol.for("inkie-deck.vite.active-servers");
+const viteGlobals = globalThis as typeof globalThis & {
+  [activeServersKey]?: Set<symbol>;
+};
+const activeServers = viteGlobals[activeServersKey] ??= new Set<symbol>();
+
 function deckDevSocket(): Plugin {
   return {
     name: "deck-dev-socket",
@@ -35,29 +41,40 @@ function deckDevSocket(): Plugin {
           next(error);
         }
       });
-      // Major 4: Load and retain the ACP registry while SSR is live, await initial recovery before
-      // Vite listens, handle SIGINT explicitly (pinned Vite only registers SIGTERM), and keep per-server
-      // close non-permanent so an in-process Vite restart does not latch global `closing = true`.
+      // Major 2 (Round 9): Track live Vite server instances, share ONE in-flight shutdown promise
+      // awaited by EVERY close()/SIGINT/SIGTERM caller, and latch permanent closing when the last
+      // server shuts down (reopened only when a fresh server instance configures).
+      const serverToken = Symbol("vite-dev-server");
+      activeServers.add(serverToken);
       let acpRegistry: typeof import("./app/lib/runner/acp-registry.server").acpRunnerRegistry | undefined;
       try {
         const mod = await server.ssrLoadModule("/app/lib/runner/acp-registry.server.ts") as
           typeof import("./app/lib/runner/acp-registry.server");
         acpRegistry = mod.acpRunnerRegistry;
+        acpRegistry.reopen();
         await acpRegistry.recover();
       } catch {
         // Non-fatal fallback if SSR module is unavailable during tooling runs.
       }
-      let closed = false;
       let shutdownPromise: Promise<void> | undefined;
-      const runShutdown = (permanent: boolean) => {
+      const runShutdown = (forcePermanent = false) => {
+        activeServers.delete(serverToken);
         if (!acpRegistry) return Promise.resolve();
+        const permanent = forcePermanent || activeServers.size === 0;
+        if (forcePermanent) {
+          const escalated = acpRegistry.shutdown({ permanent: true }).catch(() => {});
+          shutdownPromise = shutdownPromise ? shutdownPromise.then(() => escalated) : escalated;
+          return shutdownPromise;
+        }
         shutdownPromise ??= acpRegistry.shutdown({ permanent }).catch(() => {});
         return shutdownPromise;
       };
       const originalClose = server.close.bind(server);
+      let sigintHandled = false;
       const onSigint = () => {
-        if (closed) return;
-        closed = true;
+        if (sigintHandled) return;
+        sigintHandled = true;
+        activeServers.clear();
         void runShutdown(true)
           .then(() => originalClose().catch(() => {}))
           .finally(() => process.exit(0));
@@ -65,18 +82,12 @@ function deckDevSocket(): Plugin {
       process.once("SIGINT", onSigint);
       server.close = async () => {
         process.off("SIGINT", onSigint);
-        if (!closed) {
-          closed = true;
-          await runShutdown(false);
-        }
+        await runShutdown(false);
         return originalClose();
       };
       server.httpServer?.once("close", () => {
         process.off("SIGINT", onSigint);
-        if (!closed) {
-          closed = true;
-          void runShutdown(false);
-        }
+        void runShutdown(false);
       });
     },
   };

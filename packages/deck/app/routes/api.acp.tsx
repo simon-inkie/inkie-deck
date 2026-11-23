@@ -96,6 +96,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     status: acpRunnerRegistry.status(agent) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
     events: acpRunnerRegistry.events(agent),
     lastSessionId: acpRunnerRegistry.lastSessionId(agent) ?? null,
+    canResume: acpRunnerRegistry.canResume(agent),
     usageReading: antigravityUsageReading(),
   };
 }
