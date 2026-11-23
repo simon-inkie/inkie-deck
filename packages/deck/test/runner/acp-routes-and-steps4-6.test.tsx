@@ -10,6 +10,7 @@ import type { DeckEvent } from "../../app/lib/deck-event.js";
 import { antigravity1Manifest, antigravityUsageReading } from "../../app/lib/runner/acp-manifest.js";
 import { AcpRunnerRegistry, acpRunnerRegistry } from "../../app/lib/runner/acp-registry.server.js";
 import { action as acpAction, loader as acpLoader } from "../../app/routes/api.acp.js";
+import { loader as threadLoader } from "../../app/routes/threads.$agent.js";
 
 function makeReq(method: string, url: string, body?: object, origin = "http://127.0.0.1:4295"): Request {
   return new Request(url, {
@@ -38,6 +39,7 @@ describe("ACP Slice 2 Steps 4 to 6: Negotiate, Prompt, Cards, Permissions, Cance
 
   afterEach(async () => {
     await acpRunnerRegistry.stop(agent).catch(() => {});
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
   });
@@ -266,5 +268,61 @@ rl.on("line", (line) => {
       optedIn: true,
       usageReading: { state: "unknown", source: "antigravity" },
     });
+  });
+
+  it.each([
+    { host: "localhost", site: "same-origin", trusted: true },
+    { host: "localhost", site: "cross-site", trusted: false },
+    { host: "unlisted.example", site: "same-origin", trusted: false },
+  ])("returns ACP transcript data only for trusted requests ($host, $site)", async ({ host, site, trusted }) => {
+    vi.stubEnv("AGENTS_HOME", root);
+    vi.stubEnv("INBOX_ROOT", join(root, "inbox"));
+    vi.stubEnv("PROJECTS_ROOT", join(root, "projects"));
+    vi.stubEnv("MC_ACP_RUNNER", "1");
+    vi.stubEnv("MC_ALLOWED_HOSTS", undefined);
+    vi.stubEnv("HOST", undefined);
+
+    const lastSessionId = "saved-acp-checkpoint";
+    writeFileSync(join(agentHome, ".acp-last-session"), lastSessionId + "\n");
+    const events: DeckEvent[] = [{
+      v: 1,
+      id: "transcript-event",
+      seq: 1,
+      ts: "2026-11-23T12:00:00Z",
+      source: { kind: "agent", session: lastSessionId },
+      class: "happened",
+      type: "message.chunk",
+      title: "Agent reply",
+      view: { kind: "text", excerpt: "Private transcript text" },
+    }];
+    const status = { state: "stopped" as const, code: 0, exitedAt: 1, events };
+    vi.spyOn(acpRunnerRegistry, "status").mockReturnValue(status);
+    vi.spyOn(acpRunnerRegistry, "events").mockReturnValue(events);
+    vi.spyOn(acpRunnerRegistry, "canResume").mockReturnValue(true);
+
+    const headers = { host, "sec-fetch-site": site };
+    const api = await acpLoader({
+      request: new Request(`http://${host}/api/acp?agent=${agent}`, { headers }),
+      params: {},
+      context: {},
+    } as Parameters<typeof acpLoader>[0]);
+    const thread = await threadLoader({
+      request: new Request(`http://${host}/threads/${agent}`, { headers }),
+      params: { agent },
+      context: {},
+    } as Parameters<typeof threadLoader>[0]);
+
+    const expected = trusted
+      ? { status, events, lastSessionId, canResume: true }
+      : { status: { state: "stopped", code: null, exitedAt: 0 }, events: [], lastSessionId: null, canResume: false };
+    expect(api).toMatchObject(expected);
+    expect(thread.acp).toMatchObject({ ...expected, canWrite: trusted });
+    if (!trusted) {
+      for (const payload of [api, thread]) {
+        const serialized = JSON.stringify(payload);
+        expect(serialized).not.toContain(lastSessionId);
+        expect(serialized).not.toContain("Private transcript text");
+      }
+    }
   });
 });

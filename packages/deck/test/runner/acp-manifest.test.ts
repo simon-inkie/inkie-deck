@@ -184,16 +184,16 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
       return agentDir;
     }
 
-    it("requires both MC_ACP_RUNNER=1 and .runner=acp with valid runtime", () => {
+    it("requires MC_ACP_RUNNER=1, .runner=acp and .runtime=agy", () => {
       const agent = "agent-alpha";
       setupAgent(agent, "acp\n", "agy\n");
 
       // Opted in when MC_ACP_RUNNER is 1
       expect(isAcpOptedIn({ AGENTS_HOME: agentsHome, MC_ACP_RUNNER: "1" }, agent)).toBe(true);
 
-      // Absent runtime defaults to agy-compatible for acp
-      setupAgent(agent, "acp\n", undefined);
-      expect(isAcpOptedIn({ AGENTS_HOME: agentsHome, MC_ACP_RUNNER: "1" }, agent)).toBe(true);
+      const agentMissingRuntime = "agent-missing-runtime";
+      setupAgent(agentMissingRuntime, "acp\n");
+      expect(isAcpOptedIn({ AGENTS_HOME: agentsHome, MC_ACP_RUNNER: "1" }, agentMissingRuntime)).toBe(false);
 
       // Rejects if MC_ACP_RUNNER is not "1"
       for (const flag of [undefined, "0", "false", "true", "2", " 1 "]) {

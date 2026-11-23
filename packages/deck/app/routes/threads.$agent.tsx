@@ -202,6 +202,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const requestUrl = new URL(request.url);
   const tmuxView = tmuxOn && requestUrl.searchParams.get("view") === "tmux";
   const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
+  const trusted = canWriteFromRequest(request, context);
 
   // The operator rendering the thread IS the read - flip the
   // agent's sent blocks to read on disk BEFORE reading, so the receipt is
@@ -209,7 +210,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   // approved Host and origin proof, serve the thread without a receipt.
   // SKIPPED in tmux view AND ACP view - neither renders inbox blocks,
   // so flipping unread state would clear messages the operator never saw.
-  if (!tmuxView && !acpActive && canWriteFromRequest(request, context)) {
+  if (!tmuxView && !acpActive && trusted) {
     try {
       await inbox.markRead(agent, user);
     } catch (err) {
@@ -279,7 +280,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     latestBlock?.header.from === user;
   const needsPane = !acpActive && tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);
   const pty = needsPane && runnerRegistry.handlesTerminal(agent);
-  const ptyAllowed = pty && canWriteFromRequest(request, context);
+  const ptyAllowed = pty && trusted;
   const pane = !needsPane ? undefined : pty
     ? ptyAllowed ? runnerRegistry.capture(agent) : undefined
     : captureTmuxPane(process.env, agent);
@@ -291,12 +292,12 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
   const acp = acpActive
     ? {
-      status: acpRunnerRegistry.status(agent) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
-      events: acpRunnerRegistry.events(agent),
-      lastSessionId: acpRunnerRegistry.lastSessionId(agent) ?? null,
-      canResume: acpRunnerRegistry.canResume(agent),
+      status: (trusted ? acpRunnerRegistry.status(agent) : undefined) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
+      events: trusted ? acpRunnerRegistry.events(agent) : [],
+      lastSessionId: trusted ? acpRunnerRegistry.lastSessionId(agent) ?? null : null,
+      canResume: trusted && acpRunnerRegistry.canResume(agent),
       usageReading: antigravityUsageReading(),
-      canWrite: canWriteFromRequest(request, context),
+      canWrite: trusted,
     }
     : undefined;
 

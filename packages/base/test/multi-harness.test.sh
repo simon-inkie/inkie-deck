@@ -149,7 +149,7 @@ printf 'Gale is new\n' > "$AGENTS_HOME/gale/IDENTITY.md"
 printf '# gale\n<!-- BEGIN SYNCED:IDENTITY.md (generated) -->\nstale\n<!-- END SYNCED:IDENTITY.md -->\n' > "$AGENTS_HOME/gale/GEMINI.md"
 hist_line "hi" 1 "$AGENTS_HOME/gale" "gale-conv-1" > "$AGY_HISTORY_FILE"
 
-sent_to() { grep -E "^(-S [^ ]+ )?send-keys -t agents:$1 " "$TMUX_LOG" | head -1; }
+sent_to() { grep -E "^(-S [^ ]+ )?send-keys -t =agents:$1 " "$TMUX_LOG" | head -1; }
 
 : > "$TMUX_LOG"
 PATH="$STUB_PATH" BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 CODEX_RESUME_VERIFY_SECS=0 \
@@ -205,10 +205,18 @@ cat > "$BOX/stubs/tmux" <<'STUB'
 printf '%s\n' "$*" >> "$TMUX_LOG"
 while [[ "${1:-}" == "-S" ]]; do shift 2; done
 case "$1" in
-  has-session) exit 1 ;;
+  has-session)
+    [[ "${TMUX_PREFIX_ONLY:-0}" == 1 ]] || exit 1
+    # A bare 'agents' resolves to the existing 'agents-dev' by prefix.
+    case "$3" in
+      agents|=agents-dev) exit 0 ;;
+      =agents) grep -q '^new-session -d -s agents ' "$TMUX_LOG"; exit $? ;;
+    esac
+    exit 1
+    ;;
   list-windows) for d in "$AGENTS_HOME"/*/; do basename "$d"; done ;;
   list-panes)
-    if grep -qE '^(-S [^ ]+ )?send-keys -t agents:cobalt ' "$TMUX_LOG"; then echo node; else echo bash; fi ;;
+    if grep -qE '^(-S [^ ]+ )?send-keys -t =agents:cobalt ' "$TMUX_LOG"; then echo node; else echo bash; fi ;;
   capture-pane) printf 'OpenAI Codex\n\342\200\272 \n' ;;
 esac
 exit 0
@@ -218,6 +226,27 @@ PATH="$STUB_PATH" WATCHER_ENABLED=0 bash "$BIN_DIR/workspace.sh" claudia cobalt 
 ws_rc=$?
 [[ "$ws_rc" -eq 0 && "$(sent_to cobalt)" == *" codex Enter" && "$(sent_to gale)" == *" agy --conversation gale-conv-1 Enter" && "$(sent_to claudia)" == *" claude "* ]] \
   && pass "W6 workspace run: each pane is sent its own runtime's command" || fail "W6 workspace run" "rc=$ws_rc $(cat "$TMUX_LOG")"
+
+# With only agents-dev present, both launchers create and use agents.
+for launcher in boot-agents.sh workspace.sh; do
+  : > "$TMUX_LOG"
+  args=(cobalt)
+  attach_target='new-session -t =agents ;'
+  if [[ "$launcher" == boot-agents.sh ]]; then
+    args=(--attach cobalt)
+    attach_target='attach -t =agents'
+  fi
+  out=$(PATH="$STUB_PATH" TMUX_PREFIX_ONLY=1 BOOT_STAGGER_SECS=0 BOOT_READY_SECS=1 WATCHER_ENABLED=0 \
+    bash "$BIN_DIR/$launcher" "${args[@]}" 2>&1)
+  rc=$?
+  if [[ "$rc" -eq 0 && "$(sent_to cobalt)" == *" codex Enter" ]] &&
+    grep -q '^new-session -d -s agents -n cobalt ' "$TMUX_LOG" &&
+    grep -qF "$attach_target" "$TMUX_LOG"; then
+    pass "$launcher creates and targets agents when only agents-dev exists"
+  else
+    fail "$launcher canonical session" "rc=$rc $out $(cat "$TMUX_LOG")"
+  fi
+done
 
 mkdir -p "$AGENTS_HOME/ptytest"
 : > "$AGENTS_HOME/ptytest/SOUL.md"

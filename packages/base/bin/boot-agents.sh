@@ -46,6 +46,7 @@ set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
 SESSION="agents"
+SESSION_TARGET="=$SESSION"
 AGENTS_HOME="${AGENTS_HOME:-$HOME/agents}"
 
 # Agent list derived from $AGENTS_HOME/*/ - a dir is an agent iff it holds
@@ -405,7 +406,7 @@ tmux_base set -g focus-events on 2>/dev/null || true
 
 # Launch an agent if it is not already running. Echoes "launched" or "skipped".
 launch_agent() {
-  local a="$1" target="$SESSION:$1" runtime model_flag=""
+  local a="$1" target="$SESSION_TARGET:$1" runtime model_flag=""
   # Re-check runner marker/lock right before tmux admission to close the cutover race.
   if agent_opts_into_pty "$a"; then
     echo "skipped"
@@ -421,14 +422,14 @@ launch_agent() {
   # Absent = no flag = inherit the global default. Applies to all runtimes.
   model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
   local created_window=0
-  if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
+  if ! tmux_base has-session -t "$SESSION_TARGET" 2>/dev/null; then
     if ! tmux_base new-session -d -s "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null; then
       echo "boot-agents: session creation failed" >&2
       return 1
     fi
     created_window=1
-  elif ! tmux_base list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
-    tmux_base new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+  elif ! tmux_base list-windows -t "$SESSION_TARGET" -F '#{window_name}' | grep -qx "$a"; then
+    tmux_base new-window -t "$SESSION_TARGET:" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
     created_window=1
   fi
   # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, remove the fresh window and refuse send-keys.
@@ -533,7 +534,7 @@ for a in "${AGENTS[@]}"; do
     readiness_check=wait_for_readiness
     [[ "$outcome" == skipped ]] && readiness_check=existing_readiness
     [[ "$outcome" == launched:first-boot ]] && readiness_check=first_boot_readiness
-    if reason=$("$readiness_check" "$SESSION:$a" "$(get_runtime "$a")"); then
+    if reason=$("$readiness_check" "$SESSION_TARGET:$a" "$(get_runtime "$a")"); then
       if [[ "$outcome" == launched* ]]; then
         if [[ "$outcome" == launched:first-boot ]]; then
           # Typing "arm your monitor" into a pane busy with its first turn
@@ -580,7 +581,7 @@ for a in "${FRESH[@]}"; do
     echo "boot-agents: $a monitor not requested"
     continue
   fi
-  target="$SESSION:$a"
+  target="$SESSION_TARGET:$a"
   confirmed=0; monitor_reason=""
   monitor_pattern='^[^[:alnum:]]*(Monitor\(|Monitor started([[:space:]]|$))'
   baseline=$(tmux_base capture-pane -t "$target" -p -S -2000 2>/dev/null | grep -ciE "$monitor_pattern")
@@ -622,5 +623,5 @@ echo "boot-agents: waiting-detail: prompts=$PROMPT_WAITING other=$OTHER_WAITING"
 BOOT_RC=0
 [[ "$WAITING" -eq 0 ]] || BOOT_RC=3
 [[ "$FAILED" -eq 0 ]] || BOOT_RC=1
-if [[ "$ATTACH" -eq 1 ]]; then tmux_base attach -t "$SESSION"; fi
+if [[ "$ATTACH" -eq 1 ]]; then tmux_base attach -t "$SESSION_TARGET"; fi
 exit "$BOOT_RC"

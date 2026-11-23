@@ -1139,6 +1139,13 @@ Boot, Base inbox delivery and ACP admission use the `agents` session on
 tmux's default socket. Before switching an agent to ACP, stop its Base
 runtime and close its panes on any other tmux socket.
 
+Run one Deck instance per agent home. Concurrent starts from two Deck
+processes sharing a home are not guaranteed to be exclusive. In ACP, Deck
+offers Resume only for the verified `agy` executable identity that advertised
+resume support. After an `agy` update changes that identity, a fresh Start
+replaces Deck's saved checkpoint if the new executable advertises resume
+support.
+
 On an agent's first launch, `boot-agents.sh` starts a new session and gives it
 a first message: do your day-one steps from your persona files, then say hello.
 Expect it to fill in `IDENTITY.md` and `SOUL.md`, and it may ask you questions

@@ -351,7 +351,10 @@ export function isRunnerLockFlockHeld(file: string): boolean {
   }
 }
 
-export async function recoverRunnerLock(file: string): Promise<"absent" | "recovered" | "unrecovered"> {
+export async function recoverRunnerLock(
+  file: string,
+  expectedOwner?: RunnerLockOwner,
+): Promise<"absent" | "recovered" | "unrecovered"> {
   let fd: number;
   try {
     // Minor 2 (Round 16): Open O_RDWR (not O_RDONLY) so exclusive flock works on Linux NFS as well.
@@ -371,10 +374,12 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
     if (!sameLock(file, owned)) return "unrecovered";
     // Empty file whose exclusive flock we just won (interrupted pre-write): safe to remove.
     if (owned.isFile() && owned.size === 0 && owned.uid === process.getuid?.() && (owned.mode & 0o022) === 0) {
+      if (expectedOwner) return "unrecovered";
       unlinkSync(file);
       return "recovered";
     }
     const snapshot = readLock(fd);
+    if (expectedOwner && snapshot.owner !== expectedOwner) return "unrecovered";
     // Major 3 (Round 16): For Base-owned locks, staleness is decided SOLELY by the non-blocking
     // flock acquired above (zero /proc descendant scanning, so unrelated non-dumpable processes
     // never block recovery). Refuse only incomplete legacy spawning locks with childPid === null.
@@ -394,7 +399,7 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
       const record = readLock(fd);
       if (record.deckPid !== snapshot.deckPid || record.deckBirth !== snapshot.deckBirth ||
           record.bootId !== snapshot.bootId || record.sessionId !== snapshot.sessionId ||
-          record.startedAt !== snapshot.startedAt) return "unrecovered";
+          record.startedAt !== snapshot.startedAt || (expectedOwner && record.owner !== expectedOwner)) return "unrecovered";
       if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;

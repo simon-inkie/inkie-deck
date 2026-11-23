@@ -2,7 +2,7 @@ import { data } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/api.acp";
 import { MAX_QUEUED_PROMPTS } from "~/lib/acp-session.server";
-import { requireSameOriginWrite } from "~/lib/request-origin.server";
+import { canWriteFromRequest, requireSameOriginWrite } from "~/lib/request-origin.server";
 import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
 import { antigravityUsageReading, isAcpOptedIn } from "~/lib/runner/acp-manifest";
 import { StartRefusal } from "~/lib/runner/registry.server";
@@ -87,20 +87,21 @@ async function readBoundedJson(request: Request): Promise<{ ok: true; value: unk
   }
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader({ request, context }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const agent = url.searchParams.get("agent") ?? "";
   if (!AGENT_NAME_RE.test(agent)) {
     return data({ ok: false, error: "Invalid agent name." }, { status: 400 });
   }
   const optedIn = isAcpOptedIn(process.env, agent);
+  const trusted = canWriteFromRequest(request, context);
   return {
     ok: true,
     optedIn,
-    status: acpRunnerRegistry.status(agent) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
-    events: acpRunnerRegistry.events(agent),
-    lastSessionId: acpRunnerRegistry.lastSessionId(agent) ?? null,
-    canResume: acpRunnerRegistry.canResume(agent),
+    status: (trusted ? acpRunnerRegistry.status(agent) : undefined) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
+    events: trusted ? acpRunnerRegistry.events(agent) : [],
+    lastSessionId: trusted ? acpRunnerRegistry.lastSessionId(agent) ?? null : null,
+    canResume: trusted && acpRunnerRegistry.canResume(agent),
     usageReading: antigravityUsageReading(),
   };
 }

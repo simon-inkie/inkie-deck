@@ -27,6 +27,7 @@ import {
   sanitizePathEnv,
 } from "../../app/lib/runner/acp-manifest.js";
 import { AcpRunnerRegistry, acpRunnerRegistry } from "../../app/lib/runner/acp-registry.server.js";
+import { RunnerRegistry } from "../../app/lib/runner/registry.server.js";
 import { hasSameOriginProof } from "../../app/lib/request-origin.server.js";
 import { action as acpAction } from "../../app/routes/api.acp.js";
 
@@ -149,6 +150,36 @@ fi
     expect(listWindows).toHaveBeenCalledTimes(2);
     expect(startSession).not.toHaveBeenCalled();
     expect(existsSync(lockFile)).toBe(false);
+  });
+
+  it.runIf(process.platform === "linux")("recovers a stale ACP lock after opting out before Deck restarts", async () => {
+    const lockFile = join(agentHome, ".runner.lock");
+    const baseHome = join(root, "base-agent");
+    const baseLock = join(baseHome, ".runner.lock");
+    mkdirSync(baseHome);
+    const staleClaim = {
+      deckPid: 100,
+      deckBirth: "1",
+      childPid: null,
+      childBirth: null,
+      bootId: "00000000-0000-4000-8000-000000000001",
+      sessionId: "00000000-0000-4000-8000-000000000002",
+      startedAt: 1,
+      phase: "reserved",
+    };
+    writeFileSync(lockFile, JSON.stringify({ ...staleClaim, owner: "acp" }), { mode: 0o600 });
+    writeFileSync(baseLock, JSON.stringify({ ...staleClaim, owner: "base" }), { mode: 0o600 });
+    rmSync(join(agentHome, ".runner"));
+
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1" };
+    const ptyRegistry = new RunnerRegistry(env);
+    const acpRegistry = new AcpRunnerRegistry(env);
+    expect(acpRegistry.status(agent)).toBeUndefined();
+    await ptyRegistry.recover();
+    expect(existsSync(lockFile)).toBe(true);
+    await acpRegistry.recover();
+    expect(existsSync(lockFile)).toBe(false);
+    expect(existsSync(baseLock)).toBe(true);
   });
 
   it("Major 1: fatal extension terminates session, closes open permissions, and refuses second prompt", async () => {
@@ -1016,6 +1047,7 @@ fi
     const agentHome = join(root, agent);
     mkdirSync(agentHome, { recursive: true });
     writeFileSync(join(agentHome, ".runner"), "acp\n");
+    writeFileSync(join(agentHome, ".runtime"), "agy\n");
     const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
 
     // Round 8 Major 4 & Round 9 Major 2:
@@ -1076,6 +1108,7 @@ fi
     const baseExecScript = join(process.cwd(), "..", "base", "bin", "base-runner-exec.sh");
     const baseAgentHome = join(root, "base-shared");
     mkdirSync(baseAgentHome, { recursive: true });
+    writeFileSync(join(baseAgentHome, ".runtime"), "agy\n");
     const baseReadyFile = join(root, "base-exec-ready");
     const baseChild = spawnChild(
       baseExecScript,
@@ -1104,7 +1137,6 @@ fi
       // Round 13 Major 2 + Round 14 Major 2: Healthy Base lock (owner: "base") MUST NOT hijack
       // tmux terminal dispatch BEFORE OR AFTER RunnerRegistry.recover(), and MUST NOT record 'locked'
       // in PTY registry or block a separate opted-in PTY agent!
-      const { RunnerRegistry } = await import("../../app/lib/runner/registry.server.js");
       const ptyBetaHome = join(root, "pty-beta");
       mkdirSync(ptyBetaHome, { recursive: true });
       writeFileSync(join(ptyBetaHome, ".runner"), "pty\n");
@@ -1163,6 +1195,7 @@ fi
           dataRoot: root,
           manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
           execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+          listWindows: () => [],
         },
       );
       await expect(regSharedLock.start("base-shared")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
@@ -1304,6 +1337,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
         const unkillHome = join(root, unkillName);
         mkdirSync(unkillHome, { recursive: true });
         writeFileSync(join(unkillHome, ".runner"), "acp\n");
+        writeFileSync(join(unkillHome, ".runtime"), "agy\n");
         const neverExited = new Promise<void>(() => {});
         const regUnkill = new AcpRunnerRegistry(
           { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH },
@@ -1360,6 +1394,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     const betaHome = join(root, "beta");
     mkdirSync(betaHome, { recursive: true });
     writeFileSync(join(betaHome, ".runner"), "acp\n");
+    writeFileSync(join(betaHome, ".runtime"), "agy\n");
     const persistSess = await regRestart.start(agent);
     const lockFile = join(agentHome, ".runner.lock");
     rmSync(lockFile, { force: true });
@@ -1422,6 +1457,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     const capHome = join(root, "cap-agent");
     mkdirSync(capHome, { recursive: true });
     writeFileSync(join(capHome, ".runner"), "acp\n");
+    writeFileSync(join(capHome, ".runtime"), "agy\n");
     writeFileSync(join(capHome, ".acp-last-session"), "kept-valid-checkpoint\n");
     const downgradedScript = join(root, "r9-downgraded.mjs");
     writeFileSync(

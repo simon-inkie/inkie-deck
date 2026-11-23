@@ -35,6 +35,7 @@ import {
   hasCode,
   isRunnerGroupVerifiedAlive,
   killVerifiedRunnerGroup,
+  readRunnerLockOwner,
   recoverRunnerLock,
   type RunnerGroupIdentity,
 } from "./lock.server.js";
@@ -1012,8 +1013,10 @@ export class AcpRunnerRegistry {
       }
     }
 
+    const lockFile = join(home, lockName);
+    const expectedOwner = homeWantsAcp(home) ? undefined : "acp";
     try {
-      const result = await recoverRunnerLock(join(home, lockName));
+      const result = await recoverRunnerLock(lockFile, expectedOwner);
       if (shared.sessions.get(home) !== existing) return;
       if (result === "recovered") {
         shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
@@ -1021,6 +1024,7 @@ export class AcpRunnerRegistry {
         shared.sessions.delete(home);
       }
     } catch {
+      if (expectedOwner && readRunnerLockOwner(lockFile) !== expectedOwner) return;
       if (shared.sessions.get(home) === existing) {
         if (existing?.state === "orphaned") return;
         shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
@@ -1051,8 +1055,8 @@ export class AcpRunnerRegistry {
       for (const entry of entries) {
         if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
         const home = join(root, entry.name);
-        // Major 8: Only recover homes that opt into ACP (do not touch unrelated PTY homes)
-        if (!homeWantsAcp(home)) continue;
+        // An ACP lock can survive a crash even if the operator has since opted out.
+        if (!homeWantsAcp(home) && readRunnerLockOwner(join(home, lockName)) !== "acp") continue;
         homesToRecover.add(home);
       }
     } catch (error) {

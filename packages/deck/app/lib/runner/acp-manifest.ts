@@ -433,8 +433,7 @@ export function isAcpOptedIn(env: NodeJS.ProcessEnv, agent: string): boolean {
   if (!home) return false;
   try {
     if (readAgentFile(join(home, ".runner")) !== "acp") return false;
-    const runtime = readAgentFile(join(home, ".runtime"));
-    return runtime === undefined || runtime === "agy";
+    return readAgentFile(join(home, ".runtime")) === "agy";
   } catch {
     return false;
   }
