@@ -36,7 +36,8 @@ function deckDevSocket(): Plugin {
         }
       });
       // Major 4: Load and retain the ACP registry while SSR is live, await initial recovery before
-      // Vite listens, and wrap server.close() so shutdown() is awaited BEFORE Vite closes SSR or exits.
+      // Vite listens, handle SIGINT explicitly (pinned Vite only registers SIGTERM), and keep per-server
+      // close non-permanent so an in-process Vite restart does not latch global `closing = true`.
       let acpRegistry: typeof import("./app/lib/runner/acp-registry.server").acpRunnerRegistry | undefined;
       try {
         const mod = await server.ssrLoadModule("/app/lib/runner/acp-registry.server.ts") as
@@ -46,19 +47,36 @@ function deckDevSocket(): Plugin {
       } catch {
         // Non-fatal fallback if SSR module is unavailable during tooling runs.
       }
+      let closed = false;
       let shutdownPromise: Promise<void> | undefined;
-      const runShutdown = () => {
+      const runShutdown = (permanent: boolean) => {
         if (!acpRegistry) return Promise.resolve();
-        shutdownPromise ??= acpRegistry.shutdown().catch(() => {});
+        shutdownPromise ??= acpRegistry.shutdown({ permanent }).catch(() => {});
         return shutdownPromise;
       };
       const originalClose = server.close.bind(server);
+      const onSigint = () => {
+        if (closed) return;
+        closed = true;
+        void runShutdown(true)
+          .then(() => originalClose().catch(() => {}))
+          .finally(() => process.exit(0));
+      };
+      process.once("SIGINT", onSigint);
       server.close = async () => {
-        await runShutdown();
+        process.off("SIGINT", onSigint);
+        if (!closed) {
+          closed = true;
+          await runShutdown(false);
+        }
         return originalClose();
       };
       server.httpServer?.once("close", () => {
-        void runShutdown();
+        process.off("SIGINT", onSigint);
+        if (!closed) {
+          closed = true;
+          void runShutdown(false);
+        }
       });
     },
   };

@@ -438,11 +438,13 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     // Major 3a: resume: true with missing checkpoint fails fast instead of starting session/new
     await expect(reg.start(agent, { resume: true })).rejects.toThrow(/No valid saved session checkpoint/);
 
-    // Major 3b: stale .acp-last-session is cleared when a non-resume agent starts
-    writeFileSync(join(agentHome, ".acp-last-session"), "stale-session-id\n");
+    // Major 2 (Round 8): fresh Start with a non-resume binary MUST PRESERVE a previously saved valid checkpoint
+    // (checkpoints are cleared ONLY on explicit session-not-found for that exact ID).
+    writeFileSync(join(agentHome, ".acp-last-session"), "valid-old-session-id\n");
     await reg.start(agent);
-    expect(reg.lastSessionId(agent)).toBeUndefined();
+    expect(reg.lastSessionId(agent)).toBe("valid-old-session-id");
     await reg.stop(agent);
+    rmSync(join(agentHome, ".acp-last-session"), { force: true });
 
     // Major 4: in-home symlink AND hard-linked .acp-last-session NEVER truncate their target file
     const inHomeTarget = join(agentHome, "precious-notes.txt");
@@ -872,7 +874,23 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(giantSess.unsupportedReason).toBe("Unsupported ACP protocol version.");
     await giantSess.close();
 
-    // Round 7 Major 3: ENOSPC on raw.ndjson STILL replies -32601 AND delivers extension.blocking to live onEvent
+    // Round 8 Major 1: Deck with custom TMUX_TMPDIR still checks Base's canonical default socket (TMUX_TMPDIR stripped)
+    const tmpdirEnv = {
+      AGENTS_HOME: root,
+      MC_ACP_RUNNER: "1",
+      TMUX_TMPDIR: "/tmp/custom-deck-tmux-dir",
+      HOME: root,
+      PATH: process.env.PATH,
+    };
+    const regTmpdir = new AcpRunnerRegistry(tmpdirEnv, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: (e) => (!e.TMUX && !e.TMUX_TMPDIR && e.MC_TMUX_SESSION === "agents" ? [agent] : []),
+    });
+    await expect(regTmpdir.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Round 8 Major 3: ENOSPC on BOTH inbound AND outbound raw.ndjson STILL delivers -32601 reply AND extension.blocking to UI
     const rawFailScript = join(root, "r7-raw-enospc.mjs");
     writeFileSync(
       rawFailScript,
@@ -894,15 +912,30 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     );
     const origFrame = rawFailSess.records.frame.bind(rawFailSess.records);
     rawFailSess.records.frame = (dir, bytes, issue) => {
-      if (dir === "in" && bytes.toString("utf8").includes("_ext/unknown_under_enospc")) {
+      const text = bytes.toString("utf8");
+      if (text.includes("_ext/unknown_under_enospc") || (dir === "out" && text.includes("-32601"))) {
         const err = new Error("ENOSPC") as NodeJS.ErrnoException;
         err.code = "ENOSPC";
         throw err;
       }
       return origFrame(dir, bytes, issue);
     };
-    expect(await rawFailSess.prompt("trigger unknown under raw ENOSPC")).toBe("completed");
+    expect(await rawFailSess.prompt("trigger unknown under inbound+outbound raw ENOSPC")).toBe("completed");
     expect(rawFailEvents.some((e) => e.type === "extension.blocking")).toBe(true);
     await rawFailSess.close();
+
+    // Round 8 Major 4: Non-permanent shutdown({ permanent: false }) (Vite in-process restart) stops sessions without latching closing=true
+    const regRestart = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [rawFailScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    const s1 = await regRestart.start(agent);
+    await regRestart.shutdown({ permanent: false });
+    expect(s1.state.kind).toBe("disconnected");
+    const s2 = await regRestart.start(agent);
+    expect(s2.state.kind).toBe("idle");
+    await regRestart.stop(agent);
   });
 });

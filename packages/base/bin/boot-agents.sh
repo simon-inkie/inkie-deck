@@ -591,9 +591,9 @@ done
 [[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
 AGENTS=("${TMUX_AGENTS[@]}")
 
-# Major 1: Pin Base tmux operations to the canonical default socket (never inherit a private $TMUX)
+# Major 1: Pin Base tmux operations to the canonical default socket (never inherit a private $TMUX or $TMUX_TMPDIR)
 # so Base and Deck always inspect the exact same tmux server regardless of launch environment.
-unset TMUX TMUX_PANE
+unset TMUX TMUX_PANE TMUX_TMPDIR
 
 tmux start-server 2>/dev/null || true
 # Turn on focus-events before any pane starts, so Claude Code does not show its

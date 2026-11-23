@@ -564,11 +564,11 @@ export class AcpRunnerRegistry {
     }
 
     activeSession.state = "running";
-    // Persist .acp-last-session ONLY when agent advertised resume/load capability; clear stale metadata otherwise
+    // Major 2: Persist .acp-last-session ONLY when agent advertised resume/load capability.
+    // Never delete a previously saved valid checkpoint on a fresh Start with a downgraded binary;
+    // checkpoints are cleared ONLY on explicit session-not-found for that exact ID.
     if (session.activeSessionId && session.supportsResume?.()) {
       writeStoredSessionId(home, session.activeSessionId);
-    } else {
-      clearStoredSessionId(home);
     }
 
     const exitSettled = this.recordExit(home, activeSession, lock).finally(() => resolveSettled());
@@ -581,19 +581,21 @@ export class AcpRunnerRegistry {
   private assertNoTmuxWindow(agent: string): void {
     const list = this.options.listWindows ?? listTmuxWindows;
     const configuredSession = resolveTmuxSession(this.env);
+    const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
     let windows: string[];
     try {
       windows = list(this.env, true);
-      // Major 1: Base's boot-agents.sh & workspace.sh use the "agents" session on the default tmux socket.
-      // Check Base's default socket ("agents", with TMUX/TMUX_PANE stripped) whenever Deck uses a different
-      // session name OR inherits a private TMUX socket, and also check "agents" on the current socket if needed.
-      if (configuredSession !== "agents" || Boolean(this.env.TMUX)) {
+      // Major 1: Base's boot-agents.sh & workspace.sh clear TMUX, TMUX_PANE, and TMUX_TMPDIR so they
+      // always target the canonical default socket's "agents" session. Always check that canonical
+      // socket whenever Deck uses a different session name, TMUX, or TMUX_TMPDIR.
+      if (configuredSession !== "agents" || hasCustomSocketEnv) {
         const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
         delete baseDefaultEnv.TMUX;
         delete baseDefaultEnv.TMUX_PANE;
+        delete baseDefaultEnv.TMUX_TMPDIR;
         windows = [...windows, ...list(baseDefaultEnv, true)];
       }
-      if (configuredSession !== "agents" && Boolean(this.env.TMUX)) {
+      if (configuredSession !== "agents" && hasCustomSocketEnv) {
         windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
       }
     } catch {
@@ -717,8 +719,10 @@ export class AcpRunnerRegistry {
     return activeSession.stopPromise;
   }
 
-  async shutdown(): Promise<void> {
-    shared.closing = true;
+  async shutdown(options: { permanent?: boolean } = {}): Promise<void> {
+    if (options.permanent !== false) {
+      shared.closing = true;
+    }
     await Promise.all(Array.from(shared.sessions.values(), (session) =>
       "abortController" in session ? this.stopSession(session) : session.state === "cleanup-pending" ? session.retry() : undefined));
   }

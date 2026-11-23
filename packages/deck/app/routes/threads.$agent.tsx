@@ -392,6 +392,8 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // operator's send must stay instant. Gated to tmux-enabled instances
   // (tmux is off on some instances). wakeIdleAgent is a no-op on an active pane.
   const wakeTarget = (target: string) => {
+    // Minor 1 (Round 8): Never wake/push to a legacy tmux pane once an agent opts into or is controlled by ACP.
+    if (acpRunnerRegistry.isOptedIn(target) || acpRunnerRegistry.canControl(target)) return;
     if (tmuxEnabled(process.env)) {
       const wake = runnerRegistry.handlesTerminal(target)
         ? runnerRegistry.submit(target, buildPaneWakePayload(user))
@@ -418,6 +420,8 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // the drop with no error, no failing test and no reviewer prompt. Require the
   // flag so the compiler catches a missing value at every call site.
   const pushTarget = (target: string, body: string, dictated: boolean) => {
+    // Minor 1 (Round 8): Never push compose text to a legacy tmux pane once an agent opts into or is controlled by ACP.
+    if (acpRunnerRegistry.isOptedIn(target) || acpRunnerRegistry.canControl(target)) return;
     if (tmuxEnabled(process.env)) {
       const push = runnerRegistry.handlesTerminal(target)
         ? runnerRegistry.submit(target, buildPanePushPayload(user, body, dictated))

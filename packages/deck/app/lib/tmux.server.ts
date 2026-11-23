@@ -146,11 +146,14 @@ export function listTmuxWindows(env: NodeJS.ProcessEnv, requireKnown = false): s
 
 function listTmuxForOwnership(args: string[], env: NodeJS.ProcessEnv): string {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env, LC_ALL: "C" };
-  // Major 1: When caller omits/strips TMUX (e.g. querying Base's default socket),
-  // prevent Deck's process.env.TMUX from routing the check to a private socket.
+  // Major 1: When caller omits/strips TMUX or TMUX_TMPDIR (e.g. querying Base's default socket),
+  // prevent Deck's process.env.TMUX / TMUX_TMPDIR from routing the check to a private socket.
   if (!env["TMUX"]) {
     delete childEnv["TMUX"];
     delete childEnv["TMUX_PANE"];
+  }
+  if (!env["TMUX_TMPDIR"]) {
+    delete childEnv["TMUX_TMPDIR"];
   }
   try {
     return execFileSync("tmux", args, {

@@ -419,9 +419,15 @@ export class AcpSession {
   private async send(message: AnyMessage): Promise<void> {
     if (terminal(this.current)) return;
     const bytes = Buffer.from(JSON.stringify(message));
-    this.records.frame("out", bytes);
+    // Major 3: Write to child stdin BEFORE best-effort raw.ndjson journaling so outbound ENOSPC
+    // never prevents delivering -32601 or disconnects an active turn.
     await new Promise<void>((resolve, reject) => this.owned.stdin.write(Buffer.concat([bytes, Buffer.from("\n")]),
       (error) => error ? reject(error) : resolve()));
+    try {
+      this.records.frame("out", bytes);
+    } catch {
+      // Best-effort outbound raw frame logging.
+    }
   }
 
   private async consume(fromGeneration: number): Promise<void> {
