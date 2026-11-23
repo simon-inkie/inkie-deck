@@ -238,24 +238,40 @@ for agent in "${AGENTS[@]}"; do
   fi
 done
 
+if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  exit 0
+fi
+
+LIVE_WINDOWS="$(tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null || true)"
+[[ -n "$LIVE_WINDOWS" ]] || exit 0
+
 if [[ $WINDOWED -eq 1 ]]; then
   # Spawn each agent in its own Windows Terminal window via wt.exe (WSL only).
   # Each window attaches to the shared tmux session and selects its agent.
   # Use bash -c so the tmux command separator (\;) survives the
   # wt.exe -> wsl.exe -> bash argument chain intact.
+  spawned=0
   for agent in "${AGENTS[@]}"; do
+    printf '%s\n' "$LIVE_WINDOWS" | grep -qx "$agent" || continue
     wt.exe -w new --title "$agent" \
       wsl.exe -d Ubuntu --cd "$AGENTS_HOME/$agent" -- \
       bash -c "tmux new-session -t $SESSION \\; select-window -t $agent" \
       >/dev/null 2>&1 &
+    spawned=$((spawned + 1))
     sleep 0.5  # stagger so wt.exe instances don't race each other
   done
   wait  # let backgrounded wt.exe calls settle
-  echo "Spawned ${#AGENTS[@]} windowed agents"
+  echo "Spawned $spawned windowed agents"
 else
   # Attach via a grouped session: shares windows but keeps independent focus
   # per client, so two people (or two terminals) can look at different agents
   # in the same tmux session at once.
-  LAST_AGENT="${AGENTS[-1]}"
-  exec tmux new-session -t "$SESSION" \; select-window -t "$LAST_AGENT"
+  TARGET_AGENT=""
+  for agent in "${AGENTS[@]}"; do
+    if printf '%s\n' "$LIVE_WINDOWS" | grep -qx "$agent"; then
+      TARGET_AGENT="$agent"
+    fi
+  done
+  [[ -n "$TARGET_AGENT" ]] || exit 0
+  exec tmux new-session -t "$SESSION" \; select-window -t "$TARGET_AGENT"
 fi

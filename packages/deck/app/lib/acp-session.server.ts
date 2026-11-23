@@ -87,10 +87,8 @@ const FATAL_EXTENSION_RE = /(?:^|[/:])(?:error|fatal)$/i;
 const MAX_PENDING_PERMISSIONS = 16;
 const MAX_TRACKED_REQUEST_IDS = 256;
 const MAX_UNKNOWN_REQUEST_CARDS = 16;
-// Strict exhaustion matcher: requires structured limit code/data or explicit exhaustion wording
-// (does NOT trip on "Rate limit endpoint unavailable" or "quota endpoint unavailable").
-const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limited|rate[-_ ]?limit\s+(?:exceeded|reached|hit)|quota[-_ ]?(?:exceeded|exhausted|reached)|usage[-_ ]?(?:limit\s+(?:exceeded|reached)|exhausted)|too many requests)\b/i;
-const SESSION_NOT_FOUND_RE = /\b(?:session\s+(?:not\s+found|missing|unknown|expired)|unknown\s+session|invalid\s+session)\b/i;
+// Major 4: Structured-only quota/limit classification (never match free-text error messages).
+const STRUCTURED_LIMIT_CODES = new Set(["rate_limit_exceeded", "quota_exhausted", "usage_exhausted"]);
 const KNOWN_SESSION_UPDATES = new Set([
   "agent_message_chunk",
   "user_message_chunk",
@@ -137,21 +135,42 @@ function isLimitError(error: unknown): boolean {
   if (!isObject(error)) return false;
   if (error.code === 429 || error.code === -32029) return true;
   if (isObject(error.data)) {
-    const reason = error.data.reason ?? error.data.code;
-    if (reason === "rate_limit_exceeded" || reason === "quota_exhausted" || reason === "usage_exhausted") {
+    // Check structured code FIRST, then structured reason (never let a generic reason mask an explicit code)
+    if (typeof error.data.code === "string" && STRUCTURED_LIMIT_CODES.has(error.data.code.toLowerCase())) {
+      return true;
+    }
+    if (typeof error.data.reason === "string" && STRUCTURED_LIMIT_CODES.has(error.data.reason.toLowerCase())) {
       return true;
     }
   }
-  if (typeof error.message === "string" && LIMIT_ERROR_RE.test(error.message)) return true;
   return false;
 }
 
-function isSessionNotFoundError(error: unknown): boolean {
-  if (!isObject(error)) return false;
-  if (error.code === -32002) return true;
-  if (isObject(error.data) && error.data.reason === "session_not_found") return true;
-  if (typeof error.message === "string" && SESSION_NOT_FOUND_RE.test(error.message)) return true;
+function isSessionNotFoundError(error: unknown, attemptedSessionId: string): boolean {
+  if (!isObject(error) || !isObject(error.data)) return false;
+  // Major 2: SDK 2.7.0 uses -32002 for any missing resource (e.g. data.uri for files, data.sessionId for sessions).
+  // Require explicit session identity matching attemptedSessionId so a missing file or mismatched ID NEVER clears a checkpoint.
+  if (error.code === -32002) {
+    return error.data.sessionId === attemptedSessionId;
+  }
+  if (error.data.reason === "session_not_found") {
+    return error.data.sessionId === undefined || error.data.sessionId === attemptedSessionId;
+  }
   return false;
+}
+
+function formatProtocolVersionError(error: unknown): string | undefined {
+  if (!isObject(error) || error.code !== -32022) return undefined;
+  const data = isObject(error.data) ? error.data : undefined;
+  const req = data && (typeof data.requested === "number" || typeof data.requested === "string")
+    ? String(data.requested)
+    : undefined;
+  const sup = data && Array.isArray(data.supported)
+    ? data.supported.filter((v): v is number | string => typeof v === "number" || typeof v === "string").join(", ")
+    : undefined;
+  if (req && sup) return `Unsupported ACP protocol version (requested ${req}, supported: ${sup}).`;
+  if (sup) return `Unsupported ACP protocol version (supported: ${sup}).`;
+  return "Unsupported ACP protocol version.";
 }
 
 export class AcpSession {
@@ -185,6 +204,7 @@ export class AcpSession {
   private processExit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
   private authRequiredFlag = false;
   private resumeRejectedFlag = false;
+  private unsupportedReasonText?: string;
   private lastContextUsage?: { used: number; size: number };
 
   private constructor(readonly adapter: AcpAdapter, private readonly options: Options) {
@@ -275,7 +295,7 @@ export class AcpSession {
                 mcpServers: [],
               } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
             } catch (resumeErr) {
-              if (isSessionNotFoundError(resumeErr)) {
+              if (isSessionNotFoundError(resumeErr, options.resumeSessionId)) {
                 owner.resumeRejectedFlag = true;
               }
               throw resumeErr;
@@ -286,7 +306,11 @@ export class AcpSession {
         }
       }
     } catch (error) {
-      if (isAuthRequiredError(error)) {
+      const protoErr = formatProtocolVersionError(error);
+      if (protoErr) {
+        owner.unsupportedReasonText = protoErr;
+        owner.stop("unsupported", protoErr);
+      } else if (isAuthRequiredError(error)) {
         owner.authRequiredFlag = true;
         owner.emitAuthRequired();
         owner.stop("failed", "Authentication required");
@@ -310,6 +334,7 @@ export class AcpSession {
   get queuedCount(): number { return this.queuedPrompts; }
   get authRequired(): boolean { return this.authRequiredFlag; }
   get resumeRejected(): boolean { return this.resumeRejectedFlag; }
+  get unsupportedReason(): string | undefined { return this.unsupportedReasonText; }
   get contextUsage(): { used: number; size: number } | undefined {
     return this.lastContextUsage ? { ...this.lastContextUsage } : undefined;
   }
@@ -436,7 +461,7 @@ export class AcpSession {
     requestId?: JsonRpcId,
   ): void {
     const paramObj = isObject(params) ? params : undefined;
-    const isExplicitFatal = paramObj?.fatal === true;
+    const isExplicitFatal = paramObj?.fatal === true || paramObj?.severity === "fatal";
     const isAdvisory =
       paramObj?.recoverable === true ||
       paramObj?.severity === "warning" ||
@@ -488,10 +513,14 @@ export class AcpSession {
       if (classification === "blocking" && persistToDisplay) {
         this.unknownRequestCards += 1;
       }
-      try {
-        if (persistToDisplay) {
+      if (persistToDisplay) {
+        try {
           this.records.event(cardEvent);
+        } catch {
+          // Major 3: Disk-full (ENOSPC) on display.ndjson must NEVER suppress live UI delivery.
         }
+      }
+      try {
         this.options.onEvent?.(cardEvent);
       } catch {
         // Ignore emit error during shutdown.

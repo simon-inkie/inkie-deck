@@ -136,7 +136,7 @@ function runTmux(args: string[]): string | undefined {
  */
 export function listTmuxWindows(env: NodeJS.ProcessEnv, requireKnown = false): string[] {
   const args = buildListArgs(resolveTmuxSession(env));
-  const out = requireKnown ? listTmuxForOwnership(args) : runTmux(args);
+  const out = requireKnown ? listTmuxForOwnership(args, env) : runTmux(args);
   if (out === undefined) return [];
   return out
     .split("\n")
@@ -144,11 +144,18 @@ export function listTmuxWindows(env: NodeJS.ProcessEnv, requireKnown = false): s
     .filter((l) => l !== "" && isValidWindowName(l));
 }
 
-function listTmuxForOwnership(args: string[]): string {
+function listTmuxForOwnership(args: string[], env: NodeJS.ProcessEnv): string {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env, LC_ALL: "C" };
+  // Major 1: When caller omits/strips TMUX (e.g. querying Base's default socket),
+  // prevent Deck's process.env.TMUX from routing the check to a private socket.
+  if (!env["TMUX"]) {
+    delete childEnv["TMUX"];
+    delete childEnv["TMUX_PANE"];
+  }
   try {
     return execFileSync("tmux", args, {
       encoding: "utf8", timeout: TMUX_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "pipe"], env: childEnv,
     });
   } catch (error) {
     const result = error as { status?: number; stderr?: string };

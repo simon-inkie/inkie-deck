@@ -139,8 +139,11 @@ function readStoredSessionId(home: string): string | undefined {
   }
 }
 
-function clearStoredSessionId(home: string): void {
+function clearStoredSessionId(home: string, expectedSessionId?: string): void {
   try {
+    if (expectedSessionId !== undefined && readStoredSessionId(home) !== expectedSessionId) {
+      return;
+    }
     const file = literalSessionFile(home);
     const stat = lstatSync(file, { throwIfNoEntry: false });
     if (stat && !stat.isSymbolicLink() && stat.isFile() && stat.nlink === 1) {
@@ -152,8 +155,8 @@ function clearStoredSessionId(home: string): void {
 }
 
 /**
- * Major 4: Atomic temp-file + rename write so an existing or concurrently created
- * hard-linked inode or symlink can NEVER be modified in place.
+ * Major 4 & 5: Atomic temp-file + full-write + size verification + rename so an existing
+ * or concurrently created hard-linked inode, symlink, or short write can NEVER corrupt .acp-last-session.
  */
 function writeStoredSessionId(home: string, sessionId: string): void {
   try {
@@ -174,7 +177,17 @@ function writeStoredSessionId(home: string, sessionId: string): void {
     try {
       try {
         const bytes = Buffer.from(sessionId + "\n", "utf8");
-        writeSync(fd, bytes, 0, bytes.length, 0);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+          if (written <= 0 || offset + written > bytes.length) {
+            throw new Error("Short write while persisting ACP session checkpoint");
+          }
+          offset += written;
+        }
+        if (fstatSync(fd).size !== bytes.length) {
+          throw new Error("Truncated write while persisting ACP session checkpoint");
+        }
       } finally {
         closeSync(fd);
       }
@@ -186,7 +199,7 @@ function writeStoredSessionId(home: string, sessionId: string): void {
       }
     }
   } catch {
-    // Refuse symlink/hard-link/invalid targets silently without crashing session startup.
+    // Refuse symlink/hard-link/short-write/invalid targets silently without replacing valid checkpoint.
   }
 }
 
@@ -248,26 +261,31 @@ export class AcpRunnerRegistry {
   }
 
   /**
-   * Major 2: Return retained events plus any pending (unanswered) permission cards that are
-   * protected from 500-event ring eviction.
+   * Build event snapshot combining protected pending permissions + latest blocking card
+   * with the retained event ring (used both while active AND on transition to stopped).
+   */
+  private snapshotEvents(entry: AcpActiveSession): DeckEvent[] {
+    const seen = new Set(entry.events.map((e: DeckEvent) => e.id));
+    const protectedEvents: DeckEvent[] = [];
+    for (const perm of entry.pendingPermissions.values()) {
+      if (!seen.has(perm.id)) {
+        protectedEvents.push(perm);
+        seen.add(perm.id);
+      }
+    }
+    if (entry.latestBlockingCard && !seen.has(entry.latestBlockingCard.id)) {
+      protectedEvents.push(entry.latestBlockingCard);
+    }
+    return [...protectedEvents, ...entry.events];
+  }
+
+  /**
+   * Major 2 & 3: Return retained events plus protected pending permissions and latest blocking card.
    */
   events(agent: string): DeckEvent[] {
     const entry = this.session(agent);
     if (!entry) return [];
-    if ("abortController" in entry) {
-      const seen = new Set(entry.events.map((e: DeckEvent) => e.id));
-      const protectedEvents: DeckEvent[] = [];
-      for (const perm of entry.pendingPermissions.values()) {
-        if (!seen.has(perm.id)) {
-          protectedEvents.push(perm);
-          seen.add(perm.id);
-        }
-      }
-      if (entry.latestBlockingCard && !seen.has(entry.latestBlockingCard.id)) {
-        protectedEvents.push(entry.latestBlockingCard);
-      }
-      return [...protectedEvents, ...entry.events];
-    }
+    if ("abortController" in entry) return this.snapshotEvents(entry);
     if (entry.state === "stopped" && entry.events) return [...entry.events];
     return [];
   }
@@ -433,12 +451,19 @@ export class AcpRunnerRegistry {
       }
     }
 
-    // Re-verify opt-in, tmux window absence, and pinned executable identity (dev, ino, size, mtimeMs, sha256) AFTER lock claim
+    // Re-verify opt-in, tmux window absence, locked resume checkpoint, and pinned executable identity AFTER lock claim
+    let lockedResumeSessionId = resumeSessionId;
     try {
       if (!this.isOptedIn(agent)) {
         throw new StartRefusal("not-opted-in");
       }
       this.assertNoTmuxWindow(agent);
+      if (options.resume) {
+        lockedResumeSessionId = readStoredSessionId(home);
+        if (!lockedResumeSessionId) {
+          throw new LaunchFailure("start-failed", "No valid saved session checkpoint to resume.");
+        }
+      }
       const currentIdentity = statExecutableIdentity(executable);
       if (
         currentIdentity.dev !== execIdentity.dev ||
@@ -468,7 +493,7 @@ export class AcpRunnerRegistry {
       cwd: home,
       dataRoot: this.options.dataRoot ?? home,
       sessionMarker: sessionId,
-      resumeSessionId,
+      resumeSessionId: lockedResumeSessionId,
       signal: abortController.signal,
       onEvent: (event: DeckEvent) => {
         if (event.type === "permission.requested") {
@@ -516,16 +541,16 @@ export class AcpRunnerRegistry {
     activeSession.session = session;
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
-      // Major 3: Clear stale checkpoint ONLY when resume was explicitly rejected (no resume capability or session-not-found),
-      // NEVER on a temporary protocol-version mismatch or transient transport disconnect!
-      if (options.resume && session.resumeRejected) {
-        clearStoredSessionId(home);
+      // Major 2: Clear stale checkpoint ONLY when resume was explicitly rejected for lockedResumeSessionId
+      // AND the file on disk still contains that exact ID (never clobber a newer checkpoint).
+      if (options.resume && session.resumeRejected && lockedResumeSessionId) {
+        clearStoredSessionId(home, lockedResumeSessionId);
       }
       await session.close().catch(() => {});
       await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
       if (terminalKind === "unsupported") {
-        throw new LaunchFailure("unavailable", "Agent does not support the required ACP protocol version or capability.");
+        throw new LaunchFailure("unavailable", session.unsupportedReason ?? "Agent does not support the required ACP protocol version or capability.");
       }
       throw new LaunchFailure("start-failed", `ACP session negotiation ended in state '${terminalKind}'.`);
     }
@@ -558,11 +583,17 @@ export class AcpRunnerRegistry {
     let windows: string[];
     try {
       windows = list(this.env, true);
-      // Major 1: Base's boot-agents.sh & workspace.sh always use the "agents" session;
-      // if MC_TMUX_SESSION points elsewhere, check Base's "agents" session too so both runners cannot overlap.
-      if (configuredSession !== "agents") {
-        const baseWindows = list({ ...this.env, MC_TMUX_SESSION: "agents" }, true);
-        windows = [...windows, ...baseWindows];
+      // Major 1: Base's boot-agents.sh & workspace.sh use the "agents" session on the default tmux socket.
+      // Check Base's default socket ("agents", with TMUX/TMUX_PANE stripped) whenever Deck uses a different
+      // session name OR inherits a private TMUX socket, and also check "agents" on the current socket if needed.
+      if (configuredSession !== "agents" || Boolean(this.env.TMUX)) {
+        const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
+        delete baseDefaultEnv.TMUX;
+        delete baseDefaultEnv.TMUX_PANE;
+        windows = [...windows, ...list(baseDefaultEnv, true)];
+      }
+      if (configuredSession !== "agents" && Boolean(this.env.TMUX)) {
+        windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
       }
     } catch {
       throw new StartRefusal("tmux-unknown");
@@ -581,6 +612,7 @@ export class AcpRunnerRegistry {
       signalGroup(activeSession.pid, "SIGKILL");
       activeSession.pid = 0;
     }
+    const retainedEvents = this.snapshotEvents(activeSession);
     try {
       await lock.release();
       if (shared.sessions.get(home) === activeSession) {
@@ -589,7 +621,7 @@ export class AcpRunnerRegistry {
           code: activeSession.session?.exitInfo.code ?? null,
           signal: activeSession.session?.exitInfo.signal ?? null,
           exitedAt: this.now(),
-          events: activeSession.events,
+          events: retainedEvents,
         });
       }
     } catch {
@@ -603,7 +635,7 @@ export class AcpRunnerRegistry {
             code: activeSession.session?.exitInfo.code ?? null,
             signal: activeSession.session?.exitInfo.signal ?? null,
             exitedAt: this.now(),
-            events: activeSession.events,
+            events: retainedEvents,
           });
         })().finally(() => { pending = undefined; }),
       };
@@ -631,6 +663,8 @@ export class AcpRunnerRegistry {
 
     const exitInfo = activeSession.session?.exitInfo ?? { code: null, signal: null };
     const exitedAt = this.now();
+    // Major 3: Snapshot protected blocking cards + retained events so disconnect never drops latest blocker
+    const retainedEvents = this.snapshotEvents(activeSession);
     let pending: Promise<void> | undefined;
     const cleanup: AcpCleanupSession = {
       state: "cleanup-pending",
@@ -640,7 +674,7 @@ export class AcpRunnerRegistry {
           code: exitInfo.code,
           signal: exitInfo.signal,
           exitedAt,
-          events: activeSession.events,
+          events: retainedEvents,
         });
       }).finally(() => { pending = undefined; }),
     };

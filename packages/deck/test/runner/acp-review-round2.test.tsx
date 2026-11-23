@@ -685,13 +685,13 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     await expect(regProto.start(agent, { resume: true })).rejects.toThrow();
     expect(regProto.lastSessionId(agent)).toBe("valid-saved-id");
 
-    // Major 3b: explicit session-not-found from loadSession clears stale .acp-last-session
+    // Major 3b: explicit session-not-found (-32002 with matching data.sessionId) clears stale .acp-last-session
     const missingSessScript = join(root, "r5-notfound.mjs");
     writeFileSync(
       missingSessScript,
       byteIoScript(`
         if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found" } });
+        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found", data: { sessionId: "valid-saved-id" } } });
       `),
     );
     const regNotFound = new AcpRunnerRegistry(env, {
@@ -721,5 +721,138 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(await outSess.prompt("check outage")).toBe("failed");
     expect(outEvents.some((e) => e.type === "usage.exhausted")).toBe(false);
     await outSess.close();
+  });
+
+  it("Round 6 (Majors 1-4 & Minors 3-4): cross-socket tmux check, -32002 uri vs sessionId & pre-lock swap, blocker survives 501 chunks + disconnect, structured quota code, -32022 & severity:fatal", async () => {
+    // Major 1: Deck runs inside private TMUX socket while Base runs on default socket (TMUX unset) -> refused as tmux-active
+    const privSockEnv = {
+      AGENTS_HOME: root,
+      MC_ACP_RUNNER: "1",
+      TMUX: "/tmp/private-deck-tmux.sock,1234,0",
+      TMUX_PANE: "%1",
+      HOME: root,
+      PATH: process.env.PATH,
+    };
+    const regSock = new AcpRunnerRegistry(privSockEnv, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: (e) => (!e.TMUX && e.MC_TMUX_SESSION === "agents" ? [agent] : []),
+    });
+    await expect(regSock.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Major 2a: -32002 with data.uri (missing file, NOT missing session) preserves valid checkpoint
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
+    writeFileSync(join(agentHome, ".acp-last-session"), "keep-me-uri\n");
+    const missingFileScript = join(root, "r6-uri.mjs");
+    writeFileSync(
+      missingFileScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Resource not found", data: { uri: "file:///missing" } } });
+      `),
+    );
+    const regUri = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [missingFileScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    await expect(regUri.start(agent, { resume: true })).rejects.toThrow();
+    expect(regUri.lastSessionId(agent)).toBe("keep-me-uri");
+
+    // Major 2b: Checkpoint replaced during pre-lock probe is NEVER deleted if old ID is rejected
+    writeFileSync(join(agentHome, ".acp-last-session"), "old-pre-probe-id\n");
+    const swapScript = join(root, "r6-swap.mjs");
+    writeFileSync(
+      swapScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found", data: { sessionId: "old-pre-probe-id" } } });
+      `),
+    );
+    const regSwap = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [swapScript] },
+      execVersion: () => {
+        writeFileSync(join(agentHome, ".acp-last-session"), "newer-valid-id\n");
+        return { status: 0, stdout: "1.5.14\n", stderr: "" };
+      },
+      listWindows: () => [],
+    });
+    await expect(regSwap.start(agent, { resume: true })).rejects.toThrow();
+    expect(regSwap.lastSessionId(agent)).toBe("newer-valid-id");
+
+    // Major 3: Blocker + 501 chunks + disconnect retains the blocking card in stopped thread view
+    const blockerDiscScript = join(root, "r6-blocker-disc.mjs");
+    writeFileSync(
+      blockerDiscScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-bd" } });
+        else if (msg.method === "session/prompt") {
+          for (let i = 1; i <= 17; i++) send({ jsonrpc: "2.0", id: i, method: "_ext/unsupported_req", params: {} });
+          for (let i = 0; i < 501; i++) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s-bd", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "c" + i } } } });
+          setTimeout(() => process.exit(1), 30);
+        }
+      `),
+    );
+    const regDisc = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [blockerDiscScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    const discSess = await regDisc.start(agent);
+    expect(await discSess.prompt("flood and disconnect")).toBe("disconnected");
+    await delay(80);
+    expect(regDisc.status(agent)?.state).toBe("stopped");
+    expect(regDisc.events(agent).some((e) => e.type === "extension.blocking")).toBe(true);
+
+    // Major 4 & Minor 4: -32603 text-only rate-limit ambiguity emits NO exhaustion; { reason: provider_error, code: quota_exhausted } DOES; severity: fatal terminates turn
+    const quotaScript = join(root, "r6-quota.mjs");
+    writeFileSync(
+      quotaScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-q" } });
+        else if (msg.method === "session/prompt") {
+          globalThis.__qn = (globalThis.__qn || 0) + 1;
+          if (globalThis.__qn === 1) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "Could not determine whether the rate limit reached its threshold" } });
+          else if (globalThis.__qn === 2) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "Provider failure", data: { reason: "provider_error", code: "quota_exhausted" } } });
+          else send({ jsonrpc: "2.0", method: "vendor/notice", params: { severity: "fatal" } });
+        }
+      `),
+    );
+    const qEvents: DeckEvent[] = [];
+    const qSess = await AcpSession.start(
+      { executable: process.execPath, args: [quotaScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root, onEvent: (e) => qEvents.push(e) },
+    );
+    expect(await qSess.prompt("ambiguous text")).toBe("failed");
+    expect(qEvents.filter((e) => e.type === "usage.exhausted")).toHaveLength(0);
+    expect(await qSess.prompt("structured code")).toBe("failed");
+    expect(qEvents.filter((e) => e.type === "usage.exhausted")).toHaveLength(1);
+    expect(await qSess.prompt("fatal notice")).toBe("failed");
+    expect(qSess.state.kind).toBe("failed");
+    expect(qEvents.some((e) => e.type === "extension.blocking")).toBe(true);
+    await qSess.close();
+
+    // Minor 3: Explicit -32022 initialize error transitions to unsupported with requested/supported versions
+    const protoErrScript = join(root, "r6-proto-err.mjs");
+    writeFileSync(
+      protoErrScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32022, message: "Unsupported version", data: { requested: 1, supported: [2] } } });
+      `),
+    );
+    const protoSess = await AcpSession.start(
+      { executable: process.execPath, args: [protoErrScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root },
+    );
+    expect(protoSess.state.kind).toBe("unsupported");
+    expect(protoSess.unsupportedReason).toContain("requested 1");
+    expect(protoSess.unsupportedReason).toContain("supported: 2");
+    await protoSess.close();
   });
 });

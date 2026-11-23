@@ -35,6 +35,17 @@ function deckDevSocket(): Plugin {
           next(error);
         }
       });
+      // Wire ACP recovery and clean shutdown in Vite dev mode alongside production.mjs.
+      void server
+        .ssrLoadModule("/app/lib/runner/acp-registry.server.ts")
+        .then((mod) => (mod as typeof import("./app/lib/runner/acp-registry.server")).acpRunnerRegistry.recover())
+        .catch(() => {});
+      server.httpServer?.once("close", () => {
+        void server
+          .ssrLoadModule("/app/lib/runner/acp-registry.server.ts")
+          .then((mod) => (mod as typeof import("./app/lib/runner/acp-registry.server")).acpRunnerRegistry.shutdown())
+          .catch(() => {});
+      });
     },
   };
 }
