@@ -1,5 +1,18 @@
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  accessSync,
+  closeSync,
+  constants as fsConstants,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import { acpRunnerEnabled } from "../instance.server.js";
@@ -82,14 +95,35 @@ export interface ExecutableIdentity {
   ino: number;
   size: number;
   mtimeMs: number;
+  sha256: string;
 }
 
 export function statExecutableIdentity(executablePath: string): ExecutableIdentity {
-  const info = lstatSync(executablePath);
-  if (!info.isFile()) {
-    throw new LaunchFailure("unavailable", `Pinned executable '${executablePath}' is not a regular file.`);
+  const fd = openSync(executablePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) {
+      throw new LaunchFailure("unavailable", `Pinned executable '${executablePath}' is not a regular file.`);
+    }
+    const hash = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let offset = 0;
+    while (true) {
+      const n = readSync(fd, chunk, 0, chunk.length, offset);
+      if (n <= 0) break;
+      hash.update(n === chunk.length ? chunk : chunk.subarray(0, n));
+      offset += n;
+    }
+    return {
+      dev: info.dev,
+      ino: info.ino,
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      sha256: hash.digest("hex"),
+    };
+  } finally {
+    closeSync(fd);
   }
-  return { dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs };
 }
 
 export function buildConstrainedProbeEnv(

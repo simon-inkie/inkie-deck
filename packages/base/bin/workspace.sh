@@ -197,6 +197,11 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     else
       tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     fi
+    # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, tear down the empty window and skip launch.
+    if agent_opts_into_pty "$agent"; then
+      tmux kill-window -t "$SESSION:$agent" 2>/dev/null || true
+      continue
+    fi
     start_agent "$agent"
     start_watcher "$agent"
   done
@@ -219,6 +224,10 @@ for agent in "${AGENTS[@]}"; do
       tmux new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     else
       tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    fi
+    if agent_opts_into_pty "$agent"; then
+      tmux kill-window -t "$SESSION:$agent" 2>/dev/null || true
+      continue
     fi
     start_agent "$agent"
     start_watcher "$agent"

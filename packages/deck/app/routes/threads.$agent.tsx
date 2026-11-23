@@ -201,15 +201,15 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const tmuxOn = tmuxEnabled(process.env);
   const requestUrl = new URL(request.url);
   const tmuxView = tmuxOn && requestUrl.searchParams.get("view") === "tmux";
+  const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
 
   // The operator rendering the thread IS the read - flip the
   // agent's sent blocks to read on disk BEFORE reading, so the receipt is
   // durable and this render already shows the flipped state. Without an
   // approved Host and origin proof, serve the thread without a receipt.
-  // SKIPPED in tmux view - terminal mode renders no
-  // messages, and the 1s poll would otherwise mark unseen messages read.
-  // Render-is-the-receipt only counts when the messages actually render.
-  if (!tmuxView && canWriteFromRequest(request, context)) {
+  // SKIPPED in tmux view AND ACP view - neither renders inbox blocks,
+  // so flipping unread state would clear messages the operator never saw.
+  if (!tmuxView && !acpActive && canWriteFromRequest(request, context)) {
     try {
       await inbox.markRead(agent, user);
     } catch (err) {
@@ -275,7 +275,6 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   }
 
   const latestBlock = blocks[blocks.length - 1];
-  const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
   const awaitingAgent = !acpActive && !tmuxView && startIndex + blocks.length === totalCount &&
     latestBlock?.header.from === user;
   const needsPane = !acpActive && tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);

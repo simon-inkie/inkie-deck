@@ -85,6 +85,8 @@ const explicitDeckVariables = new Set(["INBOX_ROOT", "DATA_ROOT", "GOOGLE_GENERA
 const deckVariable = /^(?:MC_|DECK_|INKIE_|DEEPGRAM_)/i;
 const FATAL_EXTENSION_RE = /(?:^|[/:])(?:error|fatal)$/i;
 const MAX_PENDING_PERMISSIONS = 16;
+const MAX_TRACKED_REQUEST_IDS = 256;
+const MAX_UNKNOWN_REQUEST_CARDS = 16;
 // Strict limit-exhaustion matcher (does NOT trip on generic "quota endpoint unavailable").
 const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limit(?:ed|s)?|quota[-_ ]?(?:exceeded|exhausted|reached)|usage[-_ ]?(?:limit|exhausted)|too many requests)\b/i;
 const KNOWN_SESSION_UPDATES = new Set([
@@ -147,6 +149,7 @@ export class AcpSession {
   private readonly requests = new Set<JsonRpcId>();
   private readonly permissions = new Map<string, Permission>();
   private readonly tools = new Map<string, { key: string; view: ToolView }>();
+  private unknownRequestCards = 0;
   private readonly cancelMs: number;
   private readonly violationLimit: number;
   private readonly framer: LineFramer;
@@ -383,6 +386,23 @@ export class AcpSession {
     }
   }
 
+  private recordIncomingRequestId(id: JsonRpcId): boolean {
+    if (this.requests.has(id)) return false;
+    // Keep tracked ID set bounded while NEVER evicting any live open permission's RPC ID
+    if (this.requests.size >= MAX_TRACKED_REQUEST_IDS) {
+      const livePermissionIds = new Set<JsonRpcId>();
+      for (const perm of this.permissions.values()) livePermissionIds.add(perm.request);
+      for (const existing of this.requests) {
+        if (!livePermissionIds.has(existing)) {
+          this.requests.delete(existing);
+          if (this.requests.size < MAX_TRACKED_REQUEST_IDS) break;
+        }
+      }
+    }
+    this.requests.add(id);
+    return true;
+  }
+
   private handleUnknownExtension(
     method: string,
     params: unknown,
@@ -391,12 +411,17 @@ export class AcpSession {
   ): void {
     const paramObj = isObject(params) ? params : undefined;
     const isExplicitFatal = paramObj?.fatal === true;
-    const isExplicitRecoverable = paramObj?.recoverable === true;
-    const classification: ExtensionClassification = requestId !== undefined
-      ? "blocking"
-      : isExplicitFatal || (FATAL_EXTENSION_RE.test(method) && !isExplicitRecoverable)
-        ? "fatal"
-        : "non-blocking";
+    const isAdvisory =
+      paramObj?.recoverable === true ||
+      paramObj?.severity === "warning" ||
+      paramObj?.severity === "info";
+    const classification: ExtensionClassification = isExplicitFatal
+      ? "fatal"
+      : requestId !== undefined
+        ? "blocking"
+        : FATAL_EXTENSION_RE.test(method) && !isAdvisory
+          ? "fatal"
+          : "non-blocking";
 
     this.records.frame("in", bytes);
     this.records.unknownExtension({
@@ -419,24 +444,28 @@ export class AcpSession {
     }
 
     if (classification === "blocking" || classification === "fatal") {
-      try {
-        this.emit({
-          class: "action",
-          type: "extension.blocking",
-          title: "Something went wrong",
-          view: {
-            kind: "text",
-            excerpt: classification === "blocking"
-              ? "The agent sent an unsupported request that blocked progress."
-              : "An unsupported agent message interrupted the turn.",
-          },
-        });
-      } catch {
-        // Ignore emit error during shutdown.
+      const shouldEmitCard = classification === "fatal" || this.unknownRequestCards < MAX_UNKNOWN_REQUEST_CARDS;
+      if (shouldEmitCard) {
+        if (classification === "blocking") this.unknownRequestCards += 1;
+        try {
+          this.emit({
+            class: "action",
+            type: "extension.blocking",
+            title: "Something went wrong",
+            view: {
+              kind: "text",
+              excerpt: classification === "blocking"
+                ? "The agent sent an unsupported request that blocked progress."
+                : "An unsupported agent message interrupted the turn.",
+            },
+          });
+        } catch {
+          // Ignore emit error during shutdown.
+        }
       }
       if (classification === "fatal") {
-        // Major 1: fatally terminate the session (closing RPC, permissions, and child process)
-        // so NO subsequent prompt can overlap the open RPC and no late reply can settle a second turn.
+        // Major 1 & 6: fatally terminate the session (closing RPC, permissions, and child process)
+        // so NO subsequent prompt can overlap the open RPC and no active turn hangs pending.
         this.stop("failed", "Unsupported fatal agent message");
       }
     }
@@ -489,9 +518,8 @@ export class AcpSession {
       this.handleUnknownExtension(value.method, value.params, frame.bytes);
     } else if (typeof value.method === "string" && rpcId(value.id) && value.id !== null) {
       if (value.method === incoming.update) return reject("invalid update envelope");
-      // Never allow an unsupported request to collide with a live or previously seen client request ID
-      if (this.requests.has(value.id)) return reject("duplicate request id");
-      this.requests.add(value.id);
+      // Never allow an unsupported request to collide with a live or recently seen client request ID
+      if (!this.recordIncomingRequestId(value.id)) return reject("duplicate request id");
       this.handleUnknownExtension(value.method, value.params, frame.bytes, value.id);
     } else {
       reject("unexpected JSON-RPC message");
@@ -618,8 +646,7 @@ export class AcpSession {
   }
 
   private permissionRequest(request: JsonRpcId, params: unknown, bytes: Buffer): void {
-    if (this.requests.has(request)) return this.violate(bytes, "duplicate permission request");
-    this.requests.add(request);
+    if (!this.recordIncomingRequestId(request)) return this.violate(bytes, "duplicate permission request");
     if (this.permissions.size >= MAX_PENDING_PERMISSIONS) {
       this.permissionResponse(request);
       return this.violate(bytes, "too many pending permissions");

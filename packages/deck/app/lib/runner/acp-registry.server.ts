@@ -3,12 +3,13 @@ import {
   closeSync,
   constants as fsConstants,
   fstatSync,
-  ftruncateSync,
   lstatSync,
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
+  renameSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -38,6 +39,7 @@ const MAX_EVENTS_PER_SESSION = 500;
 export type AcpActiveSession = {
   state: "starting" | "running" | "stopping";
   session?: AcpSession;
+  usesAcpSession: boolean;
   pid: number;
   home: string;
   manifest: AcpAdapterManifest;
@@ -117,12 +119,16 @@ function readStoredSessionId(home: string): string | undefined {
   try {
     const file = literalSessionFile(home);
     const stat = lstatSync(file, { throwIfNoEntry: false });
-    if (!stat || stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1) return undefined;
+    if (!stat || stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1 || stat.size > 256) return undefined;
     const fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     try {
       const fdStat = fstatSync(fd);
-      if (!fdStat.isFile() || fdStat.nlink > 1) return undefined;
-      const value = readFileSync(fd, "utf8").trim();
+      if (!fdStat.isFile() || fdStat.nlink > 1 || fdStat.size > 256) return undefined;
+      // Major 4: Bounded fixed-size read (never reads arbitrarily large files on poll)
+      const buf = Buffer.allocUnsafe(256);
+      const n = readSync(fd, buf, 0, 256, 0);
+      // Major 3: Strip only trailing newline so printable leading/trailing spaces round-trip verbatim
+      const value = buf.subarray(0, n).toString("utf8").replace(/\r?\n$/, "");
       return value.length > 0 && value.length <= 128 && !/[^ -~]/.test(value) ? value : undefined;
     } finally {
       closeSync(fd);
@@ -145,30 +151,35 @@ function clearStoredSessionId(home: string): void {
 }
 
 /**
- * Write .acp-last-session strictly via literal child path + O_NOFOLLOW + fstatSync
- * (regular file, nlink === 1) BEFORE truncating so neither in-home symlinks nor
- * hard-linked targets can ever be overwritten.
+ * Major 4: Atomic temp-file + rename write so an existing or concurrently created
+ * hard-linked inode or symlink can NEVER be modified in place.
  */
 function writeStoredSessionId(home: string, sessionId: string): void {
   try {
-    const file = literalSessionFile(home);
+    const realHome = realpathSync(home);
+    const file = join(realHome, lastSessionName);
     const existing = lstatSync(file, { throwIfNoEntry: false });
     if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1)) {
       return;
     }
+    const tmp = join(realHome, `${lastSessionName}.tmp.${randomUUID()}`);
     const flags =
       fsConstants.O_WRONLY |
       fsConstants.O_CREAT |
+      fsConstants.O_EXCL |
       (fsConstants.O_NOFOLLOW ?? 0);
-    const fd = openSync(file, flags, 0o600);
+    const fd = openSync(tmp, flags, 0o600);
     try {
-      const fdStat = fstatSync(fd);
-      if (!fdStat.isFile() || fdStat.nlink > 1) return;
-      ftruncateSync(fd, 0);
       const bytes = Buffer.from(sessionId + "\n", "utf8");
       writeSync(fd, bytes, 0, bytes.length, 0);
     } finally {
       closeSync(fd);
+    }
+    try {
+      renameSync(tmp, file);
+    } catch (renameErr) {
+      try { unlinkSync(tmp); } catch { /* ignore */ }
+      throw renameErr;
     }
   } catch {
     // Refuse symlink/hard-link/invalid targets silently without crashing session startup.
@@ -304,6 +315,7 @@ export class AcpRunnerRegistry {
     // so stop()/shutdown() ALWAYS sees and cancels an in-flight start (even when prior state was 'locked').
     const activeSession: AcpActiveSession = {
       state: "starting",
+      usesAcpSession: !this.options.startSession,
       pid: 0,
       home,
       manifest,
@@ -411,7 +423,7 @@ export class AcpRunnerRegistry {
       }
     }
 
-    // Re-verify opt-in, tmux window absence, and pinned executable identity (dev, ino, size, mtimeMs) AFTER lock claim
+    // Re-verify opt-in, tmux window absence, and pinned executable identity (dev, ino, size, mtimeMs, sha256) AFTER lock claim
     try {
       if (!this.isOptedIn(agent)) {
         throw new StartRefusal("not-opted-in");
@@ -422,13 +434,15 @@ export class AcpRunnerRegistry {
         currentIdentity.dev !== execIdentity.dev ||
         currentIdentity.ino !== execIdentity.ino ||
         currentIdentity.size !== execIdentity.size ||
-        currentIdentity.mtimeMs !== execIdentity.mtimeMs
+        currentIdentity.mtimeMs !== execIdentity.mtimeMs ||
+        currentIdentity.sha256 !== execIdentity.sha256
       ) {
         throw new LaunchFailure("unavailable", "ACP executable changed between version probe and launch.");
       }
     } catch (error) {
-      await lock.release().catch(() => lock.retain());
-      clearReservation();
+      // Major 8: Route post-claim lock cleanup through cleanupFailedStart so failed release exposes cleanup-pending retry
+      await this.cleanupFailedStart(home, activeSession, lock);
+      resolveSettled();
       throw error;
     }
 
@@ -485,6 +499,10 @@ export class AcpRunnerRegistry {
     activeSession.session = session;
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
+      // Major 3: If Resume was refused because agent dropped resume/load capability, clear stale checkpoint metadata
+      if (terminalKind === "unsupported" && options.resume) {
+        clearStoredSessionId(home);
+      }
       await session.close().catch(() => {});
       await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
@@ -621,11 +639,13 @@ export class AcpRunnerRegistry {
     if (activeSession.stopPromise) return activeSession.stopPromise;
     activeSession.stopPromise = (async () => {
       activeSession.state = "stopping";
-      // Single termination owner: abort cancels probe/recovery/startup; AcpSession.close() owns child group shutdown
+      // Major 2: Single termination owner. When usesAcpSession is true, abortController.abort()
+      // triggers AcpSession's own abort listener during negotiation and session.close() owns running teardown.
+      // Never fire a second raw-PID SIGKILL on top of AcpSession!
       activeSession.abortController.abort();
       if (activeSession.session?.close) {
         await activeSession.session.close().catch(() => {});
-      } else if (activeSession.pid > 0) {
+      } else if (!activeSession.usesAcpSession && activeSession.pid > 0) {
         signalGroup(activeSession.pid, "SIGKILL");
         activeSession.pid = 0;
       }

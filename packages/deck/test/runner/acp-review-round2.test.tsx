@@ -5,7 +5,9 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -559,5 +561,90 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(await capSess.prompt("flood")).toBe("failed");
     expect(capSess.state.kind).toBe("failed");
     await capSess.close();
+  });
+
+  it("Round 4 (Majors 3, 4, 5, 6, 7): refused Resume clears stale checkpoint, same-size mtime-preserving rewrite refused via SHA-256, warning vs fatal request, bounded unknown request cards", async () => {
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
+
+    // Major 3: Refused Resume (agent dropped resume capability) clears stale .acp-last-session
+    writeFileSync(join(agentHome, ".acp-last-session"), "  spaced-id  \n");
+    const noResScript = join(root, "r4-nores.mjs");
+    writeFileSync(
+      noResScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      `),
+    );
+    const regNoRes = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [noResScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    // Printable leading/trailing spaces preserved on read
+    expect(regNoRes.lastSessionId(agent)).toBe("  spaced-id  ");
+    await expect(regNoRes.start(agent, { resume: true })).rejects.toThrow(/does not support/);
+    expect(regNoRes.lastSessionId(agent)).toBeUndefined();
+
+    // Major 5: Same-size rewrite preserving mtime is caught by SHA-256 identity pin
+    const fakeBin = join(root, "r4-same-size-bin");
+    writeFileSync(fakeBin, "#!/bin/sh\necho 1.5.14 # AAAA\n", { mode: 0o755 });
+    const origStat = statSync(fakeBin);
+    const regHash = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: fakeBin, args: [] },
+      execVersion: () => {
+        writeFileSync(fakeBin, "#!/bin/sh\necho 1.5.14 # BBBB\n", { mode: 0o755 });
+        utimesSync(fakeBin, origStat.atime, origStat.mtime);
+        return { status: 0, stdout: "1.5.14\n", stderr: "" };
+      },
+      listWindows: () => [],
+    });
+    await expect(regHash.start(agent)).rejects.toThrow(/changed between version probe and launch/);
+
+    // Major 6 & 7: advisory warning stays non-blocking, repeated unknown requests cap cards at 16, and fatal:true request terminates turn
+    const extScript = join(root, "r4-ext.mjs");
+    writeFileSync(
+      extScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-r4" } });
+        else if (msg.method === "session/prompt") {
+          send({ jsonrpc: "2.0", method: "_ext/error", params: { severity: "warning" } });
+          for (let i = 100; i < 125; i++) {
+            send({ jsonrpc: "2.0", id: i, method: "_ext/unsupported_req", params: {} });
+          }
+          send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: "end_turn" } });
+        }
+      `),
+    );
+    const extEvents: DeckEvent[] = [];
+    const extSess = await AcpSession.start(
+      { executable: process.execPath, args: [extScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root, onEvent: (e) => extEvents.push(e) },
+    );
+    expect(await extSess.prompt("advisory and 25 unknown reqs")).toBe("completed");
+    expect(extEvents.filter((e) => e.type === "extension.blocking").length).toBeLessThanOrEqual(16);
+    await extSess.close();
+
+    // Fatal request (has id AND fatal: true) terminates turn instead of hanging pending
+    const fatalReqScript = join(root, "r4-fatal-req.mjs");
+    writeFileSync(
+      fatalReqScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-fr" } });
+        else if (msg.method === "session/prompt") {
+          send({ jsonrpc: "2.0", id: 999, method: "_ext/abort_req", params: { fatal: true } });
+        }
+      `),
+    );
+    const frSess = await AcpSession.start(
+      { executable: process.execPath, args: [fatalReqScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root },
+    );
+    expect(await frSess.prompt("fatal req")).toBe("failed");
+    expect(frSess.state.kind).toBe("failed");
+    await frSess.close();
   });
 });

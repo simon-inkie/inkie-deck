@@ -276,7 +276,7 @@ export function AcpThreadView({
                           onClick={() => void postOp({ op: "answer-permission", eventId: ev.id, optionId: opt.id })}
                           className="rounded border px-2 py-1 text-xs"
                         >
-                          {opt.label}
+                          {opt.label} ({opt.optionKind.replace(/_/g, " ")})
                         </button>
                       ))}
                     </div>
@@ -295,7 +295,7 @@ export function AcpThreadView({
             const text = promptText.trim();
             if (!text) return;
             void postOp({ op: "prompt", text }).then((ok) => {
-              if (ok) setPromptText("");
+              if (ok) setPromptText((curr) => (curr.trim() === text ? "" : curr));
             });
           }}
           className="flex flex-col gap-2"

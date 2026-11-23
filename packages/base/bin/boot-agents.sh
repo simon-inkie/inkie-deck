@@ -614,10 +614,21 @@ launch_agent() {
   # Per-agent model override (selector): $AGENTS_HOME/<a>/.model -> --model flag.
   # Absent = no flag = inherit the global default. Applies to all runtimes.
   model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
+  local created_window=0
   if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     tmux new-session -d -s "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+    created_window=1
   elif ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
     tmux new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
+    created_window=1
+  fi
+  # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, remove the fresh window and refuse send-keys.
+  if agent_opts_into_pty "$a"; then
+    if [[ $created_window -eq 1 ]]; then
+      tmux kill-window -t "$target" 2>/dev/null || true
+    fi
+    echo "skipped"
+    return 0
   fi
   if tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then
     echo "skipped"; return
