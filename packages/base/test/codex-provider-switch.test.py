@@ -285,7 +285,9 @@ class ProviderSwitchTests(unittest.TestCase):
             sent = []
             with mock.patch.object(
                 mod, "confirm_rollback_ready", return_value=("%9", "bash", str(self.agent))
-            ), mock.patch.object(mod, "send_fresh", side_effect=lambda pane, command: sent.append((pane, command))):
+            ), mock.patch.object(
+                mod, "send_fresh", side_effect=lambda pane, command: sent.append((pane, command))
+            ), mock.patch.object(mod, "wait_for_clean_codex", return_value=None):
                 mod.rollback("alex", transaction)
             self.assertEqual(len(sent), 1)
             self.assertEqual(sent[0][0], "%9")
@@ -306,6 +308,34 @@ class ProviderSwitchTests(unittest.TestCase):
             self.assertEqual(final_tx["stage"], "finalised")
             self.assertEqual(final_tx["outcome"], "rolled-back")
             self.assertNotEqual(subprocess.run([str(LOCK), "active", "alex"], env=self.env).returncode, 0)
+
+    def test_rollback_refuses_commit_when_replacement_codex_never_starts(self):
+        mod = load_cli()
+        transaction = "33333333-3333-4333-8333-333333333333"
+        tx = {
+            "schema_version": 1,
+            "transaction_id": transaction,
+            "agent": "alex",
+            "stage": "launching",
+            "source_provider": "plus",
+            "target_provider": "azure",
+            "pane_id": "%9",
+            "working_directory": str(self.agent),
+            "azure_home": str(self.agent / ".codex-home"),
+        }
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            mod.atomic_json(mod.transaction_path("alex"), tx)
+            subprocess.run([str(LOCK), "acquire", "alex", transaction], env=self.env, check=True)
+            with mock.patch.object(
+                mod, "confirm_rollback_ready", return_value=("%9", "bash", str(self.agent))
+            ), mock.patch.object(mod, "send_fresh", return_value=None), mock.patch.object(
+                mod, "wait_for_clean_codex", side_effect=mod.SwitchError("launcher refused lock")
+            ):
+                with self.assertRaises(mod.SwitchError):
+                    mod.rollback("alex", transaction)
+            self.assertFalse(mod.provider_path("alex").exists())
+            stored_tx = json.loads(mod.transaction_path("alex").read_text(encoding="utf-8"))
+            self.assertEqual(stored_tx["stage"], "launching")
 
     def test_abort_prepared_releases_lock(self):
         mod = load_cli()

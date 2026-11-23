@@ -330,41 +330,32 @@ function verifyGroup(record: LockRecord, group: number): boolean {
   return member?.birth === witness.birth && member.group === group && member.session === group && live(member.state);
 }
 
-function hasLiveMarkedBaseProcess(sessionId: string, deckBirth: string): boolean {
-  const marker = `${ptySessionEnv}=${sessionId}`;
-  const myUid = process.getuid?.();
-  const minBirth = BigInt(deckBirth);
-  for (const entry of readdirSync("/proc")) {
-    const pid = Number(entry);
-    if (!validPid(pid)) continue;
-    let st;
-    try {
-      st = lstatSync(`/proc/${pid}`);
-    } catch {
-      continue;
-    }
-    if (myUid !== undefined && st.uid !== myUid) continue;
-    const info = processInfo(pid);
-    if (!info || !live(info.state)) continue;
-    if (info.birth === undefined || BigInt(info.birth) < minBirth) continue;
-    let envText: string;
-    try {
-      envText = readFileSync(`/proc/${pid}/environ`, "utf8");
-    } catch (error) {
-      if (hasCode(error, "ENOENT") || hasCode(error, "ESRCH")) continue;
-      // Fail closed if a same-uid process started at/after deckBirth cannot have its environ read.
-      return true;
-    }
-    if (!envText.split("\0").includes(marker)) continue;
-    return true;
+/**
+ * Major 2 (Round 16) & Minor 2: Non-blocking flock probe on an O_RDWR descriptor (NFS-compatible).
+ * Returns true if another process holds an exclusive flock on the lock file right now.
+ */
+export function isRunnerLockFlockHeld(file: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return false;
   }
-  return false;
+  try {
+    const guard = spawnSync("flock", ["-n", "3"], {
+      env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "ignore", "ignore", fd], timeout: 1_000,
+    });
+    return Boolean(guard.error || guard.status !== 0);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export async function recoverRunnerLock(file: string): Promise<"absent" | "recovered" | "unrecovered"> {
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    // Minor 2 (Round 16): Open O_RDWR (not O_RDONLY) so exclusive flock works on Linux NFS as well.
+    fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (hasCode(error, "ENOENT")) return "absent";
     throw error;
@@ -378,7 +369,23 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
     }
     const owned = fstatSync(fd);
     if (!sameLock(file, owned)) return "unrecovered";
+    // Empty file whose exclusive flock we just won (interrupted pre-write): safe to remove.
+    if (owned.isFile() && owned.size === 0 && owned.uid === process.getuid?.() && (owned.mode & 0o022) === 0) {
+      unlinkSync(file);
+      return "recovered";
+    }
     const snapshot = readLock(fd);
+    // Major 3 (Round 16): For Base-owned locks, staleness is decided SOLELY by the non-blocking
+    // flock acquired above (zero /proc descendant scanning, so unrelated non-dumpable processes
+    // never block recovery). Refuse only incomplete legacy spawning locks with childPid === null.
+    if (snapshot.owner === "base") {
+      if (snapshot.bootId === bootId() && snapshot.phase === "spawning" && snapshot.childPid === null) {
+        throw new Error("Base runner lock was left in incomplete spawning state.");
+      }
+      if (!sameLock(file, owned)) return "unrecovered";
+      unlinkSync(file);
+      return "recovered";
+    }
     if (snapshot.bootId === bootId()) {
       const deck = processInfo(snapshot.deckPid);
       if (deck?.birth === snapshot.deckBirth && live(deck.state)) return "unrecovered";
@@ -388,13 +395,7 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
       if (record.deckPid !== snapshot.deckPid || record.deckBirth !== snapshot.deckBirth ||
           record.bootId !== snapshot.bootId || record.sessionId !== snapshot.sessionId ||
           record.startedAt !== snapshot.startedAt) return "unrecovered";
-      if (record.owner === "base") {
-        // Major 4 (Round 14): Base holds flock on an inherited fd across exec;
-        // flock succeeded above, and we also verify no marked descendant survived after closing fds.
-        if (hasLiveMarkedBaseProcess(record.sessionId, record.deckBirth)) {
-          throw new Error("A Base runner descendant is still alive.");
-        }
-      } else if (record.phase !== "reserved") {
+      if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;
         if (groupExists(group)) {

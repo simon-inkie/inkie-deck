@@ -1120,8 +1120,9 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       expect(existsSync(sideEffectFile)).toBe(false);
       expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(false);
 
-      // Round 14 Major 4: Inherited flock across exec keeps Base claim locked while a grandchild survives
-      // after the direct runtime exits; BOTH recoverRunnerLock AND a second Base launch MUST refuse!
+      // Round 14 Major 4 + Round 16 Major 3: Inherited flock across exec + real fork() keeps Base claim
+      // locked while a grandchild survives after the direct runtime exits (NO /proc scanning needed!);
+      // BOTH recoverRunnerLock AND a second Base launch MUST refuse until the grandchild exits!
       const gcHome = join(root, "base-grandchild");
       mkdirSync(gcHome, { recursive: true });
       const gcPidFile = join(root, "gc.pid");
@@ -1130,14 +1131,16 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
         [
           gcHome,
           "--",
-          process.execPath,
-          "-e",
-          `const { spawn } = require("node:child_process");
-           const fs = require("node:fs");
-           const c = spawn(process.execPath, ["-e", "setTimeout(() => {}, 15000)"], { detached: true, stdio: "ignore" });
-           fs.writeFileSync(${JSON.stringify(gcPidFile)}, String(c.pid));
-           c.unref();
-           process.exit(0);`,
+          "python3",
+          "-c",
+          `import os, time
+pid = os.fork()
+if pid == 0:
+    time.sleep(15)
+    os._exit(0)
+with open(${JSON.stringify(gcPidFile)}, "w", encoding="utf-8") as f:
+    f.write(str(pid))
+os._exit(0)`,
         ],
         { stdio: "ignore" },
       );
@@ -1171,28 +1174,57 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
         expect(recovered).toBe(true);
         expect(existsSync(join(gcHome, ".runner.lock"))).toBe(false);
 
-        // Round 14 Minor 1: Malformed {"owner":"base"} lock is rejected identically by Deck, runtime-launch.sh, and codex-provider-switch
+        // Round 14 Minor 1 + Round 16 Minor 1: Malformed {"owner":"base"} AND missing childPid/childBirth
+        // locks are rejected identically by Deck, runtime-launch.sh, and codex-provider-switch
         const badOwnerHome = join(root, "malformed-base-owner");
         mkdirSync(badOwnerHome, { recursive: true });
-        writeFileSync(join(badOwnerHome, ".runner.lock"), JSON.stringify({ owner: "base" }) + "\n", { mode: 0o600 });
-        expect(readRunnerLockOwner(join(badOwnerHome, ".runner.lock"))).toBe("unknown");
         const runtimeLaunch = join(process.cwd(), "..", "base", "bin", "runtime-launch.sh");
-        const shellCheck = spawnChildSync("bash", ["-c", `AGENTS_HOME="$1" source "$2"; runner_lock_is_base_owned "$3"`, "check", root, runtimeLaunch, join(badOwnerHome, ".runner.lock")]);
-        expect(shellCheck.status).not.toBe(0);
+        const providerSwitchScript = join(process.cwd(), "..", "base", "bin", "codex-provider-switch");
+        const malformedPayloads = [
+          { owner: "base" },
+          {
+            owner: "base",
+            deckPid: process.pid,
+            deckBirth: "1",
+            bootId: bootIdNow,
+            sessionId: "00000000-0000-4000-8000-000000000077",
+            startedAt: Date.now(),
+          },
+        ];
+        for (const badRec of malformedPayloads) {
+          writeFileSync(join(badOwnerHome, ".runner.lock"), JSON.stringify(badRec) + "\n", { mode: 0o600 });
+          expect(readRunnerLockOwner(join(badOwnerHome, ".runner.lock"))).toBe("unknown");
+          const shellCheck = spawnChildSync("bash", ["-c", `AGENTS_HOME="$1" source "$2"; runner_lock_is_base_owned "$3"`, "check", root, runtimeLaunch, join(badOwnerHome, ".runner.lock")]);
+          expect(shellCheck.status).not.toBe(0);
+          const providerCheck = spawnChildSync("python3", [
+            "-c",
+            `import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("cps", sys.argv[1])
+spec = importlib.util.spec_from_loader("cps", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
+            providerSwitchScript,
+            badOwnerHome,
+          ]);
+          expect(providerCheck.status).toBe(0);
+        }
       } finally {
         try { process.kill(gcPid, "SIGKILL"); } catch { /* ignore */ }
       }
 
-      // Round 14 Major 5: tmux.server.ts honours BASE_TMUX_SOCKET (-S) for list and direct named-key delivery
+      // Round 14 Major 5 + Round 16 Major 6: tmux.server.ts honours BASE_TMUX_SOCKET (-S) AND
+      // strips inherited TMUX_TMPDIR when BASE_TMUX_SOCKET is unset so tmux targets /tmp/tmux-<uid>/default
       const { resolveTmuxSocket, sendNamedKeyToWindow } = await import("../../app/lib/tmux.server.js");
       expect(resolveTmuxSocket({ BASE_TMUX_SOCKET: "/tmp/base-custom.sock" })).toBe("/tmp/base-custom.sock");
+      expect(resolveTmuxSocket({ TMUX_TMPDIR: "/tmp/other-server" })).toBeUndefined();
       const shimBin = join(root, "tmux-shim-bin");
       mkdirSync(shimBin, { recursive: true });
       const shimLog = join(root, "tmux-shim.log");
       writeFileSync(
         join(shimBin, "tmux"),
         `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> ${JSON.stringify(shimLog)}
+printf '%s | TMUX_TMPDIR=%s\\n' "$*" "\${TMUX_TMPDIR:-}" >> ${JSON.stringify(shimLog)}
 if [[ "$*" == *"list-windows"* ]]; then
   printf 'alpha\\n'
 fi
@@ -1205,57 +1237,121 @@ exit 0
       try {
         const keyRes = sendNamedKeyToWindow({ BASE_TMUX_SOCKET: "/tmp/base-custom.sock", MC_TMUX_SESSION: "agents" }, "alpha", "Enter");
         expect(keyRes).toEqual({ ok: true });
+        const unsetKeyRes = sendNamedKeyToWindow({ TMUX_TMPDIR: "/tmp/other-server", MC_TMUX_SESSION: "agents" }, "alpha", "Enter");
+        expect(unsetKeyRes).toEqual({ ok: true });
         const logLines = readFileSync(shimLog, "utf8").trim().split("\n");
-        expect(logLines.length).toBeGreaterThanOrEqual(2);
+        expect(logLines.length).toBeGreaterThanOrEqual(4);
         expect(logLines[0]).toContain("-S /tmp/base-custom.sock list-windows");
         expect(logLines[1]).toContain("-S /tmp/base-custom.sock send-keys");
+        expect(logLines[2]).toContain("TMUX_TMPDIR=");
+        expect(logLines[2]).not.toContain("/tmp/other-server");
+        expect(logLines[3]).not.toContain("/tmp/other-server");
       } finally {
         process.env.PATH = origPath;
       }
 
-      // Round 14 Major 6: ACP stop()/shutdown() MUST NOT hang when group signal fails (isGroupStopped === false)
-      // and child never exits; transitions cleanly to 'orphaned' while retaining .runner.lock
-      const unkillHome = join(root, "unkillable-agent");
-      mkdirSync(unkillHome, { recursive: true });
-      writeFileSync(join(unkillHome, ".runner"), "acp\n");
-      const neverExited = new Promise<void>(() => {});
-      const regUnkill = new AcpRunnerRegistry(
-        { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH },
-        {
-          dataRoot: root,
-          manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
-          execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
-          startSession: async (_adapter, opts) => {
-            opts.onBeforeSpawn?.();
-            opts.onSpawn?.(process.pid);
-            return {
-              state: { kind: "idle" },
-              capabilities: {},
-              negotiated: true,
-              activeSessionId: "s-unkill",
-              queuedCount: 0,
-              authRequired: false,
-              resumeRejected: false,
-              isGroupStopped: false,
-              exited: neverExited,
-              exitInfo: { code: null, signal: null },
-              records: { list: () => [] },
-              supportsResume: () => false,
-              close: async () => {},
-            } as unknown as AcpSession;
+      // Round 16 Major 4: Production assertNoTmuxWindow (without injected listWindows) refuses
+      // Start when tmux shim reports a live window for the agent (legacy pre-lock Base pane guard)
+      const legacyHome = join(root, "alpha");
+      mkdirSync(legacyHome, { recursive: true });
+      writeFileSync(join(legacyHome, ".runner"), "acp\n");
+      process.env.PATH = `${shimBin}:${origPath ?? ""}`;
+      try {
+        const regProdTmux = new AcpRunnerRegistry(
+          { AGENTS_HOME: root, MC_ACP_RUNNER: "1", BASE_TMUX_SOCKET: "/tmp/base-custom.sock", HOME: root, PATH: process.env.PATH },
+          {
+            dataRoot: root,
+            manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
+            execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
           },
-        },
-      );
-      await regUnkill.start("unkillable-agent");
-      const stopStart = Date.now();
-      await regUnkill.stop("unkillable-agent");
-      expect(Date.now() - stopStart).toBeLessThan(1000);
-      expect(regUnkill.status("unkillable-agent")?.state).toBe("orphaned");
-      expect(existsSync(join(unkillHome, ".runner.lock"))).toBe(true);
-      // Clean up orphaned entry & lock so subsequent assertions in this test start clean
-      const regState = (globalThis as unknown as Record<symbol, { sessions: Map<string, unknown> }>)[Symbol.for("inkie-deck.acp.registry")]!;
-      regState.sessions.delete(unkillHome);
-      rmSync(join(unkillHome, ".runner.lock"), { force: true });
+        );
+        await expect(regProdTmux.start("alpha")).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+      } finally {
+        process.env.PATH = origPath;
+      }
+
+      // Round 16 Major 1: boot-agents.sh codex_verify_resume_or_fallback MUST preserve checkpoint
+      // and send ZERO fallback when pane shows base-runner-exec: REFUSED_LOCK_BUSY
+      const bootScript = join(process.cwd(), "..", "base", "bin", "boot-agents.sh");
+      const codexSessDir = join(root, "codex-r16-sess");
+      mkdirSync(codexSessDir, { recursive: true });
+      const rolloutFile = join(codexSessDir, "rollout-2026-11-23-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl");
+      writeFileSync(rolloutFile, '{"type":"session_meta"}\n');
+      const sentLog = join(root, "boot-r16-sent.log");
+      const bootRefusalRun = spawnChildSync("bash", [
+        "-c",
+        `BOOT_AGENTS_LIB_ONLY=1 AGENTS_HOME="$1" CODEX_SESSIONS_DIR="$2" source "$3"
+tmux_base() {
+  if [[ "$1" == "capture-pane" ]]; then
+    printf 'base-runner-exec: REFUSED_LOCK_BUSY runner lock busy\\n'
+    return 0
+  fi
+  if [[ "$1" == "send-keys" ]]; then
+    printf '%s\\n' "$*" >> "$4"
+    return 0
+  fi
+  return 0
+}
+codex_pane_current_command() { printf 'bash\\n'; }
+codex_verify_resume_or_fallback "agents:demo" "demo" "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" "" "" ""
+`,
+        "r16-boot-refusal",
+        root,
+        codexSessDir,
+        bootScript,
+        sentLog,
+      ]);
+      expect(bootRefusalRun.status).not.toBe(0);
+      expect(existsSync(rolloutFile)).toBe(true);
+      expect(existsSync(`${rolloutFile}.codex-resume-failed`)).toBe(false);
+      expect(existsSync(sentLog)).toBe(false);
+
+      // Round 14 Major 6 + Round 16 Major 7: ACP stop() MUST NOT hang when exited never resolves
+      // BOTH when isGroupStopped === false (EPERM) AND when isGroupStopped === true (open stdout pipe)
+      for (const groupStoppedFlag of [false, true]) {
+        const unkillName = groupStoppedFlag ? "open-pipe-agent" : "unkillable-agent";
+        const unkillHome = join(root, unkillName);
+        mkdirSync(unkillHome, { recursive: true });
+        writeFileSync(join(unkillHome, ".runner"), "acp\n");
+        const neverExited = new Promise<void>(() => {});
+        const regUnkill = new AcpRunnerRegistry(
+          { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH },
+          {
+            dataRoot: root,
+            manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
+            execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+            listWindows: () => [],
+            startSession: async (_adapter, opts) => {
+              opts.onBeforeSpawn?.();
+              opts.onSpawn?.(process.pid);
+              return {
+                state: { kind: "idle" },
+                capabilities: {},
+                negotiated: true,
+                activeSessionId: `s-${unkillName}`,
+                queuedCount: 0,
+                authRequired: false,
+                resumeRejected: false,
+                isGroupStopped: groupStoppedFlag,
+                exited: neverExited,
+                exitInfo: { code: null, signal: null },
+                records: { list: () => [] },
+                supportsResume: () => false,
+                close: async () => {},
+              } as unknown as AcpSession;
+            },
+          },
+        );
+        await regUnkill.start(unkillName);
+        const stopStart = Date.now();
+        await regUnkill.stop(unkillName);
+        expect(Date.now() - stopStart).toBeLessThan(1000);
+        expect(regUnkill.status(unkillName)?.state).toBe("orphaned");
+        expect(existsSync(join(unkillHome, ".runner.lock"))).toBe(true);
+        const regState = (globalThis as unknown as Record<symbol, { sessions: Map<string, unknown> }>)[Symbol.for("inkie-deck.acp.registry")]!;
+        regState.sessions.delete(unkillHome);
+        rmSync(join(unkillHome, ".runner.lock"), { force: true });
+      }
     } finally {
       try { baseChild.kill("SIGKILL"); } catch { /* ignore */ }
     }
@@ -1466,5 +1562,5 @@ exit 0
     expect(decodedRaw).not.toContain("ADV_UPDATE_SECRET_88");
     expect(decodedRaw).not.toContain("vendor/notice");
     expect(decodedRaw).not.toContain("vendor_hint");
-  });
+  }, 15_000);
 });

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""base-runner-exec.sh - Acquire Deck's shared .runner.lock (flock + LockRecord)
+"""base-runner-exec.sh - Acquire Deck's shared .runner.lock (flock-first + LockRecord)
 on an inherited file descriptor and exec directly into the Base tmux agent runtime.
 
 NO wrapper process remains alive: the runtime itself becomes the pane's foreground
 process (so tmux pane_current_command stays codex/claude/agy), inherits the open
 flock'd .runner.lock descriptor (so the kernel holds the exclusive lock for the
-runtime and every descendant automatically), and carries DECK_PTY_SESSION_ID.
+runtime and every descendant automatically). Stale Base locks are decided SOLELY
+by non-blocking flock (zero /proc descendant scanning).
 
 Usage: base-runner-exec.sh <agent-home> -- <cmd> [args...]
 """
@@ -61,43 +62,6 @@ def group_exists(pgid):
         return True
 
 
-def has_live_marked_process(session_id, deck_birth):
-    marker = f"DECK_PTY_SESSION_ID={session_id}".encode("utf-8")
-    my_uid = os.getuid()
-    min_birth = int(deck_birth)
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return True
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        pid = int(entry)
-        if pid <= 1:
-            continue
-        try:
-            st = os.stat(f"/proc/{pid}")
-        except OSError:
-            continue
-        if st.st_uid != my_uid:
-            continue
-        info = proc_info(pid)
-        if info is None or not is_live_state(info["state"]):
-            continue
-        if int(info["birth"]) < min_birth:
-            continue
-        try:
-            with open(f"/proc/{pid}/environ", "rb") as f:
-                env_bytes = f.read()
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-        except OSError:
-            return True
-        if marker in env_bytes.split(b"\0"):
-            return True
-    return False
-
-
 def marker_opts_into_runner(agent_home):
     marker = os.path.join(agent_home, ".runner")
     try:
@@ -131,11 +95,13 @@ def valid_pid(val):
 def validate_lock_record(rec):
     if not isinstance(rec, dict):
         return False
+    if "childPid" not in rec or "childBirth" not in rec:
+        return False
     owner = rec.get("owner")
     deck_pid = rec.get("deckPid")
     deck_birth = rec.get("deckBirth")
-    child_pid = rec.get("childPid")
-    child_birth = rec.get("childBirth")
+    child_pid = rec["childPid"]
+    child_birth = rec["childBirth"]
     rec_boot_id = rec.get("bootId")
     rec_session_id = rec.get("sessionId")
     started_at = rec.get("startedAt")
@@ -159,111 +125,99 @@ def validate_lock_record(rec):
     return True
 
 
-def try_reap_stale_lock(lock_file, current_boot_id):
-    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    try:
-        fd = os.open(lock_file, flags)
-    except FileNotFoundError:
+def can_overwrite_existing(fd, st, current_boot_id):
+    """Caller MUST already hold exclusive flock on fd."""
+    if st.st_size == 0:
+        # Empty file under our exclusive flock (newly created or interrupted before record write).
         return True
-    except OSError:
+    if st.st_size > MAX_LOCK_BYTES:
+        return False
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = os.read(fd, MAX_LOCK_BYTES + 1)
+    if len(raw) != st.st_size:
         return False
     try:
+        rec = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return False
+    if not validate_lock_record(rec):
+        return False
+
+    owner = rec.get("owner")
+    if owner == "base":
+        # Major 3 (Round 16): Stale Base lock is decided SOLELY by non-blocking flock (which we hold).
+        # Refuse only incomplete legacy 'spawning' records with childPid: null on the same boot.
+        if rec["bootId"] == current_boot_id and rec.get("phase") == "spawning" and rec["childPid"] is None:
+            return False
+        return True
+
+    # Deck-owned (pty/acp) record: check same-boot Deck owner and process group before reaping.
+    if rec["bootId"] == current_boot_id:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            deck = proc_info(rec["deckPid"])
         except OSError:
             return False
-        st = os.fstat(fd)
-        if (
-            not stat.S_ISREG(st.st_mode)
-            or st.st_size <= 0
-            or st.st_size > MAX_LOCK_BYTES
-            or st.st_uid != os.getuid()
-            or (st.st_mode & 0o022) != 0
-        ):
+        if deck and deck["birth"] == rec["deckBirth"] and is_live_state(deck["state"]):
             return False
-        if not same_inode(lock_file, st):
-            return False
-        os.lseek(fd, 0, os.SEEK_SET)
-        raw = os.read(fd, MAX_LOCK_BYTES + 1)
-        if len(raw) != st.st_size:
-            return False
-        try:
-            rec = json.loads(raw.decode("utf-8"))
-        except Exception:
-            return False
-        if not validate_lock_record(rec):
-            return False
-
-        owner = rec.get("owner")
-        deck_pid = rec["deckPid"]
-        deck_birth = rec["deckBirth"]
-        child_pid = rec["childPid"]
-        child_birth = rec["childBirth"]
-        rec_boot_id = rec["bootId"]
-        rec_session_id = rec["sessionId"]
-        phase = rec.get("phase")
-
-        if rec_boot_id == current_boot_id:
+        if rec.get("phase") != "reserved":
+            child_pid = rec["childPid"]
+            child_birth = rec["childBirth"]
+            if child_pid is None:
+                return False
             try:
-                deck = proc_info(deck_pid)
+                child = proc_info(child_pid)
             except OSError:
                 return False
-            if deck and deck["birth"] == deck_birth and is_live_state(deck["state"]):
+            if child and is_live_state(child["state"]) and (child_birth is None or child["birth"] == child_birth):
                 return False
-            if owner == "base":
-                # Major 4 (Round 14): Base holds flock on an inherited fd across exec;
-                # flock already succeeded above, and we also verify no incomplete spawning
-                # lock or marked descendant survived after closing fds.
-                if phase == "spawning" and child_pid is None:
-                    return False
-                if has_live_marked_process(rec_session_id, deck_birth):
-                    return False
-            elif phase != "reserved":
-                if child_pid is None:
-                    return False
-                try:
-                    child = proc_info(child_pid)
-                except OSError:
-                    return False
-                if child and is_live_state(child["state"]) and (child_birth is None or child["birth"] == child_birth):
-                    return False
-                if group_exists(child_pid):
-                    return False
+            if group_exists(child_pid):
+                return False
+    return True
 
-        if not same_inode(lock_file, st):
-            return False
-        os.unlink(lock_file)
-        return True
-    finally:
+
+def claim_lock_flock_first(lock_file, current_boot_id):
+    """Major 2 (Round 16): Open O_CREAT|O_RDWR|O_NOFOLLOW (no O_EXCL) and acquire flock FIRST,
+    so a lost contention race NEVER strands an empty .runner.lock file."""
+    open_flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    for _attempt in range(3):
         try:
-            os.close(fd)
+            fd = os.open(lock_file, open_flags, 0o600)
         except OSError:
-            pass
-
-
-def claim_lock(lock_file, current_boot_id):
-    create_flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-    for _attempt in range(2):
+            return None, None, False
         try:
-            fd = os.open(lock_file, create_flags, 0o600)
-        except FileExistsError:
-            if not try_reap_stale_lock(lock_file, current_boot_id):
-                return None, None
-            continue
-        except OSError:
-            return None, None
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.fchmod(fd, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                return None, None, False
             st = os.fstat(fd)
-            return fd, st
-        except OSError:
+            if (
+                not stat.S_ISREG(st.st_mode)
+                or st.st_uid != os.getuid()
+                or (st.st_mode & 0o022) != 0
+            ):
+                os.close(fd)
+                return None, None, False
+            if not same_inode(lock_file, st):
+                # File was unlinked between open and flock; retry cleanly.
+                os.close(fd)
+                continue
+            was_empty = st.st_size == 0
+            if not can_overwrite_existing(fd, st, current_boot_id):
+                os.close(fd)
+                return None, None, False
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
+            return fd, st, was_empty
+        except Exception:
             try:
                 os.close(fd)
             except OSError:
                 pass
-            return None, None
-    return None, None
+            return None, None, False
+    return None, None, False
 
 
 def persist_record(fd, record):
@@ -279,12 +233,13 @@ def persist_record(fd, record):
     os.fsync(fd)
 
 
-def cleanup_unlaunched(lock_file, fd, owned_stat):
-    try:
-        if same_inode(lock_file, owned_stat):
-            os.unlink(lock_file)
-    except OSError:
-        pass
+def cleanup_unlaunched(lock_file, fd, owned_stat, unlink_file=True):
+    if unlink_file:
+        try:
+            if same_inode(lock_file, owned_stat):
+                os.unlink(lock_file)
+        except OSError:
+            pass
     try:
         os.close(fd)
     except OSError:
@@ -316,24 +271,24 @@ def main():
     except OSError:
         my_info = None
     if not boot_id or not my_info or not my_info.get("birth"):
-        sys.stderr.write("base-runner-exec: cannot verify process identity or boot_id; failing closed\n")
+        sys.stderr.write("base-runner-exec: REFUSED_LOCK_BUSY cannot verify process identity or boot_id\n")
         return 1
 
     lock_file = os.path.join(agent_home, ".runner.lock")
-    fd, owned_stat = claim_lock(lock_file, boot_id)
+    fd, owned_stat, was_empty = claim_lock_flock_first(lock_file, boot_id)
     if fd is None or owned_stat is None:
-        sys.stderr.write(f"base-runner-exec: runner lock busy or unrecoverable for {agent_home}\n")
+        sys.stderr.write(f"base-runner-exec: REFUSED_LOCK_BUSY runner lock busy or unrecoverable for {agent_home}\n")
         return 1
 
     try:
         # Re-check .runner marker WHILE holding exclusive flock on .runner.lock (closes cutover race).
         if marker_opts_into_runner(agent_home):
-            cleanup_unlaunched(lock_file, fd, owned_stat)
+            cleanup_unlaunched(lock_file, fd, owned_stat, unlink_file=was_empty)
             return 0
 
         session_id = str(uuid.uuid4())
-        # After os.execvp, the runtime process keeps my_pid and my_info["birth"] verbatim,
-        # inherits the open flock'd lock descriptor, and becomes the pane's foreground command.
+        # Owner record written atomically under our held flock; after os.execvp, the runtime
+        # keeps my_pid/my_info["birth"] and inherits the flock'd descriptor directly.
         record = {
             "owner": "base",
             "deckPid": my_pid,
@@ -350,13 +305,13 @@ def main():
         os.set_inheritable(fd, True)
         os.chdir(agent_home)
     except Exception:
-        cleanup_unlaunched(lock_file, fd, owned_stat)
+        cleanup_unlaunched(lock_file, fd, owned_stat, unlink_file=True)
         return 1
 
     try:
         os.execvp(cmd[0], cmd)
     except OSError as exc:
-        cleanup_unlaunched(lock_file, fd, owned_stat)
+        cleanup_unlaunched(lock_file, fd, owned_stat, unlink_file=True)
         sys.stderr.write(f"base-runner-exec: exec failed: {exc}\n")
         return 127
 

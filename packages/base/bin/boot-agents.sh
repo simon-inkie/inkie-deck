@@ -430,6 +430,14 @@ codex_verify_resume_or_fallback() {
       fallback_reason="$a's codex resume $sid produced an EMPTY process read (no dialog was dismissed on this path) -- zero positive evidence of a crash, treating as inconclusive rather than assuming failure"
       outcome="inconclusive"
     else
+      # Major 1 (Round 16): Distinguish shared launcher refusal from a Codex crash so Boot
+      # NEVER sends a fallback or quarantines a valid Codex checkpoint when .runner.lock is busy.
+      local pane_tail
+      pane_tail="$(tmux_base capture-pane -t "$target" -p 2>/dev/null || true)"
+      if echo "$pane_tail" | grep -qE 'base-runner-exec: (REFUSED_LOCK_BUSY|runner lock busy)'; then
+        echo "boot-agents: $a's codex resume $sid was REFUSED by base-runner-exec (runner lock busy) -- preserving checkpoint $sid without fallback or quarantine" >&2
+        return 1
+      fi
       fallback_reason="$a's codex resume $sid landed on '$cmd', not codex/node -- falling back to a fresh codex"
       outcome="crash"
     fi

@@ -391,16 +391,21 @@ export class AcpSession {
   }
 
   private async waitForExitBounded(): Promise<void> {
-    if (!this.groupStopped) {
-      // Major 5 (Round 13) & Major 6 (Round 14): If killGroup failed (e.g. EPERM) and child cannot
-      // be killed here, bound the wait so both terminal negotiation and shutdown reach bounded cleanup.
-      await Promise.race([
-        this.closePromise,
-        new Promise<void>((resolve) => setTimeout(resolve, 500)),
-      ]);
-      return;
+    // Major 5 (Round 13) & Major 7 (Round 16): ALWAYS bound wait for 'close' (even when killGroup
+    // succeeded, an external helper outside the process group can hold inherited stdout open).
+    // If the timeout wins, destroy stdio pipes and unref the child handle so shutdown and process
+    // exit never hang.
+    let closed = false;
+    const closeRace = this.closePromise.then(() => { closed = true; });
+    await Promise.race([
+      closeRace,
+      new Promise<void>((resolve) => setTimeout(resolve, 500)),
+    ]);
+    if (!closed) {
+      try { this.owned.stdin?.destroy(); } catch { /* ignore */ }
+      try { this.owned.stdout?.destroy(); } catch { /* ignore */ }
+      try { this.owned.unref(); } catch { /* ignore */ }
     }
-    await this.closePromise;
   }
 
   async close(): Promise<void> {

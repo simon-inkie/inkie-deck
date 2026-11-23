@@ -45,8 +45,10 @@ try:
         rec = json.load(f)
     if not isinstance(rec, dict) or rec.get("owner") != "base":
         sys.exit(1)
+    if "childPid" not in rec or "childBirth" not in rec:
+        sys.exit(1)
     dp, db = rec.get("deckPid"), rec.get("deckBirth")
-    cp, cb = rec.get("childPid"), rec.get("childBirth")
+    cp, cb = rec["childPid"], rec["childBirth"]
     bid, sid, sat, ph = rec.get("bootId"), rec.get("sessionId"), rec.get("startedAt"), rec.get("phase")
     ok = (
         valid_pid(dp)

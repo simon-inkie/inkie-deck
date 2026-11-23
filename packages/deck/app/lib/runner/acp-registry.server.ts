@@ -754,31 +754,29 @@ export class AcpRunnerRegistry {
   }
 
   private assertNoTmuxWindow(agent: string): void {
-    if (this.options.listWindows) {
-      let windows: string[];
-      try {
-        const list = this.options.listWindows;
-        const configuredSession = resolveTmuxSession(this.env);
-        const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
-        windows = list(this.env, true);
-        if (configuredSession !== "agents" || hasCustomSocketEnv) {
-          const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
-          delete baseDefaultEnv.TMUX;
-          delete baseDefaultEnv.TMUX_PANE;
-          delete baseDefaultEnv.TMUX_TMPDIR;
-          windows = [...windows, ...list(baseDefaultEnv, true)];
-        }
-        if (configuredSession !== "agents" && hasCustomSocketEnv) {
-          windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
-        }
-      } catch {
-        throw new StartRefusal("tmux-unknown");
+    // Major 4 (Round 16): Keep the live tmux window check active in production as a second
+    // admission guard alongside .runner.lock so legacy pre-lock Base panes or unlinked lock
+    // pathnames can never run side-by-side with an ACP session.
+    let windows: string[];
+    try {
+      const list = this.options.listWindows ?? listTmuxWindows;
+      const configuredSession = resolveTmuxSession(this.env);
+      const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
+      windows = list(this.env, true);
+      if (configuredSession !== "agents" || hasCustomSocketEnv) {
+        const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
+        delete baseDefaultEnv.TMUX;
+        delete baseDefaultEnv.TMUX_PANE;
+        delete baseDefaultEnv.TMUX_TMPDIR;
+        windows = [...windows, ...list(baseDefaultEnv, true)];
       }
-      if (windows.includes(agent)) throw new StartRefusal("tmux-active");
-      return;
+      if (configuredSession !== "agents" && hasCustomSocketEnv) {
+        windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
+      }
+    } catch {
+      throw new StartRefusal("tmux-unknown");
     }
-    // Majors 1 & 2 (Round 12): Base shares Deck's .runner.lock via base-runner-exec.sh (flock + LockRecord).
-    // Mutual exclusion is enforced atomically by claimRunnerLock / recoverRunnerLock with zero tmux probing.
+    if (windows.includes(agent)) throw new StartRefusal("tmux-active");
   }
 
   private abandonCleanup(
@@ -929,13 +927,14 @@ export class AcpRunnerRegistry {
         signalGroup(activeSession.pid, "SIGKILL");
         activeSession.pid = 0;
       }
-      // Major 6 (Round 14): When group signaling failed (e.g. EPERM) and the child stays live,
-      // do not hang awaiting settled forever. Transition to orphaned (retaining .runner.lock) so
-      // Stop and shutdown always complete cleanly.
-      if (activeSession.session && activeSession.session.isGroupStopped === false) {
+      // Major 6 (Round 14) & Major 7 (Round 16): ALWAYS bound the settled wait after session.close()
+      // (both on EPERM unkillable child AND when a helper outside the process group keeps inherited
+      // stdout open preventing Node's 'close' event). Transition cleanly via abandonOnUnkillable so
+      // Stop and shutdown NEVER hang indefinitely.
+      if (activeSession.session) {
         const settledInTime = await Promise.race([
           activeSession.settled.then(() => true, () => true),
-          delay(50).then(() => false),
+          delay(150).then(() => false),
         ]);
         if (!settledInTime) {
           activeSession.abandonOnUnkillable?.();

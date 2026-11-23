@@ -37,10 +37,19 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
     if (shuttingDown) return;
     shuttingDown = true;
     server?.close();
-    void runnerLifecycle.shutdown().catch(() => {
-      console.error("[prod] Could not stop the runner safely.");
-      process.exitCode = 1;
-    });
+    // Major 7 (Round 16): Bound process exit after runnerLifecycle.shutdown() so an unkillable
+    // child or lingering inherited pipe handle can never keep the production server alive forever.
+    const hardExitTimer = setTimeout(() => process.exit(process.exitCode ?? 0), 3000);
+    hardExitTimer.unref();
+    void runnerLifecycle.shutdown()
+      .catch(() => {
+        console.error("[prod] Could not stop the runner safely.");
+        process.exitCode = 1;
+      })
+      .finally(() => {
+        clearTimeout(hardExitTimer);
+        process.exit(process.exitCode ?? 0);
+      });
   });
 }
 await runnerLifecycle.recover();

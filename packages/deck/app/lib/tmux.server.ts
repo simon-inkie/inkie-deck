@@ -82,6 +82,19 @@ export function resolveTmuxSocket(env: NodeJS.ProcessEnv): string | undefined {
   return raw;
 }
 
+/**
+ * Major 6 (Round 16): Match Base's socket environment (boot-agents.sh:604-605) by stripping
+ * inherited TMUX, TMUX_PANE, and TMUX_TMPDIR on normal reads/writes so unset BASE_TMUX_SOCKET
+ * ALWAYS resolves to /tmp/tmux-<uid>/default rather than a stray inherited TMUX_TMPDIR server.
+ */
+function buildTmuxChildEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...(env ?? {}), LC_ALL: "C" };
+  delete childEnv["TMUX"];
+  delete childEnv["TMUX_PANE"];
+  delete childEnv["TMUX_TMPDIR"];
+  return childEnv;
+}
+
 function withSocketArgs(env: NodeJS.ProcessEnv | undefined, args: string[]): string[] {
   const socket = env ? resolveTmuxSocket(env) : undefined;
   return socket ? ["-S", socket, ...args] : args;
@@ -137,6 +150,7 @@ function runTmux(args: string[], env?: NodeJS.ProcessEnv): string | undefined {
       // Belt-and-braces: never inherit stdio, never grow unbounded.
       maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
+      env: buildTmuxChildEnv(env),
     });
   } catch {
     // tmux absent, session/window missing, timeout - all degrade the same.
@@ -287,6 +301,7 @@ function runTmuxVoid(args: string[], env?: NodeJS.ProcessEnv): boolean {
       timeout: TMUX_EXEC_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
       stdio: ["ignore", "ignore", "ignore"],
+      env: buildTmuxChildEnv(env),
     });
     return true;
   } catch {
