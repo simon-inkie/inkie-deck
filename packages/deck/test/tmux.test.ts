@@ -76,7 +76,7 @@ describe("argv builders - the no-shell shape pinned", () => {
     expect(buildListArgs("agents")).toEqual([
       "list-windows",
       "-t",
-      "agents",
+      "=agents",
       "-F",
       "#{window_name}",
     ]);

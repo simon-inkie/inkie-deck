@@ -1161,10 +1161,11 @@ Each agent runs the CLI named in its `.runtime`. A Codex agent looks up the
 newest session for its workspace in the home it launches with: exported
 `CODEX_HOME` first, then the agent's configured provider home, then `~/.codex`.
 It starts fresh if that home has no matching session. If Boot cannot confirm
-a Resume, it reports the failure and keeps the saved checkpoint. To start a
-new session instead, run Codex without `resume` in the agent's workspace with
-the intended provider environment. An Antigravity agent resumes the newest
-conversation started in its own home (`agy --conversation <id>`, never the
+a Resume, it reports the failure and keeps the saved checkpoint.
+To start fresh, open a shell in the agent's tmux pane and workspace, load its
+usual provider environment, and run `"$repo/packages/base/bin/base-runner-exec.sh" "$PWD" -- env AGENT_NAME="${PWD##*/}" INBOX_ROOT="$(cat .inbox-root)" codex`,
+where `repo` is the absolute path to your Deck checkout. An Antigravity agent
+resumes the newest conversation started in its own home (`agy --conversation <id>`, never the
 global `--continue`), after its `GEMINI.md` is re-synced. Neither has its own
 approval prompts switched off.
 

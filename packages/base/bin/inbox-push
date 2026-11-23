@@ -121,7 +121,7 @@
 
 set +e
 
-TMUX_SESSION="agents"
+TMUX_SESSION="=agents"
 # Where the agent homes live. bin/create-agent.sh and bin/boot-agents.sh in this
 # same package already read AGENTS_HOME for exactly this directory, so reuse the
 # name the package has rather than hardcoding one deployment's layout.

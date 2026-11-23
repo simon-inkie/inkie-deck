@@ -4,6 +4,7 @@ vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
 import { execFileSync } from "node:child_process";
 import {
   buildSendKeysNamedArgs,
+  listTmuxWindows,
   SEND_KEYS_ALLOWED_KEYS,
   sendKeysToWindow,
   sendNamedKeyToWindow,
@@ -66,6 +67,17 @@ describe("pane named keys", () => {
     expect(sendNamedKeyToWindow(env, "agent", key)).toEqual({ ok: true });
     expect(writes()).toEqual([["send-keys", "-t", "=agents:=agent", key]]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ignores agents-dev when the agents session is absent", () => {
+    exec.mockImplementation((_file, args) => {
+      if (args?.[0] === "list-windows" && (args[2] === "agents" || args[2] === "=agents-dev")) {
+        return "agent\n";
+      }
+      throw new Error("cannot find session");
+    });
+    expect(listTmuxWindows({ MC_TMUX_SESSION: "agents-dev" })).toEqual(["agent"]);
+    expect(listTmuxWindows(env)).toEqual([]);
   });
 
   it("rejects unrecognised keys and invalid targets before any subprocess", () => {

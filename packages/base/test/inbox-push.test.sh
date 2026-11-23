@@ -324,8 +324,8 @@ MSG="[inbox from courier] hello"
   run_case "runtime: empty string -> skip:unknown-runtime" "skip:unknown-runtime" 2 ); tally $?
 
 # Exercise the live delivery path with an isolated agent home. The other
-# socket always has a same-named window. The default socket gains it only
-# for the second push.
+# socket always has a same-named window. The default socket is tested with
+# no session, a prefix match, and then an exact match.
 (
   _AH_TMP="$(mktemp -d)"
   trap 'rm -rf "$_AH_TMP"' EXIT
@@ -343,7 +343,8 @@ fi
 printf '%s %s\n' "$socket" "$*" >> "$STUB_TMUX_LOG"
 case "$1" in
   list-windows)
-    if [[ "$socket" == other || "${STUB_BASE_WINDOW:-}" == 1 ]]; then
+    if [[ "$socket" == other || "$3" == "=${STUB_BASE_SESSION:-}" ||
+          "${STUB_BASE_SESSION:-}" == "$3"* ]]; then
       printf '%s\n' "$STUB_TMUX_WINDOW"
     fi ;;
   capture-pane) printf '%s' "$STUB_TMUX_PANE" ;;
@@ -351,21 +352,28 @@ case "$1" in
 esac
 STUB
   chmod +x "$_AH_TMP/stub/tmux"
-  unset STUB_BASE_WINDOW PANE_OVERRIDE PUSH_DRY_RUN
+  unset STUB_BASE_SESSION PANE_OVERRIDE PUSH_DRY_RUN
   export STUB_TMUX_WINDOW="$REC" STUB_TMUX_PANE="$IDLE_CLEAN" STUB_TMUX_LOG="$_AH_TMP/log"
   export AGENTS_HOME="$_AH_TMP/homes" PATH="$_AH_TMP/stub:$PATH" PUSH_VERIFY_SLEEP=0
   export TMUX="$_AH_TMP/other.sock,123,0" TMUX_PANE='%2' TMUX_TMPDIR="$_AH_TMP"
   export BASE_TMUX_SOCKET="$_AH_TMP/other.sock" INBOX_PUSH_TMUX_SESSION=other
   run_case "other-socket window is ignored" "skip:no-window" 2 || exit 1
-  if [[ "$(cat "$STUB_TMUX_LOG")" != 'default list-windows -t agents -F #{window_name}' ]]; then
+  if [[ "$(cat "$STUB_TMUX_LOG")" != 'default list-windows -t =agents -F #{window_name}' ]]; then
     echo 'FAIL  expected only the default window probe'
     exit 1
   fi
   : > "$STUB_TMUX_LOG"
-  export STUB_BASE_WINDOW=1
+  export STUB_BASE_SESSION=agents-dev
+  run_case "agents-dev is ignored when agents is absent" "skip:no-window" 2 || exit 1
+  if [[ "$(cat "$STUB_TMUX_LOG")" != 'default list-windows -t =agents -F #{window_name}' ]]; then
+    echo 'FAIL  expected no capture or send for the prefix session'
+    exit 1
+  fi
+  : > "$STUB_TMUX_LOG"
+  export STUB_BASE_SESSION=agents
   run_case "default socket uses temp-home .runtime and delivers" "pushed-unverified" 0 || exit 1
   if grep -v '^default ' "$STUB_TMUX_LOG" \
-    || [[ "$(grep ' send-keys ' "$STUB_TMUX_LOG")" != "$(printf 'default send-keys -t agents:%s -l %s\ndefault send-keys -t agents:%s Enter' "$REC" "$MSG" "$REC")" ]]; then
+    || [[ "$(grep ' send-keys ' "$STUB_TMUX_LOG")" != "$(printf 'default send-keys -t =agents:%s -l %s\ndefault send-keys -t =agents:%s Enter' "$REC" "$MSG" "$REC")" ]]; then
     echo 'FAIL  expected text and Enter on the default socket only'
     exit 1
   fi

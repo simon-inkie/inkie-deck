@@ -80,7 +80,7 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
 printf '%s\\n' "$*" >> ${JSON.stringify(shimLog)}
 if [[ "$*" == *"list-windows"* ]]; then
   if [[ -n "\${TMUX:-}\${TMUX_PANE:-}\${TMUX_TMPDIR:-}" || "$1" == "-S" ||
-        "$3" != "agents" || -f ${JSON.stringify(defaultWindow)} ]]; then
+        "$3" != "=agents" || -f ${JSON.stringify(defaultWindow)} ]]; then
     printf '%s\\n' ${agent}
   fi
 fi
@@ -111,7 +111,7 @@ fi
     const { sendNamedKeyToWindow } = await import("../../app/lib/tmux.server.js");
     expect(sendNamedKeyToWindow({ ...env, MC_TMUX_SESSION: "agents" }, agent, "Enter")).toEqual({ ok: true });
     expect(readFileSync(shimLog, "utf8").trim().split("\n")).toEqual([
-      "list-windows -t agents -F #{window_name}",
+      "list-windows -t =agents -F #{window_name}",
       `send-keys -t =agents:=${agent} Enter`,
     ]);
     await expect(registry.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
@@ -123,8 +123,8 @@ fi
     try {
       expect(session.state.kind).toBe("idle");
       expect(readFileSync(shimLog, "utf8").trim().split("\n")).toEqual([
-        "list-windows -t agents -F #{window_name}",
-        "list-windows -t agents -F #{window_name}",
+        "list-windows -t =agents -F #{window_name}",
+        "list-windows -t =agents -F #{window_name}",
       ]);
     } finally {
       await registry.stop(agent);
@@ -1009,7 +1009,7 @@ fi
     expect(await rawFailSess.prompt("trigger unknown under inbound+outbound raw ENOSPC")).toBe("completed");
     expect(rawFailEvents.some((e) => e.type === "extension.blocking")).toBe(true);
     await rawFailSess.close();
-  }, 15_000);
+  });
 
   it("Rounds 9-10 (Majors 1-4 & Minors 1-3): append-only Base sockets, personal/EACCES isolation, closing-server ALS, bounded shutdown retries, cold-boot capability cache, base64 raw check, malformed load reply", async () => {
     const agent = "alpha";
@@ -1553,5 +1553,5 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(decodedRaw).not.toContain("ADV_UPDATE_SECRET_88");
     expect(decodedRaw).not.toContain("vendor/notice");
     expect(decodedRaw).not.toContain("vendor_hint");
-  }, 20_000);
+  }, 15_000);
 });

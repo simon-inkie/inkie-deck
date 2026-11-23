@@ -85,7 +85,7 @@ function buildTmuxChildEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * argv for listing window names. Pure - the no-shell shape is unit-pinned.
  */
 export function buildListArgs(session: string): string[] {
-  return ["list-windows", "-t", session, "-F", "#{window_name}"];
+  return ["list-windows", "-t", `=${session}`, "-F", "#{window_name}"];
 }
 
 /**
