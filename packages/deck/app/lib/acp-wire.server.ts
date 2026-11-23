@@ -65,7 +65,13 @@ function definition(name: string): Schema {
   return schema;
 }
 
-type InboundSchema = "InitializeResponse" | "NewSessionResponse" | "SessionNotification" | "RequestPermissionRequest";
+type InboundSchema =
+  | "InitializeResponse"
+  | "NewSessionResponse"
+  | "LoadSessionResponse"
+  | "ResumeSessionResponse"
+  | "SessionNotification"
+  | "RequestPermissionRequest";
 
 export function validPayload(value: unknown, name: InboundSchema): boolean {
   return matches(value, definition(name));

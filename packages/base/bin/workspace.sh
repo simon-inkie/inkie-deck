@@ -181,10 +181,10 @@ start_watcher() {
 # Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 
-# Major 1 (Round 9): Pin Base tmux operations to one explicit socket path (-S) and record it in
-# $AGENTS_HOME/.base-tmux-socket so Deck always inspects the exact same tmux server regardless of environment.
+# Major 1 (Round 10): Pin Base tmux operations to one explicit socket path (-S) and append it to
+# $AGENTS_HOME/.base-tmux-sockets ONLY when creating a window (never overwrite prior custom sockets).
 BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
-BASE_TMUX_SOCKET_FILE="$AGENTS_HOME/.base-tmux-socket"
+BASE_TMUX_SOCKETS_FILE="$AGENTS_HOME/.base-tmux-sockets"
 unset TMUX TMUX_PANE TMUX_TMPDIR
 
 tmux_base() {
@@ -192,18 +192,16 @@ tmux_base() {
 }
 
 record_base_tmux_socket() {
-  local sock_dir tmp_file
+  local sock_dir
   sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
   [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
-  tmp_file="${BASE_TMUX_SOCKET_FILE}.tmp.$$"
-  if printf '%s\n' "$BASE_TMUX_SOCKET" > "$tmp_file" 2>/dev/null; then
-    mv -f "$tmp_file" "$BASE_TMUX_SOCKET_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
+  if [[ ! -f "$BASE_TMUX_SOCKETS_FILE" ]] || ! grep -qxF "$BASE_TMUX_SOCKET" "$BASE_TMUX_SOCKETS_FILE" 2>/dev/null; then
+    printf '%s\n' "$BASE_TMUX_SOCKET" >> "$BASE_TMUX_SOCKETS_FILE" 2>/dev/null || true
   fi
 }
 
 # Create the base session if it doesn't exist
 # Before any pane starts, so Claude Code shows no "focus-events off" hint.
-record_base_tmux_socket
 tmux_base start-server 2>/dev/null || true
 tmux_base set -g focus-events on 2>/dev/null || true
 if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
@@ -215,6 +213,7 @@ if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
     record_base_tmux_socket
     if [[ $session_created -eq 0 ]]; then
       tmux_base new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      tmux_base set-option -t "$SESSION" @base_workspace 1 2>/dev/null || true
       session_created=1
     else
       tmux_base new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
@@ -249,6 +248,7 @@ for agent in "${AGENTS[@]}"; do
     record_base_tmux_socket
     if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
       tmux_base new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      tmux_base set-option -t "$SESSION" @base_workspace 1 2>/dev/null || true
     else
       tmux_base new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
     fi
@@ -296,5 +296,5 @@ else
     fi
   done
   [[ -n "$TARGET_AGENT" ]] || exit 0
-  exec tmux -S "$BASE_TMUX_SOCKET" new-session -t "$SESSION" \; select-window -t "$TARGET_AGENT"
+  exec tmux -S "$BASE_TMUX_SOCKET" new-session -t "$SESSION" \; set-option @base_workspace 1 \; select-window -t "$TARGET_AGENT"
 fi

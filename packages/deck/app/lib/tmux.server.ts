@@ -33,7 +33,7 @@
  * ASCII only - no em-dashes.
  */
 import { execFileSync } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveAttachmentsRoot } from "./attachments.server.js";
@@ -176,25 +176,116 @@ function listTmuxForOwnership(args: string[], env: NodeJS.ProcessEnv): string {
   }
 }
 
-function parseWindowList(out: string): string[] {
-  return out
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l !== "" && isValidWindowName(l));
+const OWNERSHIP_WINDOW_FORMAT = "#{session_name}\t#{session_group}\t#{window_name}\t#{@base_workspace}\t#{pane_current_path}";
+
+function parseOwnershipWindowLines(
+  out: string,
+  configuredSession: string,
+  options: { allowUnstructuredStub: boolean; isRecordedBaseSocket: boolean; agentHome?: string },
+): string[] {
+  const result: string[] = [];
+  for (const rawLine of out.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.trim()) continue;
+    if (!line.includes("\t")) {
+      // Single-column output from simple test stubs (never accept bare names from unrelated discovered sockets)
+      const name = line.trim();
+      if (options.allowUnstructuredStub && isValidWindowName(name)) {
+        result.push(name);
+      }
+      continue;
+    }
+    const [sessionName = "", sessionGroup = "", windowName = "", baseWorkspaceTag = "", panePath = ""] = line.split("\t");
+    const trimmedWin = windowName.trim();
+    if (!trimmedWin || !isValidWindowName(trimmedWin)) continue;
+
+    // Major 2 (Round 10): Filter strictly to Base-owned sessions/groups/panes so an unrelated
+    // personal tmux session with a window sharing the agent's name never blocks ACP Start.
+    const isBaseSession =
+      sessionName === "agents" ||
+      sessionName === configuredSession ||
+      sessionGroup === "agents" ||
+      sessionGroup === configuredSession ||
+      baseWorkspaceTag === "1" ||
+      (options.isRecordedBaseSocket && sessionGroup !== "") ||
+      (options.agentHome !== undefined && panePath === options.agentHome);
+
+    if (isBaseSession) {
+      result.push(trimmedWin);
+    }
+  }
+  return result;
 }
 
-function readRecordedBaseTmuxSocket(agentsRootDir: string | undefined): string | undefined {
-  if (!agentsRootDir) return undefined;
-  try {
-    const stateFile = path.join(agentsRootDir, ".base-tmux-socket");
-    const st = lstatSync(stateFile, { throwIfNoEntry: false });
-    if (!st || st.isSymbolicLink() || !st.isFile() || st.size <= 0 || st.size > 4096) return undefined;
-    const raw = readFileSync(stateFile, "utf8").trim();
-    if (!raw || !raw.startsWith("/") || /[\r\n\0]/.test(raw)) return undefined;
-    return raw;
-  } catch {
-    return undefined;
+function readRecordedBaseTmuxSockets(agentsRootDir: string | undefined): string[] {
+  if (!agentsRootDir) return [];
+  const sockets = new Set<string>();
+  for (const filename of [".base-tmux-sockets", ".base-tmux-socket"]) {
+    try {
+      const stateFile = path.join(agentsRootDir, filename);
+      const st = lstatSync(stateFile, { throwIfNoEntry: false });
+      if (!st || st.isSymbolicLink() || !st.isFile() || st.size <= 0 || st.size > 16_384) continue;
+      const raw = readFileSync(stateFile, "utf8");
+      for (const line of raw.split(/\r?\n/)) {
+        const entry = line.trim();
+        if (entry && entry.startsWith("/") && !entry.includes("\0")) {
+          sockets.add(entry);
+        }
+      }
+    } catch {
+      // Ignore missing or unreadable state file.
+    }
   }
+  return Array.from(sockets);
+}
+
+function discoverLiveBaseSocketsFromProc(agent: string | undefined, agentHome: string | undefined): string[] {
+  if (process.platform !== "linux" || (!agent && !agentHome)) return [];
+  const myUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const sockets = new Set<string>();
+  try {
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      const procDir = `/proc/${entry}`;
+      try {
+        if (myUid !== undefined) {
+          const st = lstatSync(procDir);
+          if (st.uid !== myUid) continue;
+        }
+        const environ = readFileSync(`${procDir}/environ`, "utf8");
+        if (!environ.includes("TMUX=")) continue;
+        const vars = environ.split("\0");
+        let tmuxVal: string | undefined;
+        let agentNameVal: string | undefined;
+        for (const v of vars) {
+          if (v.startsWith("TMUX=")) tmuxVal = v.slice(5);
+          else if (v.startsWith("AGENT_NAME=")) agentNameVal = v.slice(11);
+        }
+        if (!tmuxVal) continue;
+        const sockPath = tmuxVal.split(",")[0]?.trim();
+        if (!sockPath || !sockPath.startsWith("/")) continue;
+        let matchesAgent = Boolean(agent && agentNameVal === agent);
+        if (!matchesAgent && agentHome) {
+          try {
+            const cwd = readlinkSync(`${procDir}/cwd`);
+            if (cwd === agentHome || cwd.startsWith(agentHome + path.sep)) {
+              matchesAgent = true;
+            }
+          } catch {
+            // Ignore unreadable cwd.
+          }
+        }
+        if (matchesAgent) {
+          sockets.add(sockPath);
+        }
+      } catch {
+        // Process exited or permission denied - ignore.
+      }
+    }
+  } catch {
+    // /proc unreadable - ignore.
+  }
+  return Array.from(sockets);
 }
 
 function discoverUsualTmuxSockets(env: NodeJS.ProcessEnv): string[] {
@@ -248,58 +339,113 @@ function discoverUsualTmuxSockets(env: NodeJS.ProcessEnv): string[] {
 }
 
 /**
- * Major 1 (Round 9): Comprehensive ownership window discovery across:
- * 1. Explicit Base socket recorded in $AGENTS_HOME/.base-tmux-socket (`-S <sock> list-windows -a`),
- * 2. Every tmux socket found in usual tmux directories (catches pre-upgrade private TMUX_TMPDIR sockets),
- * 3. Current env server AND canonical default socket (`list-windows -a` scans ALL sessions including grouped sessions).
+ * Major 1 & 2 (Round 10): Base-scoped ownership window discovery across:
+ * 1. Every Base socket recorded in append-only $AGENTS_HOME/.base-tmux-sockets (plus legacy .base-tmux-socket),
+ * 2. Current env server & canonical Base default socket (`list-windows -a` with Base session/group/tag filter),
+ * 3. Live Linux /proc scan for pre-upgrade Base agent panes running on arbitrary private TMUX_TMPDIR sockets,
+ * 4. Best-effort fallback scan of usual tmux socket dirs that ignores unreadable/unrelated sockets and filters
+ *    strictly to Base sessions/groups so personal tmux servers never cause false tmux-active or tmux-unknown refusals.
  */
 export function listAllTmuxWindowsForOwnership(
   env: NodeJS.ProcessEnv,
   agentsRootDir?: string,
+  agent?: string,
+  agentHome?: string,
 ): string[] {
+  const configuredSession = resolveTmuxSession(env);
   const found = new Set<string>();
   const queriedSockets = new Set<string>();
 
-  const queryServerAllSessions = (queryEnv: NodeJS.ProcessEnv, socketPath?: string) => {
-    const args = socketPath
-      ? ["-S", socketPath, "list-windows", "-a", "-F", "#{window_name}"]
-      : ["list-windows", "-a", "-F", "#{window_name}"];
-    const effectiveEnv = socketPath ? { ...queryEnv } : queryEnv;
-    if (socketPath) {
+  const queryServerAllSessions = (
+    queryEnv: NodeJS.ProcessEnv,
+    options: {
+      socketPath?: string;
+      authoritative: boolean;
+      isRecordedBaseSocket: boolean;
+      allowUnstructuredStub: boolean;
+    },
+  ) => {
+    const args = options.socketPath
+      ? ["-S", options.socketPath, "list-windows", "-a", "-F", OWNERSHIP_WINDOW_FORMAT]
+      : ["list-windows", "-a", "-F", OWNERSHIP_WINDOW_FORMAT];
+    const effectiveEnv = options.socketPath ? { ...queryEnv } : queryEnv;
+    if (options.socketPath) {
       delete effectiveEnv["TMUX"];
       delete effectiveEnv["TMUX_PANE"];
       delete effectiveEnv["TMUX_TMPDIR"];
     }
-    for (const win of parseWindowList(listTmuxForOwnership(args, effectiveEnv))) {
+    let out: string;
+    try {
+      out = listTmuxForOwnership(args, effectiveEnv);
+    } catch (err) {
+      // Major 2: Unrelated/discovered sockets that return EACCES or errors MUST NOT turn a healthy
+      // empty Base socket into tmux-unknown. Only authoritative Base sockets fail closed.
+      if (options.authoritative) throw err;
+      return;
+    }
+    for (const win of parseOwnershipWindowLines(out, configuredSession, {
+      allowUnstructuredStub: options.allowUnstructuredStub,
+      isRecordedBaseSocket: options.isRecordedBaseSocket,
+      agentHome,
+    })) {
       found.add(win);
     }
   };
 
-  // 1. Explicit Base socket written at window creation
-  const recordedSocket = readRecordedBaseTmuxSocket(agentsRootDir);
-  if (recordedSocket) {
-    queriedSockets.add(recordedSocket);
-    queryServerAllSessions(env, recordedSocket);
+  // 1. Authoritative Base sockets from append-only .base-tmux-sockets (and legacy .base-tmux-socket)
+  const recordedSockets = readRecordedBaseTmuxSockets(agentsRootDir);
+  for (const sock of recordedSockets) {
+    queriedSockets.add(sock);
+    queryServerAllSessions(env, {
+      socketPath: sock,
+      authoritative: true,
+      isRecordedBaseSocket: true,
+      allowUnstructuredStub: true,
+    });
   }
 
-  // 2. Current env's tmux server (all sessions, including grouped sessions)
-  queryServerAllSessions(env);
+  // 2. Current env's tmux server (authoritative)
+  queryServerAllSessions(env, {
+    authoritative: true,
+    isRecordedBaseSocket: false,
+    allowUnstructuredStub: true,
+  });
 
-  // 3. Canonical default socket with TMUX/TMUX_PANE/TMUX_TMPDIR stripped
-  if (env["TMUX"] || env["TMUX_TMPDIR"] || resolveTmuxSession(env) !== "agents") {
+  // 3. Canonical Base default socket with TMUX/TMUX_PANE/TMUX_TMPDIR stripped (authoritative)
+  if (env["TMUX"] || env["TMUX_TMPDIR"] || configuredSession !== "agents") {
     const defaultEnv: NodeJS.ProcessEnv = { ...env, MC_TMUX_SESSION: "agents" };
     delete defaultEnv["TMUX"];
     delete defaultEnv["TMUX_PANE"];
     delete defaultEnv["TMUX_TMPDIR"];
-    queryServerAllSessions(defaultEnv);
+    queryServerAllSessions(defaultEnv, {
+      authoritative: true,
+      isRecordedBaseSocket: false,
+      allowUnstructuredStub: true,
+    });
   }
 
-  // 4. Scan usual tmux socket directories (catches pre-upgrade launchers under different TMUX_TMPDIR
-  //    or non-default socket names when .base-tmux-socket is absent or stale)
+  // 4. Live Linux /proc scan for pre-upgrade legacy Base runners under arbitrary TMUX_TMPDIR
+  for (const procSock of discoverLiveBaseSocketsFromProc(agent, agentHome)) {
+    if (queriedSockets.has(procSock)) continue;
+    queriedSockets.add(procSock);
+    queryServerAllSessions(env, {
+      socketPath: procSock,
+      authoritative: false,
+      isRecordedBaseSocket: true,
+      allowUnstructuredStub: true,
+    });
+  }
+
+  // 5. Non-authoritative fallback scan of usual tmux dirs (ignores unreadable sockets, requires Base session/group match)
   for (const sock of discoverUsualTmuxSockets(env)) {
     if (queriedSockets.has(sock)) continue;
     queriedSockets.add(sock);
-    queryServerAllSessions(env, sock);
+    queryServerAllSessions(env, {
+      socketPath: sock,
+      authoritative: false,
+      isRecordedBaseSocket: false,
+      allowUnstructuredStub: false,
+    });
   }
 
   return Array.from(found);

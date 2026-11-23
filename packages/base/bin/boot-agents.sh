@@ -599,23 +599,21 @@ done
 [[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
 AGENTS=("${TMUX_AGENTS[@]}")
 
-# Major 1 (Round 9): Pin Base tmux operations to one explicit socket path (-S) and record it in
-# $AGENTS_HOME/.base-tmux-socket so Deck always inspects the exact same tmux server regardless of environment.
+# Major 1 (Round 10): Pin Base tmux operations to one explicit socket path (-S) and append it to
+# $AGENTS_HOME/.base-tmux-sockets ONLY when creating a window (never overwrite prior custom sockets).
 BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
-BASE_TMUX_SOCKET_FILE="$AGENTS_HOME/.base-tmux-socket"
+BASE_TMUX_SOCKETS_FILE="$AGENTS_HOME/.base-tmux-sockets"
 unset TMUX TMUX_PANE TMUX_TMPDIR
 
 record_base_tmux_socket() {
-  local sock_dir tmp_file
+  local sock_dir
   sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
   [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
-  tmp_file="${BASE_TMUX_SOCKET_FILE}.tmp.$$"
-  if printf '%s\n' "$BASE_TMUX_SOCKET" > "$tmp_file" 2>/dev/null; then
-    mv -f "$tmp_file" "$BASE_TMUX_SOCKET_FILE" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null || true
+  if [[ ! -f "$BASE_TMUX_SOCKETS_FILE" ]] || ! grep -qxF "$BASE_TMUX_SOCKET" "$BASE_TMUX_SOCKETS_FILE" 2>/dev/null; then
+    printf '%s\n' "$BASE_TMUX_SOCKET" >> "$BASE_TMUX_SOCKETS_FILE" 2>/dev/null || true
   fi
 }
 
-record_base_tmux_socket
 tmux_base start-server 2>/dev/null || true
 # Turn on focus-events before any pane starts, so Claude Code does not show its
 # "tmux focus-events off" hint. tmux has no per-session form of this option
@@ -646,6 +644,7 @@ launch_agent() {
       echo "boot-agents: session creation failed" >&2
       return 1
     fi
+    tmux_base set-option -t "$SESSION" @base_workspace 1 2>/dev/null || true
     created_window=1
   elif ! tmux_base list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
     record_base_tmux_socket

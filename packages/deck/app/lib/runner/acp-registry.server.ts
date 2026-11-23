@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -14,6 +15,7 @@ import {
   writeSync,
 } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
@@ -34,7 +36,10 @@ import { LaunchFailure, signalGroup } from "./runner.js";
 
 const lockName = ".runner.lock";
 const lastSessionName = ".acp-last-session";
+const capabilitiesName = ".acp-capabilities";
 const MAX_EVENTS_PER_SESSION = 500;
+const MAX_SHUTDOWN_CLEANUP_ATTEMPTS = 3;
+const SHUTDOWN_CLEANUP_RETRY_DELAY_MS = 50;
 
 export type AcpActiveSession = {
   state: "starting" | "running" | "stopping";
@@ -75,6 +80,7 @@ export type AcpSessionStatus =
   | AcpInactiveSession;
 
 const registryKey = Symbol.for("inkie-deck.acp.registry");
+const closingAlsKey = Symbol.for("inkie-deck.dev.server-closing-als");
 const globals = globalThis as typeof globalThis & {
   [registryKey]?: {
     sessions: Map<string, AcpActiveSession | AcpCleanupSession | AcpInactiveSession>;
@@ -84,6 +90,7 @@ const globals = globalThis as typeof globalThis & {
     recoveryFailed: false | symbol;
     resumeSupport: Map<string, { supported: boolean; executableKey: string }>;
   };
+  [closingAlsKey]?: AsyncLocalStorage<() => boolean>;
 };
 const shared: NonNullable<(typeof globals)[typeof registryKey]> = globals[registryKey] ??= {
   sessions: new Map(),
@@ -96,8 +103,12 @@ const shared: NonNullable<(typeof globals)[typeof registryKey]> = globals[regist
 if (typeof shared.shutdownInFlight !== "number") shared.shutdownInFlight = 0;
 if (!shared.resumeSupport) shared.resumeSupport = new Map();
 
+function isRequestServerClosing(): boolean {
+  return globals[closingAlsKey]?.getStore()?.() === true;
+}
+
 function isShuttingDown(): boolean {
-  return shared.closing || shared.shutdownInFlight > 0;
+  return shared.closing || shared.shutdownInFlight > 0 || isRequestServerClosing();
 }
 
 function executableKey(id: ExecutableIdentity): string {
@@ -224,6 +235,80 @@ function writeStoredSessionId(home: string, sessionId: string): void {
   }
 }
 
+function readStoredCapabilities(home: string): { supported: boolean; executableKey: string } | undefined {
+  try {
+    const file = join(realpathSync(home), capabilitiesName);
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (!stat || stat.isSymbolicLink() || !stat.isFile() || stat.nlink > 1 || stat.size <= 0 || stat.size > 512) {
+      return undefined;
+    }
+    const fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    try {
+      const fdStat = fstatSync(fd);
+      if (!fdStat.isFile() || fdStat.nlink > 1 || fdStat.size <= 0 || fdStat.size > 512) return undefined;
+      const buf = Buffer.allocUnsafe(512);
+      const n = readSync(fd, buf, 0, 512, 0);
+      const parsed = JSON.parse(buf.subarray(0, n).toString("utf8")) as Partial<{
+        supported: unknown;
+        executableKey: unknown;
+      }> | null;
+      if (!parsed || typeof parsed.supported !== "boolean" || typeof parsed.executableKey !== "string") {
+        return undefined;
+      }
+      return { supported: parsed.supported, executableKey: parsed.executableKey };
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredCapabilities(home: string, record: { supported: boolean; executableKey: string }): void {
+  try {
+    const realHome = realpathSync(home);
+    const file = join(realHome, capabilitiesName);
+    const existing = lstatSync(file, { throwIfNoEntry: false });
+    if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1)) {
+      return;
+    }
+    const tmp = join(realHome, `${capabilitiesName}.tmp.${randomUUID()}`);
+    const flags =
+      fsConstants.O_WRONLY |
+      fsConstants.O_CREAT |
+      fsConstants.O_EXCL |
+      (fsConstants.O_NOFOLLOW ?? 0);
+    const fd = openSync(tmp, flags, 0o600);
+    let renamed = false;
+    try {
+      try {
+        const bytes = Buffer.from(JSON.stringify(record) + "\n", "utf8");
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+          if (written <= 0 || offset + written > bytes.length) {
+            throw new Error("Short write while persisting ACP capabilities");
+          }
+          offset += written;
+        }
+        if (fstatSync(fd).size !== bytes.length) {
+          throw new Error("Truncated write while persisting ACP capabilities");
+        }
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, file);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(tmp); } catch { /* ignore cleanup error */ }
+      }
+    }
+  } catch {
+    // Best-effort persistence of negotiated capability cache.
+  }
+}
+
 export interface AcpRegistryOptions {
   manifest?: AcpAdapterManifest;
   listWindows?: typeof listTmuxWindows;
@@ -317,14 +402,13 @@ export class AcpRunnerRegistry {
   }
 
   /**
-   * Minor 1 (Round 9): Gate Resume offer on BOTH saved checkpoint AND advertised capability.
-   * After a known capability refusal on the currently installed binary identity, return false
-   * while preserving the saved checkpoint; re-enable automatically if the binary changes.
+   * Minor 1 (Round 10): Gate Resume offer on BOTH saved checkpoint AND advertised capability,
+   * persisting capability refusal across cold Deck restarts via .acp-capabilities keyed by binary identity.
    */
   canResume(agent: string): boolean {
     const home = agentHome(this.env, agent);
     if (!home || !readStoredSessionId(home)) return false;
-    const recorded = shared.resumeSupport.get(home);
+    const recorded = shared.resumeSupport.get(home) ?? readStoredCapabilities(home);
     if (!recorded || recorded.supported) return true;
     try {
       const manifest = this.options.manifest ?? antigravity1Manifest;
@@ -589,10 +673,12 @@ export class AcpRunnerRegistry {
 
     activeSession.session = session;
     if (session.negotiated) {
-      shared.resumeSupport.set(home, {
+      const capRecord = {
         supported: Boolean(session.supportsResume?.()),
         executableKey: executableKey(execIdentity),
-      });
+      };
+      shared.resumeSupport.set(home, capRecord);
+      writeStoredCapabilities(home, capRecord);
     }
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
@@ -651,15 +737,16 @@ export class AcpRunnerRegistry {
           windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
         }
       } else {
-        // Major 1 (Round 9): Check explicit Base socket state file (.base-tmux-socket), ALL sessions
-        // including grouped sessions (`list-windows -a`), AND usual tmux socket dirs when absent.
+        // Major 1 & 2 (Round 10): Check append-only .base-tmux-sockets, Base sessions/groups only,
+        // live /proc legacy panes, and tolerate unreadable unrelated sockets.
         let root: string | undefined;
         try {
           root = realpathSync(agentsRoot(this.env));
         } catch {
           root = agentsRoot(this.env);
         }
-        windows = listAllTmuxWindowsForOwnership(this.env, root);
+        const home = agentHome(this.env, agent);
+        windows = listAllTmuxWindowsForOwnership(this.env, root, agent, home);
       }
     } catch {
       throw new StartRefusal("tmux-unknown");
@@ -782,26 +869,52 @@ export class AcpRunnerRegistry {
     return activeSession.stopPromise;
   }
 
-  async shutdown(options: { permanent?: boolean } = {}): Promise<void> {
+  async shutdown(options: { permanent?: boolean; cleanupRetryDelayMs?: number } = {}): Promise<void> {
     if (options.permanent !== false) {
       shared.closing = true;
     }
+    const retryDelayMs = options.cleanupRetryDelayMs ?? SHUTDOWN_CLEANUP_RETRY_DELAY_MS;
     shared.shutdownInFlight += 1;
     const drain = async () => {
-      while (true) {
-        const pending = Array.from(shared.sessions.values()).filter(
-          (session) => "abortController" in session || session.state === "cleanup-pending",
+      // Phase 1: Stop all active sessions (starting, running, stopping).
+      const active = Array.from(shared.sessions.values()).filter(
+        (session): session is AcpActiveSession => "abortController" in session,
+      );
+      if (active.length > 0) {
+        await Promise.all(active.map((session) => this.stopSession(session).catch(() => {})));
+      }
+
+      // Phase 2 (Major 4, Round 10): Bounded cleanup retries with delay so a persistent lock failure
+      // (e.g. replaced lock inode) NEVER loops infinitely or hangs production/Vite shutdown.
+      for (let attempt = 1; attempt <= MAX_SHUTDOWN_CLEANUP_ATTEMPTS; attempt++) {
+        const pendingEntries = Array.from(shared.sessions.entries()).filter(
+          (entry): entry is [string, AcpCleanupSession] => entry[1].state === "cleanup-pending",
         );
-        if (pending.length === 0) break;
+        if (pendingEntries.length === 0) break;
+
+        let anyRetryableFailure = false;
         await Promise.all(
-          pending.map((session) =>
-            "abortController" in session
-              ? this.stopSession(session)
-              : session.state === "cleanup-pending"
-                ? session.retry().catch(() => {})
-                : undefined,
-          ),
+          pendingEntries.map(async ([home, session]) => {
+            try {
+              await session.retry();
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error);
+              const nonRetryable = msg.includes("changed owners");
+              if (nonRetryable || attempt === MAX_SHUTDOWN_CLEANUP_ATTEMPTS) {
+                shared.sessions.set(home, {
+                  state: "locked",
+                  reason: "Runner lock cleanup failed during shutdown; orphaned lock requires recovery.",
+                });
+              } else {
+                anyRetryableFailure = true;
+              }
+            }
+          }),
         );
+        if (!anyRetryableFailure) break;
+        if (attempt < MAX_SHUTDOWN_CLEANUP_ATTEMPTS && retryDelayMs > 0) {
+          await delay(retryDelayMs);
+        }
       }
     };
     const inFlight = (shared.shutdownPromise ??= drain().finally(() => {
