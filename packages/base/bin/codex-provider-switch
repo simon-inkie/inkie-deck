@@ -197,16 +197,10 @@ def lock(action: str, agent: str, transaction: str | None = None, check: bool = 
 
 def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     binary = os.environ.get("PROVIDER_SWITCH_TMUX_BIN", "tmux")
-    # Major 6 (Round 16): Target the exact tmux socket Base uses (BASE_TMUX_SOCKET or default
-    # /tmp/tmux-<uid>/default) and strip inherited TMUX/TMUX_TMPDIR so switches never hit another server.
-    socket = os.environ.get("BASE_TMUX_SOCKET", "").strip()
-    if not socket and hasattr(os, "getuid"):
-        socket = f"/tmp/tmux-{os.getuid()}/default"
-    argv = [binary, "-S", socket, *args] if socket else [binary, *args]
     sub_env = dict(os.environ)
     for var in ("TMUX", "TMUX_PANE", "TMUX_TMPDIR"):
         sub_env.pop(var, None)
-    return subprocess.run(argv, text=True, capture_output=True, check=check, env=sub_env)
+    return subprocess.run([binary, *args], text=True, capture_output=True, check=check, env=sub_env)
 
 
 def pane_details(agent: str) -> tuple[str, str, str]:

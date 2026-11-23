@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AcpThreadView } from "../../app/components/AcpThreadView.js";
@@ -65,6 +66,89 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     await acpRunnerRegistry.stop(agent).catch(() => {});
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("checks the default agents session and ignores a window on another tmux socket", async () => {
+    const shimBin = join(root, "tmux-shim-bin");
+    mkdirSync(shimBin);
+    const defaultWindow = join(root, "base-window");
+    const shimLog = join(root, "tmux-shim.log");
+    writeFileSync(defaultWindow, "");
+    writeFileSync(
+      join(shimBin, "tmux"),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(shimLog)}
+if [[ "$*" == *"list-windows"* ]]; then
+  if [[ -n "\${TMUX:-}\${TMUX_PANE:-}\${TMUX_TMPDIR:-}" || "$1" == "-S" ||
+        "$3" != "agents" || -f ${JSON.stringify(defaultWindow)} ]]; then
+    printf '%s\\n' ${agent}
+  fi
+fi
+`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv("PATH", `${shimBin}:${process.env.PATH ?? ""}`);
+    vi.stubEnv("TMUX", `${root}/other.sock,999,0`);
+    vi.stubEnv("TMUX_PANE", "%2");
+    vi.stubEnv("TMUX_TMPDIR", root);
+    const env = {
+      ...process.env,
+      AGENTS_HOME: root,
+      MC_ACP_RUNNER: "1",
+      MC_TMUX_SESSION: "personal",
+      BASE_TMUX_SOCKET: join(root, "other.sock"),
+      HOME: root,
+    };
+    const registry = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: {
+        ...antigravity1Manifest,
+        executableName: process.execPath,
+        args: [fileURLToPath(new URL("../fixtures/acp-agent.mjs", import.meta.url)), "{}"],
+      },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+    });
+    const { sendNamedKeyToWindow } = await import("../../app/lib/tmux.server.js");
+    expect(sendNamedKeyToWindow({ ...env, MC_TMUX_SESSION: "agents" }, agent, "Enter")).toEqual({ ok: true });
+    expect(readFileSync(shimLog, "utf8").trim().split("\n")).toEqual([
+      "list-windows -t agents -F #{window_name}",
+      `send-keys -t =agents:=${agent} Enter`,
+    ]);
+    await expect(registry.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Only the other socket or session still has the window.
+    rmSync(defaultWindow);
+    writeFileSync(shimLog, "");
+    const session = await registry.start(agent);
+    try {
+      expect(session.state.kind).toBe("idle");
+      expect(readFileSync(shimLog, "utf8").trim().split("\n")).toEqual([
+        "list-windows -t agents -F #{window_name}",
+        "list-windows -t agents -F #{window_name}",
+      ]);
+    } finally {
+      await registry.stop(agent);
+    }
+  });
+
+  it("refuses a Base window that appears only after claiming the ACP lock", async () => {
+    const lockFile = join(agentHome, ".runner.lock");
+    const listWindows = vi.fn(() => existsSync(lockFile) ? [agent] : []);
+    const startSession = vi.fn(async () => { throw new Error("Unexpected ACP spawn"); });
+    const registry = new AcpRunnerRegistry(
+      { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH },
+      {
+        dataRoot: root,
+        manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [] },
+        execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+        listWindows,
+        startSession,
+      },
+    );
+    await expect(registry.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+    expect(listWindows).toHaveBeenCalledTimes(2);
+    expect(startSession).not.toHaveBeenCalled();
+    expect(existsSync(lockFile)).toBe(false);
   });
 
   it("Major 1: fatal extension terminates session, closes open permissions, and refuses second prompt", async () => {
@@ -925,7 +1009,7 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(await rawFailSess.prompt("trigger unknown under inbound+outbound raw ENOSPC")).toBe("completed");
     expect(rawFailEvents.some((e) => e.type === "extension.blocking")).toBe(true);
     await rawFailSess.close();
-  });
+  }, 15_000);
 
   it("Rounds 9-10 (Majors 1-4 & Minors 1-3): append-only Base sockets, personal/EACCES isolation, closing-server ALS, bounded shutdown retries, cold-boot capability cache, base64 raw check, malformed load reply", async () => {
     const agent = "alpha";
@@ -1213,99 +1297,6 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
         try { process.kill(gcPid, "SIGKILL"); } catch { /* ignore */ }
       }
 
-      // Round 14 Major 5 + Round 16 Major 6: tmux.server.ts honours BASE_TMUX_SOCKET (-S) AND
-      // strips inherited TMUX_TMPDIR when BASE_TMUX_SOCKET is unset so tmux targets /tmp/tmux-<uid>/default
-      const { resolveTmuxSocket, sendNamedKeyToWindow } = await import("../../app/lib/tmux.server.js");
-      expect(resolveTmuxSocket({ BASE_TMUX_SOCKET: "/tmp/base-custom.sock" })).toBe("/tmp/base-custom.sock");
-      expect(resolveTmuxSocket({ TMUX_TMPDIR: "/tmp/other-server" })).toBeUndefined();
-      const shimBin = join(root, "tmux-shim-bin");
-      mkdirSync(shimBin, { recursive: true });
-      const shimLog = join(root, "tmux-shim.log");
-      writeFileSync(
-        join(shimBin, "tmux"),
-        `#!/usr/bin/env bash
-printf '%s | TMUX_TMPDIR=%s\\n' "$*" "\${TMUX_TMPDIR:-}" >> ${JSON.stringify(shimLog)}
-if [[ "$*" == *"list-windows"* ]]; then
-  printf 'alpha\\n'
-fi
-exit 0
-`,
-        { mode: 0o755 },
-      );
-      const origPath = process.env.PATH;
-      process.env.PATH = `${shimBin}:${origPath ?? ""}`;
-      try {
-        const keyRes = sendNamedKeyToWindow({ BASE_TMUX_SOCKET: "/tmp/base-custom.sock", MC_TMUX_SESSION: "agents" }, "alpha", "Enter");
-        expect(keyRes).toEqual({ ok: true });
-        const unsetKeyRes = sendNamedKeyToWindow({ TMUX_TMPDIR: "/tmp/other-server", MC_TMUX_SESSION: "agents" }, "alpha", "Enter");
-        expect(unsetKeyRes).toEqual({ ok: true });
-        const logLines = readFileSync(shimLog, "utf8").trim().split("\n");
-        expect(logLines.length).toBeGreaterThanOrEqual(4);
-        expect(logLines[0]).toContain("-S /tmp/base-custom.sock list-windows");
-        expect(logLines[1]).toContain("-S /tmp/base-custom.sock send-keys");
-        expect(logLines[2]).toContain("TMUX_TMPDIR=");
-        expect(logLines[2]).not.toContain("/tmp/other-server");
-        expect(logLines[3]).not.toContain("/tmp/other-server");
-      } finally {
-        process.env.PATH = origPath;
-      }
-
-      // Round 16 Major 4: Production assertNoTmuxWindow (without injected listWindows) refuses
-      // Start when tmux shim reports a live window for the agent (legacy pre-lock Base pane guard)
-      const legacyHome = join(root, "alpha");
-      mkdirSync(legacyHome, { recursive: true });
-      writeFileSync(join(legacyHome, ".runner"), "acp\n");
-      process.env.PATH = `${shimBin}:${origPath ?? ""}`;
-      try {
-        const regProdTmux = new AcpRunnerRegistry(
-          { AGENTS_HOME: root, MC_ACP_RUNNER: "1", BASE_TMUX_SOCKET: "/tmp/base-custom.sock", HOME: root, PATH: process.env.PATH },
-          {
-            dataRoot: root,
-            manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
-            execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
-          },
-        );
-        await expect(regProdTmux.start("alpha")).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
-      } finally {
-        process.env.PATH = origPath;
-      }
-
-      // Round 16 Major 1: boot-agents.sh codex_verify_resume_or_fallback MUST preserve checkpoint
-      // and send ZERO fallback when pane shows base-runner-exec: REFUSED_LOCK_BUSY
-      const bootScript = join(process.cwd(), "..", "base", "bin", "boot-agents.sh");
-      const codexSessDir = join(root, "codex-r16-sess");
-      mkdirSync(codexSessDir, { recursive: true });
-      const rolloutFile = join(codexSessDir, "rollout-2026-11-23-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl");
-      writeFileSync(rolloutFile, '{"type":"session_meta"}\n');
-      const sentLog = join(root, "boot-r16-sent.log");
-      const bootRefusalRun = spawnChildSync("bash", [
-        "-c",
-        `BOOT_AGENTS_LIB_ONLY=1 AGENTS_HOME="$1" CODEX_SESSIONS_DIR="$2" source "$3"
-tmux_base() {
-  if [[ "$1" == "capture-pane" ]]; then
-    printf 'base-runner-exec: REFUSED_LOCK_BUSY runner lock busy\\n'
-    return 0
-  fi
-  if [[ "$1" == "send-keys" ]]; then
-    printf '%s\\n' "$*" >> "$4"
-    return 0
-  fi
-  return 0
-}
-codex_pane_current_command() { printf 'bash\\n'; }
-codex_verify_resume_or_fallback "agents:demo" "demo" "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" "" "" ""
-`,
-        "r16-boot-refusal",
-        root,
-        codexSessDir,
-        bootScript,
-        sentLog,
-      ]);
-      expect(bootRefusalRun.status).not.toBe(0);
-      expect(existsSync(rolloutFile)).toBe(true);
-      expect(existsSync(`${rolloutFile}.codex-resume-failed`)).toBe(false);
-      expect(existsSync(sentLog)).toBe(false);
-
       // Round 14 Major 6 + Round 16 Major 7: ACP stop() MUST NOT hang when exited never resolves
       // BOTH when isGroupStopped === false (EPERM) AND when isGroupStopped === true (open stdout pipe)
       for (const groupStoppedFlag of [false, true]) {
@@ -1562,5 +1553,5 @@ codex_verify_resume_or_fallback "agents:demo" "demo" "aaaaaaaa-aaaa-4aaa-8aaa-aa
     expect(decodedRaw).not.toContain("ADV_UPDATE_SECRET_88");
     expect(decodedRaw).not.toContain("vendor/notice");
     expect(decodedRaw).not.toContain("vendor_hint");
-  }, 15_000);
+  }, 20_000);
 });

@@ -182,15 +182,6 @@ start_watcher() {
 # Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 
-# Majors 1 & 2 (Round 12): Pin Base tmux operations to one explicit socket (-S);
-# runtime mutual exclusion with Deck is enforced atomically by base-runner-exec.sh on .runner.lock.
-BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
-unset TMUX TMUX_PANE TMUX_TMPDIR
-
-tmux_base() {
-  tmux -S "$BASE_TMUX_SOCKET" "$@"
-}
-
 # Create the base session if it doesn't exist
 # Before any pane starts, so Claude Code shows no "focus-events off" hint.
 tmux_base start-server 2>/dev/null || true
@@ -265,7 +256,7 @@ if [[ $WINDOWED -eq 1 ]]; then
     printf '%s\n' "$LIVE_WINDOWS" | grep -qx "$agent" || continue
     wt.exe -w new --title "$agent" \
       wsl.exe -d Ubuntu --cd "$AGENTS_HOME/$agent" -- \
-      bash -c "tmux -S $(printf '%q' "$BASE_TMUX_SOCKET") new-session -t $SESSION \\; select-window -t $agent" \
+      bash -c "unset TMUX TMUX_PANE TMUX_TMPDIR; exec tmux new-session -t $SESSION \\; select-window -t $agent" \
       >/dev/null 2>&1 &
     spawned=$((spawned + 1))
     sleep 0.5  # stagger so wt.exe instances don't race each other
@@ -283,5 +274,6 @@ else
     fi
   done
   [[ -n "$TARGET_AGENT" ]] || exit 0
-  exec tmux -S "$BASE_TMUX_SOCKET" new-session -t "$SESSION" \; set-option @base_workspace 1 \; select-window -t "$TARGET_AGENT"
+  unset TMUX TMUX_PANE TMUX_TMPDIR
+  exec tmux new-session -t "$SESSION" \; set-option @base_workspace 1 \; select-window -t "$TARGET_AGENT"
 fi

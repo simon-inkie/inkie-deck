@@ -18,6 +18,12 @@
 #
 # Requires AGENTS_HOME to be set by the caller.
 
+# Base uses tmux's default socket even when called from inside another server.
+tmux_base() (
+  unset TMUX TMUX_PANE TMUX_TMPDIR
+  tmux "$@"
+)
+
 # Major 2 (Round 13): Branch on lock owner kind ('base' vs 'pty'/'acp'/unknown) so a
 # healthy Base tmux lock never disables inbox-push or provider-switch while PTY/ACP/corrupt
 # locks still keep tmux admission drained.
@@ -218,7 +224,7 @@ codex_sessions_dir_for_home() {
 }
 
 # Construct the canonical codex launch command for an agent, preserving its
-# complete provider envelope across both initial launch and crash-fallback.
+# complete provider envelope for both fresh starts and resumes.
 # Arguments: agent_name role codex_home [session_id] [model_flag]
 codex_launch_command() {
   local a="$1" role="${2:-}" codex_home="${3:-}" sid="${4:-}" model_flag="${5:-}"

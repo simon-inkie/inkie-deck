@@ -20,7 +20,7 @@ import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
 import { AGENT_NAME_RE } from "../safe-fs.server.js";
-import { listTmuxWindows, resolveTmuxSession } from "../tmux.server.js";
+import { listTmuxWindows } from "../tmux.server.js";
 import {
   antigravity1Manifest,
   isAcpOptedIn,
@@ -754,25 +754,14 @@ export class AcpRunnerRegistry {
   }
 
   private assertNoTmuxWindow(agent: string): void {
-    // Major 4 (Round 16): Keep the live tmux window check active in production as a second
-    // admission guard alongside .runner.lock so legacy pre-lock Base panes or unlinked lock
-    // pathnames can never run side-by-side with an ACP session.
     let windows: string[];
     try {
       const list = this.options.listWindows ?? listTmuxWindows;
-      const configuredSession = resolveTmuxSession(this.env);
-      const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
-      windows = list(this.env, true);
-      if (configuredSession !== "agents" || hasCustomSocketEnv) {
-        const baseDefaultEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
-        delete baseDefaultEnv.TMUX;
-        delete baseDefaultEnv.TMUX_PANE;
-        delete baseDefaultEnv.TMUX_TMPDIR;
-        windows = [...windows, ...list(baseDefaultEnv, true)];
-      }
-      if (configuredSession !== "agents" && hasCustomSocketEnv) {
-        windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
-      }
+      const baseEnv: NodeJS.ProcessEnv = { ...this.env, MC_TMUX_SESSION: "agents" };
+      delete baseEnv.TMUX;
+      delete baseEnv.TMUX_PANE;
+      delete baseEnv.TMUX_TMPDIR;
+      windows = list(baseEnv, true);
     } catch {
       throw new StartRefusal("tmux-unknown");
     }
