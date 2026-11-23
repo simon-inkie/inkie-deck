@@ -20,7 +20,7 @@ try {
 function deckDevSocket(): Plugin {
   return {
     name: "deck-dev-socket",
-    configureServer(server) {
+    async configureServer(server) {
       const host = server.config.server.host;
       const bindHost = host === true ? "0.0.0.0" : host || "localhost";
       const { HOST } = loadEnv(server.config.mode, server.config.envDir, "HOST");
@@ -35,16 +35,30 @@ function deckDevSocket(): Plugin {
           next(error);
         }
       });
-      // Wire ACP recovery and clean shutdown in Vite dev mode alongside production.mjs.
-      void server
-        .ssrLoadModule("/app/lib/runner/acp-registry.server.ts")
-        .then((mod) => (mod as typeof import("./app/lib/runner/acp-registry.server")).acpRunnerRegistry.recover())
-        .catch(() => {});
+      // Major 4: Load and retain the ACP registry while SSR is live, await initial recovery before
+      // Vite listens, and wrap server.close() so shutdown() is awaited BEFORE Vite closes SSR or exits.
+      let acpRegistry: typeof import("./app/lib/runner/acp-registry.server").acpRunnerRegistry | undefined;
+      try {
+        const mod = await server.ssrLoadModule("/app/lib/runner/acp-registry.server.ts") as
+          typeof import("./app/lib/runner/acp-registry.server");
+        acpRegistry = mod.acpRunnerRegistry;
+        await acpRegistry.recover();
+      } catch {
+        // Non-fatal fallback if SSR module is unavailable during tooling runs.
+      }
+      let shutdownPromise: Promise<void> | undefined;
+      const runShutdown = () => {
+        if (!acpRegistry) return Promise.resolve();
+        shutdownPromise ??= acpRegistry.shutdown().catch(() => {});
+        return shutdownPromise;
+      };
+      const originalClose = server.close.bind(server);
+      server.close = async () => {
+        await runShutdown();
+        return originalClose();
+      };
       server.httpServer?.once("close", () => {
-        void server
-          .ssrLoadModule("/app/lib/runner/acp-registry.server.ts")
-          .then((mod) => (mod as typeof import("./app/lib/runner/acp-registry.server")).acpRunnerRegistry.shutdown())
-          .catch(() => {});
+        void runShutdown();
       });
     },
   };

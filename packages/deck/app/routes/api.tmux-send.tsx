@@ -28,6 +28,7 @@ import {
 } from "~/lib/tmux.server";
 import { tmuxEnabled } from "~/lib/instance.server";
 import { requireSameOriginWrite } from "~/lib/request-origin.server";
+import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
 import { runnerRegistry } from "~/lib/runner/registry.server";
 
 const windowSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
@@ -79,6 +80,13 @@ export async function action({ request, context }: Route.ActionArgs) {
     return data(
       { ok: false as const, error: "Invalid send payload." },
       { status: 400 }
+    );
+  }
+  // Minor 2: Refuse legacy tmux sends once an agent opts into or is controlled by the ACP runner.
+  if (acpRunnerRegistry.isOptedIn(parsed.data.window) || acpRunnerRegistry.canControl(parsed.data.window)) {
+    return data(
+      { ok: false as const, error: "This agent is controlled by the ACP runner; use the ACP thread." },
+      { status: 409 }
     );
   }
   const pty = runnerRegistry.handlesTerminal(parsed.data.window);

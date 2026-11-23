@@ -53,6 +53,7 @@ export type AcpActiveSession = {
 
 export type AcpCleanupSession = {
   state: "cleanup-pending";
+  events?: DeckEvent[];
   retry: () => Promise<void>;
 };
 
@@ -286,7 +287,7 @@ export class AcpRunnerRegistry {
     const entry = this.session(agent);
     if (!entry) return [];
     if ("abortController" in entry) return this.snapshotEvents(entry);
-    if (entry.state === "stopped" && entry.events) return [...entry.events];
+    if ((entry.state === "stopped" || entry.state === "cleanup-pending") && entry.events) return [...entry.events];
     return [];
   }
 
@@ -628,6 +629,7 @@ export class AcpRunnerRegistry {
       let pending: Promise<void> | undefined;
       const cleanup: AcpCleanupSession = {
         state: "cleanup-pending",
+        events: retainedEvents,
         retry: () => pending ??= (async () => {
           await lock.release();
           shared.sessions.set(home, {
@@ -668,6 +670,7 @@ export class AcpRunnerRegistry {
     let pending: Promise<void> | undefined;
     const cleanup: AcpCleanupSession = {
       state: "cleanup-pending",
+      events: retainedEvents,
       retry: () => pending ??= lock.release().then(() => {
         shared.sessions.set(home, {
           state: "stopped",

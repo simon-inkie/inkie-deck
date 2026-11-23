@@ -591,6 +591,10 @@ done
 [[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
 AGENTS=("${TMUX_AGENTS[@]}")
 
+# Major 1: Pin Base tmux operations to the canonical default socket (never inherit a private $TMUX)
+# so Base and Deck always inspect the exact same tmux server regardless of launch environment.
+unset TMUX TMUX_PANE
+
 tmux start-server 2>/dev/null || true
 # Turn on focus-events before any pane starts, so Claude Code does not show its
 # "tmux focus-events off" hint. tmux has no per-session form of this option

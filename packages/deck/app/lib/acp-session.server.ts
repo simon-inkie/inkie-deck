@@ -162,11 +162,15 @@ function isSessionNotFoundError(error: unknown, attemptedSessionId: string): boo
 function formatProtocolVersionError(error: unknown): string | undefined {
   if (!isObject(error) || error.code !== -32022) return undefined;
   const data = isObject(error.data) ? error.data : undefined;
-  const req = data && (typeof data.requested === "number" || typeof data.requested === "string")
+  // Minor 1: Only accept bounded safe integer protocol versions (never interpolate arbitrary agent strings into UI banners).
+  const req = data && typeof data.requested === "number" && Number.isSafeInteger(data.requested)
     ? String(data.requested)
     : undefined;
   const sup = data && Array.isArray(data.supported)
-    ? data.supported.filter((v): v is number | string => typeof v === "number" || typeof v === "string").join(", ")
+    ? data.supported
+      .filter((v): v is number => typeof v === "number" && Number.isSafeInteger(v))
+      .slice(0, 8)
+      .join(", ")
     : undefined;
   if (req && sup) return `Unsupported ACP protocol version (requested ${req}, supported: ${sup}).`;
   if (sup) return `Unsupported ACP protocol version (supported: ${sup}).`;
@@ -278,9 +282,9 @@ export class AcpSession {
         if (options.requireCapability === "session/load" && !owner.advertised.loadSession) {
           owner.stop("unsupported", options.requireCapability);
         } else if (options.resumeSessionId) {
-          // Major 3: never silently fall back to session/new when resume was explicitly requested
+          // Major 2: Never silently fall back to session/new when resume was explicitly requested,
+          // and NEVER delete a valid saved checkpoint merely because a downgraded binary lacks resume capability.
           if (!owner.supportsResume()) {
-            owner.resumeRejectedFlag = true;
             owner.stop("unsupported", "Agent does not advertise resume capability");
           } else {
             // Major 3: bind sessionId BEFORE session/load or session/resume so replay updates arriving
@@ -474,19 +478,8 @@ export class AcpSession {
           ? "fatal"
           : "non-blocking";
 
-    this.records.frame("in", bytes);
-    this.records.unknownExtension({
-      v: 1,
-      ts: new Date().toISOString(),
-      session: this.sessionId ?? null,
-      extensionName: method,
-      method,
-      classification,
-      paramsSummary: summarizeExtensionParams(params),
-    });
-
     if (requestId !== undefined) {
-      // Reply method-not-found so the agent does not hang waiting on an unsupported request.
+      // Major 3: Reply -32601 BEFORE best-effort disk logging so ENOSPC on raw.ndjson never leaves the agent hanging.
       void this.send({
         jsonrpc: "2.0",
         id: requestId,
@@ -495,7 +488,7 @@ export class AcpSession {
     }
 
     if (classification === "blocking" || classification === "fatal") {
-      // Major 4: ALWAYS surface blocking & fatal cards to the live UI (never suppress later blockers!),
+      // Major 3 & 4: ALWAYS surface blocking & fatal cards to live UI BEFORE disk writes so ENOSPC never hides them,
       // while capping repeated display.ndjson writes at MAX_UNKNOWN_REQUEST_CARDS to bound disk usage.
       const cardEvent = this.makeEvent({
         class: "action",
@@ -509,6 +502,11 @@ export class AcpSession {
             : "An unsupported agent message interrupted the turn.",
         },
       });
+      try {
+        this.options.onEvent?.(cardEvent);
+      } catch {
+        // Ignore callback error during shutdown.
+      }
       const persistToDisplay = classification === "fatal" || this.unknownRequestCards < MAX_UNKNOWN_REQUEST_CARDS;
       if (classification === "blocking" && persistToDisplay) {
         this.unknownRequestCards += 1;
@@ -517,19 +515,30 @@ export class AcpSession {
         try {
           this.records.event(cardEvent);
         } catch {
-          // Major 3: Disk-full (ENOSPC) on display.ndjson must NEVER suppress live UI delivery.
+          // Disk-full (ENOSPC) on display.ndjson must NEVER suppress live UI delivery.
         }
       }
-      try {
-        this.options.onEvent?.(cardEvent);
-      } catch {
-        // Ignore emit error during shutdown.
-      }
-      if (classification === "fatal") {
-        // Major 1 & 6: fatally terminate the session (closing RPC, permissions, and child process)
-        // so NO subsequent prompt can overlap the open RPC and no active turn hangs pending.
-        this.stop("failed", "Unsupported fatal agent message");
-      }
+    }
+
+    try {
+      this.records.frame("in", bytes);
+    } catch {
+      // Best-effort raw frame logging; ENOSPC must not abort handling of an unknown extension.
+    }
+    this.records.unknownExtension({
+      v: 1,
+      ts: new Date().toISOString(),
+      session: this.sessionId ?? null,
+      extensionName: method,
+      method,
+      classification,
+      paramsSummary: summarizeExtensionParams(params),
+    });
+
+    if (classification === "fatal") {
+      // Major 1 & 6: fatally terminate the session (closing RPC, permissions, and child process)
+      // so NO subsequent prompt can overlap the open RPC and no active turn hangs pending.
+      this.stop("failed", "Unsupported fatal agent message");
     }
   }
 

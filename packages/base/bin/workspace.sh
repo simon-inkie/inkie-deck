@@ -181,6 +181,10 @@ start_watcher() {
 # Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 
+# Major 1: Pin Base tmux operations to the canonical default socket (never inherit a private $TMUX)
+# so Base and Deck always inspect the exact same tmux server regardless of launch environment.
+unset TMUX TMUX_PANE
+
 # Create the base session if it doesn't exist
 # Before any pane starts, so Claude Code shows no "focus-events off" hint.
 tmux start-server 2>/dev/null || true

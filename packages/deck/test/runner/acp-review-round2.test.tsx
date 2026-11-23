@@ -566,7 +566,8 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
   it("Round 4 (Majors 3, 4, 5, 6, 7): refused Resume clears stale checkpoint, same-size mtime-preserving rewrite refused via SHA-256, warning vs fatal request, bounded unknown request cards", async () => {
     const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
 
-    // Major 3: Refused Resume (agent dropped resume capability) clears stale .acp-last-session
+    // Major 2 (Round 7): Refused Resume due to capability downgrade PRESERVES valid .acp-last-session
+    // (only an explicit session-not-found for that exact ID clears the saved checkpoint).
     writeFileSync(join(agentHome, ".acp-last-session"), "  spaced-id  \n");
     const noResScript = join(root, "r4-nores.mjs");
     writeFileSync(
@@ -581,10 +582,11 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       listWindows: () => [],
     });
-    // Printable leading/trailing spaces preserved on read
+    // Printable leading/trailing spaces preserved on read AND retained after capability-downgrade refusal
     expect(regNoRes.lastSessionId(agent)).toBe("  spaced-id  ");
     await expect(regNoRes.start(agent, { resume: true })).rejects.toThrow(/does not support/);
-    expect(regNoRes.lastSessionId(agent)).toBeUndefined();
+    expect(regNoRes.lastSessionId(agent)).toBe("  spaced-id  ");
+    rmSync(join(agentHome, ".acp-last-session"), { force: true });
 
     // Major 5: Same-size rewrite preserving EXACT integer-second timestamp is caught by SHA-256 identity pin
     const fakeBin = join(root, "r4-same-size-bin");
@@ -838,7 +840,7 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(qEvents.some((e) => e.type === "extension.blocking")).toBe(true);
     await qSess.close();
 
-    // Minor 3: Explicit -32022 initialize error transitions to unsupported with requested/supported versions
+    // Minor 3 & Round 7 Minor 1: Explicit -32022 initialize error transitions to unsupported with bounded integer versions only
     const protoErrScript = join(root, "r6-proto-err.mjs");
     writeFileSync(
       protoErrScript,
@@ -854,5 +856,53 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(protoSess.unsupportedReason).toContain("requested 1");
     expect(protoSess.unsupportedReason).toContain("supported: 2");
     await protoSess.close();
+
+    const giantProtoScript = join(root, "r7-giant-proto.mjs");
+    writeFileSync(
+      giantProtoScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32022, message: "bad", data: { requested: "x".repeat(16000), supported: ["y".repeat(4000)] } } });
+      `),
+    );
+    const giantSess = await AcpSession.start(
+      { executable: process.execPath, args: [giantProtoScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root },
+    );
+    expect(giantSess.state.kind).toBe("unsupported");
+    expect(giantSess.unsupportedReason).toBe("Unsupported ACP protocol version.");
+    await giantSess.close();
+
+    // Round 7 Major 3: ENOSPC on raw.ndjson STILL replies -32601 AND delivers extension.blocking to live onEvent
+    const rawFailScript = join(root, "r7-raw-enospc.mjs");
+    writeFileSync(
+      rawFailScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-enospc" } });
+        else if (msg.method === "session/prompt") {
+          globalThis.__promptId = msg.id;
+          send({ jsonrpc: "2.0", id: 777, method: "_ext/unknown_under_enospc", params: {} });
+        } else if (msg.id === 777 && msg.error && msg.error.code === -32601) {
+          send({ jsonrpc: "2.0", id: globalThis.__promptId, result: { stopReason: "end_turn" } });
+        }
+      `),
+    );
+    const rawFailEvents: DeckEvent[] = [];
+    const rawFailSess = await AcpSession.start(
+      { executable: process.execPath, args: [rawFailScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root, onEvent: (e) => rawFailEvents.push(e) },
+    );
+    const origFrame = rawFailSess.records.frame.bind(rawFailSess.records);
+    rawFailSess.records.frame = (dir, bytes, issue) => {
+      if (dir === "in" && bytes.toString("utf8").includes("_ext/unknown_under_enospc")) {
+        const err = new Error("ENOSPC") as NodeJS.ErrnoException;
+        err.code = "ENOSPC";
+        throw err;
+      }
+      return origFrame(dir, bytes, issue);
+    };
+    expect(await rawFailSess.prompt("trigger unknown under raw ENOSPC")).toBe("completed");
+    expect(rawFailEvents.some((e) => e.type === "extension.blocking")).toBe(true);
+    await rawFailSess.close();
   });
 });
