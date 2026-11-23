@@ -73,6 +73,21 @@ export function resolveTmuxSession(env: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * Major 5 (Round 14): Honour Base's explicit BASE_TMUX_SOCKET (-S) so direct terminal
+ * reads and key/text delivery always target the exact tmux server Base launched on.
+ */
+export function resolveTmuxSocket(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = (env["BASE_TMUX_SOCKET"] ?? "").trim();
+  if (raw === "" || raw.startsWith("-") || raw.includes("\0") || raw.includes("\n")) return undefined;
+  return raw;
+}
+
+function withSocketArgs(env: NodeJS.ProcessEnv | undefined, args: string[]): string[] {
+  const socket = env ? resolveTmuxSocket(env) : undefined;
+  return socket ? ["-S", socket, ...args] : args;
+}
+
+/**
  * argv for listing window names. Pure - the no-shell shape is unit-pinned.
  */
 export function buildListArgs(session: string): string[] {
@@ -114,9 +129,9 @@ export function buildCaptureArgs(session: string, window: string): string[] {
   ];
 }
 
-function runTmux(args: string[]): string | undefined {
+function runTmux(args: string[], env?: NodeJS.ProcessEnv): string | undefined {
   try {
-    return execFileSync("tmux", args, {
+    return execFileSync("tmux", withSocketArgs(env, args), {
       encoding: "utf8",
       timeout: TMUX_EXEC_TIMEOUT_MS,
       // Belt-and-braces: never inherit stdio, never grow unbounded.
@@ -136,7 +151,7 @@ function runTmux(args: string[]): string | undefined {
  */
 export function listTmuxWindows(env: NodeJS.ProcessEnv, requireKnown = false): string[] {
   const args = buildListArgs(resolveTmuxSession(env));
-  const out = requireKnown ? listTmuxForOwnership(args, env) : runTmux(args);
+  const out = requireKnown ? listTmuxForOwnership(args, env) : runTmux(args, env);
   if (out === undefined) return [];
   return out
     .split("\n")
@@ -156,7 +171,7 @@ function listTmuxForOwnership(args: string[], env: NodeJS.ProcessEnv): string {
     delete childEnv["TMUX_TMPDIR"];
   }
   try {
-    return execFileSync("tmux", args, {
+    return execFileSync("tmux", withSocketArgs(env, args), {
       encoding: "utf8", timeout: TMUX_EXEC_TIMEOUT_MS, maxBuffer: 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"], env: childEnv,
     });
@@ -186,7 +201,7 @@ export function captureTmuxPane(
   if (!isValidWindowName(window)) return undefined;
   // Live allowlist: the window must exist in the session right now.
   if (!listTmuxWindows(env).includes(window)) return undefined;
-  return runTmux(buildCaptureArgs(resolveTmuxSession(env), window));
+  return runTmux(buildCaptureArgs(resolveTmuxSession(env), window), env);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,9 +280,9 @@ export function buildSendKeysEnterArgs(
 }
 
 /** Run a tmux verb for its side effect; true on clean exit, false on any failure. */
-function runTmuxVoid(args: string[]): boolean {
+function runTmuxVoid(args: string[], env?: NodeJS.ProcessEnv): boolean {
   try {
-    execFileSync("tmux", args, {
+    execFileSync("tmux", withSocketArgs(env, args), {
       encoding: "utf8",
       timeout: TMUX_EXEC_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
@@ -296,7 +311,7 @@ export function sendNamedKeyToWindow(
   if (!listTmuxWindows(env).includes(window)) {
     return { ok: false, error: "Window is not live in the session." };
   }
-  return runTmuxVoid(buildSendKeysNamedArgs(resolveTmuxSession(env), window, key))
+  return runTmuxVoid(buildSendKeysNamedArgs(resolveTmuxSession(env), window, key), env)
     ? { ok: true }
     : { ok: false, error: "Could not send key to the window." };
 }
@@ -304,9 +319,10 @@ export function sendNamedKeyToWindow(
 /** Refuse text when the current viewport cannot be checked or shows a shell. */
 function textSendRefusal(
   session: string,
-  window: string
+  window: string,
+  env?: NodeJS.ProcessEnv
 ): string | undefined {
-  const viewport = runTmux(buildCaptureViewportArgs(session, window));
+  const viewport = runTmux(buildCaptureViewportArgs(session, window), env);
   if (viewport === undefined) {
     return "Could not check the pane before sending text.";
   }
@@ -332,25 +348,28 @@ export interface SendKeysDriver {
   wait(ms: number): Promise<void>;
 }
 
-const LIVE_SEND_KEYS_DRIVER: SendKeysDriver = {
-  listWindows: (env) => listTmuxWindows(env),
-  captureViewport: (session, window, raw) =>
-    runTmux(
-      raw
-        ? buildVerifiedSendRawCaptureArgs(session, window)
-        : buildVerifiedSendCaptureArgs(session, window)
-    ),
-  sendText: (session, window, text) =>
-    runTmuxVoid(buildSendKeysTextArgs(session, window, text)),
-  // Recheck immediately before every Enter. The verified state machine proves
-  // the composer safe before typing and verifies the result afterwards; this
-  // closes the remaining delay race where the agent could exit to a shell
-  // after the text send but before Enter.
-  pressEnter: (session, window) =>
-    textSendRefusal(session, window) === undefined &&
-    runTmuxVoid(buildSendKeysEnterArgs(session, window)),
-  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-};
+function createLiveSendKeysDriver(env: NodeJS.ProcessEnv): SendKeysDriver {
+  return {
+    listWindows: (e) => listTmuxWindows(e),
+    captureViewport: (session, window, raw) =>
+      runTmux(
+        raw
+          ? buildVerifiedSendRawCaptureArgs(session, window)
+          : buildVerifiedSendCaptureArgs(session, window),
+        env
+      ),
+    sendText: (session, window, text) =>
+      runTmuxVoid(buildSendKeysTextArgs(session, window, text), env),
+    // Recheck immediately before every Enter. The verified state machine proves
+    // the composer safe before typing and verifies the result afterwards; this
+    // closes the remaining delay race where the agent could exit to a shell
+    // after the text send but before Enter.
+    pressEnter: (session, window) =>
+      textSendRefusal(session, window, env) === undefined &&
+      runTmuxVoid(buildSendKeysEnterArgs(session, window), env),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
+}
 
 /** Bounded settle samples before deciding whether one Enter retry is safe. */
 export const SEND_KEYS_VERIFY_DELAYS_MS = [250, 750] as const;
@@ -386,7 +405,7 @@ export async function sendKeysToWindow(
   env: NodeJS.ProcessEnv,
   window: string,
   text: string,
-  driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
+  driver: SendKeysDriver = createLiveSendKeysDriver(env)
 ): Promise<PaneSendKeysResult> {
   if (!isValidWindowName(window)) {
     return {
@@ -846,12 +865,12 @@ export function isAgentPaneIdle(env: NodeJS.ProcessEnv, window: string): boolean
   if (!isValidWindowName(window)) return false;
   if (!listTmuxWindows(env).includes(window)) return false;
   const session = resolveTmuxSession(env);
-  const out = runTmux(buildCaptureViewportArgs(session, window));
+  const out = runTmux(buildCaptureViewportArgs(session, window), env);
   if (out === undefined) return false;
   // Second, raw (-e) capture: lets composerIsClean tell a Codex dim-hint
   // placeholder apart from real staged text. undefined (capture failed) reads
   // as "no dim available" -> the conservative dirty direction.
-  const raw = runTmux(buildCaptureViewportRawArgs(session, window));
+  const raw = runTmux(buildCaptureViewportRawArgs(session, window), env);
   return paneTextIsIdle(out, raw);
 }
 
@@ -902,11 +921,11 @@ export function paneAcceptsSendLive(env: NodeJS.ProcessEnv, window: string): boo
   if (!isValidWindowName(window)) return false;
   if (!listTmuxWindows(env).includes(window)) return false;
   const session = resolveTmuxSession(env);
-  const out = runTmux(buildCaptureViewportArgs(session, window));
+  const out = runTmux(buildCaptureViewportArgs(session, window), env);
   if (out === undefined) return false;
   // Second, raw (-e) capture for the Codex dim-hint disambiguation (see
   // isAgentPaneIdle). undefined reads as the conservative dirty direction.
-  const raw = runTmux(buildCaptureViewportRawArgs(session, window));
+  const raw = runTmux(buildCaptureViewportRawArgs(session, window), env);
   return paneAcceptsSend(out, raw);
 }
 
@@ -1210,7 +1229,7 @@ export async function pushMessageToIdleAgent(
   fromUser: string,
   text: string,
   dictated: boolean = false,
-  driver: SendKeysDriver = LIVE_SEND_KEYS_DRIVER
+  driver: SendKeysDriver = createLiveSendKeysDriver(env)
 ): Promise<PushResult> {
   try {
     return await sendKeysToWindow(env, window, buildPanePushPayload(fromUser, text, dictated), driver);

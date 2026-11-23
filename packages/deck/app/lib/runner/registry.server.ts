@@ -351,8 +351,16 @@ export class RunnerRegistry {
   private async recoverHome(home: string): Promise<void> {
     const existing = shared.sessions.get(home);
     if (existing && ("runner" in existing || existing.state === "cleanup-pending")) return;
+    const lockFile = join(home, lockName);
+    const ownerBefore = readRunnerLockOwner(lockFile);
+    // Major 2 (Round 14): Base-owned and ACP-owned non-PTY homes belong to other runners;
+    // never sweep them or record 'locked' as PTY registry's own state.
+    if ((ownerBefore === "base" || ownerBefore === "acp") && !optedIn(home)) {
+      if (existing?.state === "locked") shared.sessions.delete(home);
+      return;
+    }
     try {
-      const result = await recoverRunnerLock(join(home, lockName));
+      const result = await recoverRunnerLock(lockFile);
       if (shared.sessions.get(home) !== existing) return;
       if (result === "recovered") {
         shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
@@ -361,6 +369,11 @@ export class RunnerRegistry {
       }
     } catch {
       if (shared.sessions.get(home) === existing) {
+        const ownerAfter = readRunnerLockOwner(lockFile);
+        if (ownerAfter === "base" || ownerAfter === "acp") {
+          if (existing?.state === "locked") shared.sessions.delete(home);
+          return;
+        }
         shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
       }
     }
@@ -381,6 +394,12 @@ export class RunnerRegistry {
     for (const entry of entries) {
       if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
       const home = join(root, entry.name);
+      const owner = readRunnerLockOwner(join(home, lockName));
+      // Major 2 (Round 14): Skip Base-owned and ACP-owned homes during PTY boot recovery.
+      if (owner === "base" || owner === "acp") {
+        if (shared.sessions.get(home)?.state === "locked") shared.sessions.delete(home);
+        continue;
+      }
       await this.recoverHome(home);
     }
     if (shared.recoveryFailed === previousFailure) shared.recoveryFailed = false;

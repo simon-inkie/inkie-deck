@@ -58,6 +58,7 @@ export type AcpActiveSession = {
   abortController: AbortController;
   settled: Promise<void>;
   stopPromise?: Promise<void>;
+  abandonOnUnkillable?: () => void;
   events: DeckEvent[];
   pendingPermissions: Map<string, DeckEvent>;
   latestBlockingCard?: DeckEvent;
@@ -741,6 +742,10 @@ export class AcpRunnerRegistry {
       writeStoredSessionId(home, session.activeSessionId);
     }
 
+    activeSession.abandonOnUnkillable = () => {
+      const retainedEvents = this.snapshotEvents(activeSession);
+      this.abandonCleanup(home, activeSession, lock, retainedEvents);
+    };
     const exitSettled = this.recordExit(home, activeSession, lock).finally(() => resolveSettled());
     activeSession.settled = exitSettled;
     void exitSettled.catch(() => {});
@@ -872,6 +877,7 @@ export class AcpRunnerRegistry {
       lock.retain();
       throw error;
     }
+    if (shared.sessions.get(home) !== activeSession) return;
 
     const exitInfo = activeSession.session?.exitInfo ?? { code: null, signal: null };
     const exitedAt = this.now();
@@ -922,6 +928,19 @@ export class AcpRunnerRegistry {
       } else if (!activeSession.usesAcpSession && activeSession.pid > 0) {
         signalGroup(activeSession.pid, "SIGKILL");
         activeSession.pid = 0;
+      }
+      // Major 6 (Round 14): When group signaling failed (e.g. EPERM) and the child stays live,
+      // do not hang awaiting settled forever. Transition to orphaned (retaining .runner.lock) so
+      // Stop and shutdown always complete cleanly.
+      if (activeSession.session && activeSession.session.isGroupStopped === false) {
+        const settledInTime = await Promise.race([
+          activeSession.settled.then(() => true, () => true),
+          delay(50).then(() => false),
+        ]);
+        if (!settledInTime) {
+          activeSession.abandonOnUnkillable?.();
+          return;
+        }
       }
       await activeSession.settled.catch(() => {});
     })();

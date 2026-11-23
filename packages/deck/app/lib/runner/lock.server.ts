@@ -330,6 +330,37 @@ function verifyGroup(record: LockRecord, group: number): boolean {
   return member?.birth === witness.birth && member.group === group && member.session === group && live(member.state);
 }
 
+function hasLiveMarkedBaseProcess(sessionId: string, deckBirth: string): boolean {
+  const marker = `${ptySessionEnv}=${sessionId}`;
+  const myUid = process.getuid?.();
+  const minBirth = BigInt(deckBirth);
+  for (const entry of readdirSync("/proc")) {
+    const pid = Number(entry);
+    if (!validPid(pid)) continue;
+    let st;
+    try {
+      st = lstatSync(`/proc/${pid}`);
+    } catch {
+      continue;
+    }
+    if (myUid !== undefined && st.uid !== myUid) continue;
+    const info = processInfo(pid);
+    if (!info || !live(info.state)) continue;
+    if (info.birth === undefined || BigInt(info.birth) < minBirth) continue;
+    let envText: string;
+    try {
+      envText = readFileSync(`/proc/${pid}/environ`, "utf8");
+    } catch (error) {
+      if (hasCode(error, "ENOENT") || hasCode(error, "ESRCH")) continue;
+      // Fail closed if a same-uid process started at/after deckBirth cannot have its environ read.
+      return true;
+    }
+    if (!envText.split("\0").includes(marker)) continue;
+    return true;
+  }
+  return false;
+}
+
 export async function recoverRunnerLock(file: string): Promise<"absent" | "recovered" | "unrecovered"> {
   let fd: number;
   try {
@@ -357,7 +388,13 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
       if (record.deckPid !== snapshot.deckPid || record.deckBirth !== snapshot.deckBirth ||
           record.bootId !== snapshot.bootId || record.sessionId !== snapshot.sessionId ||
           record.startedAt !== snapshot.startedAt) return "unrecovered";
-      if (record.phase !== "reserved") {
+      if (record.owner === "base") {
+        // Major 4 (Round 14): Base holds flock on an inherited fd across exec;
+        // flock succeeded above, and we also verify no marked descendant survived after closing fds.
+        if (hasLiveMarkedBaseProcess(record.sessionId, record.deckBirth)) {
+          throw new Error("A Base runner descendant is still alive.");
+        }
+      } else if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;
         if (groupExists(group)) {

@@ -25,15 +25,40 @@ runner_lock_is_base_owned() {
   local lock_file="$1"
   [[ -f "$lock_file" && ! -L "$lock_file" && -r "$lock_file" ]] || return 1
   python3 - "$lock_file" 2>/dev/null <<'PY'
-import json, os, stat, sys
+import json, os, re, stat, sys
 p = sys.argv[1]
+uuid_re = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+def valid_pid(v):
+    return isinstance(v, int) and not isinstance(v, bool) and 1 < v <= 0x7FFFFFFF
 try:
     st = os.lstat(p)
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size <= 0 or st.st_size > 4096:
+    if (
+        stat.S_ISLNK(st.st_mode)
+        or not stat.S_ISREG(st.st_mode)
+        or st.st_size <= 0
+        or st.st_size > 4096
+        or st.st_uid != os.getuid()
+        or (st.st_mode & 0o022) != 0
+    ):
         sys.exit(1)
     with open(p, "r", encoding="utf-8") as f:
         rec = json.load(f)
-    sys.exit(0 if isinstance(rec, dict) and rec.get("owner") == "base" else 1)
+    if not isinstance(rec, dict) or rec.get("owner") != "base":
+        sys.exit(1)
+    dp, db = rec.get("deckPid"), rec.get("deckBirth")
+    cp, cb = rec.get("childPid"), rec.get("childBirth")
+    bid, sid, sat, ph = rec.get("bootId"), rec.get("sessionId"), rec.get("startedAt"), rec.get("phase")
+    ok = (
+        valid_pid(dp)
+        and (cp is None or valid_pid(cp))
+        and isinstance(db, str) and db.isdigit()
+        and (cb is None or (isinstance(cb, str) and cb.isdigit()))
+        and isinstance(bid, str) and bool(uuid_re.match(bid))
+        and isinstance(sid, str) and bool(uuid_re.match(sid))
+        and (ph in (None, "spawning") or (ph == "reserved" and cp is None and cb is None))
+        and isinstance(sat, int) and not isinstance(sat, bool)
+    )
+    sys.exit(0 if ok else 1)
 except Exception:
     sys.exit(1)
 PY

@@ -327,11 +327,12 @@ export class AcpSession {
       clearTimeout(startupTimer);
       options.signal?.removeEventListener("abort", onAbort);
     }
-    if (terminal(owner.current)) await owner.closePromise;
+    if (terminal(owner.current)) await owner.waitForExitBounded();
     return owner;
   }
 
   get state(): State { return { ...this.current }; }
+  get isGroupStopped(): boolean { return this.groupStopped; }
   get capabilities(): AgentCapabilities { return structuredClone(this.advertised); }
   get pid(): number | undefined { return this.owned.pid; }
   get exited(): Promise<void> { return this.closePromise; }
@@ -389,12 +390,10 @@ export class AcpSession {
     return true;
   }
 
-  async close(): Promise<void> {
-    this.intentionalClose = true;
-    this.stop("disconnected", "Session closed");
+  private async waitForExitBounded(): Promise<void> {
     if (!this.groupStopped) {
-      // Major 5 (Round 13): If killGroup failed (e.g. EPERM) and child cannot be killed here,
-      // bound the wait so registry shutdown always reaches Phase 2 bounded cleanup & orphaned state.
+      // Major 5 (Round 13) & Major 6 (Round 14): If killGroup failed (e.g. EPERM) and child cannot
+      // be killed here, bound the wait so both terminal negotiation and shutdown reach bounded cleanup.
       await Promise.race([
         this.closePromise,
         new Promise<void>((resolve) => setTimeout(resolve, 500)),
@@ -402,6 +401,12 @@ export class AcpSession {
       return;
     }
     await this.closePromise;
+  }
+
+  async close(): Promise<void> {
+    this.intentionalClose = true;
+    this.stop("disconnected", "Session closed");
+    await this.waitForExitBounded();
   }
 
   private emitAuthRequired(): void {

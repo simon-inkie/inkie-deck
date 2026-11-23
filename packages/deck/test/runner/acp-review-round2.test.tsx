@@ -1013,10 +1013,23 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       expect(existsSync(baseReadyFile)).toBe(true);
       expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(true);
 
-      // Round 13 Major 2: Healthy Base lock (owner: "base") MUST NOT hijack tmux terminal dispatch!
+      // Round 14 Major 1: Zero-wrapper exec means the pane's process IS node (never python3!)
+      const runningComm = readFileSync(`/proc/${baseChild.pid}/comm`, "utf8").trim();
+      expect(runningComm).not.toBe("python3");
+
+      // Round 13 Major 2 + Round 14 Major 2: Healthy Base lock (owner: "base") MUST NOT hijack
+      // tmux terminal dispatch BEFORE OR AFTER RunnerRegistry.recover(), and MUST NOT record 'locked'
+      // in PTY registry or block a separate opted-in PTY agent!
       const { RunnerRegistry } = await import("../../app/lib/runner/registry.server.js");
+      const ptyBetaHome = join(root, "pty-beta");
+      mkdirSync(ptyBetaHome, { recursive: true });
+      writeFileSync(join(ptyBetaHome, ".runner"), "pty\n");
       const ptyReg = new RunnerRegistry({ AGENTS_HOME: root, MC_PTY_RUNNER: "1", HOME: root, PATH: process.env.PATH });
       expect(ptyReg.handlesTerminal("base-shared")).toBe(false);
+      await ptyReg.recover();
+      expect(ptyReg.handlesTerminal("base-shared")).toBe(false);
+      expect(ptyReg.status("base-shared")).toBeUndefined();
+      expect(ptyReg.status("pty-beta")).toBeUndefined();
 
       // Round 13 Major 1: Direct Python base-runner-exec.sh preserves interactive TTY stdin (fd 0 -> child)
       const stdinHome = join(root, "stdin-agent");
@@ -1080,10 +1093,9 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       expect(existsSync(sideEffectFile)).toBe(false);
       expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(true);
 
-      // Terminate Base wrapper -> .runner.lock is cleaned up -> Deck Start succeeds!
+      // Terminate Base runtime -> kernel releases flock automatically -> Deck Start reaps stale Base lock & succeeds!
       baseChild.kill("SIGTERM");
       await baseExited;
-      expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(false);
 
       const deckOwnedSess = await regSharedLock.start("base-shared");
       expect(deckOwnedSess.state.kind).toBe("idle");
@@ -1107,6 +1119,143 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       expect(baseOptedOut.status).toBe(0);
       expect(existsSync(sideEffectFile)).toBe(false);
       expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(false);
+
+      // Round 14 Major 4: Inherited flock across exec keeps Base claim locked while a grandchild survives
+      // after the direct runtime exits; BOTH recoverRunnerLock AND a second Base launch MUST refuse!
+      const gcHome = join(root, "base-grandchild");
+      mkdirSync(gcHome, { recursive: true });
+      const gcPidFile = join(root, "gc.pid");
+      const gcParent = spawnChild(
+        baseExecScript,
+        [
+          gcHome,
+          "--",
+          process.execPath,
+          "-e",
+          `const { spawn } = require("node:child_process");
+           const fs = require("node:fs");
+           const c = spawn(process.execPath, ["-e", "setTimeout(() => {}, 15000)"], { detached: true, stdio: "ignore" });
+           fs.writeFileSync(${JSON.stringify(gcPidFile)}, String(c.pid));
+           c.unref();
+           process.exit(0);`,
+        ],
+        { stdio: "ignore" },
+      );
+      await new Promise<void>((resolve) => gcParent.once("exit", () => resolve()));
+      const gcDeadline = Date.now() + 5000;
+      while (!existsSync(gcPidFile) && Date.now() < gcDeadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const gcPid = Number(readFileSync(gcPidFile, "utf8").trim());
+      try {
+        const { recoverRunnerLock, readRunnerLockOwner } = await import("../../app/lib/runner/lock.server.js");
+        await expect(recoverRunnerLock(join(gcHome, ".runner.lock"))).rejects.toThrow();
+        const secondGcBase = spawnChildSync(baseExecScript, [gcHome, "--", process.execPath, "-e", "process.exit(0)"]);
+        expect(secondGcBase.status).not.toBe(0);
+        expect(existsSync(join(gcHome, ".runner.lock"))).toBe(true);
+
+        // Once the grandchild exits, kernel releases flock and recoverRunnerLock reaps cleanly!
+        process.kill(gcPid, "SIGKILL");
+        const killWait = Date.now() + 3000;
+        let recovered = false;
+        while (Date.now() < killWait) {
+          try {
+            if ((await recoverRunnerLock(join(gcHome, ".runner.lock"))) === "recovered") {
+              recovered = true;
+              break;
+            }
+          } catch {
+            await new Promise((r) => setTimeout(r, 25));
+          }
+        }
+        expect(recovered).toBe(true);
+        expect(existsSync(join(gcHome, ".runner.lock"))).toBe(false);
+
+        // Round 14 Minor 1: Malformed {"owner":"base"} lock is rejected identically by Deck, runtime-launch.sh, and codex-provider-switch
+        const badOwnerHome = join(root, "malformed-base-owner");
+        mkdirSync(badOwnerHome, { recursive: true });
+        writeFileSync(join(badOwnerHome, ".runner.lock"), JSON.stringify({ owner: "base" }) + "\n", { mode: 0o600 });
+        expect(readRunnerLockOwner(join(badOwnerHome, ".runner.lock"))).toBe("unknown");
+        const runtimeLaunch = join(process.cwd(), "..", "base", "bin", "runtime-launch.sh");
+        const shellCheck = spawnChildSync("bash", ["-c", `AGENTS_HOME="$1" source "$2"; runner_lock_is_base_owned "$3"`, "check", root, runtimeLaunch, join(badOwnerHome, ".runner.lock")]);
+        expect(shellCheck.status).not.toBe(0);
+      } finally {
+        try { process.kill(gcPid, "SIGKILL"); } catch { /* ignore */ }
+      }
+
+      // Round 14 Major 5: tmux.server.ts honours BASE_TMUX_SOCKET (-S) for list and direct named-key delivery
+      const { resolveTmuxSocket, sendNamedKeyToWindow } = await import("../../app/lib/tmux.server.js");
+      expect(resolveTmuxSocket({ BASE_TMUX_SOCKET: "/tmp/base-custom.sock" })).toBe("/tmp/base-custom.sock");
+      const shimBin = join(root, "tmux-shim-bin");
+      mkdirSync(shimBin, { recursive: true });
+      const shimLog = join(root, "tmux-shim.log");
+      writeFileSync(
+        join(shimBin, "tmux"),
+        `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(shimLog)}
+if [[ "$*" == *"list-windows"* ]]; then
+  printf 'alpha\\n'
+fi
+exit 0
+`,
+        { mode: 0o755 },
+      );
+      const origPath = process.env.PATH;
+      process.env.PATH = `${shimBin}:${origPath ?? ""}`;
+      try {
+        const keyRes = sendNamedKeyToWindow({ BASE_TMUX_SOCKET: "/tmp/base-custom.sock", MC_TMUX_SESSION: "agents" }, "alpha", "Enter");
+        expect(keyRes).toEqual({ ok: true });
+        const logLines = readFileSync(shimLog, "utf8").trim().split("\n");
+        expect(logLines.length).toBeGreaterThanOrEqual(2);
+        expect(logLines[0]).toContain("-S /tmp/base-custom.sock list-windows");
+        expect(logLines[1]).toContain("-S /tmp/base-custom.sock send-keys");
+      } finally {
+        process.env.PATH = origPath;
+      }
+
+      // Round 14 Major 6: ACP stop()/shutdown() MUST NOT hang when group signal fails (isGroupStopped === false)
+      // and child never exits; transitions cleanly to 'orphaned' while retaining .runner.lock
+      const unkillHome = join(root, "unkillable-agent");
+      mkdirSync(unkillHome, { recursive: true });
+      writeFileSync(join(unkillHome, ".runner"), "acp\n");
+      const neverExited = new Promise<void>(() => {});
+      const regUnkill = new AcpRunnerRegistry(
+        { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH },
+        {
+          dataRoot: root,
+          manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
+          execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+          startSession: async (_adapter, opts) => {
+            opts.onBeforeSpawn?.();
+            opts.onSpawn?.(process.pid);
+            return {
+              state: { kind: "idle" },
+              capabilities: {},
+              negotiated: true,
+              activeSessionId: "s-unkill",
+              queuedCount: 0,
+              authRequired: false,
+              resumeRejected: false,
+              isGroupStopped: false,
+              exited: neverExited,
+              exitInfo: { code: null, signal: null },
+              records: { list: () => [] },
+              supportsResume: () => false,
+              close: async () => {},
+            } as unknown as AcpSession;
+          },
+        },
+      );
+      await regUnkill.start("unkillable-agent");
+      const stopStart = Date.now();
+      await regUnkill.stop("unkillable-agent");
+      expect(Date.now() - stopStart).toBeLessThan(1000);
+      expect(regUnkill.status("unkillable-agent")?.state).toBe("orphaned");
+      expect(existsSync(join(unkillHome, ".runner.lock"))).toBe(true);
+      // Clean up orphaned entry & lock so subsequent assertions in this test start clean
+      const regState = (globalThis as unknown as Record<symbol, { sessions: Map<string, unknown> }>)[Symbol.for("inkie-deck.acp.registry")]!;
+      regState.sessions.delete(unkillHome);
+      rmSync(join(unkillHome, ".runner.lock"), { force: true });
     } finally {
       try { baseChild.kill("SIGKILL"); } catch { /* ignore */ }
     }
