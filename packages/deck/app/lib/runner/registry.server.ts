@@ -9,7 +9,7 @@ import {
   listTmuxWindows, SEND_KEYS_ENTER_DELAY_MS, SEND_KEYS_VERIFY_DELAYS_MS, type PaneKey,
 } from "../tmux.server.js";
 import { submitPaneText, type SendKeysResult } from "../tmux-submit.js";
-import { claimRunnerLock, hasCode, ptySessionEnv, recoverRunnerLock } from "./lock.server.js";
+import { claimRunnerLock, hasCode, ptySessionEnv, readRunnerLockOwner, recoverRunnerLock } from "./lock.server.js";
 import { PtyRunner } from "./pty-runner.server.js";
 import { LaunchFailure, type SessionSpec, type WriteResult } from "./runner.js";
 import { createRunnerScreen, type RunnerScreen } from "./screen.server.js";
@@ -131,7 +131,8 @@ export class RunnerRegistry {
     const session = shared.sessions.get(home);
     if (session?.state === "locked") return true;
     try {
-      return lstatSync(join(home, lockName), { throwIfNoEntry: false }) !== undefined;
+      const owner = readRunnerLockOwner(join(home, lockName));
+      return owner !== "absent" && owner !== "base";
     } catch {
       return true;
     }

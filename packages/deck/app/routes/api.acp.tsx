@@ -135,7 +135,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       return { ok: true };
     }
     if (op === "recover") {
-      await acpRunnerRegistry.recover();
+      await acpRunnerRegistry.recoverAgent(agent);
       return { ok: true, status: acpRunnerRegistry.status(agent) };
     }
     if (op === "cancel") {

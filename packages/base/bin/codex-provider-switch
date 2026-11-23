@@ -50,7 +50,17 @@ def agent_opts_into_pty(home: Path) -> bool:
     runner_file = home / ".runner"
     try:
         if lock_file.exists() or lock_file.is_symlink():
-            return True
+            is_base_lock = False
+            if not lock_file.is_symlink() and lock_file.is_file():
+                try:
+                    raw = lock_file.read_text(encoding="utf-8")
+                    if len(raw) <= 4096:
+                        rec = json.loads(raw)
+                        is_base_lock = isinstance(rec, dict) and rec.get("owner") == "base"
+                except (OSError, UnicodeError, ValueError):
+                    is_base_lock = False
+            if not is_base_lock:
+                return True
         if not runner_file.exists() and not runner_file.is_symlink():
             return False
         if not runner_file.is_file():

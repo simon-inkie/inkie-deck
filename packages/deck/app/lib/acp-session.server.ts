@@ -392,6 +392,15 @@ export class AcpSession {
   async close(): Promise<void> {
     this.intentionalClose = true;
     this.stop("disconnected", "Session closed");
+    if (!this.groupStopped) {
+      // Major 5 (Round 13): If killGroup failed (e.g. EPERM) and child cannot be killed here,
+      // bound the wait so registry shutdown always reaches Phase 2 bounded cleanup & orphaned state.
+      await Promise.race([
+        this.closePromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 500)),
+      ]);
+      return;
+    }
     await this.closePromise;
   }
 
@@ -847,11 +856,20 @@ export class AcpSession {
 
   private killGroup(): void {
     if (this.groupStopped) return;
-    this.groupStopped = true;
     const pid = this.owned.pid;
-    if (pid) {
-      try { process.kill(-pid, "SIGKILL"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    if (!pid) {
+      this.groupStopped = true;
+      return;
+    }
+    try {
+      process.kill(-pid, "SIGKILL");
+      this.groupStopped = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        this.groupStopped = true;
+      }
+      // Major 5 (Round 13): On EPERM or non-ESRCH error, do NOT set groupStopped=true and do NOT throw
+      // out of close()/stop() so registry shutdown always reaches bounded cleanup and transitions to orphaned.
     }
   }
 

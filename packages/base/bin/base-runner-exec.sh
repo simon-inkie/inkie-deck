@@ -1,22 +1,14 @@
-#!/usr/bin/env bash
-# base-runner-exec.sh - Hold Deck's shared .runner.lock (flock + LockRecord) for
-# the lifetime of a Base tmux agent runtime, closing Base <-> ACP overlap races
-# atomically and failing closed on every error.
-#
-# Usage: base-runner-exec.sh <agent-home> -- <cmd> [args...]
+#!/usr/bin/env python3
+"""base-runner-exec.sh - Hold Deck's shared .runner.lock (flock + LockRecord)
+for the lifetime of a Base tmux agent runtime.
 
-set -euo pipefail
+Runs directly as a Python script (NO bash heredoc on fd 0) so the child runtime
+inherits the pane's untouched controlling TTY stdin for interactive sign-in and
+approval prompts.
 
-if [[ $# -lt 3 || "${2:-}" != "--" ]]; then
-  echo "base-runner-exec: usage: base-runner-exec.sh <agent-home> -- <cmd> [args...]" >&2
-  exit 2
-fi
+Usage: base-runner-exec.sh <agent-home> -- <cmd> [args...]
+"""
 
-AGENT_HOME="$1"
-shift 2
-
-exec python3 - "$AGENT_HOME" "$@" <<'PY'
-import errno
 import fcntl
 import json
 import os
@@ -52,9 +44,7 @@ def proc_info(pid):
             "session": int(fields[3]),
             "birth": fields[19],
         }
-    except FileNotFoundError:
-        return None
-    except ProcessLookupError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
@@ -143,6 +133,7 @@ def try_reap_stale_lock(lock_file, current_boot_id):
         rec_boot_id = rec.get("bootId")
         rec_session_id = rec.get("sessionId")
         started_at = rec.get("startedAt")
+        phase = rec.get("phase")
         if (
             not valid_pid(deck_pid)
             or not (child_pid is None or valid_pid(child_pid))
@@ -164,7 +155,12 @@ def try_reap_stale_lock(lock_file, current_boot_id):
                 return False
             if deck and deck["birth"] == deck_birth and is_live_state(deck["state"]):
                 return False
-            if child_pid is not None:
+            # Major 4 (Round 13): NEVER unlink a non-reserved ('spawning' or omitted phase) lock
+            # with childPid: null on the same boot; the previous wrapper may have spawned a child
+            # before dying and failed to record it.
+            if phase != "reserved":
+                if child_pid is None:
+                    return False
                 try:
                     child = proc_info(child_pid)
                 except OSError:
@@ -224,11 +220,23 @@ def persist_record(fd, record):
 
 
 def main():
+    if len(sys.argv) < 4 or sys.argv[2] != "--":
+        sys.stderr.write("base-runner-exec: usage: base-runner-exec.sh <agent-home> -- <cmd> [args...]\n")
+        return 2
+
     agent_home = os.path.realpath(sys.argv[1])
-    cmd = sys.argv[2:]
+    cmd = sys.argv[3:]
     if not cmd or not os.path.isdir(agent_home):
         sys.stderr.write("base-runner-exec: invalid agent home or command\n")
         return 2
+
+    # Major 6 (Round 13): ACP/PTY runner lock enforcement is Linux-only; keep ordinary non-Linux
+    # (e.g. macOS) Base launches working when /proc is absent while still honouring .runner opt-in.
+    if sys.platform != "linux" or not os.path.isdir("/proc"):
+        if marker_opts_into_runner(agent_home):
+            return 0
+        os.chdir(agent_home)
+        os.execvp(cmd[0], cmd)
 
     boot_id = read_boot_id()
     my_pid = os.getpid()
@@ -246,17 +254,9 @@ def main():
         sys.stderr.write(f"base-runner-exec: runner lock busy or unrecoverable for {agent_home}\n")
         return 1
 
-    def release_lock():
-        try:
-            if same_inode(lock_file, owned_stat):
-                os.unlink(lock_file)
-        except OSError:
-            pass
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-
+    # Major 4 (Round 13): Only unlink .runner.lock on exit if no child was spawned OR the child
+    # is positively verified dead. Any uncertain spawn leaves the orphan lock in place blocking admission.
+    safe_to_unlink = True
     child = None
     try:
         # Re-check .runner marker WHILE holding exclusive flock on .runner.lock (closes cutover race!)
@@ -265,6 +265,7 @@ def main():
 
         session_id = str(uuid.uuid4())
         record = {
+            "owner": "base",
             "deckPid": my_pid,
             "deckBirth": my_info["birth"],
             "childPid": None,
@@ -279,16 +280,24 @@ def main():
         child_env = dict(os.environ)
         child_env["DECK_PTY_SESSION_ID"] = session_id
 
-        child = subprocess.Popen(cmd, cwd=agent_home, env=child_env, close_fds=True)
+        safe_to_unlink = False
+        try:
+            child = subprocess.Popen(cmd, cwd=agent_home, env=child_env, close_fds=True)
+        except OSError:
+            # Confirmed no child process was spawned; safe to release our reserved/spawning lock.
+            safe_to_unlink = True
+            raise
 
         try:
             child_info = proc_info(child.pid)
         except OSError:
             child_info = None
-        if child_info and child_info.get("birth"):
-            record["childPid"] = child.pid
-            record["childBirth"] = child_info["birth"]
-            persist_record(fd, record)
+        if not child_info or not child_info.get("birth"):
+            raise RuntimeError("Could not identify spawned Base runtime child")
+
+        record["childPid"] = child.pid
+        record["childBirth"] = child_info["birth"]
+        persist_record(fd, record)
 
         def forward_signal(signum, _frame):
             if child is not None and child.poll() is None:
@@ -302,19 +311,34 @@ def main():
         signal.signal(signal.SIGHUP, forward_signal)
 
         rc = child.wait()
+        if child.poll() is not None:
+            safe_to_unlink = True
         return rc if rc >= 0 else 128 + (-rc)
     except Exception as exc:
-        if child is not None and child.poll() is None:
+        if child is not None:
             try:
-                child.kill()
-                child.wait(timeout=2)
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=2)
+                if child.poll() is not None:
+                    safe_to_unlink = True
             except Exception:
-                pass
+                # Child death not verified -> keep safe_to_unlink = False so lock stays on disk!
+                safe_to_unlink = False
         sys.stderr.write(f"base-runner-exec: failed: {exc}\n")
         return 1
     finally:
-        release_lock()
+        if safe_to_unlink:
+            try:
+                if same_inode(lock_file, owned_stat):
+                    os.unlink(lock_file)
+            except OSError:
+                pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
-sys.exit(main())
-PY
+if __name__ == "__main__":
+    sys.exit(main())

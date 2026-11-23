@@ -776,6 +776,7 @@ TMUX_LOG_P3=$(mktemp)
 tmux() { if [ "$1" = "send-keys" ]; then printf '%s\n' "$*" >> "$TMUX_LOG_P3"; fi; return 0; }
 p3_resume=$(codex_launch_command iris "researcher" "$P3_HOME" "$P3_SID" "--model gpt-5.6-sol")
 p3_fresh=$(codex_launch_command iris "researcher" "$P3_HOME" "" "--model gpt-5.6-sol")
+p3_fresh_wrapped=$(base_runner_wrap_launch_cmd iris "$p3_fresh")
 # The verifier must derive quarantine scope from the same isolated home even
 # without launch_agent's dynamically-scoped CODEX_SESSIONS_DIR convenience.
 unset CODEX_SESSIONS_DIR
@@ -793,7 +794,7 @@ p3_quarantine_ok=0
 if [ "$p3_rc" -ne 0 ] \
   && [ "$p3_shape_ok" -eq 1 ] \
   && [ "$p3_quarantine_ok" -eq 1 ] \
-  && [ "$p3_sent" = "$p3_fresh" ] \
+  && [ "$p3_sent" = "$p3_fresh_wrapped" ] \
   && printf '%s' "$p3_fresh" | grep -qF "[ -f $AGENTS_HOME/iris/.env.secrets ] && . $AGENTS_HOME/iris/.env.secrets;" \
   && printf '%s' "$p3_fresh" | grep -qF "CODEX_HOME=$P3_HOME" \
   && printf '%s' "$p3_fresh" | grep -qF 'codex --model gpt-5.6-sol'; then

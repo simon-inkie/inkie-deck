@@ -370,7 +370,10 @@ export class AcpRunnerRegistry {
 
   canControl(agent: string): boolean {
     const session = this.session(agent);
-    return session !== undefined && ("abortController" in session || session.state === "cleanup-pending");
+    return (
+      session !== undefined &&
+      ("abortController" in session || session.state === "cleanup-pending" || session.state === "orphaned")
+    );
   }
 
   /**
@@ -854,7 +857,7 @@ export class AcpRunnerRegistry {
 
   private claimLock(home: string, sessionId: string) {
     try {
-      return claimRunnerLock(join(home, lockName), sessionId, this.now());
+      return claimRunnerLock(join(home, lockName), sessionId, this.now(), "acp");
     } catch (error) {
       if (hasCode(error, "EEXIST")) throw new StartRefusal("locked");
       throw new LaunchFailure("start-failed", "Could not claim the runner lock.", error);
@@ -1018,23 +1021,37 @@ export class AcpRunnerRegistry {
     }
   }
 
+  async recoverAgent(agent: string): Promise<void> {
+    if (process.platform !== "linux") return;
+    const home = agentHome(this.env, agent);
+    if (!home) return;
+    await this.recoverHome(home);
+  }
+
   async recover(): Promise<void> {
     if (process.platform !== "linux") return;
     const previousFailure = shared.recoveryFailed;
-    let root: string;
-    let entries;
+    const homesToRecover = new Set<string>();
+    for (const [trackedHome, entry] of shared.sessions.entries()) {
+      // Minor 1 (Round 13): Always include tracked orphaned/locked homes even if they opted out of .runner=acp
+      if (entry.state === "orphaned" || entry.state === "locked") {
+        homesToRecover.add(trackedHome);
+      }
+    }
     try {
-      root = realpathSync(agentsRoot(this.env));
-      entries = readdirSync(root, { withFileTypes: true });
+      const root = realpathSync(agentsRoot(this.env));
+      const entries = readdirSync(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
+        const home = join(root, entry.name);
+        // Major 8: Only recover homes that opt into ACP (do not touch unrelated PTY homes)
+        if (!homeWantsAcp(home)) continue;
+        homesToRecover.add(home);
+      }
     } catch (error) {
       if (!hasCode(error, "ENOENT")) shared.recoveryFailed = Symbol();
-      return;
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
-      const home = join(root, entry.name);
-      // Major 8: Only recover homes that opt into ACP (do not touch unrelated PTY homes)
-      if (!homeWantsAcp(home)) continue;
+    for (const home of homesToRecover) {
       await this.recoverHome(home);
     }
     if (shared.recoveryFailed === previousFailure) shared.recoveryFailed = false;

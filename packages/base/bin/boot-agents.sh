@@ -455,7 +455,7 @@ codex_verify_resume_or_fallback() {
   # to the primary send minus `resume <sid>` so the replacement agent keeps
   # its full provider envelope (name, role, auto-mode config, secrets, and model).
   local fallback_command
-  fallback_command="$(codex_launch_command "$a" "$role" "$codex_home" "" "$model_flag")"
+  fallback_command="$(base_runner_wrap_launch_cmd "$a" "$(codex_launch_command "$a" "$role" "$codex_home" "" "$model_flag")")"
   tmux_base send-keys -t "$target" "$fallback_command" Enter
   local send_rc=$?
   if [[ "$send_rc" -ne 0 ]]; then

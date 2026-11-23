@@ -18,10 +18,35 @@
 #
 # Requires AGENTS_HOME to be set by the caller.
 
+# Major 2 (Round 13): Branch on lock owner kind ('base' vs 'pty'/'acp'/unknown) so a
+# healthy Base tmux lock never disables inbox-push or provider-switch while PTY/ACP/corrupt
+# locks still keep tmux admission drained.
+runner_lock_is_base_owned() {
+  local lock_file="$1"
+  [[ -f "$lock_file" && ! -L "$lock_file" && -r "$lock_file" ]] || return 1
+  python3 - "$lock_file" 2>/dev/null <<'PY'
+import json, os, stat, sys
+p = sys.argv[1]
+try:
+    st = os.lstat(p)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size <= 0 or st.st_size > 4096:
+        sys.exit(1)
+    with open(p, "r", encoding="utf-8") as f:
+        rec = json.load(f)
+    sys.exit(0 if isinstance(rec, dict) and rec.get("owner") == "base" else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
 agent_opts_into_runner() {
   local agent_home="$AGENTS_HOME/$1" runner
-  # A marker drains tmux admission; a lock keeps it drained after opt-out.
-  [[ -e "$agent_home/.runner.lock" || -L "$agent_home/.runner.lock" ]] && return 0
+  # A PTY/ACP/unknown lock keeps tmux drained after opt-out; a healthy Base lock does not.
+  if [[ -e "$agent_home/.runner.lock" || -L "$agent_home/.runner.lock" ]]; then
+    if ! runner_lock_is_base_owned "$agent_home/.runner.lock"; then
+      return 0
+    fi
+  fi
   # Absent marker means tmux. A broken symlink or unreadable marker fails closed.
   if [[ ! -e "$agent_home/.runner" && ! -L "$agent_home/.runner" ]]; then
     return 1

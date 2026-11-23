@@ -1013,6 +1013,45 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       expect(existsSync(baseReadyFile)).toBe(true);
       expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(true);
 
+      // Round 13 Major 2: Healthy Base lock (owner: "base") MUST NOT hijack tmux terminal dispatch!
+      const { RunnerRegistry } = await import("../../app/lib/runner/registry.server.js");
+      const ptyReg = new RunnerRegistry({ AGENTS_HOME: root, MC_PTY_RUNNER: "1", HOME: root, PATH: process.env.PATH });
+      expect(ptyReg.handlesTerminal("base-shared")).toBe(false);
+
+      // Round 13 Major 1: Direct Python base-runner-exec.sh preserves interactive TTY stdin (fd 0 -> child)
+      const stdinHome = join(root, "stdin-agent");
+      mkdirSync(stdinHome, { recursive: true });
+      const stdinRun = spawnChildSync(
+        baseExecScript,
+        [stdinHome, "--", process.execPath, "-e", 'const fs=require("node:fs");process.stdout.write(fs.readFileSync(0,"utf8"));'],
+        { input: "pane-input\n", encoding: "utf8" },
+      );
+      expect(stdinRun.status).toBe(0);
+      expect(stdinRun.stdout).toBe("pane-input\n");
+
+      // Round 13 Major 4: Dead-owner 'spawning' lock with childPid: null MUST NOT be unlinked by a second Base wrapper
+      const staleSpawnHome = join(root, "stale-spawn-agent");
+      mkdirSync(staleSpawnHome, { recursive: true });
+      const bootIdNow = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      writeFileSync(
+        join(staleSpawnHome, ".runner.lock"),
+        JSON.stringify({
+          owner: "base",
+          deckPid: 999999,
+          deckBirth: "1",
+          childPid: null,
+          childBirth: null,
+          bootId: bootIdNow,
+          sessionId: "00000000-0000-4000-8000-000000000099",
+          startedAt: Date.now(),
+          phase: "spawning",
+        }) + "\n",
+        { mode: 0o600 },
+      );
+      const staleSpawnRes = spawnChildSync(baseExecScript, [staleSpawnHome, "--", process.execPath, "-e", "process.exit(0)"]);
+      expect(staleSpawnRes.status).not.toBe(0);
+      expect(existsSync(join(staleSpawnHome, ".runner.lock"))).toBe(true);
+
       // Flip .runner=acp mid-run while Base still holds .runner.lock: Deck MUST refuse with 'locked'!
       writeFileSync(join(baseAgentHome, ".runner"), "acp\n");
       const regSharedLock = new AcpRunnerRegistry(
@@ -1125,6 +1164,13 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     await regRestart.recover();
     expect(regRestart.status(agent)?.state).toBe("orphaned");
     await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+
+    // Round 13 Minor 1: Orphaned home retains canControl() and recoverAgent() even after opting out of .runner=acp
+    rmSync(join(agentHome, ".runner"), { force: true });
+    expect(regRestart.canControl(agent)).toBe(true);
+    await regRestart.recoverAgent(agent);
+    expect(regRestart.status(agent)?.state).toBe("orphaned");
+    writeFileSync(join(agentHome, ".runner"), "acp\n");
 
     // Cold-start 'locked' entry on alpha ALSO blocks starting beta
     sharedRegState.sessions.set(agentHome, { state: "locked", reason: "Unrecovered lock on cold start." });
