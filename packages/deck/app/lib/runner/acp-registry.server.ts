@@ -18,7 +18,7 @@ import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
 import { AGENT_NAME_RE } from "../safe-fs.server.js";
-import { listTmuxWindows } from "../tmux.server.js";
+import { listTmuxWindows, resolveTmuxSession } from "../tmux.server.js";
 import {
   antigravity1Manifest,
   isAcpOptedIn,
@@ -48,6 +48,7 @@ export type AcpActiveSession = {
   stopPromise?: Promise<void>;
   events: DeckEvent[];
   pendingPermissions: Map<string, DeckEvent>;
+  latestBlockingCard?: DeckEvent;
 };
 
 export type AcpCleanupSession = {
@@ -169,17 +170,20 @@ function writeStoredSessionId(home: string, sessionId: string): void {
       fsConstants.O_EXCL |
       (fsConstants.O_NOFOLLOW ?? 0);
     const fd = openSync(tmp, flags, 0o600);
+    let renamed = false;
     try {
-      const bytes = Buffer.from(sessionId + "\n", "utf8");
-      writeSync(fd, bytes, 0, bytes.length, 0);
-    } finally {
-      closeSync(fd);
-    }
-    try {
+      try {
+        const bytes = Buffer.from(sessionId + "\n", "utf8");
+        writeSync(fd, bytes, 0, bytes.length, 0);
+      } finally {
+        closeSync(fd);
+      }
       renameSync(tmp, file);
-    } catch (renameErr) {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
-      throw renameErr;
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(tmp); } catch { /* ignore cleanup error */ }
+      }
     }
   } catch {
     // Refuse symlink/hard-link/invalid targets silently without crashing session startup.
@@ -252,11 +256,17 @@ export class AcpRunnerRegistry {
     if (!entry) return [];
     if ("abortController" in entry) {
       const seen = new Set(entry.events.map((e: DeckEvent) => e.id));
-      const protectedPending: DeckEvent[] = [];
+      const protectedEvents: DeckEvent[] = [];
       for (const perm of entry.pendingPermissions.values()) {
-        if (!seen.has(perm.id)) protectedPending.push(perm);
+        if (!seen.has(perm.id)) {
+          protectedEvents.push(perm);
+          seen.add(perm.id);
+        }
       }
-      return [...protectedPending, ...entry.events];
+      if (entry.latestBlockingCard && !seen.has(entry.latestBlockingCard.id)) {
+        protectedEvents.push(entry.latestBlockingCard);
+      }
+      return [...protectedEvents, ...entry.events];
     }
     if (entry.state === "stopped" && entry.events) return [...entry.events];
     return [];
@@ -465,6 +475,13 @@ export class AcpRunnerRegistry {
           activeSession.pendingPermissions.set(event.id, event);
         } else if (event.type === "permission.answered" && event.answers) {
           activeSession.pendingPermissions.delete(event.answers);
+        } else if (event.type === "extension.blocking") {
+          // Major 4: Retain latest blocking card (1 slot) and replace any prior deduped blocking card in ring
+          activeSession.latestBlockingCard = event;
+          if (event.dedupeKey) {
+            const idx = activeSession.events.findIndex((e) => e.dedupeKey === event.dedupeKey);
+            if (idx !== -1) activeSession.events.splice(idx, 1);
+          }
         }
         activeSession.events.push(event);
         if (activeSession.events.length > MAX_EVENTS_PER_SESSION) {
@@ -499,8 +516,9 @@ export class AcpRunnerRegistry {
     activeSession.session = session;
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
-      // Major 3: If Resume was refused because agent dropped resume/load capability, clear stale checkpoint metadata
-      if (terminalKind === "unsupported" && options.resume) {
+      // Major 3: Clear stale checkpoint ONLY when resume was explicitly rejected (no resume capability or session-not-found),
+      // NEVER on a temporary protocol-version mismatch or transient transport disconnect!
+      if (options.resume && session.resumeRejected) {
         clearStoredSessionId(home);
       }
       await session.close().catch(() => {});
@@ -535,9 +553,17 @@ export class AcpRunnerRegistry {
   }
 
   private assertNoTmuxWindow(agent: string): void {
+    const list = this.options.listWindows ?? listTmuxWindows;
+    const configuredSession = resolveTmuxSession(this.env);
     let windows: string[];
     try {
-      windows = (this.options.listWindows ?? listTmuxWindows)(this.env, true);
+      windows = list(this.env, true);
+      // Major 1: Base's boot-agents.sh & workspace.sh always use the "agents" session;
+      // if MC_TMUX_SESSION points elsewhere, check Base's "agents" session too so both runners cannot overlap.
+      if (configuredSession !== "agents") {
+        const baseWindows = list({ ...this.env, MC_TMUX_SESSION: "agents" }, true);
+        windows = [...windows, ...baseWindows];
+      }
     } catch {
       throw new StartRefusal("tmux-unknown");
     }

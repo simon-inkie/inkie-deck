@@ -157,15 +157,25 @@ const child = spawn("react-router", args, {
   shell: true,
 });
 
-// Kill the voice proxy when the dev server exits.
+// Kill the voice proxy and forward shutdown signals to the dev server so ACP/PTY sessions can drain cleanly.
+let shuttingDown = false;
 function cleanup() {
   if (!voiceProxy.killed) {
     voiceProxy.kill();
   }
 }
+function forwardSignal(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  cleanup();
+  if (!child.killed) {
+    try { child.kill(signal); } catch { /* ignore */ }
+  }
+  setTimeout(() => process.exit(0), 3000).unref();
+}
 process.on("exit", cleanup);
-process.on("SIGINT", () => { cleanup(); process.exit(0); });
-process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+process.on("SIGINT", () => forwardSignal("SIGINT"));
+process.on("SIGTERM", () => forwardSignal("SIGTERM"));
 
 child.on("exit", (code) => {
   cleanup();

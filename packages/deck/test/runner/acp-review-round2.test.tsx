@@ -586,23 +586,25 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     await expect(regNoRes.start(agent, { resume: true })).rejects.toThrow(/does not support/);
     expect(regNoRes.lastSessionId(agent)).toBeUndefined();
 
-    // Major 5: Same-size rewrite preserving mtime is caught by SHA-256 identity pin
+    // Major 5: Same-size rewrite preserving EXACT integer-second timestamp is caught by SHA-256 identity pin
     const fakeBin = join(root, "r4-same-size-bin");
+    const fixedTime = new Date("2026-11-22T00:00:00.000Z");
     writeFileSync(fakeBin, "#!/bin/sh\necho 1.5.14 # AAAA\n", { mode: 0o755 });
-    const origStat = statSync(fakeBin);
+    utimesSync(fakeBin, fixedTime, fixedTime);
     const regHash = new AcpRunnerRegistry(env, {
       dataRoot: root,
       manifest: { ...antigravity1Manifest, executableName: fakeBin, args: [] },
       execVersion: () => {
         writeFileSync(fakeBin, "#!/bin/sh\necho 1.5.14 # BBBB\n", { mode: 0o755 });
-        utimesSync(fakeBin, origStat.atime, origStat.mtime);
+        utimesSync(fakeBin, fixedTime, fixedTime);
         return { status: 0, stdout: "1.5.14\n", stderr: "" };
       },
       listWindows: () => [],
     });
     await expect(regHash.start(agent)).rejects.toThrow(/changed between version probe and launch/);
 
-    // Major 6 & 7: advisory warning stays non-blocking, repeated unknown requests cap cards at 16, and fatal:true request terminates turn
+    // Major 6 & 7: advisory warning stays non-blocking, repeated unknown requests bound display.ndjson at 16
+    // while ALWAYS keeping latest blocking card visible in UI, and fatal:true request terminates turn
     const extScript = join(root, "r4-ext.mjs");
     writeFileSync(
       extScript,
@@ -624,7 +626,12 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       { cwd: agentHome, dataRoot: root, onEvent: (e) => extEvents.push(e) },
     );
     expect(await extSess.prompt("advisory and 25 unknown reqs")).toBe("completed");
-    expect(extEvents.filter((e) => e.type === "extension.blocking").length).toBeLessThanOrEqual(16);
+    // All 25 blocking requests reach live onEvent (never suppressed!), while display.ndjson caps at 16 blocking writes
+    expect(extEvents.filter((e) => e.type === "extension.blocking").length).toBe(25);
+    const displayLines = readFileSync(join(extSess.records.directory, "display.ndjson"), "utf8")
+      .split("\n")
+      .filter((l) => l.includes('"extension.blocking"'));
+    expect(displayLines.length).toBe(16);
     await extSess.close();
 
     // Fatal request (has id AND fatal: true) terminates turn instead of hanging pending
@@ -646,5 +653,73 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(await frSess.prompt("fatal req")).toBe("failed");
     expect(frSess.state.kind).toBe("failed");
     await frSess.close();
+  });
+
+  it("Round 5 (Majors 1, 3, 4, 5): alternate MC_TMUX_SESSION still checks Base 'agents' session, Resume preserves valid checkpoint on proto mismatch and clears on session-not-found, rate-limit endpoint outage is not exhaustion", async () => {
+    // Major 1: MC_TMUX_SESSION=separate still queries Base's "agents" session and refuses Start if agent is live there
+    const altEnv = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", MC_TMUX_SESSION: "separate", HOME: root, PATH: process.env.PATH };
+    const regAlt = new AcpRunnerRegistry(altEnv, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: (e) => (e.MC_TMUX_SESSION === "agents" ? [agent] : []),
+    });
+    await expect(regAlt.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Major 3a: temporary protocol mismatch preserves valid .acp-last-session
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
+    writeFileSync(join(agentHome, ".acp-last-session"), "valid-saved-id\n");
+    const protoMismatchScript = join(root, "r5-proto.mjs");
+    writeFileSync(
+      protoMismatchScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 99, agentCapabilities: { loadSession: true } } });
+      `),
+    );
+    const regProto = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [protoMismatchScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    await expect(regProto.start(agent, { resume: true })).rejects.toThrow();
+    expect(regProto.lastSessionId(agent)).toBe("valid-saved-id");
+
+    // Major 3b: explicit session-not-found from loadSession clears stale .acp-last-session
+    const missingSessScript = join(root, "r5-notfound.mjs");
+    writeFileSync(
+      missingSessScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found" } });
+      `),
+    );
+    const regNotFound = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [missingSessScript] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    await expect(regNotFound.start(agent, { resume: true })).rejects.toThrow();
+    expect(regNotFound.lastSessionId(agent)).toBeUndefined();
+
+    // Major 5: "Rate limit endpoint unavailable" (-32603) MUST NOT emit usage.exhausted
+    const outageScript = join(root, "r5-outage.mjs");
+    writeFileSync(
+      outageScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-out" } });
+        else if (msg.method === "session/prompt") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "Rate limit endpoint unavailable" } });
+      `),
+    );
+    const outEvents: DeckEvent[] = [];
+    const outSess = await AcpSession.start(
+      { executable: process.execPath, args: [outageScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root, onEvent: (e) => outEvents.push(e) },
+    );
+    expect(await outSess.prompt("check outage")).toBe("failed");
+    expect(outEvents.some((e) => e.type === "usage.exhausted")).toBe(false);
+    await outSess.close();
   });
 });

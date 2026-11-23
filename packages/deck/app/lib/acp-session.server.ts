@@ -87,8 +87,10 @@ const FATAL_EXTENSION_RE = /(?:^|[/:])(?:error|fatal)$/i;
 const MAX_PENDING_PERMISSIONS = 16;
 const MAX_TRACKED_REQUEST_IDS = 256;
 const MAX_UNKNOWN_REQUEST_CARDS = 16;
-// Strict limit-exhaustion matcher (does NOT trip on generic "quota endpoint unavailable").
-const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limit(?:ed|s)?|quota[-_ ]?(?:exceeded|exhausted|reached)|usage[-_ ]?(?:limit|exhausted)|too many requests)\b/i;
+// Strict exhaustion matcher: requires structured limit code/data or explicit exhaustion wording
+// (does NOT trip on "Rate limit endpoint unavailable" or "quota endpoint unavailable").
+const LIMIT_ERROR_RE = /\b(?:rate[-_ ]?limited|rate[-_ ]?limit\s+(?:exceeded|reached|hit)|quota[-_ ]?(?:exceeded|exhausted|reached)|usage[-_ ]?(?:limit\s+(?:exceeded|reached)|exhausted)|too many requests)\b/i;
+const SESSION_NOT_FOUND_RE = /\b(?:session\s+(?:not\s+found|missing|unknown|expired)|unknown\s+session|invalid\s+session)\b/i;
 const KNOWN_SESSION_UPDATES = new Set([
   "agent_message_chunk",
   "user_message_chunk",
@@ -134,7 +136,21 @@ function isAuthRequiredError(error: unknown): boolean {
 function isLimitError(error: unknown): boolean {
   if (!isObject(error)) return false;
   if (error.code === 429 || error.code === -32029) return true;
+  if (isObject(error.data)) {
+    const reason = error.data.reason ?? error.data.code;
+    if (reason === "rate_limit_exceeded" || reason === "quota_exhausted" || reason === "usage_exhausted") {
+      return true;
+    }
+  }
   if (typeof error.message === "string" && LIMIT_ERROR_RE.test(error.message)) return true;
+  return false;
+}
+
+function isSessionNotFoundError(error: unknown): boolean {
+  if (!isObject(error)) return false;
+  if (error.code === -32002) return true;
+  if (isObject(error.data) && error.data.reason === "session_not_found") return true;
+  if (typeof error.message === "string" && SESSION_NOT_FOUND_RE.test(error.message)) return true;
   return false;
 }
 
@@ -168,6 +184,7 @@ export class AcpSession {
   private intentionalClose = false;
   private processExit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
   private authRequiredFlag = false;
+  private resumeRejectedFlag = false;
   private lastContextUsage?: { used: number; size: number };
 
   private constructor(readonly adapter: AcpAdapter, private readonly options: Options) {
@@ -243,6 +260,7 @@ export class AcpSession {
         } else if (options.resumeSessionId) {
           // Major 3: never silently fall back to session/new when resume was explicitly requested
           if (!owner.supportsResume()) {
+            owner.resumeRejectedFlag = true;
             owner.stop("unsupported", "Agent does not advertise resume capability");
           } else {
             // Major 3: bind sessionId BEFORE session/load or session/resume so replay updates arriving
@@ -250,11 +268,18 @@ export class AcpSession {
             owner.sessionId = options.resumeSessionId;
             owner.makeEvent = createEventSource({ kind: "session", session: owner.sessionId, generation: owner.generation }, randomUUID);
             const resumeMethod = owner.advertised.sessionCapabilities?.resume ? "session/resume" : "session/load";
-            await owner.connection.agent.request(resumeMethod as typeof session.new, {
-              cwd: options.cwd,
-              sessionId: options.resumeSessionId,
-              mcpServers: [],
-            } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
+            try {
+              await owner.connection.agent.request(resumeMethod as typeof session.new, {
+                cwd: options.cwd,
+                sessionId: options.resumeSessionId,
+                mcpServers: [],
+              } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
+            } catch (resumeErr) {
+              if (isSessionNotFoundError(resumeErr)) {
+                owner.resumeRejectedFlag = true;
+              }
+              throw resumeErr;
+            }
           }
         } else {
           await owner.connection.agent.request(session.new, { cwd: options.cwd, mcpServers: [] });
@@ -284,6 +309,7 @@ export class AcpSession {
   get activeSessionId(): string | undefined { return this.sessionId; }
   get queuedCount(): number { return this.queuedPrompts; }
   get authRequired(): boolean { return this.authRequiredFlag; }
+  get resumeRejected(): boolean { return this.resumeRejectedFlag; }
   get contextUsage(): { used: number; size: number } | undefined {
     return this.lastContextUsage ? { ...this.lastContextUsage } : undefined;
   }
@@ -444,24 +470,31 @@ export class AcpSession {
     }
 
     if (classification === "blocking" || classification === "fatal") {
-      const shouldEmitCard = classification === "fatal" || this.unknownRequestCards < MAX_UNKNOWN_REQUEST_CARDS;
-      if (shouldEmitCard) {
-        if (classification === "blocking") this.unknownRequestCards += 1;
-        try {
-          this.emit({
-            class: "action",
-            type: "extension.blocking",
-            title: "Something went wrong",
-            view: {
-              kind: "text",
-              excerpt: classification === "blocking"
-                ? "The agent sent an unsupported request that blocked progress."
-                : "An unsupported agent message interrupted the turn.",
-            },
-          });
-        } catch {
-          // Ignore emit error during shutdown.
+      // Major 4: ALWAYS surface blocking & fatal cards to the live UI (never suppress later blockers!),
+      // while capping repeated display.ndjson writes at MAX_UNKNOWN_REQUEST_CARDS to bound disk usage.
+      const cardEvent = this.makeEvent({
+        class: "action",
+        type: "extension.blocking",
+        title: "Something went wrong",
+        dedupeKey: classification === "blocking" ? "extension.blocking" : undefined,
+        view: {
+          kind: "text",
+          excerpt: classification === "blocking"
+            ? "The agent sent an unsupported request that blocked progress."
+            : "An unsupported agent message interrupted the turn.",
+        },
+      });
+      const persistToDisplay = classification === "fatal" || this.unknownRequestCards < MAX_UNKNOWN_REQUEST_CARDS;
+      if (classification === "blocking" && persistToDisplay) {
+        this.unknownRequestCards += 1;
+      }
+      try {
+        if (persistToDisplay) {
+          this.records.event(cardEvent);
         }
+        this.options.onEvent?.(cardEvent);
+      } catch {
+        // Ignore emit error during shutdown.
       }
       if (classification === "fatal") {
         // Major 1 & 6: fatally terminate the session (closing RPC, permissions, and child process)

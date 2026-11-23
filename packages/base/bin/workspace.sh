@@ -200,6 +200,10 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, tear down the empty window and skip launch.
     if agent_opts_into_pty "$agent"; then
       tmux kill-window -t "$SESSION:$agent" 2>/dev/null || true
+      # If killing the only window removed the session, reset session_created so subsequent agents can start cleanly.
+      if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+        session_created=0
+      fi
       continue
     fi
     start_agent "$agent"
