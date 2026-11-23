@@ -75,6 +75,12 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
     bootId: bootId(), sessionId, startedAt, phase: "reserved",
   };
   const fd = openSync(file, "wx", 0o600);
+  let fdClosed = false;
+  const closeFdOnce = () => {
+    if (fdClosed) return;
+    fdClosed = true;
+    closeSync(fd);
+  };
   const owned = fstatSync(fd);
 
   function persist() {
@@ -97,7 +103,7 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
     try {
       unlinkOwned();
     } finally {
-      closeSync(fd);
+      closeFdOnce();
     }
     throw error;
   }
@@ -133,9 +139,9 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
         throw new Error("The PTY child was not recorded.");
       }
       unlinkOwned();
-      closeSync(fd);
+      closeFdOnce();
     },
-    retain() { closeSync(fd); },
+    retain() { closeFdOnce(); },
   };
 }
 

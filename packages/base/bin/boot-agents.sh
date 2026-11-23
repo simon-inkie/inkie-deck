@@ -599,19 +599,19 @@ done
 [[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
 AGENTS=("${TMUX_AGENTS[@]}")
 
-# Major 1 (Round 10): Pin Base tmux operations to one explicit socket path (-S) and append it to
-# $AGENTS_HOME/.base-tmux-sockets ONLY when creating a window (never overwrite prior custom sockets).
+# Major 1 & 2 (Round 11): Pin Base tmux operations to one explicit socket (-S) and write a per-agent
+# lease (<agent-home>/.base-runner.lease) carrying the live pane PID, start time, boot_id, and socket.
 BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
-BASE_TMUX_SOCKETS_FILE="$AGENTS_HOME/.base-tmux-sockets"
 unset TMUX TMUX_PANE TMUX_TMPDIR
 
-record_base_tmux_socket() {
+refresh_agent_lease() {
+  local agent="$1" pane_pid=""
   local sock_dir
   sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
   [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
-  if [[ ! -f "$BASE_TMUX_SOCKETS_FILE" ]] || ! grep -qxF "$BASE_TMUX_SOCKET" "$BASE_TMUX_SOCKETS_FILE" 2>/dev/null; then
-    printf '%s\n' "$BASE_TMUX_SOCKET" >> "$BASE_TMUX_SOCKETS_FILE" 2>/dev/null || true
-  fi
+  pane_pid="$(tmux_base list-panes -t "$SESSION:$agent" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
+  base_runner_lease_write "$agent" "$pane_pid" "$BASE_TMUX_SOCKET"
+  tmux_base set-hook -t "$SESSION:$agent" pane-exited "run-shell 'rm -f $(printf '%q' "$AGENTS_HOME/$agent/.base-runner.lease")'" 2>/dev/null || true
 }
 
 tmux_base start-server 2>/dev/null || true
@@ -639,15 +639,12 @@ launch_agent() {
   model_flag="$(agent_model_flag "$AGENTS_HOME/$a")"
   local created_window=0
   if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
-    record_base_tmux_socket
     if ! tmux_base new-session -d -s "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null; then
       echo "boot-agents: session creation failed" >&2
       return 1
     fi
-    tmux_base set-option -t "$SESSION" @base_workspace 1 2>/dev/null || true
     created_window=1
   elif ! tmux_base list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$a"; then
-    record_base_tmux_socket
     tmux_base new-window -t "$SESSION" -n "$a" -c "$AGENTS_HOME/$a" >/dev/null || return 1
     created_window=1
   fi
@@ -655,10 +652,12 @@ launch_agent() {
   if agent_opts_into_pty "$a"; then
     if [[ $created_window -eq 1 ]]; then
       tmux_base kill-window -t "$target" 2>/dev/null || true
+      base_runner_lease_remove "$a"
     fi
     echo "skipped"
     return 0
   fi
+  refresh_agent_lease "$a"
   if tmux_base list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then
     echo "skipped"; return
   fi

@@ -20,7 +20,7 @@ import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
 import { AGENT_NAME_RE } from "../safe-fs.server.js";
-import { listAllTmuxWindowsForOwnership, listTmuxWindows, resolveTmuxSession } from "../tmux.server.js";
+import { listTmuxWindows, resolveTmuxSession } from "../tmux.server.js";
 import {
   antigravity1Manifest,
   isAcpOptedIn,
@@ -35,6 +35,7 @@ import { StartRefusal } from "./registry.server.js";
 import { LaunchFailure, signalGroup } from "./runner.js";
 
 const lockName = ".runner.lock";
+const baseLeaseName = ".base-runner.lease";
 const lastSessionName = ".acp-last-session";
 const capabilitiesName = ".acp-capabilities";
 const MAX_EVENTS_PER_SESSION = 500;
@@ -60,6 +61,13 @@ export type AcpCleanupSession = {
   state: "cleanup-pending";
   events?: DeckEvent[];
   retry: () => Promise<void>;
+  abandon: () => void;
+};
+
+export type AcpOrphanedSession = {
+  state: "orphaned";
+  reason: string;
+  events?: DeckEvent[];
 };
 
 export type AcpInactiveSession =
@@ -77,13 +85,14 @@ export type AcpSessionStatus =
     contextUsage?: { used: number; size: number };
   }
   | { state: AcpCleanupSession["state"] }
+  | { state: AcpOrphanedSession["state"]; reason: string }
   | AcpInactiveSession;
 
 const registryKey = Symbol.for("inkie-deck.acp.registry");
 const closingAlsKey = Symbol.for("inkie-deck.dev.server-closing-als");
 const globals = globalThis as typeof globalThis & {
   [registryKey]?: {
-    sessions: Map<string, AcpActiveSession | AcpCleanupSession | AcpInactiveSession>;
+    sessions: Map<string, AcpActiveSession | AcpCleanupSession | AcpOrphanedSession | AcpInactiveSession>;
     closing: boolean;
     shutdownInFlight: number;
     shutdownPromise?: Promise<void>;
@@ -232,6 +241,97 @@ function writeStoredSessionId(home: string, sessionId: string): void {
     }
   } catch {
     // Refuse symlink/hard-link/short-write/invalid targets silently without replacing valid checkpoint.
+  }
+}
+
+function readProcStartInfo(pid: number): { state: string; birth: string } | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const state = fields[0];
+    const birth = fields[19];
+    if (!state || !birth) return undefined;
+    return { state, birth };
+  } catch (error) {
+    if (hasCode(error, "ENOENT") || hasCode(error, "ESRCH")) return undefined;
+    throw error;
+  }
+}
+
+function readBootId(): string | undefined {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Major 1 & 2 (Round 11): Per-agent Base lease check (<agent-home>/.base-runner.lease).
+ * Refuse Start ONLY when a live Base lease exists (PID alive and /proc/<pid>/stat start time matches),
+ * or when the lease file is malformed/unreadable (fail-closed). Completely ignores unrelated tmux servers.
+ */
+function assertNoBaseRunnerLease(home: string): void {
+  const leasePath = join(realpathSync(home), baseLeaseName);
+  let fd: number;
+  try {
+    fd = openSync(
+      leasePath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return;
+    throw new StartRefusal("tmux-unknown");
+  }
+  let raw: string;
+  try {
+    const st = fstatSync(fd);
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (!st.isFile() || st.nlink > 1 || st.size <= 0 || st.size > 1024 || (uid !== undefined && st.uid !== uid)) {
+      throw new StartRefusal("tmux-unknown");
+    }
+    const buf = Buffer.allocUnsafe(st.size);
+    const n = readSync(fd, buf, 0, st.size, 0);
+    if (n !== st.size) throw new StartRefusal("tmux-unknown");
+    raw = buf.toString("utf8");
+  } catch (error) {
+    if (error instanceof StartRefusal) throw error;
+    throw new StartRefusal("tmux-unknown");
+  } finally {
+    closeSync(fd);
+  }
+
+  let parsed: { pid?: unknown; startTime?: unknown; bootId?: unknown; socket?: unknown } | null;
+  try {
+    parsed = JSON.parse(raw) as { pid?: unknown; startTime?: unknown; bootId?: unknown; socket?: unknown } | null;
+  } catch {
+    throw new StartRefusal("tmux-unknown");
+  }
+  if (
+    !parsed ||
+    typeof parsed.pid !== "number" ||
+    !Number.isInteger(parsed.pid) ||
+    parsed.pid <= 1 ||
+    parsed.pid > 0x7fffffff ||
+    typeof parsed.startTime !== "string" ||
+    !/^\d+$/.test(parsed.startTime)
+  ) {
+    throw new StartRefusal("tmux-unknown");
+  }
+
+  const currentBootId = readBootId();
+  if (typeof parsed.bootId === "string" && parsed.bootId && currentBootId && parsed.bootId !== currentBootId) {
+    return;
+  }
+
+  let info: { state: string; birth: string } | undefined;
+  try {
+    info = readProcStartInfo(parsed.pid);
+  } catch {
+    throw new StartRefusal("tmux-unknown");
+  }
+  if (info && info.state !== "Z" && info.state !== "X" && info.birth === parsed.startTime) {
+    throw new StartRefusal("tmux-active");
   }
 }
 
@@ -392,7 +492,9 @@ export class AcpRunnerRegistry {
     const entry = this.session(agent);
     if (!entry) return [];
     if ("abortController" in entry) return this.snapshotEvents(entry);
-    if ((entry.state === "stopped" || entry.state === "cleanup-pending") && entry.events) return [...entry.events];
+    if ((entry.state === "stopped" || entry.state === "cleanup-pending" || entry.state === "orphaned") && entry.events) {
+      return [...entry.events];
+    }
     return [];
   }
 
@@ -402,18 +504,19 @@ export class AcpRunnerRegistry {
   }
 
   /**
-   * Minor 1 (Round 10): Gate Resume offer on BOTH saved checkpoint AND advertised capability,
-   * persisting capability refusal across cold Deck restarts via .acp-capabilities keyed by binary identity.
+   * Minor 1 (Round 11): Strictly positive, fail-closed capability gate for Resume.
+   * Offer Resume ONLY when BOTH a valid saved checkpoint exists AND the currently installed
+   * binary identity has positively advertised resume/load support (persisted in .acp-capabilities).
    */
   canResume(agent: string): boolean {
     const home = agentHome(this.env, agent);
     if (!home || !readStoredSessionId(home)) return false;
     const recorded = shared.resumeSupport.get(home) ?? readStoredCapabilities(home);
-    if (!recorded || recorded.supported) return true;
+    if (!recorded || !recorded.supported) return false;
     try {
       const manifest = this.options.manifest ?? antigravity1Manifest;
       const currentExec = resolveAcpExecutable(manifest.executableName, this.env, home);
-      return executableKey(statExecutableIdentity(currentExec)) !== recorded.executableKey;
+      return executableKey(statExecutableIdentity(currentExec)) === recorded.executableKey;
     } catch {
       return false;
     }
@@ -432,6 +535,7 @@ export class AcpRunnerRegistry {
     const session = this.session(agent);
     if (!session) return undefined;
     if (session.state === "cleanup-pending") return { state: session.state };
+    if (session.state === "orphaned") return { state: session.state, reason: session.reason };
     if (!("abortController" in session)) return session;
     return {
       state: session.state,
@@ -448,10 +552,10 @@ export class AcpRunnerRegistry {
     const home = this.isOptedIn(agent) ? agentHome(this.env, agent) : undefined;
     if (!home) throw new StartRefusal("not-opted-in");
 
-    // Check active ACP sessions / cleanup-pending across homes BEFORE publishing reservation
+    // Check active ACP sessions, cleanup-pending, and orphaned process groups across ALL homes BEFORE reservation
     for (const session of shared.sessions.values()) {
       if ("abortController" in session) throw new StartRefusal("busy");
-      if (session.state === "cleanup-pending") throw new StartRefusal("locked");
+      if (session.state === "cleanup-pending" || session.state === "orphaned") throw new StartRefusal("locked");
     }
 
     if (process.platform !== "linux") {
@@ -719,9 +823,9 @@ export class AcpRunnerRegistry {
   }
 
   private assertNoTmuxWindow(agent: string): void {
-    let windows: string[];
-    try {
-      if (this.options.listWindows) {
+    if (this.options.listWindows) {
+      let windows: string[];
+      try {
         const list = this.options.listWindows;
         const configuredSession = resolveTmuxSession(this.env);
         const hasCustomSocketEnv = Boolean(this.env.TMUX) || Boolean(this.env.TMUX_TMPDIR);
@@ -736,22 +840,18 @@ export class AcpRunnerRegistry {
         if (configuredSession !== "agents" && hasCustomSocketEnv) {
           windows = [...windows, ...list({ ...this.env, MC_TMUX_SESSION: "agents" }, true)];
         }
-      } else {
-        // Major 1 & 2 (Round 10): Check append-only .base-tmux-sockets, Base sessions/groups only,
-        // live /proc legacy panes, and tolerate unreadable unrelated sockets.
-        let root: string | undefined;
-        try {
-          root = realpathSync(agentsRoot(this.env));
-        } catch {
-          root = agentsRoot(this.env);
-        }
-        const home = agentHome(this.env, agent);
-        windows = listAllTmuxWindowsForOwnership(this.env, root, agent, home);
+      } catch {
+        throw new StartRefusal("tmux-unknown");
       }
-    } catch {
-      throw new StartRefusal("tmux-unknown");
+      if (windows.includes(agent)) throw new StartRefusal("tmux-active");
+      return;
     }
-    if (windows.includes(agent)) throw new StartRefusal("tmux-active");
+
+    // Major 1 & 2 (Round 11): Check ONLY the per-agent Base lease (<agent-home>/.base-runner.lease).
+    // Never probe tmux sockets or inherit Deck's TMUX environment.
+    const home = agentHome(this.env, agent);
+    if (!home) throw new StartRefusal("not-opted-in");
+    assertNoBaseRunnerLease(home);
   }
 
   private async cleanupFailedStart(
@@ -792,6 +892,16 @@ export class AcpRunnerRegistry {
             events: retainedEvents,
           });
         })().finally(() => { pending = undefined; }),
+        abandon: () => {
+          const pid = activeSession.session?.pid ?? activeSession.pid;
+          if (pid && pid > 0) signalGroup(pid, "SIGKILL");
+          lock.retain();
+          shared.sessions.set(home, {
+            state: "orphaned",
+            reason: "Runner lock cleanup failed during shutdown; orphaned lock requires recovery.",
+            events: retainedEvents,
+          });
+        },
       };
       shared.sessions.set(home, cleanup);
     }
@@ -832,6 +942,16 @@ export class AcpRunnerRegistry {
           events: retainedEvents,
         });
       }).finally(() => { pending = undefined; }),
+      abandon: () => {
+        const pid = activeSession.session?.pid ?? activeSession.pid;
+        if (pid && pid > 0) signalGroup(pid, "SIGKILL");
+        lock.retain();
+        shared.sessions.set(home, {
+          state: "orphaned",
+          reason: "Runner lock cleanup failed during shutdown; orphaned lock requires recovery.",
+          events: retainedEvents,
+        });
+      },
     };
     shared.sessions.set(home, cleanup);
     await cleanup.retry();
@@ -901,10 +1021,9 @@ export class AcpRunnerRegistry {
               const msg = error instanceof Error ? error.message : String(error);
               const nonRetryable = msg.includes("changed owners");
               if (nonRetryable || attempt === MAX_SHUTDOWN_CLEANUP_ATTEMPTS) {
-                shared.sessions.set(home, {
-                  state: "locked",
-                  reason: "Runner lock cleanup failed during shutdown; orphaned lock requires recovery.",
-                });
+                // Major 4 (Round 11): Kill process group, close lock fd, and transition to 'orphaned'
+                // which STILL blocks registry-wide admission for any second agent until recovered.
+                session.abandon();
               } else {
                 anyRetryableFailure = true;
               }
@@ -935,11 +1054,12 @@ export class AcpRunnerRegistry {
       if (shared.sessions.get(home) !== existing) return;
       if (result === "recovered") {
         shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
-      } else if (result === "absent" && existing?.state === "locked") {
+      } else if (result === "absent" && (existing?.state === "locked" || existing?.state === "orphaned")) {
         shared.sessions.delete(home);
       }
     } catch {
       if (shared.sessions.get(home) === existing) {
+        if (existing?.state === "orphaned") return;
         shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
       }
     }

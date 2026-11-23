@@ -665,27 +665,24 @@ export class AcpSession {
           this.sessionId = result.sessionId;
           this.makeEvent = createEventSource({ kind: "session", session: this.sessionId, generation: this.generation }, randomUUID);
         } else {
-          // Minor 3 (Round 10): Validate session/load and session/resume replies against the pinned SDK schema
-          // (must be a valid object, never e.g. result: 42) before marking the session ready.
+          // Major 5 & Minor 3 (Round 11): Validate session/load and session/resume replies against the pinned
+          // SDK schema AND never allow an agent reply to switch sessionId away from the requested resumeSessionId.
           const schemaName = method === "session/load" ? "LoadSessionResponse" : "ResumeSessionResponse";
           if (
             !isObject(result) ||
             !validPayload(result, schemaName) ||
-            (Object.hasOwn(result, "sessionId") && (typeof result.sessionId !== "string" || !printableId(result.sessionId, 128)))
+            (Object.hasOwn(result, "sessionId") && result.sessionId !== this.options.resumeSessionId)
           ) {
             this.records.frame("in", bytes, "invalid resume session response");
             this.stop("failed", "invalid resume session response");
             return;
           }
-          const resumedId = typeof result.sessionId === "string"
-            ? result.sessionId
-            : this.options.resumeSessionId;
-          if (!resumedId) {
+          if (!this.options.resumeSessionId) {
             this.records.frame("in", bytes, "invalid resume session response");
             this.stop("failed", "invalid resume session response");
             return;
           }
-          this.sessionId = resumedId;
+          this.sessionId = this.options.resumeSessionId;
         }
         this.current = reduce(this.current, { kind: "ready" });
       }

@@ -3,7 +3,7 @@ import type { DeckEvent } from "~/lib/deck-event";
 import type { UsageReading } from "~/lib/runner/acp-manifest";
 
 export interface AcpThreadStatus {
-  state: "starting" | "running" | "stopping" | "cleanup-pending" | "stopped" | "locked" | "unavailable";
+  state: "starting" | "running" | "stopping" | "cleanup-pending" | "orphaned" | "stopped" | "locked" | "unavailable";
   capabilities?: Record<string, unknown>;
   supportsResume?: boolean;
   queuedCount?: number;

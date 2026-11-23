@@ -35,6 +35,36 @@ agent_opts_into_pty() {
   agent_opts_into_runner "$@"
 }
 
+# Major 1 & 2 (Round 11): Per-agent Base lease file (<agent-home>/.base-runner.lease)
+# storing pane PID, /proc/<pid>/stat start time, boot_id, and tmux socket path.
+# Deck refuses ACP Start strictly when a live lease matches a running pane process,
+# eliminating fragile cross-socket tmux probing and personal-tmux false positives.
+base_runner_lease_write() {
+  local agent="$1" pid="${2:-}" sock="${3:-}"
+  local lease="$AGENTS_HOME/$agent/.base-runner.lease"
+  local tmp="${lease}.tmp.$$"
+  local start_time="" boot_id=""
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  if [[ -r "/proc/$pid/stat" ]]; then
+    local stat_line after_comm
+    stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"
+    after_comm="${stat_line##*) }"
+    local -a _stat_fields
+    read -r -a _stat_fields <<< "$after_comm"
+    start_time="${_stat_fields[19]:-}"
+  fi
+  [[ -r "/proc/sys/kernel/random/boot_id" ]] && boot_id="$(tr -d '[:space:]' < /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+  [[ -n "$start_time" ]] || return 0
+  if (umask 077 && printf '{"pid":%s,"startTime":"%s","bootId":"%s","socket":"%s"}\n' \
+      "$pid" "$start_time" "$boot_id" "${sock//\"/}" > "$tmp" 2>/dev/null); then
+    mv -f "$tmp" "$lease" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  fi
+}
+
+base_runner_lease_remove() {
+  rm -f "$AGENTS_HOME/$1/.base-runner.lease" 2>/dev/null || true
+}
+
 # agent_role <agent> -- the optional one-line role in $AGENTS_HOME/<agent>/.role.
 agent_role() {
   local file="$AGENTS_HOME/$1/.role"

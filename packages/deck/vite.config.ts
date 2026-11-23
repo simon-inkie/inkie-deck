@@ -85,24 +85,37 @@ function deckDevSocket(): Plugin {
       };
 
       const originalClose = server.close.bind(server);
-      let sigintHandled = false;
+      let sigintInProgress = false;
       const onSigint = () => {
-        if (sigintHandled) return;
-        sigintHandled = true;
+        // Major 3 (Round 11): Keep SIGINT handler installed until ACP drain completes;
+        // a second SIGINT while draining is a no-op so Node's default exit cannot interrupt cleanup.
+        if (sigintInProgress) return;
+        sigintInProgress = true;
         activeServers.clear();
         void runShutdown(true)
           .then(() => originalClose().catch(() => {}))
-          .finally(() => process.exit(0));
+          .finally(() => {
+            process.off("SIGINT", onSigint);
+            process.exit(0);
+          });
       };
-      process.once("SIGINT", onSigint);
+      process.on("SIGINT", onSigint);
       server.close = async () => {
-        process.off("SIGINT", onSigint);
-        await runShutdown(false);
-        return originalClose();
+        try {
+          await runShutdown(false);
+          return await originalClose();
+        } finally {
+          if (!sigintInProgress) {
+            process.off("SIGINT", onSigint);
+          }
+        }
       };
       server.httpServer?.once("close", () => {
-        process.off("SIGINT", onSigint);
-        void runShutdown(false);
+        void runShutdown(false).finally(() => {
+          if (!sigintInProgress) {
+            process.off("SIGINT", onSigint);
+          }
+        });
       });
 
       server.middlewares.use((request, response, next) => {

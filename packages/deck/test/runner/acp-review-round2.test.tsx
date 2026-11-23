@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
-  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -27,6 +26,7 @@ import {
   sanitizePathEnv,
 } from "../../app/lib/runner/acp-manifest.js";
 import { AcpRunnerRegistry, acpRunnerRegistry } from "../../app/lib/runner/acp-registry.server.js";
+import { hasSameOriginProof } from "../../app/lib/request-origin.server.js";
 import { action as acpAction } from "../../app/routes/api.acp.js";
 
 function byteIoScript(handlerBody: string): string {
@@ -981,78 +981,26 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(s2.state.kind).toBe("idle");
     await regRestart.stop(agent);
 
-    // Round 9 Major 1 & Round 10 Majors 1 & 2:
-    // (a) Append-only .base-tmux-sockets preserves earlier custom socket when a second socket is recorded,
-    //     and grouped session surviving deletion of `agents` is detected via `list-windows -a`.
-    // (b) Personal tmux session with unrelated window named `alpha` is NOT refused as tmux-active.
-    // (c) Unrelated discovered socket returning Permission denied does NOT turn a healthy Base check into tmux-unknown.
-    const tmuxStubDir = join(root, "tmux-stub-bin");
-    mkdirSync(tmuxStubDir, { recursive: true });
-    const privateSockDir = join(root, "private-tmux-dir");
-    const uidDir = join(privateSockDir, `tmux-${process.getuid?.() ?? 1000}`);
-    mkdirSync(uidDir, { recursive: true });
-    const recordedSock = join(uidDir, "base-explicit");
-    const secondSock = join(uidDir, "base-default");
-    const personalSock = join(uidDir, "personal-sock");
-    const forbiddenSock = join(uidDir, "other-user-sock");
-    writeFileSync(recordedSock, "stub-sock");
-    writeFileSync(secondSock, "stub-sock");
-    writeFileSync(personalSock, "stub-sock");
-    writeFileSync(forbiddenSock, "stub-sock");
-    const stubTmuxPath = join(tmuxStubDir, "tmux");
+    // Round 11 Majors 1 & 2: Per-agent .base-runner.lease (Deck refuses ONLY on live/malformed lease
+    // and ignores tmux sockets and inherited TMUX env completely).
+    const procStat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    const myBirth = procStat.slice(procStat.lastIndexOf(")") + 2).split(" ")[19]!;
+    const myBootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    const leaseFile = join(agentHome, ".base-runner.lease");
+
+    // Live lease (current live PID + matching startTime + bootId) -> refused as tmux-active
     writeFileSync(
-      stubTmuxPath,
-      `#!/usr/bin/env bash
-sock=""
-if [[ "$1" == "-S" ]]; then
-  sock="$2"
-  shift 2
-fi
-if [[ "$1" == "list-windows" && "$2" == "-a" ]]; then
-  if [[ "$sock" == "${recordedSock}" ]]; then
-    printf 'grouped-0\\tagents\\t%s\\t1\\t%s\\n' "${agent}" "${agentHome}"
-    exit 0
-  fi
-  if [[ "$sock" == "${personalSock}" ]]; then
-    printf 'personal\\t\\t%s\\t\\t/tmp/unrelated-personal\\n' "${agent}"
-    exit 0
-  fi
-  if [[ "$sock" == "${forbiddenSock}" ]]; then
-    echo "error connecting to ${forbiddenSock} (Permission denied)" >&2
-    exit 1
-  fi
-  echo "no server running on /tmp/tmux-0/default" >&2
-  exit 1
-fi
-echo "can't find session: agents" >&2
-exit 1
-`,
+      leaseFile,
+      JSON.stringify({ pid: process.pid, startTime: myBirth, bootId: myBootId, socket: "/tmp/custom-base/sock" }) + "\n",
     );
-    chmodSync(stubTmuxPath, 0o755);
-
-    // Case A: Append-only .base-tmux-sockets holds recordedSock + secondSock -> grouped window on recordedSock refused!
-    writeFileSync(join(root, ".base-tmux-sockets"), `${recordedSock}\n${secondSock}\n`);
-    const regExplicitSock = new AcpRunnerRegistry(
-      { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: `${tmuxStubDir}:${process.env.PATH ?? ""}` },
-      {
-        dataRoot: root,
-        manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
-        execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
-      },
-    );
-    await expect(regExplicitSock.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
-
-    // Case B: Remove Case A's Base socket; .base-tmux-sockets points ONLY to empty secondSock while personalSock
-    // has unrelated window `alpha` AND forbiddenSock returns Permission denied -> Start MUST SUCCEED!
-    rmSync(recordedSock, { force: true });
-    writeFileSync(join(root, ".base-tmux-sockets"), `${secondSock}\n`);
-    const regUnrelatedOk = new AcpRunnerRegistry(
+    const regLease = new AcpRunnerRegistry(
       {
         AGENTS_HOME: root,
         MC_ACP_RUNNER: "1",
         HOME: root,
-        TMUX_TMPDIR: privateSockDir,
-        PATH: `${tmuxStubDir}:${process.env.PATH ?? ""}`,
+        // Deliberately point TMUX at an inaccessible socket; Deck MUST ignore TMUX completely!
+        TMUX: "/nonexistent/forbidden/personal-socket,99999,0",
+        PATH: process.env.PATH,
       },
       {
         dataRoot: root,
@@ -1060,10 +1008,21 @@ exit 1
         execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       },
     );
-    const unrelatedSess = await regUnrelatedOk.start(agent);
-    expect(unrelatedSess.state.kind).toBe("idle");
-    await regUnrelatedOk.stop(agent);
-    rmSync(join(root, ".base-tmux-sockets"), { force: true });
+    await expect(regLease.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+
+    // Malformed lease -> fail closed with tmux-unknown
+    writeFileSync(leaseFile, "{not-valid-json");
+    await expect(regLease.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-unknown" });
+
+    // Stale lease (wrong startTime / reused PID) -> ignored, Start SUCCEEDS even with inaccessible TMUX env!
+    writeFileSync(
+      leaseFile,
+      JSON.stringify({ pid: process.pid, startTime: "1", bootId: myBootId, socket: "/tmp/custom-base/sock" }) + "\n",
+    );
+    const leaseOkSess = await regLease.start(agent);
+    expect(leaseOkSess.state.kind).toBe("idle");
+    await regLease.stop(agent);
+    rmSync(leaseFile, { force: true });
 
     // Round 10 Major 3: Closing Vite server rejects Start via per-server AsyncLocalStorage even when shared.closing === false
     const closingAlsKey = Symbol.for("inkie-deck.dev.server-closing-als");
@@ -1073,7 +1032,11 @@ exit 1
       await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "shutting-down" });
     });
 
-    // Round 10 Major 4: Persistent lock-release failure (replaced lock inode) MUST NOT hang shutdown()
+    // Round 11 Major 4: Persistent lock-release failure (replaced lock inode) MUST NOT hang shutdown(),
+    // transitions to 'orphaned', closes lock fd, AND STILL blocks registry-wide Start for a second agent (beta)!
+    const betaHome = join(root, "beta");
+    mkdirSync(betaHome, { recursive: true });
+    writeFileSync(join(betaHome, ".runner"), "acp\n");
     const persistSess = await regRestart.start(agent);
     const lockFile = join(agentHome, ".runner.lock");
     rmSync(lockFile, { force: true });
@@ -1082,11 +1045,20 @@ exit 1
     await regRestart.shutdown({ permanent: false, cleanupRetryDelayMs: 10 });
     expect(Date.now() - shutdownStart).toBeLessThan(1500);
     expect(persistSess.state.kind).toBe("disconnected");
-    expect(regRestart.status(agent)?.state).toBe("locked");
+    expect(regRestart.status(agent)?.state).toBe("orphaned");
+    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
     rmSync(lockFile, { force: true });
     await regRestart.recover();
+    const betaSess = await regRestart.start("beta");
+    expect(betaSess.state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
-    // Round 9 & 10 Minor 1: Capability-gated Resume persists across cold Deck restart via .acp-capabilities
+    // Round 11 Minor 1: Strictly positive fail-closed capability gate for Resume
+    // (absent .acp-capabilities -> false; capable start -> true across cold restart; downgraded refusal -> false)
+    const capHome = join(root, "cap-agent");
+    mkdirSync(capHome, { recursive: true });
+    writeFileSync(join(capHome, ".runner"), "acp\n");
+    writeFileSync(join(capHome, ".acp-last-session"), "kept-valid-checkpoint\n");
     const downgradedScript = join(root, "r9-downgraded.mjs");
     writeFileSync(
       downgradedScript,
@@ -1095,24 +1067,24 @@ exit 1
         else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s-dg" } });
       `),
     );
-    writeFileSync(join(agentHome, ".acp-last-session"), "kept-valid-checkpoint\n");
     const regCapGate = new AcpRunnerRegistry(env, {
       dataRoot: root,
       manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [downgradedScript] },
       execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       listWindows: () => [],
     });
-    await expect(regCapGate.start(agent, { resume: true })).rejects.toThrow();
-    expect(regCapGate.lastSessionId(agent)).toBe("kept-valid-checkpoint");
-    expect(regCapGate.canResume(agent)).toBe(false);
-    // Simulate cold Deck restart (clear in-memory capability map) -> .acp-capabilities on disk STILL hides Resume!
+    // No capability record yet -> fail closed (false!)
+    expect(regCapGate.canResume("cap-agent")).toBe(false);
+    await expect(regCapGate.start("cap-agent", { resume: true })).rejects.toThrow();
+    expect(regCapGate.lastSessionId("cap-agent")).toBe("kept-valid-checkpoint");
+    expect(regCapGate.canResume("cap-agent")).toBe(false);
     const regKey = Symbol.for("inkie-deck.acp.registry");
     const regShared = (globalThis as unknown as Record<symbol, { resumeSupport?: Map<string, unknown> }>)[regKey];
     regShared?.resumeSupport?.clear();
-    expect(regCapGate.canResume(agent)).toBe(false);
+    expect(regCapGate.canResume("cap-agent")).toBe(false);
     const hiddenResumeHtml = renderToStaticMarkup(
       <AcpThreadView
-        agent={agent}
+        agent="cap-agent"
         initialStatus={{ state: "stopped" }}
         initialEvents={[]}
         initialLastSessionId="kept-valid-checkpoint"
@@ -1123,7 +1095,8 @@ exit 1
     );
     expect(hiddenResumeHtml).not.toContain("Resume last session");
 
-    // Round 10 Minor 3: Malformed session/load reply (result: 42) fails validation and does NOT reach idle
+    // Round 11 Major 5 & Minor 3: Malformed session/load reply (result: 42) AND switched sessionId ({ sessionId: "different" })
+    // both fail validation and NEVER reach idle or overwrite checkpoint!
     const badLoadScript = join(root, "r10-bad-load.mjs");
     writeFileSync(
       badLoadScript,
@@ -1139,8 +1112,34 @@ exit 1
     expect(badLoadSess.state.kind).not.toBe("idle");
     await badLoadSess.close();
 
-    // Round 9 & 10 Minor 2: Non-blocking unknown advisory notification AND unknown sessionUpdate go to
-    // extensions.ndjson ONLY, never raw.ndjson (verified by decoding base64 raw entries!)
+    const switchIdScript = join(root, "r11-switch-id.mjs");
+    writeFileSync(
+      switchIdScript,
+      byteIoScript(`
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "different" } });
+      `),
+    );
+    const switchSess = await AcpSession.start(
+      { executable: process.execPath, args: [switchIdScript], version: "1.5.14" },
+      { cwd: agentHome, dataRoot: root, resumeSessionId: "kept-valid-checkpoint" },
+    );
+    expect(switchSess.state.kind).not.toBe("idle");
+    expect(switchSess.activeSessionId).toBe("kept-valid-checkpoint");
+    await switchSess.close();
+
+    // Round 11 Minor 3: Scheme mismatch when Fetch Metadata is absent MUST be rejected by hasSameOriginProof
+    const schemeMismatchReq = new Request("https://deck.example.test/api/acp", {
+      method: "POST",
+      headers: {
+        host: "deck.example.test",
+        origin: "http://deck.example.test",
+      },
+    });
+    expect(hasSameOriginProof(schemeMismatchReq, {})).toBe(false);
+
+    // Round 11 Minor 2: Non-blocking unknown advisory notification AND unknown sessionUpdate go to
+    // extensions.ndjson ONLY, never raw.ndjson (verified by decoding base64 `rec.bytes`!)
     const advScript = join(root, "r9-advisory.mjs");
     writeFileSync(
       advScript,
@@ -1167,9 +1166,10 @@ exit 1
     const extLog = readFileSync(join(advSess.records.directory, "extensions.ndjson"), "utf8");
     const rawLines = readFileSync(join(advSess.records.directory, "raw.ndjson"), "utf8").trim().split("\n").filter(Boolean);
     const decodedRaw = rawLines.map((line) => {
-      const rec = JSON.parse(line) as { data?: string };
-      return rec.data ? Buffer.from(rec.data, "base64").toString("utf8") : "";
+      const rec = JSON.parse(line) as { bytes?: string };
+      return rec.bytes ? Buffer.from(rec.bytes, "base64").toString("utf8") : "";
     }).join("\n");
+    expect(decodedRaw).toContain("initialize");
     expect(extLog).toContain("vendor/notice");
     expect(extLog).toContain("session/update:vendor_hint");
     expect(extLog).not.toContain("ADV_SECRET_TOKEN_99");

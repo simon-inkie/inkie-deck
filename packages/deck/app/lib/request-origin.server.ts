@@ -35,6 +35,11 @@ export function hasSameOriginProof(request: Request, context: AppLoadContext) {
 
   const parsed = URL.parse(origin);
   if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.origin !== origin.toLowerCase()) return false;
+  // Minor 3 (Round 11): Enforce scheme match against the request URL when Fetch Metadata is absent.
+  const requestUrl = URL.parse(request.url);
+  if (requestUrl && /^https?:$/.test(requestUrl.protocol) && parsed.protocol !== requestUrl.protocol) {
+    return false;
+  }
   return parsed.host === URL.parse(`${parsed.protocol}//${request.headers.get("host")}`)?.host;
 }
 
