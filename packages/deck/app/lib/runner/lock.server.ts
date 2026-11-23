@@ -142,7 +142,77 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
       closeFdOnce();
     },
     retain() { closeFdOnce(); },
+    identity(): RunnerGroupIdentity {
+      return {
+        pid: record.childPid ?? 0,
+        birth: record.childBirth,
+        sessionId: record.sessionId,
+      };
+    },
   };
+}
+
+export interface RunnerGroupIdentity {
+  pid: number;
+  birth: string | null;
+  sessionId: string;
+}
+
+/**
+ * Major 3 (Round 12): Verify whether a previously tracked runner process group is still
+ * genuinely owned and alive, dead (including reused PGID), or unverifiable (/proc/EPERM).
+ */
+export function isRunnerGroupVerifiedAlive(identity: RunnerGroupIdentity): "alive" | "dead" | "unverifiable" {
+  if (!validPid(identity.pid) || !identity.birth) {
+    return "unverifiable";
+  }
+  let exists: boolean;
+  try {
+    exists = groupExists(identity.pid);
+  } catch {
+    return "unverifiable";
+  }
+  if (!exists) {
+    try {
+      const child = processInfo(identity.pid);
+      if (child && live(child.state) && child.birth === identity.birth) {
+        return "alive";
+      }
+      return "dead";
+    } catch {
+      return "unverifiable";
+    }
+  }
+  try {
+    const pseudo: LockRecord = {
+      deckPid: process.pid,
+      deckBirth: "0",
+      childPid: identity.pid,
+      childBirth: identity.birth,
+      bootId: "",
+      sessionId: identity.sessionId,
+      startedAt: 0,
+      phase: "spawning",
+    };
+    return verifyGroup(pseudo, identity.pid) ? "alive" : "dead";
+  } catch {
+    return "unverifiable";
+  }
+}
+
+/**
+ * Major 3 (Round 12): Signal a process group ONLY after verifying birth / session-marker
+ * ownership so a reused numeric PGID is never killed, and swallow EPERM as 'unverifiable'.
+ */
+export function killVerifiedRunnerGroup(identity: RunnerGroupIdentity): "alive" | "dead" | "unverifiable" {
+  const before = isRunnerGroupVerifiedAlive(identity);
+  if (before !== "alive") return before;
+  try {
+    signalGroup(identity.pid, "SIGKILL");
+  } catch {
+    return "unverifiable";
+  }
+  return isRunnerGroupVerifiedAlive(identity);
 }
 
 function validPid(pid: unknown): pid is number {

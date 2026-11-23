@@ -22,6 +22,10 @@ const postPayload = z.discriminatedUnion("op", [
   }).strict(),
   z.object({
     agent: z.string().regex(AGENT_NAME_RE),
+    op: z.literal("recover"),
+  }).strict(),
+  z.object({
+    agent: z.string().regex(AGENT_NAME_RE),
     op: z.literal("cancel"),
   }).strict(),
   z.object({
@@ -129,6 +133,10 @@ export async function action({ request, context }: Route.ActionArgs) {
     if (op === "stop") {
       await acpRunnerRegistry.stop(agent);
       return { ok: true };
+    }
+    if (op === "recover") {
+      await acpRunnerRegistry.recover();
+      return { ok: true, status: acpRunnerRegistry.status(agent) };
     }
     if (op === "cancel") {
       if (!await acpRunnerRegistry.cancel(agent)) {

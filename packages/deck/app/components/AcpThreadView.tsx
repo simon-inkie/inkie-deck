@@ -127,9 +127,11 @@ export function AcpThreadView({
 
   const { cards, answeredIds } = useMemo(() => deriveAcpCards(events), [events]);
   const isActive = status.state === "running" || status.state === "starting";
+  const isOrphaned = status.state === "orphaned";
   const canStop = isActive || status.state === "cleanup-pending";
-  // Minor 1 (Round 9): Gate Resume button on BOTH saved checkpoint AND capability support
-  const showResume = Boolean(lastSessionId && canResume && !isActive && status.state !== "cleanup-pending");
+  // Minor 1 (Round 9 & Round 12): Gate Start/Resume off when cleanup-pending or orphaned
+  const canLaunch = !isActive && status.state !== "cleanup-pending" && !isOrphaned;
+  const showResume = Boolean(lastSessionId && canResume && canLaunch);
   const advertisedCapNames = useMemo(() => {
     if (!status.capabilities) return [];
     const caps: string[] = [];
@@ -171,11 +173,16 @@ export function AcpThreadView({
               Capabilities: {advertisedCapNames.join(", ")}
             </div>
           )}
+          {(status.state === "orphaned" || status.state === "locked" || status.state === "unavailable") && status.reason && (
+            <div data-testid="acp-status-reason" className="text-xs text-destructive">
+              {status.reason}
+            </div>
+          )}
         </div>
 
         {canWrite && (
           <div className="flex flex-wrap items-center gap-2">
-            {!isActive && status.state !== "cleanup-pending" && (
+            {canLaunch && (
               <button
                 type="button"
                 disabled={busyOp}
@@ -183,6 +190,17 @@ export function AcpThreadView({
                 className="rounded border px-3 py-1 text-xs font-medium"
               >
                 Start
+              </button>
+            )}
+            {isOrphaned && (
+              <button
+                type="button"
+                data-testid="acp-retry-recovery"
+                disabled={busyOp}
+                onClick={() => void postOp({ op: "recover" })}
+                className="rounded border px-3 py-1 text-xs font-medium"
+              >
+                Retry recovery
               </button>
             )}
             {showResume && (

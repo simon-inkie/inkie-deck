@@ -85,35 +85,41 @@ function deckDevSocket(): Plugin {
       };
 
       const originalClose = server.close.bind(server);
-      let sigintInProgress = false;
-      const onSigint = () => {
-        // Major 3 (Round 11): Keep SIGINT handler installed until ACP drain completes;
-        // a second SIGINT while draining is a no-op so Node's default exit cannot interrupt cleanup.
-        if (sigintInProgress) return;
-        sigintInProgress = true;
+      let signalDrainInProgress = false;
+      const removeSignalHandlers = () => {
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+      };
+      const onSignal = () => {
+        // Major 3 (Round 11) & Major 5 (Round 12): Keep BOTH SIGINT and SIGTERM handlers installed
+        // until ACP drain and originalClose() finish; a repeated SIGINT or SIGTERM while draining
+        // is a no-op so Node's default exit cannot interrupt cleanup (Vite registers SIGTERM with once).
+        if (signalDrainInProgress) return;
+        signalDrainInProgress = true;
         activeServers.clear();
         void runShutdown(true)
           .then(() => originalClose().catch(() => {}))
           .finally(() => {
-            process.off("SIGINT", onSigint);
+            removeSignalHandlers();
             process.exit(0);
           });
       };
-      process.on("SIGINT", onSigint);
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
       server.close = async () => {
         try {
           await runShutdown(false);
           return await originalClose();
         } finally {
-          if (!sigintInProgress) {
-            process.off("SIGINT", onSigint);
+          if (!signalDrainInProgress) {
+            removeSignalHandlers();
           }
         }
       };
       server.httpServer?.once("close", () => {
         void runShutdown(false).finally(() => {
-          if (!sigintInProgress) {
-            process.off("SIGINT", onSigint);
+          if (!signalDrainInProgress) {
+            removeSignalHandlers();
           }
         });
       });

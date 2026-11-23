@@ -599,20 +599,10 @@ done
 [[ ${#TMUX_AGENTS[@]} -gt 0 ]] || exit 0
 AGENTS=("${TMUX_AGENTS[@]}")
 
-# Major 1 & 2 (Round 11): Pin Base tmux operations to one explicit socket (-S) and write a per-agent
-# lease (<agent-home>/.base-runner.lease) carrying the live pane PID, start time, boot_id, and socket.
+# Majors 1 & 2 (Round 12): Pin Base tmux operations to one explicit socket (-S);
+# runtime mutual exclusion with Deck is enforced atomically by base-runner-exec.sh on .runner.lock.
 BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
 unset TMUX TMUX_PANE TMUX_TMPDIR
-
-refresh_agent_lease() {
-  local agent="$1" pane_pid=""
-  local sock_dir
-  sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
-  [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
-  pane_pid="$(tmux_base list-panes -t "$SESSION:$agent" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
-  base_runner_lease_write "$agent" "$pane_pid" "$BASE_TMUX_SOCKET"
-  tmux_base set-hook -t "$SESSION:$agent" pane-exited "run-shell 'rm -f $(printf '%q' "$AGENTS_HOME/$agent/.base-runner.lease")'" 2>/dev/null || true
-}
 
 tmux_base start-server 2>/dev/null || true
 # Turn on focus-events before any pane starts, so Claude Code does not show its
@@ -652,12 +642,10 @@ launch_agent() {
   if agent_opts_into_pty "$a"; then
     if [[ $created_window -eq 1 ]]; then
       tmux_base kill-window -t "$target" 2>/dev/null || true
-      base_runner_lease_remove "$a"
     fi
     echo "skipped"
     return 0
   fi
-  refresh_agent_lease "$a"
   if tmux_base list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null | grep -qiE '^(claude|codex|node|agy)$'; then
     echo "skipped"; return
   fi
@@ -680,7 +668,9 @@ launch_agent() {
     }
     local first_prompt
     first_prompt="$(claude_first_boot_prompt "$session_args" "$AGENTS_HOME/$a")"
-    tmux_base send-keys -t "$target" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $first_prompt" Enter || return 1
+    local claude_cmd
+    claude_cmd="$(base_runner_wrap_launch_cmd "$a" "printf '\033]0;${a}\007'; [ -f $AGENTS_HOME/$a/.env.secrets ] && . $AGENTS_HOME/$a/.env.secrets; claude $session_args $model_flag $first_prompt")"
+    tmux_base send-keys -t "$target" "$claude_cmd" Enter || return 1
     # The first message is already on its way, so the pane may be busy at once.
     [[ -n "$first_prompt" ]] && { echo "launched:first-boot"; return; }
   elif [[ "$runtime" == "codex" ]]; then
@@ -697,7 +687,7 @@ launch_agent() {
     CODEX_SESSIONS_DIR="$(codex_sessions_dir_for_home "$codex_home")"
     sid="$(codex_latest_session_for_workspace "$a" "$codex_home")"
     local codex_cmd
-    codex_cmd="$(codex_launch_command "$a" "$role" "$codex_home" "$sid" "$model_flag")"
+    codex_cmd="$(base_runner_wrap_launch_cmd "$a" "$(codex_launch_command "$a" "$role" "$codex_home" "$sid" "$model_flag")")"
     tmux_base send-keys -t "$target" "$codex_cmd" Enter || return 1
     # A selected id is not a promise the resume succeeded, so verify the pane
     # and recover it if it did not come up (codex_verify_resume_or_fallback,
@@ -715,14 +705,16 @@ launch_agent() {
     role="$(agent_role "$a")"
     cid="$(agy_latest_conversation_for_workspace "$a")"
     agy_sync_includes "$a"
-    agy_cmd="$(agy_launch_command "$a" "$role" "$cid" "$model_flag")"
+    agy_cmd="$(base_runner_wrap_launch_cmd "$a" "$(agy_launch_command "$a" "$role" "$cid" "$model_flag")")"
     tmux_base send-keys -t "$target" "$agy_cmd" Enter || return 1
   else
     # Any other runtime: launch it plainly. If it needs env vars set before
     # the process starts rather than after, set them here explicitly -- some
     # runtimes only apply hook-declared env to their own shell tool calls, not
     # to the process itself, so a hook-only approach can silently under-scope.
-    tmux_base send-keys -t "$target" "printf '\033]0;${a}\007'; AGENT_NAME=$a $runtime $model_flag" Enter || return 1
+    local other_cmd
+    other_cmd="$(base_runner_wrap_launch_cmd "$a" "printf '\033]0;${a}\007'; AGENT_NAME=$a $runtime $model_flag")"
+    tmux_base send-keys -t "$target" "$other_cmd" Enter || return 1
   fi
   echo "launched"
 }

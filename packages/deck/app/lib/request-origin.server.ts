@@ -35,10 +35,14 @@ export function hasSameOriginProof(request: Request, context: AppLoadContext) {
 
   const parsed = URL.parse(origin);
   if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.origin !== origin.toLowerCase()) return false;
-  // Minor 3 (Round 11): Enforce scheme match against the request URL when Fetch Metadata is absent.
-  const requestUrl = URL.parse(request.url);
-  if (requestUrl && /^https?:$/.test(requestUrl.protocol) && parsed.protocol !== requestUrl.protocol) {
-    return false;
+  // Major 4 (Round 12): Enforce scheme match against the direct request URL ONLY when Fetch Metadata
+  // (Sec-Fetch-Site) is absent. Behind a TLS-terminating HTTPS proxy, Express sees http:// internally
+  // while the browser sends Origin: https://... alongside Sec-Fetch-Site: same-origin.
+  if (site === null) {
+    const requestUrl = URL.parse(request.url);
+    if (requestUrl && /^https?:$/.test(requestUrl.protocol) && parsed.protocol !== requestUrl.protocol) {
+      return false;
+    }
   }
   return parsed.host === URL.parse(`${parsed.protocol}//${request.headers.get("host")}`)?.host;
 }

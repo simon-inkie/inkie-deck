@@ -981,48 +981,96 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(s2.state.kind).toBe("idle");
     await regRestart.stop(agent);
 
-    // Round 11 Majors 1 & 2: Per-agent .base-runner.lease (Deck refuses ONLY on live/malformed lease
-    // and ignores tmux sockets and inherited TMUX env completely).
-    const procStat = readFileSync(`/proc/${process.pid}/stat`, "utf8");
-    const myBirth = procStat.slice(procStat.lastIndexOf(")") + 2).split(" ")[19]!;
-    const myBootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    const leaseFile = join(agentHome, ".base-runner.lease");
-
-    // Live lease (current live PID + matching startTime + bootId) -> refused as tmux-active
-    writeFileSync(
-      leaseFile,
-      JSON.stringify({ pid: process.pid, startTime: myBirth, bootId: myBootId, socket: "/tmp/custom-base/sock" }) + "\n",
+    // Round 12 Majors 1 & 2: Base shares Deck's .runner.lock atomically via base-runner-exec.sh!
+    // Verify BOTH directions with real OS processes:
+    // (a) While Base wrapper holds .runner.lock (flock + LockRecord), Deck refuses Start ('locked')
+    //     AND a second Base wrapper fails closed without overwriting .runner.lock.
+    // (b) When Base wrapper exits cleanly, .runner.lock is removed and Deck Start succeeds (ignoring TMUX env).
+    // (c) While Deck holds .runner.lock, Base wrapper fails closed and never runs the runtime.
+    // (d) When .runner is 'acp', Base wrapper exits 0 without running the runtime or leaving .runner.lock.
+    const { spawn: spawnChild, spawnSync: spawnChildSync } = await import("node:child_process");
+    const baseExecScript = join(process.cwd(), "..", "base", "bin", "base-runner-exec.sh");
+    const baseAgentHome = join(root, "base-shared");
+    mkdirSync(baseAgentHome, { recursive: true });
+    const baseReadyFile = join(root, "base-exec-ready");
+    const baseChild = spawnChild(
+      baseExecScript,
+      [
+        baseAgentHome,
+        "--",
+        process.execPath,
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(baseReadyFile)}, "ready"); setTimeout(() => {}, 15000);`,
+      ],
+      { stdio: "ignore" },
     );
-    const regLease = new AcpRunnerRegistry(
-      {
-        AGENTS_HOME: root,
-        MC_ACP_RUNNER: "1",
-        HOME: root,
-        // Deliberately point TMUX at an inaccessible socket; Deck MUST ignore TMUX completely!
-        TMUX: "/nonexistent/forbidden/personal-socket,99999,0",
-        PATH: process.env.PATH,
-      },
-      {
-        dataRoot: root,
-        manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
-        execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
-      },
-    );
-    await expect(regLease.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-active" });
+    const baseExited = new Promise<number | null>((resolve) => baseChild.once("exit", (code) => resolve(code)));
+    try {
+      const waitDeadline = Date.now() + 5000;
+      while (!existsSync(baseReadyFile) && Date.now() < waitDeadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(existsSync(baseReadyFile)).toBe(true);
+      expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(true);
 
-    // Malformed lease -> fail closed with tmux-unknown
-    writeFileSync(leaseFile, "{not-valid-json");
-    await expect(regLease.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "tmux-unknown" });
+      // Flip .runner=acp mid-run while Base still holds .runner.lock: Deck MUST refuse with 'locked'!
+      writeFileSync(join(baseAgentHome, ".runner"), "acp\n");
+      const regSharedLock = new AcpRunnerRegistry(
+        {
+          AGENTS_HOME: root,
+          MC_ACP_RUNNER: "1",
+          HOME: root,
+          TMUX: "/nonexistent/forbidden/personal-socket,99999,0",
+          PATH: process.env.PATH,
+        },
+        {
+          dataRoot: root,
+          manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [slowCloseScript] },
+          execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+        },
+      );
+      await expect(regSharedLock.start("base-shared")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
 
-    // Stale lease (wrong startTime / reused PID) -> ignored, Start SUCCEEDS even with inaccessible TMUX env!
-    writeFileSync(
-      leaseFile,
-      JSON.stringify({ pid: process.pid, startTime: "1", bootId: myBootId, socket: "/tmp/custom-base/sock" }) + "\n",
-    );
-    const leaseOkSess = await regLease.start(agent);
-    expect(leaseOkSess.state.kind).toBe("idle");
-    await regLease.stop(agent);
-    rmSync(leaseFile, { force: true });
+      // Second Base wrapper MUST fail closed and MUST NOT remove or overwrite .runner.lock
+      const sideEffectFile = join(root, "second-base-must-not-run");
+      const secondBase = spawnChildSync(
+        baseExecScript,
+        [baseAgentHome, "--", process.execPath, "-e", `require("node:fs").writeFileSync(${JSON.stringify(sideEffectFile)}, "bad")`],
+      );
+      expect(secondBase.status).not.toBe(0);
+      expect(existsSync(sideEffectFile)).toBe(false);
+      expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(true);
+
+      // Terminate Base wrapper -> .runner.lock is cleaned up -> Deck Start succeeds!
+      baseChild.kill("SIGTERM");
+      await baseExited;
+      expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(false);
+
+      const deckOwnedSess = await regSharedLock.start("base-shared");
+      expect(deckOwnedSess.state.kind).toBe("idle");
+
+      // While Deck holds .runner.lock (even if .runner is removed), Base wrapper MUST fail closed!
+      rmSync(join(baseAgentHome, ".runner"), { force: true });
+      const baseWhileDeckRuns = spawnChildSync(
+        baseExecScript,
+        [baseAgentHome, "--", process.execPath, "-e", `require("node:fs").writeFileSync(${JSON.stringify(sideEffectFile)}, "bad")`],
+      );
+      expect(baseWhileDeckRuns.status).not.toBe(0);
+      expect(existsSync(sideEffectFile)).toBe(false);
+
+      // Restore .runner=acp and stop Deck cleanly; Base wrapper with .runner=acp exits 0 without running runtime
+      writeFileSync(join(baseAgentHome, ".runner"), "acp\n");
+      await regSharedLock.stop("base-shared");
+      const baseOptedOut = spawnChildSync(
+        baseExecScript,
+        [baseAgentHome, "--", process.execPath, "-e", `require("node:fs").writeFileSync(${JSON.stringify(sideEffectFile)}, "bad")`],
+      );
+      expect(baseOptedOut.status).toBe(0);
+      expect(existsSync(sideEffectFile)).toBe(false);
+      expect(existsSync(join(baseAgentHome, ".runner.lock"))).toBe(false);
+    } finally {
+      try { baseChild.kill("SIGKILL"); } catch { /* ignore */ }
+    }
 
     // Round 10 Major 3: Closing Vite server rejects Start via per-server AsyncLocalStorage even when shared.closing === false
     const closingAlsKey = Symbol.for("inkie-deck.dev.server-closing-als");
@@ -1047,7 +1095,41 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(persistSess.state.kind).toBe("disconnected");
     expect(regRestart.status(agent)?.state).toBe("orphaned");
     await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+
+    // Round 12 Minor 1: Orphaned thread view hides Start/Resume, shows recovery reason, and offers Retry recovery
+    const orphanedHtml = renderToStaticMarkup(
+      <AcpThreadView
+        agent={agent}
+        initialStatus={{ state: "orphaned", reason: "Orphaned lock requires recovery." }}
+        initialEvents={[]}
+        initialLastSessionId="kept-valid-checkpoint"
+        initialCanResume={true}
+        initialUsageReading={antigravityUsageReading()}
+        canWrite={true}
+      />,
+    );
+    expect(orphanedHtml).not.toContain(">Start<");
+    expect(orphanedHtml).not.toContain("Resume last session");
+    expect(orphanedHtml).toContain("Orphaned lock requires recovery.");
+    expect(orphanedHtml).toContain("Retry recovery");
+
+    // Round 12 Major 3: Unverifiable orphanIdentity stays orphaned even when .runner.lock is absent,
+    // AND cold-start 'locked' on alpha blocks starting beta!
+    const sharedRegState = (globalThis as unknown as Record<symbol, { sessions: Map<string, Record<string, unknown>> }>)[Symbol.for("inkie-deck.acp.registry")]!;
     rmSync(lockFile, { force: true });
+    sharedRegState.sessions.set(agentHome, {
+      state: "orphaned",
+      reason: "Unverifiable orphan still blocking.",
+      orphanIdentity: { pid: process.pid, birth: null, sessionId: "00000000-0000-4000-8000-000000000001" },
+    });
+    await regRestart.recover();
+    expect(regRestart.status(agent)?.state).toBe("orphaned");
+    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+
+    // Cold-start 'locked' entry on alpha ALSO blocks starting beta
+    sharedRegState.sessions.set(agentHome, { state: "locked", reason: "Unrecovered lock on cold start." });
+    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+
     await regRestart.recover();
     const betaSess = await regRestart.start("beta");
     expect(betaSess.state.kind).toBe("idle");
@@ -1128,7 +1210,8 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
     expect(switchSess.activeSessionId).toBe("kept-valid-checkpoint");
     await switchSess.close();
 
-    // Round 11 Minor 3: Scheme mismatch when Fetch Metadata is absent MUST be rejected by hasSameOriginProof
+    // Round 11 Minor 3 & Round 12 Major 4: Scheme mismatch without Fetch Metadata is REJECTED,
+    // while legitimate HTTPS-proxy writes with Sec-Fetch-Site: same-origin + Origin: https:// on internal http:// URL PASS!
     const schemeMismatchReq = new Request("https://deck.example.test/api/acp", {
       method: "POST",
       headers: {
@@ -1137,6 +1220,16 @@ describe("ACP Slice 2 Round 2 Hardening (All 11 Majors + Minors 1 & 2)", () => {
       },
     });
     expect(hasSameOriginProof(schemeMismatchReq, {})).toBe(false);
+
+    const httpsProxyReq = new Request("http://deck.example.test/api/acp", {
+      method: "POST",
+      headers: {
+        host: "deck.example.test",
+        origin: "https://deck.example.test",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+    expect(hasSameOriginProof(httpsProxyReq, {})).toBe(true);
 
     // Round 11 Minor 2: Non-blocking unknown advisory notification AND unknown sessionUpdate go to
     // extensions.ndjson ONLY, never raw.ndjson (verified by decoding base64 `rec.bytes`!)

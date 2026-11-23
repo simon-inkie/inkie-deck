@@ -35,34 +35,28 @@ agent_opts_into_pty() {
   agent_opts_into_runner "$@"
 }
 
-# Major 1 & 2 (Round 11): Per-agent Base lease file (<agent-home>/.base-runner.lease)
-# storing pane PID, /proc/<pid>/stat start time, boot_id, and tmux socket path.
-# Deck refuses ACP Start strictly when a live lease matches a running pane process,
-# eliminating fragile cross-socket tmux probing and personal-tmux false positives.
-base_runner_lease_write() {
-  local agent="$1" pid="${2:-}" sock="${3:-}"
-  local lease="$AGENTS_HOME/$agent/.base-runner.lease"
-  local tmp="${lease}.tmp.$$"
-  local start_time="" boot_id=""
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  if [[ -r "/proc/$pid/stat" ]]; then
-    local stat_line after_comm
-    stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"
-    after_comm="${stat_line##*) }"
-    local -a _stat_fields
-    read -r -a _stat_fields <<< "$after_comm"
-    start_time="${_stat_fields[19]:-}"
-  fi
-  [[ -r "/proc/sys/kernel/random/boot_id" ]] && boot_id="$(tr -d '[:space:]' < /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
-  [[ -n "$start_time" ]] || return 0
-  if (umask 077 && printf '{"pid":%s,"startTime":"%s","bootId":"%s","socket":"%s"}\n' \
-      "$pid" "$start_time" "$boot_id" "${sock//\"/}" > "$tmp" 2>/dev/null); then
-    mv -f "$tmp" "$lease" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
-  fi
+# Majors 1 & 2 (Round 12): Base shares Deck's .runner.lock via base-runner-exec.sh
+# (flock + Deck-compatible LockRecord held for the runtime's life). Mutual exclusion
+# is atomic, stale locks fail closed, and unrelated panes never touch any lock.
+base_runner_exec_prefix() {
+  local agent="$1" bin_dir exec_script
+  bin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec_script="$bin_dir/base-runner-exec.sh"
+  printf '%q %q -- ' "$exec_script" "$AGENTS_HOME/$agent"
 }
 
-base_runner_lease_remove() {
-  rm -f "$AGENTS_HOME/$1/.base-runner.lease" 2>/dev/null || true
+base_runner_wrap_launch_cmd() {
+  local agent="$1" cmd="$2" prefix
+  prefix="$(base_runner_exec_prefix "$agent")"
+  if [[ "$cmd" == *"; env "* ]]; then
+    printf '%s\n' "${cmd/; env /; ${prefix}env }"
+  elif [[ "$cmd" == *"; claude "* ]]; then
+    printf '%s\n' "${cmd/; claude /; ${prefix}claude }"
+  elif [[ "$cmd" == *"; AGENT_NAME="* ]]; then
+    printf '%s\n' "${cmd/; AGENT_NAME=/; ${prefix}env AGENT_NAME=}"
+  else
+    printf '%s\n' "${prefix}bash -lc $(printf '%q' "$cmd")"
+  fi
 }
 
 # agent_role <agent> -- the optional one-line role in $AGENTS_HOME/<agent>/.role.

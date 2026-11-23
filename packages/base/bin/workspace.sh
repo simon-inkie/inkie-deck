@@ -149,9 +149,10 @@ launch_command() {
 }
 
 start_agent() {
-  local agent="$1" command
+  local agent="$1" command wrapped
   command="$(launch_command "$agent")" || return 0
-  tmux_base send-keys -t "$SESSION:$agent" "$command" Enter
+  wrapped="$(base_runner_wrap_launch_cmd "$agent" "$command")"
+  tmux_base send-keys -t "$SESSION:$agent" "$wrapped" Enter
 }
 
 # Dry run: print what would be sent to each agent's pane, start nothing.
@@ -181,23 +182,13 @@ start_watcher() {
 # Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
 warn_if_foreign_claude
 
-# Major 1 & 2 (Round 11): Pin Base tmux operations to one explicit socket (-S) and write a per-agent
-# lease (<agent-home>/.base-runner.lease) carrying the live pane PID, start time, boot_id, and socket.
+# Majors 1 & 2 (Round 12): Pin Base tmux operations to one explicit socket (-S);
+# runtime mutual exclusion with Deck is enforced atomically by base-runner-exec.sh on .runner.lock.
 BASE_TMUX_SOCKET="${BASE_TMUX_SOCKET:-/tmp/tmux-$(id -u)/default}"
 unset TMUX TMUX_PANE TMUX_TMPDIR
 
 tmux_base() {
   tmux -S "$BASE_TMUX_SOCKET" "$@"
-}
-
-refresh_agent_lease() {
-  local agent="$1" pane_pid=""
-  local sock_dir
-  sock_dir="$(dirname "$BASE_TMUX_SOCKET")"
-  [[ -d "$sock_dir" ]] || mkdir -p -m 0700 "$sock_dir" 2>/dev/null || true
-  pane_pid="$(tmux_base list-panes -t "$SESSION:$agent" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
-  base_runner_lease_write "$agent" "$pane_pid" "$BASE_TMUX_SOCKET"
-  tmux_base set-hook -t "$SESSION:$agent" pane-exited "run-shell 'rm -f $(printf '%q' "$AGENTS_HOME/$agent/.base-runner.lease")'" 2>/dev/null || true
 }
 
 # Create the base session if it doesn't exist
@@ -219,14 +210,12 @@ if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
     # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, tear down the empty window and skip launch.
     if agent_opts_into_pty "$agent"; then
       tmux_base kill-window -t "$SESSION:$agent" 2>/dev/null || true
-      base_runner_lease_remove "$agent"
       # If killing the only window removed the session, reset session_created so subsequent agents can start cleanly.
       if ! tmux_base has-session -t "$SESSION" 2>/dev/null; then
         session_created=0
       fi
       continue
     fi
-    refresh_agent_lease "$agent"
     start_agent "$agent"
     start_watcher "$agent"
   done
@@ -252,14 +241,10 @@ for agent in "${AGENTS[@]}"; do
     fi
     if agent_opts_into_pty "$agent"; then
       tmux_base kill-window -t "$SESSION:$agent" 2>/dev/null || true
-      base_runner_lease_remove "$agent"
       continue
     fi
-    refresh_agent_lease "$agent"
     start_agent "$agent"
     start_watcher "$agent"
-  else
-    refresh_agent_lease "$agent"
   fi
 done
 
