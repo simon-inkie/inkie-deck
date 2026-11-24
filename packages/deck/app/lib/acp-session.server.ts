@@ -293,13 +293,13 @@ export class AcpSession {
             // ahead of the response pass sessionId validation and are retained in the transcript.
             owner.sessionId = options.resumeSessionId;
             owner.makeEvent = createEventSource({ kind: "session", session: owner.sessionId, generation: owner.generation }, randomUUID);
-            const resumeMethod = owner.advertised.sessionCapabilities?.resume ? "session/resume" : "session/load";
+            const resumeMethod = owner.advertised.loadSession ? session.load : session.resume;
             try {
-              await owner.connection.agent.request(resumeMethod as typeof session.new, {
+              await owner.connection.agent.request(resumeMethod, {
                 cwd: options.cwd,
                 sessionId: options.resumeSessionId,
                 mcpServers: [],
-              } as unknown as Parameters<typeof owner.connection.agent.request<typeof session.new>>[1]);
+              });
             } catch (resumeErr) {
               if (isSessionNotFoundError(resumeErr, options.resumeSessionId)) {
                 owner.resumeRejectedFlag = true;
@@ -430,6 +430,12 @@ export class AcpSession {
   private async runPrompt(text: string): Promise<Outcome> {
     if (terminal(this.current)) return this.current.kind;
     if (!this.sessionId) return "failed";
+    try {
+      this.emitMessage("You", text);
+    } catch {
+      this.stop("failed", "ACP transport or record failed");
+      return "failed";
+    }
     this.current = reduce(this.current, { kind: "prompt" });
     const outcome = new Promise<Outcome>((resolve) => { this.finishPrompt = resolve; });
     const finish = this.finishPrompt;
@@ -724,8 +730,11 @@ export class AcpSession {
       }
       case "user_message_chunk":
       case "agent_message_chunk":
-        if (update.content.type === "text") this.emit({ class: "happened", type: "message.chunk",
-          title: "Message", view: { kind: "text", excerpt: update.content.text } });
+        // User replay arrives during setup. Deck already recorded any live user prompts.
+        if (update.sessionUpdate === "user_message_chunk" && this.current.kind !== "starting") break;
+        if (update.content.type === "text") {
+          this.emitMessage(update.sessionUpdate === "user_message_chunk" ? "You" : "Message", update.content.text);
+        }
         break;
       case "plan": {
         let excerpt = "";
@@ -881,6 +890,10 @@ export class AcpSession {
       // Major 5 (Round 13): On EPERM or non-ESRCH error, do NOT set groupStopped=true and do NOT throw
       // out of close()/stop() so registry shutdown always reaches bounded cleanup and transitions to orphaned.
     }
+  }
+
+  private emitMessage(title: string, text: string): void {
+    this.emit({ class: "happened", type: "message.chunk", title, view: { kind: "text", excerpt: text } });
   }
 
   private emit(input: Parameters<typeof this.makeEvent>[0]): void { this.publish(this.makeEvent(input)); }

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AcpThreadView, deriveAcpCards } from "../../app/components/AcpThreadView.js";
@@ -187,6 +188,45 @@ rl.on("line", (line) => {
     const s2 = await reg.start(agent, { resume: true });
     expect(s2.activeSessionId).toBe("sess-persist-42");
     await reg.stop(agent);
+  });
+
+  it("loads replay when both capabilities are advertised and shows each earlier card once", async () => {
+    const prompt = "Remember this";
+    const reply = "I will";
+    const userUpdate = { kind: "update", update: {
+      sessionUpdate: "user_message_chunk", content: { type: "text", text: prompt },
+    } };
+    const agentUpdate = { kind: "update", update: {
+      sessionUpdate: "agent_message_chunk", content: { type: "text", text: reply },
+    } };
+    const script = {
+      sessionId: "sess-replay-43",
+      capabilities: { loadSession: true, sessionCapabilities: { resume: {} } },
+      prompts: [[agentUpdate, { kind: "result", result: { stopReason: "end_turn" } }]],
+      onLoad: [userUpdate, agentUpdate],
+    };
+    const fixture = fileURLToPath(new URL("../fixtures/acp-agent.mjs", import.meta.url));
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
+    const reg = new AcpRunnerRegistry(env, {
+      dataRoot: root,
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [fixture, JSON.stringify(script)] },
+      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
+      listWindows: () => [],
+    });
+    const messages = () => reg.events(agent).flatMap(({ type, view }) =>
+      type === "message.chunk" && view.kind === "text" ? [view.excerpt] : []);
+
+    try {
+      const session = await reg.start(agent);
+      expect(await session.prompt(prompt)).toBe("completed");
+      await reg.stop(agent);
+      expect(messages()).toContain(reply);
+
+      await reg.start(agent, { resume: true });
+      expect(messages()).toEqual([prompt, reply]);
+    } finally {
+      await reg.stop(agent);
+    }
   });
 
   it("Step 5: AcpThreadView upserts tool cards by dedupeKey, renders plain text without HTML injection, and resolves permissions", () => {

@@ -514,6 +514,7 @@ export class AcpRunnerRegistry {
       manifest,
       abortController,
       settled: settledPromise,
+      // A resumed generation rebuilds its transcript from replay in a fresh event list and journal.
       events: [],
       pendingPermissions: new Map(),
     };

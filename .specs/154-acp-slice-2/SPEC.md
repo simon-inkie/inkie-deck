@@ -29,6 +29,6 @@ box after its check passes.
 - [ ] Trigger a permission card for a harmless action and approve it. Confirm the action proceeds. (Date: ____ | agy version: ____ | Result: PENDING)
 - [ ] Trigger another permission card and deny it. Confirm the action is declined. (Date: ____ | agy version: ____ | Result: PENDING)
 - [ ] Click **Stop** and confirm the session stops. (Date: ____ | agy version: ____ | Result: PENDING)
-- [ ] Restart Deck with the same configuration and `agy` executable. In the test agent's thread, click **Resume last session** and confirm that the previous conversation opens. (Date: ____ | agy version: ____ | Result: PENDING)
+- [ ] Restart Deck with the same configuration and `agy` executable. In the test agent's thread, click **Resume last session** and confirm the agent keeps context. Earlier cards are shown only if the agent replays history on load. (Date: ____ | agy version: ____ | Result: PENDING)
 - [ ] Stop the ACP session, remove the test agent's `.runner`, and run `packages/base/bin/boot-agents.sh <test-agent>`. Confirm Base starts the agent in its tmux window. (Date: ____ | agy version: ____ | Result: PENDING)
 - [ ] Confirm the separate Base agent on the same machine still runs in its tmux window and receives an inbox message. (Date: ____ | agy version: ____ | Result: PENDING)

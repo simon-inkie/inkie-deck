@@ -68,13 +68,41 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
     expect((await start({ protocolVersion: 2 })).owner.state.kind).toBe("unsupported");
   });
 
+  test("publishes and records a prompt before sending it, once even if the agent echoes it", async () => {
+    const text = "Show the prompt";
+    const echo = ["Show the ", "prompt"].map((part) => update({
+      sessionUpdate: "user_message_chunk", content: { type: "text", text: part },
+    }));
+    const { owner, events } = await start({ prompts: [[...echo, result("end_turn")]] });
+    const recordEvent = vi.spyOn(owner.records, "event");
+    const recordFrame = vi.spyOn(owner.records, "frame");
+
+    expect(await owner.prompt(text)).toBe("completed");
+    const promptEvent = { type: "message.chunk", title: "You", view: { kind: "text", excerpt: text } };
+    expect(events.filter(({ type }) => type === "message.chunk")).toMatchObject([promptEvent]);
+    expect(recordEvent.mock.invocationCallOrder[0]).toBeLessThan(recordFrame.mock.invocationCallOrder[0]!);
+    const display = fs.readFileSync(path.join(owner.records.directory, "display.ndjson"), "utf8");
+    expect(JSON.parse(display.split("\n")[0]!)).toMatchObject(promptEvent);
+  });
+
+  test("fails closed and sends no prompt when recording the prompt event fails", async () => {
+    const { owner } = await start({ prompts: [[result("end_turn")]] });
+    vi.spyOn(owner.records, "event").mockImplementationOnce(() => {
+      throw new Error("ENOSPC");
+    });
+
+    expect(await owner.prompt("cannot record")).toBe("failed");
+    expect(owner.state.kind).toBe("failed");
+    expect(sent(owner).some((frame) => frame.method === "session/prompt")).toBe(false);
+  });
+
   test("passes only the base and adapter environment allowlists, excluding Deck credentials", async () => {
     const keys = ["PATH", "FIXTURE_ALLOWED", "FIXTURE_NOT_ALLOWED", "DEEPGRAM_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"];
     for (const key of keys.slice(1)) vi.stubEnv(key, "fixture-value");
     const { owner, events } = await start({ prompts: [[{ kind: "environment", keys }, result("end_turn")]] }, {},
       ["FIXTURE_ALLOWED", "DEEPGRAM_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]);
     expect(await owner.prompt("inspect environment")).toBe("completed");
-    expect(events[0]?.view).toEqual({ kind: "text", excerpt: "[true,true,false,false,false]" });
+    expect(events[1]?.view).toEqual({ kind: "text", excerpt: "[true,true,false,false,false]" });
   });
 
   test.each([
@@ -118,7 +146,7 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
       "invalid update schema", "unknown or already answered response id",
     ]);
     expect(owner.state).toEqual({ kind: "settled", outcome: "refused" });
-    expect(events.map(({ type }) => type)).toEqual(["message.chunk", "turn.settled"]);
+    expect(events.map(({ type }) => type)).toEqual(["message.chunk", "message.chunk", "turn.settled"]);
   });
 
   test("records stale generation and ends at the violation limit", async () => {
@@ -128,7 +156,7 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
     Reflect.get(owner, "receive").call(owner, owner.generation - 1, { bytes: Buffer.from("{}") });
     expect(await owner.prompt("first")).toBe("failed");
     expect(issues(owner)).toEqual(["stale generation", "invalid JSON or UTF-8", "oversized"]);
-    expect(events).toMatchObject([{ type: "session.failed", class: "action" }]);
+    expect(events).toMatchObject([{ type: "message.chunk" }, { type: "session.failed", class: "action" }]);
     expect(() => process.kill(owner.pid!, 0)).toThrow();
   });
 
@@ -144,12 +172,12 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
     ]] });
     expect(await owner.prompt("first")).toBe("completed");
     expect(events.map(({ seq, type }) => [seq, type])).toEqual([
-      [1, "tool.updated"], [2, "message.chunk"], [3, "tool.updated"], [4, "plan.updated"], [5, "turn.settled"],
+      [1, "message.chunk"], [2, "tool.updated"], [3, "message.chunk"], [4, "tool.updated"], [5, "plan.updated"], [6, "turn.settled"],
     ]);
-    expect(events[2]?.dedupeKey).toBe(events[0]?.dedupeKey);
-    expect(events[2]?.view).toEqual({ kind: "tool", name: "a".repeat(120), toolKind: "edit", status: "completed",
+    expect(events[3]?.dedupeKey).toBe(events[1]?.dedupeKey);
+    expect(events[3]?.view).toEqual({ kind: "tool", name: "a".repeat(120), toolKind: "edit", status: "completed",
       paths: Array.from({ length: 20 }, () => "a".repeat(512)) });
-    expect(events[1]?.view).toEqual({ kind: "text", excerpt: "a".repeat(500) });
+    expect(events[2]?.view).toEqual({ kind: "text", excerpt: "a".repeat(500) });
     const display = fs.readFileSync(path.join(owner.records.directory, "display.ndjson"), "utf-8");
     expect(display.trim().split("\n").map((line) => JSON.parse(line))).toEqual(JSON.parse(JSON.stringify(events)));
     expect(display).not.toMatch(/hidden-(?:input|output|thought)|wire-tool-id|\\u001b|\u202e/);
@@ -194,7 +222,7 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
       update({ sessionUpdate: "tool_call", toolCallId: "\x00", title: "Invalid" }),
     ]], onPermission: { 15: [result("end_turn")] } }, { violationLimit: 7 });
     expect(await owner.prompt("first")).toBe("completed");
-    expect(events.map(({ type }) => type)).toEqual(["turn.settled"]);
+    expect(events.map(({ type }) => type)).toEqual(["message.chunk", "turn.settled"]);
     expect(issues(owner)).toEqual([...invalid.map(() => "invalid permission request"), "invalid tool call id"]);
     expect(sent(owner).filter(({ result }) => result).map(({ result }) => result)).toEqual(
       invalid.map(() => ({ outcome: { outcome: "cancelled" } })),
@@ -213,14 +241,14 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
     expect(await turn).toBe("cancelled");
     expect(sent(owner).slice(-2)).toMatchObject([{ method: "session/cancel" },
       { id: 11, result: { outcome: { outcome: "cancelled" } } }]);
-    expect(events[1]?.answers).toBe(events[0]?.id);
+    expect(events[2]?.answers).toBe(events[1]?.id);
   });
 
   test("kills the whole process group when cancel is ignored", async () => {
     const { owner, events } = await start({ prompts: [[{ kind: "descendant" }]] }, { cancelMs: 75 });
     const turn = owner.prompt("first");
-    await expect.poll(() => events[0]?.view.kind).toBe("text");
-    const view = events[0]?.view;
+    await expect.poll(() => events[1]?.view.kind).toBe("text");
+    const view = events[1]?.view;
     const descendant = Number(view?.kind === "text" ? view.excerpt : undefined);
     expect(descendant).toBeGreaterThan(1);
     await owner.cancel();
