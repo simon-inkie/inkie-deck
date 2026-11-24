@@ -149,23 +149,45 @@ const appEnv = {
   ...withVoiceDisabledReason(env),
   VOICE_ALLOWED_ORIGINS: proxyEnv.VOICE_ALLOWED_ORIGINS,
 };
-// PTY recovery and shutdown hooks currently belong to server/production.mjs.
-// Dev PTY lifecycle integration remains a follow-up; use production for PTY.
-const child = spawn("react-router", args, {
+const reactRouterBin = path.join(
+  root,
+  "node_modules",
+  ".bin",
+  process.platform === "win32" ? "react-router.cmd" : "react-router",
+);
+const child = spawn(reactRouterBin, args, {
   stdio: "inherit",
   env: appEnv,
-  shell: true,
+  detached: process.platform !== "win32",
 });
 
-// Kill the voice proxy when the dev server exits.
+// Kill the voice proxy and forward shutdown signals directly to the dev server process group (no shell wrapper).
+let shuttingDown = false;
 function cleanup() {
   if (!voiceProxy.killed) {
     voiceProxy.kill();
   }
 }
+function forwardSignal(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  cleanup();
+  if (!child.killed && child.pid) {
+    try {
+      if (process.platform !== "win32") {
+        process.kill(-child.pid, signal);
+      } else {
+        child.kill(signal);
+      }
+    } catch {
+      try { child.kill(signal); } catch { /* ignore */ }
+    }
+  }
+  setTimeout(() => process.exit(0), 3000).unref();
+}
 process.on("exit", cleanup);
-process.on("SIGINT", () => { cleanup(); process.exit(0); });
-process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+process.on("SIGINT", () => forwardSignal("SIGINT"));
+process.on("SIGTERM", () => forwardSignal("SIGTERM"));
 
 child.on("exit", (code) => {
   cleanup();

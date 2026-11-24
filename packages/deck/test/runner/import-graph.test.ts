@@ -38,7 +38,10 @@ it("allows only the registry to import the PTY adapter in production", () => {
       const target = dependency && relative(deck, dependency);
       if ((/^node-pty(?:\/|$)/.test(fileName) && importer !== pty) || target?.startsWith(fixtures) ||
         (target === pty && importer !== registry) ||
-        (target === core && ![pty, registry, join(runner, "lock.server.ts")].includes(importer))) {
+        (target === core && ![
+          pty, registry, join(runner, "lock.server.ts"),
+          join(runner, "acp-manifest.ts"), join(runner, "acp-registry.server.ts"),
+        ].includes(importer))) {
         violations.push(`${importer} -> ${fileName}`);
       } else if (dependency && !resolved.isExternalLibraryImport && sourceFile.test(dependency)) {
         scan(dependency);

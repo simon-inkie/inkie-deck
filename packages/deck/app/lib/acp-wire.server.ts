@@ -18,7 +18,7 @@ type Schema = {
   minLength?: number;
 };
 
-const { $defs: definitions } = createRequire(import.meta.url)("@agentclientprotocol/sdk/schema/schema.json") as {
+const { $defs: definitions } = createRequire(import.meta.url)("@agentclientprotocol/sdk/schema/v1/schema.unstable.json") as {
   $defs: Record<string, Schema>;
 };
 
@@ -65,7 +65,13 @@ function definition(name: string): Schema {
   return schema;
 }
 
-type InboundSchema = "InitializeResponse" | "NewSessionResponse" | "SessionNotification" | "RequestPermissionRequest";
+type InboundSchema =
+  | "InitializeResponse"
+  | "NewSessionResponse"
+  | "LoadSessionResponse"
+  | "ResumeSessionResponse"
+  | "SessionNotification"
+  | "RequestPermissionRequest";
 
 export function validPayload(value: unknown, name: InboundSchema): boolean {
   return matches(value, definition(name));

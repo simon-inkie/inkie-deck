@@ -44,6 +44,11 @@ function handle(line) {
       protocolVersion: script.protocolVersion ?? 1, agentCapabilities: script.capabilities ?? {},
     } }); break;
     case "session/new": send({ id: message.id, result: { sessionId } }); break;
+    case "session/load":
+      steps(script.onLoad);
+      send({ id: message.id, result: {} });
+      break;
+    case "session/resume": send({ id: message.id, result: {} }); break;
     case "session/prompt":
       promptId = message.id;
       steps(script.prompts?.[promptCount++] ?? [{ kind: "result", result: { stopReason: "end_turn" } }]);

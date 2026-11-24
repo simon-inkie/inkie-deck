@@ -25,7 +25,8 @@ export type DeckEvent = {
   };
   class: "decision" | "action" | "happened";
   type: "permission.requested" | "permission.answered" | "tool.updated" | "message.chunk"
-    | "plan.updated" | "turn.settled" | "turn.disconnected" | "session.unsupported" | "session.failed";
+    | "plan.updated" | "turn.settled" | "turn.disconnected" | "session.unsupported" | "session.failed"
+    | "extension.blocking" | "auth.required" | "usage.updated" | "usage.exhausted";
   title: string;
   view: DisplayProjection;
   dedupeKey?: string;

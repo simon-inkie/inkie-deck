@@ -47,6 +47,10 @@ export function ptyRunnerEnabled(env: Env): boolean {
   return env["MC_PTY_RUNNER"] === "1";
 }
 
+export function acpRunnerEnabled(env: Env): boolean {
+  return env["MC_ACP_RUNNER"] === "1";
+}
+
 /**
  * Whether the agent-activity panel is exposed on this instance.
  *

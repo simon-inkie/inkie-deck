@@ -79,6 +79,9 @@ import {
   buildPanePushPayload, buildPaneWakePayload, captureTmuxPane, wakeIdleAgent, pushMessageToIdleAgent,
 } from "~/lib/tmux.server";
 import { isPtyOptedIn, runnerRegistry, type SessionStatus } from "~/lib/runner/registry.server";
+import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
+import { antigravityUsageReading, isAcpOptedIn } from "~/lib/runner/acp-manifest";
+import { AcpThreadView } from "~/components/AcpThreadView";
 import { classifyPaneHint } from "~/lib/pane-hints";
 import { TmuxPane } from "~/components/TmuxPane";
 import { Button } from "~/components/ui/button";
@@ -198,15 +201,16 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   const tmuxOn = tmuxEnabled(process.env);
   const requestUrl = new URL(request.url);
   const tmuxView = tmuxOn && requestUrl.searchParams.get("view") === "tmux";
+  const acpActive = isAcpOptedIn(process.env, agent) || acpRunnerRegistry.canControl(agent);
+  const trusted = canWriteFromRequest(request, context);
 
   // The operator rendering the thread IS the read - flip the
   // agent's sent blocks to read on disk BEFORE reading, so the receipt is
   // durable and this render already shows the flipped state. Without an
   // approved Host and origin proof, serve the thread without a receipt.
-  // SKIPPED in tmux view - terminal mode renders no
-  // messages, and the 1s poll would otherwise mark unseen messages read.
-  // Render-is-the-receipt only counts when the messages actually render.
-  if (!tmuxView && canWriteFromRequest(request, context)) {
+  // SKIPPED in tmux view AND ACP view - neither renders inbox blocks,
+  // so flipping unread state would clear messages the operator never saw.
+  if (!tmuxView && !acpActive && trusted) {
     try {
       await inbox.markRead(agent, user);
     } catch (err) {
@@ -272,20 +276,30 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
   }
 
   const latestBlock = blocks[blocks.length - 1];
-  const awaitingAgent = !tmuxView && startIndex + blocks.length === totalCount &&
+  const awaitingAgent = !acpActive && !tmuxView && startIndex + blocks.length === totalCount &&
     latestBlock?.header.from === user;
-  const needsPane = tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);
+  const needsPane = !acpActive && tmuxOn && (tmuxView || totalCount === 0 || awaitingAgent);
   const pty = needsPane && runnerRegistry.handlesTerminal(agent);
-  const ptyAllowed = pty && canWriteFromRequest(request, context);
+  const ptyAllowed = pty && trusted;
   const pane = !needsPane ? undefined : pty
     ? ptyAllowed ? runnerRegistry.capture(agent) : undefined
     : captureTmuxPane(process.env, agent);
   const hint = pane === undefined ? null : classifyPaneHint(pane);
-  const runner = tmuxView && ptyAllowed && (isPtyOptedIn(process.env, agent) || runnerRegistry.canControl(agent))
+  const runner = !acpActive && tmuxView && ptyAllowed && (isPtyOptedIn(process.env, agent) || runnerRegistry.canControl(agent))
     ? runnerRegistry.status(agent) ?? { state: "not-started" as const }
     : undefined;
-  const tmux = tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
+  const tmux = !acpActive && tmuxView ? { pane, ...(pty ? { pty, runner } : {}) } : undefined;
   const agentPaneHash = awaitingAgent ? hashPane(pane) : null;
+  const acp = acpActive
+    ? {
+      status: (trusted ? acpRunnerRegistry.status(agent) : undefined) ?? { state: "stopped" as const, code: null, exitedAt: 0 },
+      events: trusted ? acpRunnerRegistry.events(agent) : [],
+      lastSessionId: trusted ? acpRunnerRegistry.lastSessionId(agent) ?? null : null,
+      canResume: trusted && acpRunnerRegistry.canResume(agent),
+      usageReading: antigravityUsageReading(),
+      canWrite: trusted,
+    }
+    : undefined;
 
   return {
     agent,
@@ -303,6 +317,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
     hint,
     agentPaneHash,
     user,
+    acp,
   };
 }
 
@@ -379,6 +394,8 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // operator's send must stay instant. Gated to tmux-enabled instances
   // (tmux is off on some instances). wakeIdleAgent is a no-op on an active pane.
   const wakeTarget = (target: string) => {
+    // Minor 1 (Round 8): Never wake/push to a legacy tmux pane once an agent opts into or is controlled by ACP.
+    if (acpRunnerRegistry.isOptedIn(target) || acpRunnerRegistry.canControl(target)) return;
     if (tmuxEnabled(process.env)) {
       const wake = runnerRegistry.handlesTerminal(target)
         ? runnerRegistry.submit(target, buildPaneWakePayload(user))
@@ -405,6 +422,8 @@ export async function action({ request, params, context }: Route.ActionArgs) {
   // the drop with no error, no failing test and no reviewer prompt. Require the
   // flag so the compiler catches a missing value at every call site.
   const pushTarget = (target: string, body: string, dictated: boolean) => {
+    // Minor 1 (Round 8): Never push compose text to a legacy tmux pane once an agent opts into or is controlled by ACP.
+    if (acpRunnerRegistry.isOptedIn(target) || acpRunnerRegistry.canControl(target)) return;
     if (tmuxEnabled(process.env)) {
       const push = runnerRegistry.handlesTerminal(target)
         ? runnerRegistry.submit(target, buildPanePushPayload(user, body, dictated))
@@ -1469,7 +1488,20 @@ export default function ThreadView({ loaderData }: Route.ComponentProps) {
         {/* Terminal mode - the agent's live pane replaces
             the message history. v2: the pane is read/write - sendTarget wires
             the compose row to send-keys into this agent's live session. */}
-        {tmux !== undefined ? (
+        {loaderData.acp !== undefined ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-4" data-testid="thread-acp-view">
+            <AcpThreadView
+              key={agent}
+              agent={agent}
+              initialStatus={loaderData.acp.status}
+              initialEvents={loaderData.acp.events}
+              initialLastSessionId={loaderData.acp.lastSessionId}
+              initialCanResume={loaderData.acp.canResume}
+              initialUsageReading={loaderData.acp.usageReading}
+              canWrite={loaderData.acp.canWrite}
+            />
+          </div>
+        ) : tmux !== undefined ? (
           <div className="flex min-h-0 flex-1 flex-col px-6 py-4" data-testid="thread-tmux-view">
             {tmux.runner && <RunnerControls key={agent} agent={agent} status={tmux.runner} />}
             <TmuxPane pane={tmux.pane} windowName={agent} sendTarget={!tmux.pty || tmux.runner ? agent : undefined} hint={hint} />

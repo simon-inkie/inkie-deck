@@ -18,13 +18,103 @@
 #
 # Requires AGENTS_HOME to be set by the caller.
 
-agent_opts_into_pty() {
+# Base uses tmux's default socket even when called from inside another server.
+tmux_base() (
+  unset TMUX TMUX_PANE TMUX_TMPDIR
+  tmux "$@"
+)
+
+# Major 2 (Round 13): Branch on lock owner kind ('base' vs 'pty'/'acp'/unknown) so a
+# healthy Base tmux lock never disables inbox-push or provider-switch while PTY/ACP/corrupt
+# locks still keep tmux admission drained.
+runner_lock_is_base_owned() {
+  local lock_file="$1"
+  [[ -f "$lock_file" && ! -L "$lock_file" && -r "$lock_file" ]] || return 1
+  python3 - "$lock_file" 2>/dev/null <<'PY'
+import json, os, re, stat, sys
+p = sys.argv[1]
+uuid_re = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+def valid_pid(v):
+    return isinstance(v, int) and not isinstance(v, bool) and 1 < v <= 0x7FFFFFFF
+try:
+    st = os.lstat(p)
+    if (
+        stat.S_ISLNK(st.st_mode)
+        or not stat.S_ISREG(st.st_mode)
+        or st.st_size <= 0
+        or st.st_size > 4096
+        or st.st_uid != os.getuid()
+        or (st.st_mode & 0o022) != 0
+    ):
+        sys.exit(1)
+    with open(p, "r", encoding="utf-8") as f:
+        rec = json.load(f)
+    if not isinstance(rec, dict) or rec.get("owner") != "base":
+        sys.exit(1)
+    if "childPid" not in rec or "childBirth" not in rec:
+        sys.exit(1)
+    dp, db = rec.get("deckPid"), rec.get("deckBirth")
+    cp, cb = rec["childPid"], rec["childBirth"]
+    bid, sid, sat, ph = rec.get("bootId"), rec.get("sessionId"), rec.get("startedAt"), rec.get("phase")
+    ok = (
+        valid_pid(dp)
+        and (cp is None or valid_pid(cp))
+        and isinstance(db, str) and db.isdigit()
+        and (cb is None or (isinstance(cb, str) and cb.isdigit()))
+        and isinstance(bid, str) and bool(uuid_re.match(bid))
+        and isinstance(sid, str) and bool(uuid_re.match(sid))
+        and (ph in (None, "spawning") or (ph == "reserved" and cp is None and cb is None))
+        and isinstance(sat, int) and not isinstance(sat, bool)
+    )
+    sys.exit(0 if ok else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+agent_opts_into_runner() {
   local agent_home="$AGENTS_HOME/$1" runner
-  # A marker drains tmux admission; a lock keeps it drained after opt-out.
-  [[ -e "$agent_home/.runner.lock" || -L "$agent_home/.runner.lock" ]] && return 0
-  [[ -f "$agent_home/.runner" ]] || return 1
-  runner="$(< "$agent_home/.runner")" || return 1
-  [[ "$runner" =~ ^[[:space:]]*pty[[:space:]]*$ ]]
+  # A PTY/ACP/unknown lock keeps tmux drained after opt-out; a healthy Base lock does not.
+  if [[ -e "$agent_home/.runner.lock" || -L "$agent_home/.runner.lock" ]]; then
+    if ! runner_lock_is_base_owned "$agent_home/.runner.lock"; then
+      return 0
+    fi
+  fi
+  # Absent marker means tmux. A broken symlink or unreadable marker fails closed.
+  if [[ ! -e "$agent_home/.runner" && ! -L "$agent_home/.runner" ]]; then
+    return 1
+  fi
+  [[ -f "$agent_home/.runner" && -r "$agent_home/.runner" ]] || return 0
+  runner="$(cat "$agent_home/.runner" 2>/dev/null)" || return 0
+  [[ "$runner" =~ ^[[:space:]]*(pty|acp)[[:space:]]*$ ]]
+}
+
+agent_opts_into_pty() {
+  agent_opts_into_runner "$@"
+}
+
+# Majors 1 & 2 (Round 12): Base shares Deck's .runner.lock via base-runner-exec.sh
+# (flock + Deck-compatible LockRecord held for the runtime's life). Mutual exclusion
+# is atomic, stale locks fail closed, and unrelated panes never touch any lock.
+base_runner_exec_prefix() {
+  local agent="$1" bin_dir exec_script
+  bin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec_script="$bin_dir/base-runner-exec.sh"
+  printf '%q %q -- ' "$exec_script" "$AGENTS_HOME/$agent"
+}
+
+base_runner_wrap_launch_cmd() {
+  local agent="$1" cmd="$2" prefix
+  prefix="$(base_runner_exec_prefix "$agent")"
+  if [[ "$cmd" == *"; env "* ]]; then
+    printf '%s\n' "${cmd/; env /; ${prefix}env }"
+  elif [[ "$cmd" == *"; claude "* ]]; then
+    printf '%s\n' "${cmd/; claude /; ${prefix}claude }"
+  elif [[ "$cmd" == *"; AGENT_NAME="* ]]; then
+    printf '%s\n' "${cmd/; AGENT_NAME=/; ${prefix}env AGENT_NAME=}"
+  else
+    printf '%s\n' "${prefix}bash -lc $(printf '%q' "$cmd")"
+  fi
 }
 
 # agent_role <agent> -- the optional one-line role in $AGENTS_HOME/<agent>/.role.
@@ -134,7 +224,7 @@ codex_sessions_dir_for_home() {
 }
 
 # Construct the canonical codex launch command for an agent, preserving its
-# complete provider envelope across both initial launch and crash-fallback.
+# complete provider envelope for both fresh starts and resumes.
 # Arguments: agent_name role codex_home [session_id] [model_flag]
 codex_launch_command() {
   local a="$1" role="${2:-}" codex_home="${3:-}" sid="${4:-}" model_flag="${5:-}"

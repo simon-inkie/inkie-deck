@@ -6,7 +6,10 @@ import {
 import { setTimeout as delay } from "node:timers/promises";
 import { signalGroup } from "./runner.js";
 
+export type RunnerLockOwner = "base" | "pty" | "acp";
+
 interface LockRecord {
+  owner?: RunnerLockOwner;
   deckPid: number;
   deckBirth: string;
   childPid: number | null;
@@ -67,14 +70,26 @@ function sameLock(file: string, owned: { dev: number; ino: number }): boolean {
   return current?.dev === owned.dev && current.ino === owned.ino;
 }
 
-export function claimRunnerLock(file: string, sessionId: string, startedAt: number) {
+export function claimRunnerLock(
+  file: string,
+  sessionId: string,
+  startedAt: number,
+  owner: "pty" | "acp" = "pty",
+) {
   const deckBirth = processInfo(process.pid)?.birth;
   if (!deckBirth) throw new Error("Could not identify the Deck process.");
   const record: LockRecord = {
+    owner,
     deckPid: process.pid, deckBirth, childPid: null, childBirth: null,
     bootId: bootId(), sessionId, startedAt, phase: "reserved",
   };
   const fd = openSync(file, "wx", 0o600);
+  let fdClosed = false;
+  const closeFdOnce = () => {
+    if (fdClosed) return;
+    fdClosed = true;
+    closeSync(fd);
+  };
   const owned = fstatSync(fd);
 
   function persist() {
@@ -97,7 +112,7 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
     try {
       unlinkOwned();
     } finally {
-      closeSync(fd);
+      closeFdOnce();
     }
     throw error;
   }
@@ -113,6 +128,13 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
         throw error;
       }
     },
+    failedBeforeSpawn() {
+      if (record.childPid !== null) return;
+      if (record.phase === "spawning") {
+        record.phase = "reserved";
+        persist();
+      }
+    },
     spawned(pid: number) {
       record.childPid = pid;
       record.childBirth = processInfo(pid)?.birth ?? null;
@@ -126,10 +148,134 @@ export function claimRunnerLock(file: string, sessionId: string, startedAt: numb
         throw new Error("The PTY child was not recorded.");
       }
       unlinkOwned();
-      closeSync(fd);
+      closeFdOnce();
     },
-    retain() { closeSync(fd); },
+    retain() { closeFdOnce(); },
+    identity(): RunnerGroupIdentity {
+      return {
+        pid: record.childPid ?? 0,
+        birth: record.childBirth,
+        sessionId: record.sessionId,
+      };
+    },
   };
+}
+
+export interface RunnerGroupIdentity {
+  pid: number;
+  birth: string | null;
+  sessionId: string;
+}
+
+/**
+ * Major 2 (Round 13): Inspect .runner.lock owner kind without breaking tmux delivery on
+ * healthy Base locks. Returns "absent" on ENOENT, "base" | "pty" | "acp" on valid locks
+ * (defaulting legacy locks without `owner` to "pty"), and "unknown" on corrupt/symlink/unreadable locks.
+ */
+export function readRunnerLockOwner(file: string): RunnerLockOwner | "absent" | "unknown" {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return "absent";
+    return "unknown";
+  }
+  try {
+    const record = readLock(fd);
+    return record.owner ?? "pty";
+  } catch {
+    return "unknown";
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Major 3 (Round 12) & Major 5 (Round 13): Three-way classification of a tracked runner process group:
+ * - "dead": group does not exist (and lone PID isn't our birth), OR leader PID was provably reused (different birth).
+ * - "alive": leader matches our birth, OR leader is gone and a live group member carries our DECK_PTY_SESSION_ID marker.
+ * - "unverifiable": group still exists with leader gone and live member(s) lack the marker or /proc is unreadable.
+ *   Never signaled and never cleared from orphaned state.
+ */
+export function isRunnerGroupVerifiedAlive(identity: RunnerGroupIdentity): "alive" | "dead" | "unverifiable" {
+  if (!validPid(identity.pid) || !identity.birth) {
+    return "unverifiable";
+  }
+  let exists: boolean;
+  try {
+    exists = groupExists(identity.pid);
+  } catch {
+    return "unverifiable";
+  }
+  if (!exists) {
+    try {
+      const child = processInfo(identity.pid);
+      if (child && live(child.state) && child.birth === identity.birth) {
+        return "alive";
+      }
+      return "dead";
+    } catch {
+      return "unverifiable";
+    }
+  }
+  try {
+    const leader = processInfo(identity.pid);
+    if (leader) {
+      if (leader.birth === identity.birth && leader.group === identity.pid && leader.session === identity.pid) {
+        return "alive";
+      }
+      // Provably a different leader (reused PID) -> not our runner process group.
+      if (leader.birth !== identity.birth) {
+        return "dead";
+      }
+      return "unverifiable";
+    }
+    // Leader is gone, yet process group still has live member(s): check for our launch UUID marker.
+    const marker = `${ptySessionEnv}=${identity.sessionId}`;
+    const leaderBirth = BigInt(identity.birth);
+    let sawLiveGroupMember = false;
+    let sawMarkedMember = false;
+    for (const entry of readdirSync("/proc")) {
+      const pid = Number(entry);
+      if (!validPid(pid)) continue;
+      const member = processInfo(pid);
+      if (member?.group !== identity.pid || !live(member.state)) continue;
+      sawLiveGroupMember = true;
+      if (member.session !== identity.pid || member.birth === undefined || BigInt(member.birth) < leaderBirth) {
+        return "unverifiable";
+      }
+      let envText: string;
+      try {
+        envText = readFileSync(`/proc/${pid}/environ`, "utf8");
+      } catch {
+        return "unverifiable";
+      }
+      if (!envText.split("\0").includes(marker)) {
+        return "unverifiable";
+      }
+      sawMarkedMember = true;
+    }
+    if (sawMarkedMember) return "alive";
+    if (sawLiveGroupMember) return "unverifiable";
+    return groupExists(identity.pid) ? "unverifiable" : "dead";
+  } catch {
+    return "unverifiable";
+  }
+}
+
+/**
+ * Major 3 (Round 12): Signal a process group ONLY after verifying birth / session-marker
+ * ownership so a reused numeric PGID is never killed, and swallow EPERM as 'unverifiable'.
+ */
+export function killVerifiedRunnerGroup(identity: RunnerGroupIdentity): "alive" | "dead" | "unverifiable" {
+  const before = isRunnerGroupVerifiedAlive(identity);
+  if (before !== "alive") return before;
+  try {
+    signalGroup(identity.pid, "SIGKILL");
+  } catch {
+    return "unverifiable";
+  }
+  return isRunnerGroupVerifiedAlive(identity);
 }
 
 function validPid(pid: unknown): pid is number {
@@ -146,6 +292,7 @@ function readLock(fd: number): LockRecord {
   if (length !== stat.size) throw new Error("Invalid runner lock.");
   const record = JSON.parse(bytes.toString("utf8", 0, length)) as Partial<LockRecord> | null;
   if (!record || !validPid(record.deckPid) ||
+      !(record.owner === undefined || record.owner === "base" || record.owner === "pty" || record.owner === "acp") ||
       !(record.childPid === null || validPid(record.childPid)) ||
       typeof record.deckBirth !== "string" || !/^\d+$/.test(record.deckBirth) ||
       !(record.childBirth === null || (typeof record.childBirth === "string" && /^\d+$/.test(record.childBirth))) ||
@@ -183,10 +330,35 @@ function verifyGroup(record: LockRecord, group: number): boolean {
   return member?.birth === witness.birth && member.group === group && member.session === group && live(member.state);
 }
 
-export async function recoverRunnerLock(file: string): Promise<"absent" | "recovered" | "unrecovered"> {
+/**
+ * Major 2 (Round 16) & Minor 2: Non-blocking flock probe on an O_RDWR descriptor (NFS-compatible).
+ * Returns true if another process holds an exclusive flock on the lock file right now.
+ */
+export function isRunnerLockFlockHeld(file: string): boolean {
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return false;
+  }
+  try {
+    const guard = spawnSync("flock", ["-n", "3"], {
+      env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "ignore", "ignore", fd], timeout: 1_000,
+    });
+    return Boolean(guard.error || guard.status !== 0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export async function recoverRunnerLock(
+  file: string,
+  expectedOwner?: RunnerLockOwner,
+): Promise<"absent" | "recovered" | "unrecovered"> {
+  let fd: number;
+  try {
+    // Minor 2 (Round 16): Open O_RDWR (not O_RDONLY) so exclusive flock works on Linux NFS as well.
+    fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (hasCode(error, "ENOENT")) return "absent";
     throw error;
@@ -200,7 +372,25 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
     }
     const owned = fstatSync(fd);
     if (!sameLock(file, owned)) return "unrecovered";
+    // Empty file whose exclusive flock we just won (interrupted pre-write): safe to remove.
+    if (owned.isFile() && owned.size === 0 && owned.uid === process.getuid?.() && (owned.mode & 0o022) === 0) {
+      if (expectedOwner) return "unrecovered";
+      unlinkSync(file);
+      return "recovered";
+    }
     const snapshot = readLock(fd);
+    if (expectedOwner && snapshot.owner !== expectedOwner) return "unrecovered";
+    // Major 3 (Round 16): For Base-owned locks, staleness is decided SOLELY by the non-blocking
+    // flock acquired above (zero /proc descendant scanning, so unrelated non-dumpable processes
+    // never block recovery). Refuse only incomplete legacy spawning locks with childPid === null.
+    if (snapshot.owner === "base") {
+      if (snapshot.bootId === bootId() && snapshot.phase === "spawning" && snapshot.childPid === null) {
+        throw new Error("Base runner lock was left in incomplete spawning state.");
+      }
+      if (!sameLock(file, owned)) return "unrecovered";
+      unlinkSync(file);
+      return "recovered";
+    }
     if (snapshot.bootId === bootId()) {
       const deck = processInfo(snapshot.deckPid);
       if (deck?.birth === snapshot.deckBirth && live(deck.state)) return "unrecovered";
@@ -209,7 +399,7 @@ export async function recoverRunnerLock(file: string): Promise<"absent" | "recov
       const record = readLock(fd);
       if (record.deckPid !== snapshot.deckPid || record.deckBirth !== snapshot.deckBirth ||
           record.bootId !== snapshot.bootId || record.sessionId !== snapshot.sessionId ||
-          record.startedAt !== snapshot.startedAt) return "unrecovered";
+          record.startedAt !== snapshot.startedAt || (expectedOwner && record.owner !== expectedOwner)) return "unrecovered";
       if (record.phase !== "reserved") {
         if (record.childPid === null) throw new Error("The PTY child was not recorded.");
         const group = record.childPid;

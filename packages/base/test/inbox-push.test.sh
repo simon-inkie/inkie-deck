@@ -4,8 +4,8 @@
 # synchronous capture-verify branches. Covers both claude and agy (Gemini)
 # runtime panes; the RUNTIME_OVERRIDE seam exercises the runtime gate in test
 # mode without needing a live .runtime file. The single exception is the
-# AGENTS_HOME case, which must leave test mode to read a real .runtime file and
-# stands up a stub `tmux` on PATH rather than contacting a tmux server.
+# socket fixture, which leaves test mode to read a real .runtime file and
+# uses a stub `tmux` on PATH.
 #
 # Run: packages/base/test/inbox-push.test.sh
 
@@ -323,19 +323,9 @@ MSG="[inbox from courier] hello"
 ( export PANE_OVERRIDE="$IDLE_CLEAN" RUNTIME_OVERRIDE=""
   run_case "runtime: empty string -> skip:unknown-runtime" "skip:unknown-runtime" 2 ); tally $?
 
-# AGENTS_HOME is honoured for the runtime lookup. The gate reads
-# "$AGENTS_HOME/<recipient>/.runtime", so a deployment whose agent homes are not
-# under ~/agents must still be gated off its own files. Every case above drives the
-# gate through RUNTIME_OVERRIDE, which is a TEST-MODE seam and never opens the file,
-# so none of them touches the path at all.
-#
-# This case therefore runs with PANE_OVERRIDE UNSET (TEST_MODE=0, the only mode in
-# which the file is read), which means tmux has to answer. A stub `tmux` first on
-# PATH answers the window probe and the capture calls, so no tmux server is
-# contacted, and PUSH_DRY_RUN stops the flow before any send-keys exists to send.
-# If AGENTS_HOME were ignored the file would not be found, _RUNTIME would be empty
-# and the verdict would be skip:unknown-runtime -- so "pushed" is a positive
-# assertion that the var, not a hardcoded home, located the file.
+# Exercise the live delivery path with an isolated agent home. The other
+# socket always has a same-named window. The default socket is tested with
+# no session, a prefix match, and then an exact match.
 (
   _AH_TMP="$(mktemp -d)"
   trap 'rm -rf "$_AH_TMP"' EXIT
@@ -343,18 +333,51 @@ MSG="[inbox from courier] hello"
   printf 'claude\n' > "$_AH_TMP/homes/$REC/.runtime"
   cat > "$_AH_TMP/stub/tmux" <<'STUB'
 #!/usr/bin/env bash
-# Stub tmux for the AGENTS_HOME case: answers the window probe with the recipient
-# and both capture-pane forms with the injected pane text. Anything else is a no-op.
+socket=default
+if [[ "$1" == -S ]]; then
+  socket=other
+  shift 2
+elif [[ -n "${TMUX:-}${TMUX_PANE:-}${TMUX_TMPDIR:-}" ]]; then
+  socket=other
+fi
+printf '%s %s\n' "$socket" "$*" >> "$STUB_TMUX_LOG"
 case "$1" in
-  list-windows) printf '%s\n' "$STUB_TMUX_WINDOW" ;;
+  list-windows)
+    if [[ "$socket" == other || "$3" == "=${STUB_BASE_SESSION:-}" ||
+          "${STUB_BASE_SESSION:-}" == "$3"* ]]; then
+      printf '%s\n' "$STUB_TMUX_WINDOW"
+    fi ;;
   capture-pane) printf '%s' "$STUB_TMUX_PANE" ;;
   *) : ;;
 esac
 STUB
   chmod +x "$_AH_TMP/stub/tmux"
-  export STUB_TMUX_WINDOW="$REC" STUB_TMUX_PANE="$IDLE_CLEAN"
-  export AGENTS_HOME="$_AH_TMP/homes" PATH="$_AH_TMP/stub:$PATH" PUSH_DRY_RUN=1
-  run_case "AGENTS_HOME: temp-home .runtime drives the gate" "pushed" 0
+  unset STUB_BASE_SESSION PANE_OVERRIDE PUSH_DRY_RUN
+  export STUB_TMUX_WINDOW="$REC" STUB_TMUX_PANE="$IDLE_CLEAN" STUB_TMUX_LOG="$_AH_TMP/log"
+  export AGENTS_HOME="$_AH_TMP/homes" PATH="$_AH_TMP/stub:$PATH" PUSH_VERIFY_SLEEP=0
+  export TMUX="$_AH_TMP/other.sock,123,0" TMUX_PANE='%2' TMUX_TMPDIR="$_AH_TMP"
+  export BASE_TMUX_SOCKET="$_AH_TMP/other.sock" INBOX_PUSH_TMUX_SESSION=other
+  run_case "other-socket window is ignored" "skip:no-window" 2 || exit 1
+  if [[ "$(cat "$STUB_TMUX_LOG")" != 'default list-windows -t =agents -F #{window_name}' ]]; then
+    echo 'FAIL  expected only the default window probe'
+    exit 1
+  fi
+  : > "$STUB_TMUX_LOG"
+  export STUB_BASE_SESSION=agents-dev
+  run_case "agents-dev is ignored when agents is absent" "skip:no-window" 2 || exit 1
+  if [[ "$(cat "$STUB_TMUX_LOG")" != 'default list-windows -t =agents -F #{window_name}' ]]; then
+    echo 'FAIL  expected no capture or send for the prefix session'
+    exit 1
+  fi
+  : > "$STUB_TMUX_LOG"
+  export STUB_BASE_SESSION=agents
+  run_case "default socket uses temp-home .runtime and delivers" "pushed-unverified" 0 || exit 1
+  if grep -v '^default ' "$STUB_TMUX_LOG" \
+    || [[ "$(grep ' send-keys ' "$STUB_TMUX_LOG")" != "$(printf 'default send-keys -t =agents:%s -l %s\ndefault send-keys -t =agents:%s Enter' "$REC" "$MSG" "$REC")" ]]; then
+    echo 'FAIL  expected text and Enter on the default socket only'
+    exit 1
+  fi
+  exit 0
 ); tally $?
 
 # ---- agy pane gate + verify branches ----

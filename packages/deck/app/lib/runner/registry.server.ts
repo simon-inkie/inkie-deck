@@ -9,7 +9,7 @@ import {
   listTmuxWindows, SEND_KEYS_ENTER_DELAY_MS, SEND_KEYS_VERIFY_DELAYS_MS, type PaneKey,
 } from "../tmux.server.js";
 import { submitPaneText, type SendKeysResult } from "../tmux-submit.js";
-import { claimRunnerLock, hasCode, ptySessionEnv, recoverRunnerLock } from "./lock.server.js";
+import { claimRunnerLock, hasCode, isRunnerLockFlockHeld, ptySessionEnv, readRunnerLockOwner, recoverRunnerLock } from "./lock.server.js";
 import { PtyRunner } from "./pty-runner.server.js";
 import { LaunchFailure, type SessionSpec, type WriteResult } from "./runner.js";
 import { createRunnerScreen, type RunnerScreen } from "./screen.server.js";
@@ -129,9 +129,16 @@ export class RunnerRegistry {
     if (!home) return false;
     if (ptyRunnerEnabled(this.env) && optedIn(home)) return true;
     const session = shared.sessions.get(home);
-    if (session?.state === "locked") return true;
     try {
-      return lstatSync(join(home, lockName), { throwIfNoEntry: false }) !== undefined;
+      const owner = readRunnerLockOwner(join(home, lockName));
+      // Major 2 (Round 16): A live Base-owned lock ALWAYS belongs to Base tmux; clear any
+      // stale cached 'locked' entry rather than letting it override the live Base owner.
+      if (owner === "base") {
+        if (session?.state === "locked") shared.sessions.delete(home);
+        return false;
+      }
+      if (session?.state === "locked") return true;
+      return owner !== "absent";
     } catch {
       return true;
     }
@@ -350,8 +357,28 @@ export class RunnerRegistry {
   private async recoverHome(home: string): Promise<void> {
     const existing = shared.sessions.get(home);
     if (existing && ("runner" in existing || existing.state === "cleanup-pending")) return;
+    const lockFile = join(home, lockName);
+    let ownerBefore = readRunnerLockOwner(lockFile);
+    // Major 2 (Round 16): Locked-but-ownerless means another launcher just took flock and is
+    // publishing its owner record right now; retry briefly and never cache 'locked' for a live flock.
+    if (ownerBefore === "unknown" && isRunnerLockFlockHeld(lockFile)) {
+      for (let attempt = 0; attempt < 3 && ownerBefore === "unknown"; attempt++) {
+        await delay(15);
+        ownerBefore = readRunnerLockOwner(lockFile);
+      }
+      if (ownerBefore === "base" || ownerBefore === "acp" || (ownerBefore === "unknown" && isRunnerLockFlockHeld(lockFile))) {
+        if (existing?.state === "locked") shared.sessions.delete(home);
+        return;
+      }
+    }
+    // Major 2 (Round 14): Base-owned and ACP-owned non-PTY homes belong to other runners;
+    // never sweep them or record 'locked' as PTY registry's own state.
+    if ((ownerBefore === "base" || ownerBefore === "acp") && !optedIn(home)) {
+      if (existing?.state === "locked") shared.sessions.delete(home);
+      return;
+    }
     try {
-      const result = await recoverRunnerLock(join(home, lockName));
+      const result = await recoverRunnerLock(lockFile);
       if (shared.sessions.get(home) !== existing) return;
       if (result === "recovered") {
         shared.sessions.set(home, { state: "stopped", code: null, exitedAt: this.now() });
@@ -360,6 +387,11 @@ export class RunnerRegistry {
       }
     } catch {
       if (shared.sessions.get(home) === existing) {
+        const ownerAfter = readRunnerLockOwner(lockFile);
+        if (ownerAfter === "base" || ownerAfter === "acp" || (ownerAfter === "unknown" && isRunnerLockFlockHeld(lockFile))) {
+          if (existing?.state === "locked") shared.sessions.delete(home);
+          return;
+        }
         shared.sessions.set(home, { state: "locked", reason: "Could not safely recover the runner lock." });
       }
     }
@@ -380,6 +412,12 @@ export class RunnerRegistry {
     for (const entry of entries) {
       if (!entry.isDirectory() || !AGENT_NAME_RE.test(entry.name)) continue;
       const home = join(root, entry.name);
+      const owner = readRunnerLockOwner(join(home, lockName));
+      // Major 2 (Round 14): Skip Base-owned and ACP-owned homes during PTY boot recovery.
+      if (owner === "base" || owner === "acp") {
+        if (shared.sessions.get(home)?.state === "locked") shared.sessions.delete(home);
+        continue;
+      }
       await this.recoverHome(home);
     }
     if (shared.recoveryFailed === previousFailure) shared.recoveryFailed = false;

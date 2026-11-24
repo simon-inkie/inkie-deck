@@ -26,6 +26,7 @@
 set -euo pipefail
 
 SESSION="agents"
+SESSION_TARGET="=$SESSION"
 AGENTS_HOME="${AGENTS_HOME:-$HOME/agents}"
 
 # Agent list derived from $AGENTS_HOME/*/ - a dir is an agent iff it holds
@@ -149,9 +150,10 @@ launch_command() {
 }
 
 start_agent() {
-  local agent="$1" command
+  local agent="$1" command wrapped
   command="$(launch_command "$agent")" || return 0
-  tmux send-keys -t "$SESSION:$agent" "$command" Enter
+  wrapped="$(base_runner_wrap_launch_cmd "$agent" "$command")"
+  tmux_base send-keys -t "$SESSION_TARGET:$agent" "$wrapped" Enter
 }
 
 # Dry run: print what would be sent to each agent's pane, start nothing.
@@ -173,9 +175,9 @@ start_watcher() {
   local agent="$1"
   [[ "$WATCHER_ENABLED" != "1" ]] && return
   [[ ! -x "$WATCHER_SCRIPT" ]] && return
-  local target="$SESSION:$agent"
+  local target="$SESSION_TARGET:$agent"
   # Slim side pane (15%) for the watcher; -d keeps focus on the agent pane.
-  tmux split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
+  tmux_base split-window -d -t "$target" -h -p 15 "exec $WATCHER_SCRIPT $target" 2>/dev/null || true
 }
 
 # Once for the whole workspace, not per agent. Best-effort: see claude-binary-check.sh.
@@ -183,16 +185,29 @@ warn_if_foreign_claude
 
 # Create the base session if it doesn't exist
 # Before any pane starts, so Claude Code shows no "focus-events off" hint.
-tmux start-server 2>/dev/null || true
-tmux set -g focus-events on 2>/dev/null || true
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
-  FIRST="${AGENTS[0]}"
-  tmux new-session -d -s "$SESSION" -n "$FIRST" -c "$AGENTS_HOME/$FIRST"
-  start_agent "$FIRST"
-  start_watcher "$FIRST"
-
-  for agent in "${AGENTS[@]:1}"; do
-    tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+tmux_base start-server 2>/dev/null || true
+tmux_base set -g focus-events on 2>/dev/null || true
+if ! tmux_base has-session -t "$SESSION_TARGET" 2>/dev/null; then
+  session_created=0
+  for agent in "${AGENTS[@]}"; do
+    if agent_opts_into_pty "$agent"; then
+      continue
+    fi
+    if [[ $session_created -eq 0 ]]; then
+      tmux_base new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+      session_created=1
+    else
+      tmux_base new-window -t "$SESSION_TARGET:" -n "$agent" -c "$AGENTS_HOME/$agent"
+    fi
+    # Re-check after window creation: if ACP/PTY claimed the lock mid-cutover, tear down the empty window and skip launch.
+    if agent_opts_into_pty "$agent"; then
+      tmux_base kill-window -t "$SESSION_TARGET:$agent" 2>/dev/null || true
+      # If killing the only window removed the session, reset session_created so subsequent agents can start cleanly.
+      if ! tmux_base has-session -t "$SESSION_TARGET" 2>/dev/null; then
+        session_created=0
+      fi
+      continue
+    fi
     start_agent "$agent"
     start_watcher "$agent"
   done
@@ -200,38 +215,66 @@ fi
 
 # Enable mouse scroll + click, and terminal title passthrough
 # (must be after session exists -- tmux server has to be running)
-tmux set -g mouse on 2>/dev/null || true
-tmux set -g set-titles on 2>/dev/null || true
-tmux set -g set-titles-string "#{window_name}" 2>/dev/null || true
-tmux set -g allow-passthrough on 2>/dev/null || true
+tmux_base set -g mouse on 2>/dev/null || true
+tmux_base set -g set-titles on 2>/dev/null || true
+tmux_base set -g set-titles-string "#{window_name}" 2>/dev/null || true
+tmux_base set -g allow-passthrough on 2>/dev/null || true
 
 # Add any missing agent windows
 for agent in "${AGENTS[@]}"; do
-  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$agent"; then
-    tmux new-window -t "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+  if agent_opts_into_pty "$agent"; then
+    continue
+  fi
+  if ! tmux_base list-windows -t "$SESSION_TARGET" -F '#{window_name}' | grep -qx "$agent"; then
+    if ! tmux_base has-session -t "$SESSION_TARGET" 2>/dev/null; then
+      tmux_base new-session -d -s "$SESSION" -n "$agent" -c "$AGENTS_HOME/$agent"
+    else
+      tmux_base new-window -t "$SESSION_TARGET:" -n "$agent" -c "$AGENTS_HOME/$agent"
+    fi
+    if agent_opts_into_pty "$agent"; then
+      tmux_base kill-window -t "$SESSION_TARGET:$agent" 2>/dev/null || true
+      continue
+    fi
     start_agent "$agent"
     start_watcher "$agent"
   fi
 done
+
+if ! tmux_base has-session -t "$SESSION_TARGET" 2>/dev/null; then
+  exit 0
+fi
+
+LIVE_WINDOWS="$(tmux_base list-windows -t "$SESSION_TARGET" -F '#{window_name}' 2>/dev/null || true)"
+[[ -n "$LIVE_WINDOWS" ]] || exit 0
 
 if [[ $WINDOWED -eq 1 ]]; then
   # Spawn each agent in its own Windows Terminal window via wt.exe (WSL only).
   # Each window attaches to the shared tmux session and selects its agent.
   # Use bash -c so the tmux command separator (\;) survives the
   # wt.exe -> wsl.exe -> bash argument chain intact.
+  spawned=0
   for agent in "${AGENTS[@]}"; do
+    printf '%s\n' "$LIVE_WINDOWS" | grep -qx "$agent" || continue
     wt.exe -w new --title "$agent" \
       wsl.exe -d Ubuntu --cd "$AGENTS_HOME/$agent" -- \
-      bash -c "tmux new-session -t $SESSION \\; select-window -t $agent" \
+      bash -c "unset TMUX TMUX_PANE TMUX_TMPDIR; exec tmux new-session -t $SESSION_TARGET \\; select-window -t $agent" \
       >/dev/null 2>&1 &
+    spawned=$((spawned + 1))
     sleep 0.5  # stagger so wt.exe instances don't race each other
   done
   wait  # let backgrounded wt.exe calls settle
-  echo "Spawned ${#AGENTS[@]} windowed agents"
+  echo "Spawned $spawned windowed agents"
 else
   # Attach via a grouped session: shares windows but keeps independent focus
   # per client, so two people (or two terminals) can look at different agents
   # in the same tmux session at once.
-  LAST_AGENT="${AGENTS[-1]}"
-  exec tmux new-session -t "$SESSION" \; select-window -t "$LAST_AGENT"
+  TARGET_AGENT=""
+  for agent in "${AGENTS[@]}"; do
+    if printf '%s\n' "$LIVE_WINDOWS" | grep -qx "$agent"; then
+      TARGET_AGENT="$agent"
+    fi
+  done
+  [[ -n "$TARGET_AGENT" ]] || exit 0
+  unset TMUX TMUX_PANE TMUX_TMPDIR
+  exec tmux new-session -t "$SESSION_TARGET" \; set-option @base_workspace 1 \; select-window -t "$TARGET_AGENT"
 fi

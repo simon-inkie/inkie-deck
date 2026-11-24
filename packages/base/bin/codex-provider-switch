@@ -45,13 +45,63 @@ def state_root() -> Path:
     ).resolve()
 
 
+UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+
+
+def _valid_pid(val: object) -> bool:
+    return isinstance(val, int) and not isinstance(val, bool) and 1 < val <= 0x7FFFFFFF
+
+
+def _is_valid_base_lock(lock_file: Path) -> bool:
+    try:
+        st = os.lstat(lock_file)
+        if (
+            not os.path.isfile(lock_file)
+            or lock_file.is_symlink()
+            or st.st_size <= 0
+            or st.st_size > 4096
+            or st.st_uid != os.getuid()
+            or (st.st_mode & 0o022) != 0
+        ):
+            return False
+        rec = json.loads(lock_file.read_text(encoding="utf-8"))
+        if not isinstance(rec, dict) or rec.get("owner") != "base":
+            return False
+        if "childPid" not in rec or "childBirth" not in rec:
+            return False
+        dp, db = rec.get("deckPid"), rec.get("deckBirth")
+        cp, cb = rec["childPid"], rec["childBirth"]
+        bid, sid, sat, ph = rec.get("bootId"), rec.get("sessionId"), rec.get("startedAt"), rec.get("phase")
+        return (
+            _valid_pid(dp)
+            and (cp is None or _valid_pid(cp))
+            and isinstance(db, str)
+            and db.isdigit()
+            and (cb is None or (isinstance(cb, str) and cb.isdigit()))
+            and isinstance(bid, str)
+            and bool(UUID_RE.match(bid))
+            and isinstance(sid, str)
+            and bool(UUID_RE.match(sid))
+            and (ph in (None, "spawning") or (ph == "reserved" and cp is None and cb is None))
+            and isinstance(sat, int)
+            and not isinstance(sat, bool)
+        )
+    except (OSError, UnicodeError, ValueError):
+        return False
+
+
 def agent_opts_into_pty(home: Path) -> bool:
     lock_file = home / ".runner.lock"
     runner_file = home / ".runner"
     try:
         if lock_file.exists() or lock_file.is_symlink():
+            if not _is_valid_base_lock(lock_file):
+                return True
+        if not runner_file.exists() and not runner_file.is_symlink():
+            return False
+        if not runner_file.is_file():
             return True
-        return runner_file.is_file() and runner_file.read_text(encoding="utf-8").strip() == "pty"
+        return runner_file.read_text(encoding="utf-8").strip() in ("pty", "acp")
     except (OSError, UnicodeError):
         return True
 
@@ -147,7 +197,10 @@ def lock(action: str, agent: str, transaction: str | None = None, check: bool = 
 
 def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     binary = os.environ.get("PROVIDER_SWITCH_TMUX_BIN", "tmux")
-    return subprocess.run([binary, *args], text=True, capture_output=True, check=check)
+    sub_env = dict(os.environ)
+    for var in ("TMUX", "TMUX_PANE", "TMUX_TMPDIR"):
+        sub_env.pop(var, None)
+    return subprocess.run([binary, *args], text=True, capture_output=True, check=check, env=sub_env)
 
 
 def pane_details(agent: str) -> tuple[str, str, str]:
@@ -267,13 +320,17 @@ def provider_command(agent: str, role: str, codex_home: str) -> str:
             model_flag = f"--model {m}"
     fixed_program = (
         'BOOT_AGENTS_LIB_ONLY=1 source "$1"; '
-        'codex_launch_command "$2" "$3" "$4" "" "$5"'
+        'raw_cmd="$(codex_launch_command "$2" "$3" "$4" "" "$5")"; '
+        'base_runner_wrap_launch_cmd "$2" "$raw_cmd"'
     )
+    sub_env = dict(os.environ)
+    sub_env["AGENTS_HOME"] = str(agents_root())
     result = subprocess.run(
         ["bash", "-c", fixed_program, "provider-switch", str(BOOT_SCRIPT), agent, role, codex_home, model_flag],
         text=True,
         capture_output=True,
         check=False,
+        env=sub_env,
     )
     if result.returncode != 0 or not result.stdout.strip():
         raise SwitchError(f"provider envelope construction failed: {result.stderr.strip()}")
@@ -570,6 +627,9 @@ def rollback(agent: str, transaction: str) -> None:
         if command_name in {"codex", "node"}:
             terminate_codex(pane_id)
         send_fresh(pane_id, command)
+        # Major 5 (Round 16): Verify the fresh Plus Codex pane is actually live before committing
+        # provider=plus and stage=rolled-back (never claim restored if launcher refused the lock).
+        wait_for_clean_codex(pane_id)
     provider = {
         "schema_version": 1,
         "agent": agent,

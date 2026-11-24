@@ -121,7 +121,7 @@
 
 set +e
 
-TMUX_SESSION="${INBOX_PUSH_TMUX_SESSION:-agents}"
+TMUX_SESSION="=agents"
 # Where the agent homes live. bin/create-agent.sh and bin/boot-agents.sh in this
 # same package already read AGENTS_HOME for exactly this directory, so reuse the
 # name the package has rather than hardcoding one deployment's layout.
@@ -164,7 +164,7 @@ fi
 # tx <tmux-args...>  -- a live tmux side effect; a no-op in test mode.
 tx() {
   [ "$TEST_MODE" = "1" ] && return 0
-  tmux "$@" 2>/dev/null || true
+  tmux_base "$@" 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------------
@@ -325,7 +325,7 @@ capture() {
     esac
     return 0
   fi
-  tmux capture-pane -t "${TMUX_SESSION}:${1}" -p 2>/dev/null || true
+  tmux_base capture-pane -t "${TMUX_SESSION}:${1}" -p 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------------
@@ -339,7 +339,7 @@ capture_raw() {
     printf '%s' "${PANE_RAW_OVERRIDE:-}"
     return 0
   fi
-  tmux capture-pane -t "${TMUX_SESSION}:${1}" -p -e 2>/dev/null || true
+  tmux_base capture-pane -t "${TMUX_SESSION}:${1}" -p -e 2>/dev/null || true
 }
 
 # ==========================================================================
@@ -360,7 +360,7 @@ fi
 
 # 1. Window must exist (recipient is live in tmux). Skipped in test mode.
 if [ "$TEST_MODE" != "1" ]; then
-  if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
+  if ! tmux_base list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null \
        | grep -qxF "$RECIPIENT"; then
     emit "skip:no-window"
   fi

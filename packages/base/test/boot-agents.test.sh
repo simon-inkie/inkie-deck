@@ -3,8 +3,7 @@
 # machinery: codex_latest_session_for_workspace (the session lookup),
 # codex_pane_has_update_dialog / codex_dismiss_update_dialog_if_present (the
 # update-dialog detector and its keystroke), and
-# codex_verify_resume_or_fallback (launch verification, recovery, and the
-# quarantine gate).
+# codex_verify_launch (launch verification and checkpoint preservation).
 #
 #   bash packages/base/test/boot-agents.test.sh
 #     -> prints PASS/FAIL per case, exits non-zero on any fail.
@@ -184,7 +183,7 @@ rm -rf "$T8_DIR"
 # T9: a session whose first line is perfectly well formed but whose CONTENT is
 # truncated is still SELECTED by the lookup. That is correct and deliberate:
 # the lookup only ever reads line 1, and catching a resume that then fails is
-# codex_verify_resume_or_fallback's job, one layer up. This pins where the
+# codex_verify_launch's job, one layer up. This pins where the
 # responsibility boundary sits.
 T9_DIR=$(mktemp -d)
 BADSID="deadbeef-dead-beef-dead-beefdeadbeef"
@@ -195,84 +194,23 @@ got=$(CODEX_SESSIONS_DIR="$T9_DIR" codex_latest_session_for_workspace basalt)
   && pass "T9 lookup still selects a session that is bad beyond line 1" \
   || fail "T9 lookup still selects a session that is bad beyond line 1" "got '$got'"
 
-# ===== launch verification and recovery =====================================
-# The pane check and tmux are stubbed so no live target is needed. TMUX_LOG
-# records every send-keys call for assertion.
-#
-# MODEL_FLAG stands in for whatever the primary send carried beyond the bare
-# command. The fallback has to reproduce it exactly, because a crashed process
-# takes its environment and its flags down with it, and a bare re-send would
-# boot a nameless agent ignoring its own model override.
-MODEL_FLAG="--model gpt-5.6"
-# One shared matcher for the fallback re-send, rather than the same regex
-# copied into eight assertions where seven of them could quietly drift.
-resend_logged() {
-  grep -qE "send-keys -t test:basalt printf .*basalt.*;.*AGENT_NAME=basalt.*codex.*--model gpt-5\.6 Enter" "$1"
-}
-
+# ===== launch verification ==================================================
 TMUX_LOG=$(mktemp)
 tmux() {
   if [ "$1" = "send-keys" ]; then printf '%s\n' "$*" >> "$TMUX_LOG"; fi
   return 0
 }
-export CODEX_RESUME_VERIFY_SECS=0        # test seam: skip the settle wait
-export CODEX_RESUME_POLL_INTERVAL_SECS=0 # test seam: skip the poll's sleeps, while
-                                         # leaving CODEX_RESUME_POLL_MAX_CHECKS at its
-                                         # real default so the poll cases below still
-                                         # run the production check COUNT, not a
-                                         # scaled-down stand-in.
-CODEX_SESSIONS_DIR="$T9_DIR"             # so the quarantine step finds T9's fixture
+export CODEX_RESUME_VERIFY_SECS=0
+export CODEX_RESUME_POLL_INTERVAL_SECS=0
 
-# T10: the pane came up as a running codex/node process. No fallback.
+# T10: the pane came up as a running Codex process.
 codex_pane_current_command() { printf 'node\n'; }
-: > "$TMUX_LOG"
-codex_verify_resume_or_fallback "test:basalt" basalt "$BADSID" "$MODEL_FLAG"
-rc=$?
-sent=$(grep -c 'send-keys' "$TMUX_LOG" 2>/dev/null)
-if [ "$rc" -eq 0 ] && [ "$sent" -eq 0 ]; then
-  pass "T10 healthy resume: no fallback fires"
+if codex_verify_launch "test:basalt" basalt "$BADSID" && [ ! -s "$TMUX_LOG" ]; then
+  pass "T10 healthy resume is confirmed"
 else
-  fail "T10 healthy resume: no fallback fires" "rc=$rc sent=$sent"
-fi
-
-# T11 (the headline crash case): the pane dropped to a bare shell after the
-# resume. A fresh codex must be re-sent into the SAME pane carrying the SAME
-# name and flags as the primary send, and the bad session file must be renamed
-# rather than deleted, so the next boot stops re-selecting it.
-codex_pane_current_command() { printf 'bash\n'; }
-: > "$TMUX_LOG"
-codex_verify_resume_or_fallback "test:basalt" basalt "$BADSID" "$MODEL_FLAG"
-rc=$?
-resend_ok=0
-resend_logged "$TMUX_LOG" && resend_ok=1
-renamed_ok=0
-[ -f "$T9_DIR/rollout-2026-01-03T10-00-00-${BADSID}.jsonl.codex-resume-failed" ] && renamed_ok=1
-orig_gone=0
-[ ! -f "$T9_DIR/rollout-2026-01-03T10-00-00-${BADSID}.jsonl" ] && orig_gone=1
-if [ "$rc" -ne 0 ] && [ "$resend_ok" -eq 1 ] && [ "$renamed_ok" -eq 1 ] && [ "$orig_gone" -eq 1 ]; then
-  pass "T11 crashed resume: fully-flagged codex re-sent, bad session renamed"
-else
-  fail "T11 crashed resume: fully-flagged codex re-sent, bad session renamed" \
-    "rc=$rc resend_ok=$resend_ok renamed_ok=$renamed_ok orig_gone=$orig_gone"
+  fail "T10 healthy resume is confirmed"
 fi
 rm -rf "$T9_DIR" "$TMUX_LOG"
-unset CODEX_SESSIONS_DIR
-
-# T12: an empty sid means a genuine first boot, so nothing was resumed and
-# there is nothing to distrust. The crash half is a no-op whatever the pane
-# shows.
-codex_pane_current_command() { printf 'bash\n'; }
-TMUX_LOG2=$(mktemp)
-tmux() { if [ "$1" = "send-keys" ]; then printf '%s\n' "$*" >> "$TMUX_LOG2"; fi; return 0; }
-codex_verify_resume_or_fallback "test:basalt" basalt "" "$MODEL_FLAG"
-rc=$?
-sent2=$(grep -c 'send-keys' "$TMUX_LOG2" 2>/dev/null)
-if [ "$rc" -eq 0 ] && [ "$sent2" -eq 0 ]; then
-  pass "T12 empty sid (first boot): the crash check is a no-op"
-else
-  fail "T12 empty sid (first boot): the crash check is a no-op" "rc=$rc sent=$sent2"
-fi
-rm -f "$TMUX_LOG2"
 
 # ===== the update-available dialog ==========================================
 # Both fixtures are real captured pane shapes. CODEX_UPDATE_DIALOG is the
@@ -344,20 +282,12 @@ if codex_pane_has_update_dialog ""; then
   fail "D4b detector: empty capture -> no"; else pass "D4b detector: empty capture -> no"; fi
 
 # ---- the keystroke ---------------------------------------------------------
-# Stubs the tmux subcommands this section needs: capture-pane returns a
-# controlled fixture, send-keys is logged, and list-panes answers the
-# target-existence check the inconclusive branch makes. send-keys and
-# list-panes get controllable exit codes via SEND_KEYS_RC / LIST_PANES_RC
-# (both defaulting to success, and only set by the cases that need a failure)
-# so the send-success and target-existence gates are exercisable without a live
-# tmux target.
 DIALOG_STUB_TEXT=""
 TMUX_LOG3=$(mktemp)
 tmux() {
   case "$1" in
-    send-keys) printf '%s\n' "$*" >> "$TMUX_LOG3"; return "${SEND_KEYS_RC:-0}" ;;
-    capture-pane) printf '%s' "$DIALOG_STUB_TEXT"; return 0 ;;
-    list-panes) return "${LIST_PANES_RC:-0}" ;;
+    send-keys) printf '%s\n' "$*" >> "$TMUX_LOG3" ;;
+    capture-pane) printf '%s' "$DIALOG_STUB_TEXT" ;;
   esac
   return 0
 }
@@ -411,12 +341,10 @@ fi
 # ---- dialog handling wired through the verifier ----------------------------
 
 # D7 (the scope decision): an EMPTY sid, i.e. a genuine first boot with nothing
-# resumed, plus a dialog. The dismissal must STILL fire. This is the case that
-# would silently regress if the dialog check were gated on a non-empty sid the
-# way the crash check is, leaving every first-boot codex agent frozen.
+# resumed, plus a dialog. The dismissal must still fire.
 DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
 : > "$TMUX_LOG3"
-codex_verify_resume_or_fallback "test:basalt" basalt "" "$MODEL_FLAG"
+codex_verify_launch "test:basalt" basalt ""
 rc7=$?
 sent7=$(grep -c 'send-keys' "$TMUX_LOG3" 2>/dev/null)
 dismiss7=0
@@ -436,7 +364,7 @@ fi
 codex_pane_current_command() { printf 'node\n'; }
 DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
 : > "$TMUX_LOG3"
-codex_verify_resume_or_fallback "test:basalt" basalt "some-sid-1234" "$MODEL_FLAG"
+codex_verify_launch "test:basalt" basalt "some-sid-1234"
 rc8=$?
 sent8=$(grep -c 'send-keys' "$TMUX_LOG3" 2>/dev/null)
 dismiss8=0
@@ -448,83 +376,12 @@ else
     "rc=$rc8 sent=$sent8 dismiss=$dismiss8"
 fi
 
-# D9 (the regression the bounded poll closes): the dialog is dismissed, but the
-# resume behind it was also going to fail, and the pane never comes up as
-# codex/node at all. A single immediate check after dismissal would have
-# returned healthy. Assert the fully-flagged fallback AND the quarantine, plus
-# the stderr wording: a CONFIRMED crash must read differently from the
-# inconclusive timeout D11 pins, because they are genuinely different
-# situations and the boot log is where someone tells them apart.
-D9_DIR=$(mktemp -d)
-D9_SID="d9deadbe-ef00-4444-8888-000000000009"
-: > "$D9_DIR/rollout-2026-01-04T10-00-00-${D9_SID}.jsonl"
-codex_pane_current_command() { printf 'bash\n'; }
-DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
-CODEX_SESSIONS_DIR="$D9_DIR"
-: > "$TMUX_LOG3"
-d9_err=$(codex_verify_resume_or_fallback "test:basalt" basalt "$D9_SID" "$MODEL_FLAG" 2>&1)
-rc9=$?
-resend9_ok=0
-resend_logged "$TMUX_LOG3" && resend9_ok=1
-renamed9_ok=0
-[ -f "$D9_DIR/rollout-2026-01-04T10-00-00-${D9_SID}.jsonl.codex-resume-failed" ] && renamed9_ok=1
-orig9_gone=0
-[ ! -f "$D9_DIR/rollout-2026-01-04T10-00-00-${D9_SID}.jsonl" ] && orig9_gone=1
-wording9_ok=0
-printf '%s' "$d9_err" | grep -q 'not codex/node' \
-  && ! printf '%s' "$d9_err" | grep -q 'could not be confirmed healthy' \
-  && wording9_ok=1
-if [ "$rc9" -ne 0 ] && [ "$resend9_ok" -eq 1 ] && [ "$renamed9_ok" -eq 1 ] && [ "$orig9_gone" -eq 1 ] && [ "$wording9_ok" -eq 1 ]; then
-  pass "D9 post-dismissal crash: fresh codex re-sent, session quarantined, confirmed-crash wording"
-else
-  fail "D9 post-dismissal crash: fresh codex re-sent, session quarantined, confirmed-crash wording" \
-    "rc=$rc9 resend_ok=$resend9_ok renamed_ok=$renamed9_ok orig_gone=$orig9_gone wording_ok=$wording9_ok err=$d9_err"
-fi
-rm -rf "$D9_DIR"
-
-# D9b: the same confirmed crash, but the fallback send itself FAILS -- the tmux
-# target vanished at the moment of the re-send, a worse problem than a bad
-# session. The re-send is still ATTEMPTED (the gate is on its outcome, not on
-# whether it is tried), but a fallback that never landed is not grounds to
-# quarantine anything, so the session file must survive untouched even though
-# the crash was confirmed.
-D9B_DIR=$(mktemp -d)
-D9B_SID="d9bdeadb-ef00-4444-8888-00000000000e"
-D9B_FILE="$D9B_DIR/rollout-2026-01-04T10-00-00-${D9B_SID}.jsonl"
-: > "$D9B_FILE"
-codex_pane_current_command() { printf 'bash\n'; }
-DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
-CODEX_SESSIONS_DIR="$D9B_DIR"
-SEND_KEYS_RC=1
-: > "$TMUX_LOG3"
-d9b_err=$(codex_verify_resume_or_fallback "test:basalt" basalt "$D9B_SID" "$MODEL_FLAG" 2>&1)
-rc9b=$?
-unset SEND_KEYS_RC
-attempted9b=0
-resend_logged "$TMUX_LOG3" && attempted9b=1
-intact9b=0
-[ -f "$D9B_FILE" ] && intact9b=1
-wording9b_ok=0
-printf '%s' "$d9b_err" | grep -q 'fallback codex re-send into' \
-  && printf '%s' "$d9b_err" | grep -q 'FAILED' \
-  && wording9b_ok=1
-if [ "$rc9b" -ne 0 ] && [ "$attempted9b" -eq 1 ] && [ "$intact9b" -eq 1 ] && [ "$wording9b_ok" -eq 1 ]; then
-  pass "D9b confirmed crash, send fails: attempted, session left intact, distinct wording"
-else
-  fail "D9b confirmed crash, send fails: attempted, session left intact, distinct wording" \
-    "rc=$rc9b attempted=$attempted9b intact=$intact9b wording_ok=$wording9b_ok err=$d9b_err"
-fi
-rm -rf "$D9B_DIR"
-
 # D10 (why the poll needs MULTIPLE consecutive good reads): the pane reads
 # 'node', 'node', then 'bash'. It looked healthy for two checks before the
 # crash actually landed, which is exactly what a single check, or a poll that
 # trusted the first good read, would already have waved through. Pins that the
 # threshold of 3 is load-bearing, and that the crash is caught on the third
 # check rather than after the whole window.
-D10_DIR=$(mktemp -d)
-D10_SID="d10eadbe-ef00-4444-8888-00000000000a"
-: > "$D10_DIR/rollout-2026-01-04T10-00-00-${D10_SID}.jsonl"
 # The call count lives in a FILE, not a variable: codex_pane_current_command is
 # invoked inside a command substitution, so an increment to an ordinary
 # variable dies with that subshell and the counter would read the same value
@@ -540,122 +397,30 @@ codex_pane_current_command() {
   esac
 }
 DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
-CODEX_SESSIONS_DIR="$D10_DIR"
 : > "$TMUX_LOG3"
-codex_verify_resume_or_fallback "test:basalt" basalt "$D10_SID" "$MODEL_FLAG"
+d10_err=$(codex_verify_launch "test:basalt" basalt "$BADSID" 2>&1)
 rc10=$?
 d10_calls=$(cat "$D10_CALLFILE")
-resend10_ok=0
-resend_logged "$TMUX_LOG3" && resend10_ok=1
-renamed10_ok=0
-[ -f "$D10_DIR/rollout-2026-01-04T10-00-00-${D10_SID}.jsonl.codex-resume-failed" ] && renamed10_ok=1
-if [ "$rc10" -ne 0 ] && [ "$resend10_ok" -eq 1 ] && [ "$renamed10_ok" -eq 1 ] && [ "$d10_calls" -eq 3 ]; then
-  pass "D10 transient good-then-crash (node,node,bash): caught on the 3rd check, not trusted after 2"
+if [ "$rc10" -eq 1 ] && [ "$d10_calls" -eq 3 ] \
+  && [ "$(cat "$TMUX_LOG3")" = "send-keys -t test:basalt 3" ] \
+  && [[ "$d10_err" == *"could not be confirmed"* ]]; then
+  pass "D10 transient good-then-shell (node,node,bash): resume unconfirmed on the 3rd check"
 else
-  fail "D10 transient good-then-crash (node,node,bash): caught on the 3rd check, not trusted after 2" \
-    "rc=$rc10 resend_ok=$resend10_ok renamed_ok=$renamed10_ok calls=$d10_calls"
+  fail "D10 transient good-then-shell" "rc=$rc10 calls=$d10_calls stderr=$d10_err"
 fi
-rm -rf "$D10_DIR"
 rm -f "$D10_CALLFILE"
 
-# D11 (inconclusive, target confirmed GONE): every process read came back
-# empty, and list-panes then fails outright. Empty reads are evidence the pane
-# could not be observed, never evidence the SESSION was bad -- quarantining on
-# that basis would lose a healthy continuity record and silently drop the next
-# boot onto an older conversation. So: no fallback send is even attempted into
-# a target that does not exist, the session file is left completely alone, and
-# the escalation is worded unlike a confirmed crash.
-D11_DIR=$(mktemp -d)
-D11_SID="d11eadbe-ef00-4444-8888-00000000000b"
-D11_FILE="$D11_DIR/rollout-2026-01-04T10-00-00-${D11_SID}.jsonl"
-: > "$D11_FILE"
-codex_pane_current_command() { printf ''; }
-DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
-CODEX_SESSIONS_DIR="$D11_DIR"
-LIST_PANES_RC=1
+# D11: after a dialog dismissal, empty process reads exhaust the poll.
+codex_pane_current_command() { return 1; }
 : > "$TMUX_LOG3"
-d11_err=$(codex_verify_resume_or_fallback "test:basalt" basalt "$D11_SID" "$MODEL_FLAG" 2>&1)
+d11_err=$(codex_verify_launch "test:basalt" basalt "$BADSID" 2>&1)
 rc11=$?
-unset LIST_PANES_RC
-# NOT a bare send-keys absence check: the dismissal keystroke legitimately logs
-# one here, since the dialog is dismissed before classification begins. What
-# must be absent is specifically the fallback RE-SEND.
-sent11=0
-resend_logged "$TMUX_LOG3" && sent11=1
-intact11=0
-[ -f "$D11_FILE" ] && intact11=1
-wording11_ok=0
-printf '%s' "$d11_err" | grep -q 'could not be located at all' \
-  && ! printf '%s' "$d11_err" | grep -q 'not codex/node' \
-  && wording11_ok=1
-if [ "$rc11" -ne 0 ] && [ "$sent11" -eq 0 ] && [ "$intact11" -eq 1 ] && [ "$wording11_ok" -eq 1 ]; then
-  pass "D11 inconclusive + target gone: no fallback attempted, session untouched, distinct escalation"
+if [ "$rc11" -eq 1 ] && [ "$(cat "$TMUX_LOG3")" = "send-keys -t test:basalt 3" ] \
+  && [[ "$d11_err" == *"pane command: unavailable"* ]]; then
+  pass "D11 post-dialog process read unavailable: resume unconfirmed"
 else
-  fail "D11 inconclusive + target gone: no fallback attempted, session untouched, distinct escalation" \
-    "rc=$rc11 sent=$sent11 intact=$intact11 wording_ok=$wording11_ok err=$d11_err"
+  fail "D11 post-dialog process read unavailable" "rc=$rc11 stderr=$d11_err"
 fi
-rm -rf "$D11_DIR"
-
-# D11b (inconclusive, target still EXISTS, send succeeds): the sibling case. A
-# fallback attempt is worth making, since there is a real target to send to and
-# a live agent beats a frozen one. But a successful send answers only "did tmux
-# accept keys", never "was the session at fault", so the session file must be
-# preserved anyway. This is the case where send-success as a sufficient
-# condition for quarantine would fail: the gate needs BOTH a successful send
-# and a positively observed crash, and this scenario has only the first.
-D11B_DIR=$(mktemp -d)
-D11B_SID="d11beadb-ef00-4444-8888-00000000000c"
-: > "$D11B_DIR/rollout-2026-01-04T10-00-00-${D11B_SID}.jsonl"
-codex_pane_current_command() { printf ''; }
-DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
-CODEX_SESSIONS_DIR="$D11B_DIR"
-: > "$TMUX_LOG3"
-d11b_err=$(codex_verify_resume_or_fallback "test:basalt" basalt "$D11B_SID" "$MODEL_FLAG" 2>&1)
-rc11b=$?
-resend11b_ok=0
-resend_logged "$TMUX_LOG3" && resend11b_ok=1
-intact11b_ok=0
-[ -f "$D11B_DIR/rollout-2026-01-04T10-00-00-${D11B_SID}.jsonl" ] && intact11b_ok=1
-notrenamed11b_ok=0
-[ ! -f "$D11B_DIR/rollout-2026-01-04T10-00-00-${D11B_SID}.jsonl.codex-resume-failed" ] && notrenamed11b_ok=1
-if [ "$rc11b" -ne 0 ] && [ "$resend11b_ok" -eq 1 ] && [ "$intact11b_ok" -eq 1 ] && [ "$notrenamed11b_ok" -eq 1 ]; then
-  pass "D11b inconclusive + target exists + send succeeds: fallback attempted, session PRESERVED"
-else
-  fail "D11b inconclusive + target exists + send succeeds: fallback attempted, session PRESERVED" \
-    "rc=$rc11b resend_ok=$resend11b_ok intact_ok=$intact11b_ok notrenamed_ok=$notrenamed11b_ok err=$d11b_err"
-fi
-rm -rf "$D11B_DIR"
-
-# D11c: same as D11b, but the fallback send itself fails. A send that never
-# landed is still no evidence about the session, even though a real target was
-# confirmed to exist, so again nothing is quarantined.
-D11C_DIR=$(mktemp -d)
-D11C_SID="d11ceadb-ef00-4444-8888-00000000000d"
-D11C_FILE="$D11C_DIR/rollout-2026-01-04T10-00-00-${D11C_SID}.jsonl"
-: > "$D11C_FILE"
-codex_pane_current_command() { printf ''; }
-DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
-CODEX_SESSIONS_DIR="$D11C_DIR"
-SEND_KEYS_RC=1
-: > "$TMUX_LOG3"
-d11c_err=$(codex_verify_resume_or_fallback "test:basalt" basalt "$D11C_SID" "$MODEL_FLAG" 2>&1)
-rc11c=$?
-unset SEND_KEYS_RC
-attempted11c=0
-resend_logged "$TMUX_LOG3" && attempted11c=1
-intact11c=0
-[ -f "$D11C_FILE" ] && intact11c=1
-wording11c_ok=0
-printf '%s' "$d11c_err" | grep -q 'fallback codex re-send into' \
-  && printf '%s' "$d11c_err" | grep -q 'FAILED' \
-  && wording11c_ok=1
-if [ "$rc11c" -ne 0 ] && [ "$attempted11c" -eq 1 ] && [ "$intact11c" -eq 1 ] && [ "$wording11c_ok" -eq 1 ]; then
-  pass "D11c inconclusive + target exists but send fails: attempted, session left intact, distinct wording"
-else
-  fail "D11c inconclusive + target exists but send fails: attempted, session left intact, distinct wording" \
-    "rc=$rc11c attempted=$attempted11c intact=$intact11c wording_ok=$wording11c_ok err=$d11c_err"
-fi
-rm -rf "$D11C_DIR"
 
 # D12: an empty read RESETS the consecutive-healthy streak, rather than merely
 # not counting toward either outcome. Sequence: node, EMPTY, node, node, node.
@@ -675,58 +440,18 @@ codex_pane_current_command() {
 }
 DIALOG_STUB_TEXT="$CODEX_UPDATE_DIALOG"
 : > "$TMUX_LOG3"
-codex_verify_resume_or_fallback "test:basalt" basalt "d12-not-a-real-file-sid" "$MODEL_FLAG"
+codex_verify_launch "test:basalt" basalt "d12-not-a-real-file-sid"
 rc12=$?
 d12_calls=$(cat "$D12_CALLFILE")
-# Same caveat as D11: the dismissal keystroke legitimately logs a send-keys
-# call here. What must be absent is the fallback re-send.
-sent12=0
-resend_logged "$TMUX_LOG3" && sent12=1
-if [ "$rc12" -eq 0 ] && [ "$sent12" -eq 0 ] && [ "$d12_calls" -eq 5 ]; then
-  pass "D12 empty read resets the healthy streak (healthy on call 5, not 4)"
+if [ "$rc12" -eq 0 ] && [ "$d12_calls" -eq 5 ] \
+  && [ "$(cat "$TMUX_LOG3")" = "send-keys -t test:basalt 3" ]; then
+  pass "D12 empty read resets the healthy streak (healthy on call 5)"
 else
-  fail "D12 empty read resets the healthy streak (healthy on call 5, not 4)" \
-    "rc=$rc12 sent=$sent12 calls=$d12_calls"
+  fail "D12 empty read resets the healthy streak" "rc=$rc12 calls=$d12_calls"
 fi
 rm -f "$D12_CALLFILE"
 
-# T13 (the no-dialog path's own classification): no dialog is shown, so the
-# single settled check runs rather than the poll, the one process read comes
-# back EMPTY, and the target still exists. An empty read here is exactly as
-# ambiguous as an empty read inside the poll, so it must classify as
-# inconclusive. Treating it as a crash would quarantine a healthy session on
-# zero evidence through a one-check window instead of the poll's ten -- the
-# same bug, reached by a narrower door. A fallback is still attempted, because
-# the target exists and recovery is worth trying, but the session survives.
-T13_DIR=$(mktemp -d)
-T13_SID="t13eadbe-ef00-4444-8888-00000000000d"
-: > "$T13_DIR/rollout-2026-01-04T10-00-00-${T13_SID}.jsonl"
-codex_pane_current_command() { printf ''; }
-DIALOG_STUB_TEXT=""
-CODEX_SESSIONS_DIR="$T13_DIR"
-: > "$TMUX_LOG3"
-t13_err=$(codex_verify_resume_or_fallback "test:basalt" basalt "$T13_SID" "$MODEL_FLAG" 2>&1)
-rc13=$?
-resend13_ok=0
-resend_logged "$TMUX_LOG3" && resend13_ok=1
-intact13_ok=0
-[ -f "$T13_DIR/rollout-2026-01-04T10-00-00-${T13_SID}.jsonl" ] && intact13_ok=1
-notrenamed13_ok=0
-[ ! -f "$T13_DIR/rollout-2026-01-04T10-00-00-${T13_SID}.jsonl.codex-resume-failed" ] && notrenamed13_ok=1
-if [ "$rc13" -ne 0 ] && [ "$resend13_ok" -eq 1 ] && [ "$intact13_ok" -eq 1 ] && [ "$notrenamed13_ok" -eq 1 ]; then
-  pass "T13 no-dialog path, empty read, target exists: fallback attempted, session PRESERVED"
-else
-  fail "T13 no-dialog path, empty read, target exists: fallback attempted, session PRESERVED" \
-    "rc=$rc13 resend_ok=$resend13_ok intact_ok=$intact13_ok notrenamed_ok=$notrenamed13_ok err=$t13_err"
-fi
-rm -rf "$T13_DIR"
-unset CODEX_SESSIONS_DIR
-
 # ===== provider-envelope construction ==================================
-# A Codex launch has one provider envelope regardless of whether it is a
-# fresh boot, a resume, or the verified fallback after a failed resume.
-# These tests deliberately exercise construction directly so future provider
-# switching can reuse it without sending anything to tmux.
 
 # P1: shared-home compatibility. CODEX_HOME must be omitted, not exported as
 # an empty string, while secrets and agent identity/config remain present.
@@ -747,7 +472,7 @@ else
     "rc=$p1_rc cmd=$p1_cmd"
 fi
 
-# P2: an isolated home moves session lookup/quarantine with it. The explicit
+# P2: an isolated home moves the session lookup with it. The explicit
 # CODEX_SESSIONS_DIR seam still wins in lookup tests above; this pure helper
 # defines the production default selected by launch_agent.
 P2_HOME="/tmp/codex-provider-home-p2-$$"
@@ -761,48 +486,18 @@ else
     "isolated=$p2_isolated shared=$p2_shared"
 fi
 
-# P3 (headline regression): Azure resume failure must fall back through the
-# same provider envelope. Only `resume <sid>` may differ; secret sourcing,
-# identity/config, isolated CODEX_HOME, role, and model flag all survive.
-P3_DIR=$(mktemp -d)
-P3_HOME="$P3_DIR/azure-codex-home"
+# P3: a resume uses the same Azure provider envelope as a new session.
+P3_HOME="$BOX/azure-codex-home"
 P3_SID="p3azure0-ef00-4444-8888-00000000000f"
-mkdir -p "$P3_HOME/sessions"
-: > "$P3_HOME/sessions/rollout-2026-09-15T10-00-00-${P3_SID}.jsonl"
-codex_pane_current_command() { printf 'bash\n'; }
-DIALOG_STUB_TEXT=""
-CODEX_SESSIONS_DIR="$P3_HOME/sessions"
-TMUX_LOG_P3=$(mktemp)
-tmux() { if [ "$1" = "send-keys" ]; then printf '%s\n' "$*" >> "$TMUX_LOG_P3"; fi; return 0; }
 p3_resume=$(codex_launch_command iris "researcher" "$P3_HOME" "$P3_SID" "--model gpt-5.6-sol")
 p3_fresh=$(codex_launch_command iris "researcher" "$P3_HOME" "" "--model gpt-5.6-sol")
-# The verifier must derive quarantine scope from the same isolated home even
-# without launch_agent's dynamically-scoped CODEX_SESSIONS_DIR convenience.
-unset CODEX_SESSIONS_DIR
-codex_verify_resume_or_fallback "test:iris" iris "$P3_SID" "researcher" "$P3_HOME" "--model gpt-5.6-sol"
-p3_rc=$?
-p3_sent=$(sed -n 's/^send-keys -t test:iris //p' "$TMUX_LOG_P3" | tail -1 | sed 's/ Enter$//')
-p3_shape_ok=0
-case "$p3_resume" in
-  "$p3_fresh resume $P3_SID") p3_shape_ok=1 ;;
-esac
-p3_quarantine_ok=0
-[ -f "$P3_HOME/sessions/rollout-2026-09-15T10-00-00-${P3_SID}.jsonl.codex-resume-failed" ] \
-  && [ ! -f "$P3_HOME/sessions/rollout-2026-09-15T10-00-00-${P3_SID}.jsonl" ] \
-  && p3_quarantine_ok=1
-if [ "$p3_rc" -ne 0 ] \
-  && [ "$p3_shape_ok" -eq 1 ] \
-  && [ "$p3_quarantine_ok" -eq 1 ] \
-  && [ "$p3_sent" = "$p3_fresh" ] \
-  && printf '%s' "$p3_fresh" | grep -qF "[ -f $AGENTS_HOME/iris/.env.secrets ] && . $AGENTS_HOME/iris/.env.secrets;" \
-  && printf '%s' "$p3_fresh" | grep -qF "CODEX_HOME=$P3_HOME" \
-  && printf '%s' "$p3_fresh" | grep -qF 'codex --model gpt-5.6-sol'; then
-  pass "P3 Azure failed resume: fallback preserves the complete provider envelope"
+if [ "$p3_resume" = "$p3_fresh resume $P3_SID" ] \
+  && [[ "$p3_fresh" == *"[ -f $AGENTS_HOME/iris/.env.secrets ] && . $AGENTS_HOME/iris/.env.secrets;"* ]] \
+  && [[ "$p3_fresh" == *"AGENT_NAME=iris AGENT_ROLE=researcher CODEX_HOME=$P3_HOME codex --model gpt-5.6-sol" ]]; then
+  pass "P3 Azure resume carries the complete provider envelope"
 else
-  fail "P3 Azure failed resume: fallback preserves the complete provider envelope" \
-    "rc=$p3_rc shape=$p3_shape_ok quarantine=$p3_quarantine_ok resume=$p3_resume fresh=$p3_fresh sent=$p3_sent"
+  fail "P3 Azure resume carries the complete provider envelope" "$p3_resume"
 fi
-rm -rf "$P3_DIR" "$TMUX_LOG_P3"
 unset CODEX_SESSIONS_DIR
 
 # ---------------------------------------------------------------------------
@@ -1027,11 +722,15 @@ boot_fixture() {
   : > "$BOOT_BOX/homes/demo/.auto-arm-watcher"
   printf 'claude\n' > "$BOOT_BOX/homes/demo/.runtime"
   [[ "$scenario" == opt-out ]] && rm -f "$BOOT_BOX/homes/demo/.auto-arm-watcher"
-  [[ "$scenario" == codex || "$scenario" == codex-verify-fail || "$scenario" == existing-codex ]] && printf 'codex\n' > "$BOOT_BOX/homes/demo/.runtime"
-  if [[ "$scenario" == codex-verify-fail ]]; then
-    mkdir -p "$BOOT_BOX/homes/demo/.codex-home/sessions"
+  local checkpoint="$BOOT_BOX/homes/demo/.codex-home/sessions/rollout-fixture-boot-test-id.jsonl"
+  case "$scenario" in
+    codex|resume-*|existing-codex) printf 'codex\n' > "$BOOT_BOX/homes/demo/.runtime" ;;
+  esac
+  if [[ "$scenario" == resume-* ]]; then
+    mkdir -p "${checkpoint%/*}"
     : > "$BOOT_BOX/homes/demo/.codex-home/config.toml"
-    printf '{"originator":"codex-tui","thread_source":"user","cwd":"%s","id":"boot-test-id"}\n' "$BOOT_BOX/homes/demo" > "$BOOT_BOX/homes/demo/.codex-home/sessions/rollout-fixture-boot-test-id.jsonl"
+    printf '{"originator":"codex-tui","thread_source":"user","cwd":"%s","id":"boot-test-id"}\n' "$BOOT_BOX/homes/demo" > "$checkpoint"
+    cp "$checkpoint" "$BOOT_BOX/expected-checkpoint"
   fi
   [[ "$scenario" == first-boot-again ]] || rm -f "$BOOT_BOX/homes/demo/.model"
   [[ "$scenario" == first-boot-busy ]] && printf 'claude-sonnet-5-5' > "$BOOT_BOX/homes/demo/.model"
@@ -1057,6 +756,7 @@ boot_fixture() {
   output=$(bash -c '
     tmux() {
       printf "%s\n" "$*" >> "$BOOT_BOX/log"
+      while [[ "${1:-}" == "-S" ]]; do shift 2; done
       case "$1" in
         start-server|set) return 0 ;;
         has-session) [[ "$BOOT_SCENARIO" != session-fail ]] ;;
@@ -1065,7 +765,11 @@ boot_fixture() {
         new-window) return 1 ;;
         list-panes)
           if [[ "$BOOT_SCENARIO" == existing* || -f "$BOOT_BOX/launched" ]]; then
-            [[ "$BOOT_SCENARIO" == missing-runtime || "$BOOT_SCENARIO" == codex-verify-fail ]] && echo bash || echo node
+            case "$BOOT_SCENARIO" in
+              resume-no-outcome) return 1 ;;
+              missing-runtime|resume-*) echo bash ;;
+              *) echo node ;;
+            esac
           else echo bash; fi ;;
         send-keys)
           [[ "$BOOT_SCENARIO" == send-fail ]] && return 1
@@ -1083,6 +787,8 @@ boot_fixture() {
             return 0
           fi
           case "$BOOT_SCENARIO" in
+            resume-wrapped-refusal) printf "base-runner-exec:\nREFUSED_LOCK_BUSY runner lock bus\ny or unrecoverable\n" ;;
+            resume-silent-refusal|resume-no-outcome) : ;;
             existing-codex) printf "Earlier conversation\n› \n" ;;
             existing-busy) printf "────────\nThinking (esc to interrupt)\n❯ \n" ;;
             busy-history) printf "We discussed fullscreen and resume a conversation earlier\n────────\nThinking (esc to interrupt)\n❯ \n" ;;
@@ -1128,6 +834,7 @@ boot_fixture() {
       command sed "${args[@]}"
     }
     export -f tmux sleep sed
+    unset CODEX_HOME
     export BOOT_READY_SECS=2
     [[ "$BOOT_SCENARIO" == delayed ]] && unset BOOT_READY_SECS
     AGENTS_HOME="$BOOT_BOX/homes" BOOT_STAGGER_SECS=0 CODEX_RESUME_VERIFY_SECS=0 bash "$BOOT_SCRIPT" demo
@@ -1137,6 +844,16 @@ boot_fixture() {
     pass "full boot: $scenario ($rc, $label)"
   else
     fail "full boot: $scenario" "rc=$rc expected=$expected output=$output"
+  fi
+  if [[ "$scenario" == resume-* ]]; then
+    if cmp -s "$checkpoint" "$BOOT_BOX/expected-checkpoint" \
+      && [[ ! -e "$checkpoint.codex-resume-failed" ]] \
+      && [[ "$(grep -c 'send-keys' "$BOOT_BOX/log")" -eq 1 ]] \
+      && grep -q 'send-keys .* codex resume boot-test-id Enter$' "$BOOT_BOX/log"; then
+      pass "full boot: $scenario preserves the selected checkpoint and sends Resume once"
+    else
+      fail "full boot: $scenario preserves the selected checkpoint and sends Resume once"
+    fi
   fi
   case "$scenario" in
     trust|apikey|existing*|resume|fullscreen|unknown|busy|staged|missing-runtime|window-fail|send-fail)
@@ -1204,7 +921,9 @@ boot_fixture history 0 '1 launched and ready, 1 monitors armed'
 boot_fixture old-monitor 3 'demo monitor unconfirmed'
 boot_fixture ready 0 '1 launched and ready, 1 monitors armed'
 boot_fixture existing-ready 0 '0 launched and ready, 0 monitors armed, 1 already up and ready'
-boot_fixture codex-verify-fail 1 'demo launch failed or verification unconfirmed'
+boot_fixture resume-wrapped-refusal 1 "Codex Resume boot-test-id could not be confirmed (pane command: bash); checkpoint preserved"
+boot_fixture resume-silent-refusal 1 "Codex Resume boot-test-id could not be confirmed (pane command: bash); checkpoint preserved"
+boot_fixture resume-no-outcome 1 "Codex Resume boot-test-id could not be confirmed (pane command: unavailable); checkpoint preserved"
 boot_fixture codex 0 '1 launched and ready, 1 monitors armed'
 boot_fixture monitor-prose 3 'demo monitor unconfirmed'
 boot_fixture monitor-timeout 3 'demo monitor unconfirmed'

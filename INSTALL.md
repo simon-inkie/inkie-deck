@@ -1135,6 +1135,17 @@ again and an agent whose pane already has its runtime running in it is left
 alone; one whose runtime has exited is relaunched, which is what makes this
 safe to fire on boot.
 
+Boot, Base inbox delivery and ACP admission use the `agents` session on
+tmux's default socket. Before switching an agent to ACP, stop its Base
+runtime and close its panes on any other tmux socket.
+
+Run one Deck instance per agent home. Concurrent starts from two Deck
+processes sharing a home are not guaranteed to be exclusive. In ACP, Deck
+offers Resume only for the verified `agy` executable identity that advertised
+resume support. After an `agy` update changes that identity, a fresh Start
+replaces Deck's saved checkpoint if the new executable advertises resume
+support.
+
 On an agent's first launch, `boot-agents.sh` starts a new session and gives it
 a first message: do your day-one steps from your persona files, then say hello.
 Expect it to fill in `IDENTITY.md` and `SOUL.md`, and it may ask you questions
@@ -1156,10 +1167,14 @@ the whole tmux server, including any other sessions on it. Add
 Each agent runs the CLI named in its `.runtime`. A Codex agent looks up the
 newest session for its workspace in the home it launches with: exported
 `CODEX_HOME` first, then the agent's configured provider home, then `~/.codex`.
-It starts fresh if that home has no matching session or boot detects a failed
-resume. An Antigravity agent resumes the newest conversation started in its
-own home (`agy --conversation <id>`, never the global `--continue`), after its
-`GEMINI.md` is re-synced. Neither has its own approval prompts switched off.
+It starts fresh if that home has no matching session. If Boot cannot confirm
+a Resume, it reports the failure and keeps the saved checkpoint.
+To start fresh, open a shell in the agent's tmux pane and workspace, load its
+usual provider environment, and run `"$repo/packages/base/bin/base-runner-exec.sh" "$PWD" -- env AGENT_NAME="${PWD##*/}" INBOX_ROOT="$(cat .inbox-root)" codex`,
+where `repo` is the absolute path to your Deck checkout. An Antigravity agent
+resumes the newest conversation started in its own home (`agy --conversation <id>`, never the
+global `--continue`), after its `GEMINI.md` is re-synced. Neither has its own
+approval prompts switched off.
 
 On first boot, attach to the session and answer any runtime setup prompts
 manually. Folder trust defaults to No: do not press Enter while No is

@@ -7,16 +7,33 @@ import type {
   AgentCapabilities, AnyMessage, AnyResponse, ClientConnection, JsonRpcId, RequestPermissionRequest,
   SessionNotification, ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
-import { AcpRecords, type RecordOptions } from "./acp-records.server";
+import { AcpRecords, summarizeExtensionParams, type RecordOptions } from "./acp-records.server";
 import { isObject, LineFramer, promptSettlement, responseEnvelope, rpcId, validPayload } from "./acp-wire.server";
 import { createEventSource, displayText, printableId, projectDisplay } from "./deck-event";
 import type { DeckEvent, DisplayProjection, Outcome } from "./deck-event";
+import {
+  antigravityUsageReading,
+  sanitizePathEnv,
+  type ExtensionClassification,
+  type UsageReading,
+} from "./runner/acp-manifest";
+import { ptySessionEnv } from "./runner/lock.server";
+
+export const MAX_QUEUED_PROMPTS = 8;
+
+export class PromptQueueFullError extends Error {
+  constructor(limit = MAX_QUEUED_PROMPTS) {
+    super(`ACP prompt queue limit reached (max ${limit}).`);
+    this.name = "PromptQueueFullError";
+  }
+}
 
 export type AcpAdapter = {
   executable: string;
   args: readonly string[];
   version: string;
   environment?: readonly string[];
+  knownExtensions?: readonly string[];
 };
 
 type Options = RecordOptions & {
@@ -26,7 +43,13 @@ type Options = RecordOptions & {
   maxLineBytes?: number;
   violationLimit?: number;
   cancelMs?: number;
+  sessionMarker?: string;
+  resumeSessionId?: string;
+  signal?: AbortSignal;
   onEvent?: (event: DeckEvent) => void;
+  onBeforeSpawn?: () => void;
+  onSpawn?: (pid: number) => void;
+  onSpawnFailed?: () => void;
 };
 
 type TerminalState = "failed" | "disconnected" | "unsupported";
@@ -60,14 +83,38 @@ const incoming = methods.client.session;
 const environment = ["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"];
 const explicitDeckVariables = new Set(["INBOX_ROOT", "DATA_ROOT", "GOOGLE_GENERATIVE_AI_API_KEY"]);
 const deckVariable = /^(?:MC_|DECK_|INKIE_|DEEPGRAM_)/i;
+const FATAL_EXTENSION_RE = /(?:^|[/:])(?:error|fatal)$/i;
+const MAX_PENDING_PERMISSIONS = 16;
+const MAX_TRACKED_REQUEST_IDS = 256;
+const MAX_UNKNOWN_REQUEST_CARDS = 16;
+// Major 4: Structured-only quota/limit classification (never match free-text error messages).
+const STRUCTURED_LIMIT_CODES = new Set(["rate_limit_exceeded", "quota_exhausted", "usage_exhausted"]);
+const KNOWN_SESSION_UPDATES = new Set([
+  "agent_message_chunk",
+  "user_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+  "plan",
+  "available_commands_update",
+  "current_mode_update",
+  "usage_update",
+  "config_option_update",
+  "session_info_update",
+]);
 let generation = 0;
 
-function childEnvironment(adapter: AcpAdapter): NodeJS.ProcessEnv {
+function childEnvironment(adapter: AcpAdapter, sessionMarker?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.create(null);
   for (const key of [...environment, ...(adapter.environment ?? [])]) {
     if (deckVariable.test(key) || explicitDeckVariables.has(key)) continue;
     const value = process.env[key];
-    if (value !== undefined) env[key] = value;
+    if (value !== undefined) {
+      env[key] = key === "PATH" ? sanitizePathEnv(value) : value;
+    }
+  }
+  if (sessionMarker) {
+    env[ptySessionEnv] = sessionMarker;
   }
   return env;
 }
@@ -77,17 +124,71 @@ function positive(value: number, label: string): number {
   return value;
 }
 
+function isAuthRequiredError(error: unknown): boolean {
+  if (!isObject(error)) return false;
+  if (error.code === -32000) return true;
+  if (typeof error.message === "string" && /auth(?:entication)?\s+required/i.test(error.message)) return true;
+  return false;
+}
+
+function isLimitError(error: unknown): boolean {
+  if (!isObject(error)) return false;
+  if (error.code === 429 || error.code === -32029) return true;
+  if (isObject(error.data)) {
+    // Check structured code FIRST, then structured reason (never let a generic reason mask an explicit code)
+    if (typeof error.data.code === "string" && STRUCTURED_LIMIT_CODES.has(error.data.code.toLowerCase())) {
+      return true;
+    }
+    if (typeof error.data.reason === "string" && STRUCTURED_LIMIT_CODES.has(error.data.reason.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSessionNotFoundError(error: unknown, attemptedSessionId: string): boolean {
+  if (!isObject(error) || !isObject(error.data)) return false;
+  // Major 2: SDK 2.7.0 uses -32002 for any missing resource (e.g. data.uri for files, data.sessionId for sessions).
+  // Require explicit session identity matching attemptedSessionId so a missing file or mismatched ID NEVER clears a checkpoint.
+  if (error.code === -32002) {
+    return error.data.sessionId === attemptedSessionId;
+  }
+  if (error.data.reason === "session_not_found") {
+    return error.data.sessionId === undefined || error.data.sessionId === attemptedSessionId;
+  }
+  return false;
+}
+
+function formatProtocolVersionError(error: unknown): string | undefined {
+  if (!isObject(error) || error.code !== -32022) return undefined;
+  const data = isObject(error.data) ? error.data : undefined;
+  // Minor 1: Only accept bounded safe integer protocol versions (never interpolate arbitrary agent strings into UI banners).
+  const req = data && typeof data.requested === "number" && Number.isSafeInteger(data.requested)
+    ? String(data.requested)
+    : undefined;
+  const sup = data && Array.isArray(data.supported)
+    ? data.supported
+      .filter((v): v is number => typeof v === "number" && Number.isSafeInteger(v))
+      .slice(0, 8)
+      .join(", ")
+    : undefined;
+  if (req && sup) return `Unsupported ACP protocol version (requested ${req}, supported: ${sup}).`;
+  if (sup) return `Unsupported ACP protocol version (supported: ${sup}).`;
+  return "Unsupported ACP protocol version.";
+}
+
 export class AcpSession {
   readonly records: AcpRecords;
   readonly generation = ++generation;
   private readonly owned: ChildProcessByStdio<Writable, Readable, null>;
-  private readonly exited: Promise<void>;
+  private readonly closePromise: Promise<void>;
   private readonly connection: ClientConnection;
   private readonly wire: ReadableStreamDefaultController<AnyMessage>;
   private readonly pending = new Map<JsonRpcId, string>();
   private readonly requests = new Set<JsonRpcId>();
   private readonly permissions = new Map<string, Permission>();
   private readonly tools = new Map<string, { key: string; view: ToolView }>();
+  private unknownRequestCards = 0;
   private readonly cancelMs: number;
   private readonly violationLimit: number;
   private readonly framer: LineFramer;
@@ -97,24 +198,51 @@ export class AcpSession {
   private sessionId?: string;
   private makeEvent = createEventSource({ kind: "session", generation: this.generation }, randomUUID);
   private finishPrompt?: (outcome: Outcome) => void;
+  private activePromptRpcId?: JsonRpcId;
   private turnQueue: Promise<unknown> = Promise.resolve();
+  private queuedPrompts = 0;
   private cancelTimer?: NodeJS.Timeout;
   private cancelling = false;
   private groupStopped = false;
+  private intentionalClose = false;
+  private processExit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null };
+  private authRequiredFlag = false;
+  private resumeRejectedFlag = false;
+  private negotiatedFlag = false;
+  private unsupportedReasonText?: string;
+  private lastContextUsage?: { used: number; size: number };
 
-  private constructor(adapter: AcpAdapter, private readonly options: Options) {
+  private constructor(readonly adapter: AcpAdapter, private readonly options: Options) {
     if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("ACP needs a POSIX process group");
     if (!isAbsolute(adapter.executable) || !isAbsolute(options.cwd)) throw new Error("ACP needs absolute executable and working directory paths");
     this.framer = new LineFramer(positive(options.maxLineBytes ?? 1024 * 1024, "ACP line limit"));
     this.violationLimit = positive(options.violationLimit ?? 5, "ACP violation limit");
     this.cancelMs = positive(options.cancelMs ?? 1000, "ACP cancellation timeout");
+    // Construct records BEFORE onBeforeSpawn and spawn so pre-spawn failures never strand the runner lock.
     this.records = new AcpRecords(options.dataRoot, `acp-${randomUUID()}-${this.generation}`, options);
+    options.onBeforeSpawn?.();
     this.owned = spawn(adapter.executable, adapter.args, {
-      cwd: options.cwd, env: childEnvironment(adapter), detached: true, stdio: ["pipe", "pipe", "ignore"],
+      cwd: options.cwd, env: childEnvironment(adapter, options.sessionMarker), detached: true, stdio: ["pipe", "pipe", "ignore"],
     });
-    this.exited = new Promise((resolve) => this.owned.once("close", () => resolve()));
-    this.owned.on("error", () => this.stop("disconnected", "Agent process error"));
-    this.owned.once("exit", () => this.killGroup());
+    if (this.owned.pid !== undefined) options.onSpawn?.(this.owned.pid);
+    this.closePromise = new Promise((resolve) => this.owned.once("close", (code, signal) => {
+      this.processExit = { code, signal };
+      resolve();
+    }));
+    this.owned.on("error", () => {
+      if (this.owned.pid === undefined) {
+        try {
+          options.onSpawnFailed?.();
+        } catch {
+          // Never let a lock-write failure prevent session teardown.
+        }
+      }
+      this.stop("disconnected", "Agent process error");
+    });
+    this.owned.once("exit", (code, signal) => {
+      this.processExit = { code, signal };
+      this.killGroup();
+    });
     this.owned.stdin.on("error", () => this.stop("disconnected", "Agent stdin closed"));
     let controller!: ReadableStreamDefaultController<AnyMessage>;
     const readable = new ReadableStream<AnyMessage>({ start: (stream) => { controller = stream; } });
@@ -122,7 +250,12 @@ export class AcpSession {
     this.connection = client().connect({
       readable,
       writable: new WritableStream<AnyMessage>({ write: (message) => {
-        if ("method" in message && "id" in message) this.pending.set(message.id, message.method);
+        if ("method" in message && "id" in message) {
+          this.pending.set(message.id, message.method);
+          if (message.method === session.prompt) {
+            this.activePromptRpcId = message.id;
+          }
+        }
         return this.send(message);
       } }),
     });
@@ -130,38 +263,109 @@ export class AcpSession {
   }
 
   static async start(adapter: AcpAdapter, options: Options): Promise<AcpSession> {
+    if (options.signal?.aborted) {
+      throw new Error("ACP session start aborted before spawn");
+    }
     const owner = new AcpSession(adapter, options);
+    const onAbort = () => owner.stop("disconnected", "ACP session start cancelled");
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     const startupTimer = setTimeout(() => owner.stop("failed", "ACP session setup timed out"), 5000);
     try {
       const negotiated = await owner.connection.agent.request(initialize, {
         protocolVersion: PROTOCOL_VERSION, clientCapabilities: {},
       });
-      if (negotiated.protocolVersion !== PROTOCOL_VERSION) {
+      if (options.signal?.aborted) {
+        owner.stop("disconnected", "ACP session start cancelled");
+      } else if (negotiated.protocolVersion !== PROTOCOL_VERSION) {
         owner.stop("unsupported", "ACP protocol version");
       } else {
         owner.advertised = negotiated.agentCapabilities ?? {};
+        owner.negotiatedFlag = true;
         if (options.requireCapability === "session/load" && !owner.advertised.loadSession) {
           owner.stop("unsupported", options.requireCapability);
+        } else if (options.resumeSessionId) {
+          // Major 2: Never silently fall back to session/new when resume was explicitly requested,
+          // and NEVER delete a valid saved checkpoint merely because a downgraded binary lacks resume capability.
+          if (!owner.supportsResume()) {
+            owner.stop("unsupported", "Agent does not advertise resume capability");
+          } else {
+            // Major 3: bind sessionId BEFORE session/load or session/resume so replay updates arriving
+            // ahead of the response pass sessionId validation and are retained in the transcript.
+            owner.sessionId = options.resumeSessionId;
+            owner.makeEvent = createEventSource({ kind: "session", session: owner.sessionId, generation: owner.generation }, randomUUID);
+            const resumeMethod = owner.advertised.loadSession ? session.load : session.resume;
+            try {
+              await owner.connection.agent.request(resumeMethod, {
+                cwd: options.cwd,
+                sessionId: options.resumeSessionId,
+                mcpServers: [],
+              });
+            } catch (resumeErr) {
+              if (isSessionNotFoundError(resumeErr, options.resumeSessionId)) {
+                owner.resumeRejectedFlag = true;
+              }
+              throw resumeErr;
+            }
+          }
         } else {
           await owner.connection.agent.request(session.new, { cwd: options.cwd, mcpServers: [] });
         }
       }
-    } catch {
-      owner.stop("failed", "ACP session setup failed");
+    } catch (error) {
+      const protoErr = formatProtocolVersionError(error);
+      if (protoErr) {
+        owner.unsupportedReasonText = protoErr;
+        owner.stop("unsupported", protoErr);
+      } else if (isAuthRequiredError(error)) {
+        owner.authRequiredFlag = true;
+        owner.emitAuthRequired();
+        owner.stop("failed", "Authentication required");
+      } else if (!terminal(owner.current)) {
+        owner.stop("failed", "ACP session setup failed");
+      }
     } finally {
       clearTimeout(startupTimer);
+      options.signal?.removeEventListener("abort", onAbort);
     }
-    if (terminal(owner.current)) await owner.exited;
+    if (terminal(owner.current)) await owner.waitForExitBounded();
     return owner;
   }
 
   get state(): State { return { ...this.current }; }
+  get isGroupStopped(): boolean { return this.groupStopped; }
   get capabilities(): AgentCapabilities { return structuredClone(this.advertised); }
   get pid(): number | undefined { return this.owned.pid; }
+  get exited(): Promise<void> { return this.closePromise; }
+  get exitInfo(): { code: number | null; signal: NodeJS.Signals | null } { return { ...this.processExit }; }
+  get activeSessionId(): string | undefined { return this.sessionId; }
+  get queuedCount(): number { return this.queuedPrompts; }
+  get authRequired(): boolean { return this.authRequiredFlag; }
+  get resumeRejected(): boolean { return this.resumeRejectedFlag; }
+  get negotiated(): boolean { return this.negotiatedFlag; }
+  get unsupportedReason(): string | undefined { return this.unsupportedReasonText; }
+  get contextUsage(): { used: number; size: number } | undefined {
+    return this.lastContextUsage ? { ...this.lastContextUsage } : undefined;
+  }
+
+  supportsResume(): boolean {
+    return Boolean(this.advertised.sessionCapabilities?.resume || this.advertised.loadSession);
+  }
+
+  usageReading(): UsageReading {
+    return antigravityUsageReading();
+  }
 
   prompt(text: string): Promise<Outcome> {
-    const turn = this.turnQueue.then(() => this.runPrompt(text));
-    this.turnQueue = turn;
+    if (terminal(this.current)) return Promise.resolve(this.current.kind);
+    if (this.queuedPrompts >= MAX_QUEUED_PROMPTS) {
+      return Promise.reject(new PromptQueueFullError(MAX_QUEUED_PROMPTS));
+    }
+    this.queuedPrompts += 1;
+    const turn = this.turnQueue.then(async () => {
+      this.queuedPrompts = Math.max(0, this.queuedPrompts - 1);
+      return this.runPrompt(text);
+    });
+    this.turnQueue = turn.catch(() => {});
     return turn;
   }
 
@@ -178,21 +382,60 @@ export class AcpSession {
   }
 
   answerPermission(event: string, option: string): boolean {
+    if (terminal(this.current) || this.cancelling) return false;
     const permission = this.permissions.get(event);
     const selected = permission?.choices.get(option);
-    if (!permission || selected === undefined || this.cancelling) return false;
+    if (!permission || selected === undefined) return false;
     this.reply(event, permission, selected);
     return true;
   }
 
+  private async waitForExitBounded(): Promise<void> {
+    // Major 5 (Round 13) & Major 7 (Round 16): ALWAYS bound wait for 'close' (even when killGroup
+    // succeeded, an external helper outside the process group can hold inherited stdout open).
+    // If the timeout wins, destroy stdio pipes and unref the child handle so shutdown and process
+    // exit never hang.
+    let closed = false;
+    const closeRace = this.closePromise.then(() => { closed = true; });
+    await Promise.race([
+      closeRace,
+      new Promise<void>((resolve) => setTimeout(resolve, 500)),
+    ]);
+    if (!closed) {
+      try { this.owned.stdin?.destroy(); } catch { /* ignore */ }
+      try { this.owned.stdout?.destroy(); } catch { /* ignore */ }
+      try { this.owned.unref(); } catch { /* ignore */ }
+    }
+  }
+
   async close(): Promise<void> {
+    this.intentionalClose = true;
     this.stop("disconnected", "Session closed");
-    await this.exited;
+    await this.waitForExitBounded();
+  }
+
+  private emitAuthRequired(): void {
+    try {
+      this.emit({
+        class: "action",
+        type: "auth.required",
+        title: "Sign in required",
+        view: { kind: "text", excerpt: "Sign in with `agy acp --login` in a terminal." },
+      });
+    } catch {
+      // Best-effort event emission during teardown.
+    }
   }
 
   private async runPrompt(text: string): Promise<Outcome> {
     if (terminal(this.current)) return this.current.kind;
     if (!this.sessionId) return "failed";
+    try {
+      this.emitMessage("You", text);
+    } catch {
+      this.stop("failed", "ACP transport or record failed");
+      return "failed";
+    }
     this.current = reduce(this.current, { kind: "prompt" });
     const outcome = new Promise<Outcome>((resolve) => { this.finishPrompt = resolve; });
     const finish = this.finishPrompt;
@@ -204,9 +447,15 @@ export class AcpSession {
   private async send(message: AnyMessage): Promise<void> {
     if (terminal(this.current)) return;
     const bytes = Buffer.from(JSON.stringify(message));
-    this.records.frame("out", bytes);
+    // Major 3: Write to child stdin BEFORE best-effort raw.ndjson journaling so outbound ENOSPC
+    // never prevents delivering -32601 or disconnects an active turn.
     await new Promise<void>((resolve, reject) => this.owned.stdin.write(Buffer.concat([bytes, Buffer.from("\n")]),
       (error) => error ? reject(error) : resolve()));
+    try {
+      this.records.frame("out", bytes);
+    } catch {
+      // Best-effort outbound raw frame logging.
+    }
   }
 
   private async consume(fromGeneration: number): Promise<void> {
@@ -226,6 +475,111 @@ export class AcpSession {
     }
   }
 
+  private recordIncomingRequestId(id: JsonRpcId): boolean {
+    if (this.requests.has(id)) return false;
+    // Keep tracked ID set bounded while NEVER evicting any live open permission's RPC ID
+    if (this.requests.size >= MAX_TRACKED_REQUEST_IDS) {
+      const livePermissionIds = new Set<JsonRpcId>();
+      for (const perm of this.permissions.values()) livePermissionIds.add(perm.request);
+      for (const existing of this.requests) {
+        if (!livePermissionIds.has(existing)) {
+          this.requests.delete(existing);
+          if (this.requests.size < MAX_TRACKED_REQUEST_IDS) break;
+        }
+      }
+    }
+    this.requests.add(id);
+    return true;
+  }
+
+  private handleUnknownExtension(
+    method: string,
+    params: unknown,
+    bytes: Buffer,
+    requestId?: JsonRpcId,
+  ): void {
+    const paramObj = isObject(params) ? params : undefined;
+    const isExplicitFatal = paramObj?.fatal === true || paramObj?.severity === "fatal";
+    const isAdvisory =
+      paramObj?.recoverable === true ||
+      paramObj?.severity === "warning" ||
+      paramObj?.severity === "info";
+    const classification: ExtensionClassification = isExplicitFatal
+      ? "fatal"
+      : requestId !== undefined
+        ? "blocking"
+        : FATAL_EXTENSION_RE.test(method) && !isAdvisory
+          ? "fatal"
+          : "non-blocking";
+
+    if (requestId !== undefined) {
+      // Major 3: Reply -32601 BEFORE best-effort disk logging so ENOSPC on raw.ndjson never leaves the agent hanging.
+      void this.send({
+        jsonrpc: "2.0",
+        id: requestId,
+        error: { code: -32601, message: "Method not found" },
+      }).catch(() => this.stop("disconnected", "Could not reply to unknown request"));
+    }
+
+    if (classification === "blocking" || classification === "fatal") {
+      // Major 3 & 4: ALWAYS surface blocking & fatal cards to live UI BEFORE disk writes so ENOSPC never hides them,
+      // while capping repeated display.ndjson writes at MAX_UNKNOWN_REQUEST_CARDS to bound disk usage.
+      const cardEvent = this.makeEvent({
+        class: "action",
+        type: "extension.blocking",
+        title: "Something went wrong",
+        dedupeKey: classification === "blocking" ? "extension.blocking" : undefined,
+        view: {
+          kind: "text",
+          excerpt: classification === "blocking"
+            ? "The agent sent an unsupported request that blocked progress."
+            : "An unsupported agent message interrupted the turn.",
+        },
+      });
+      try {
+        this.options.onEvent?.(cardEvent);
+      } catch {
+        // Ignore callback error during shutdown.
+      }
+      const persistToDisplay = classification === "fatal" || this.unknownRequestCards < MAX_UNKNOWN_REQUEST_CARDS;
+      if (classification === "blocking" && persistToDisplay) {
+        this.unknownRequestCards += 1;
+      }
+      if (persistToDisplay) {
+        try {
+          this.records.event(cardEvent);
+        } catch {
+          // Disk-full (ENOSPC) on display.ndjson must NEVER suppress live UI delivery.
+        }
+      }
+    }
+
+    // Minor 2 (Round 9): Non-blocking unknown advisory notifications go to extensions.ndjson ONLY
+    // (bounded sanitized summary), never into raw.ndjson.
+    if (classification !== "non-blocking") {
+      try {
+        this.records.frame("in", bytes);
+      } catch {
+        // Best-effort raw frame logging; ENOSPC must not abort handling of an unknown extension.
+      }
+    }
+    this.records.unknownExtension({
+      v: 1,
+      ts: new Date().toISOString(),
+      session: this.sessionId ?? null,
+      extensionName: method,
+      method,
+      classification,
+      paramsSummary: summarizeExtensionParams(params),
+    });
+
+    if (classification === "fatal") {
+      // Major 1 & 6: fatally terminate the session (closing RPC, permissions, and child process)
+      // so NO subsequent prompt can overlap the open RPC and no active turn hangs pending.
+      this.stop("failed", "Unsupported fatal agent message");
+    }
+  }
+
   private receive(fromGeneration: number, frame: Frame): void {
     const reject = (issue: string) => this.violate(frame.bytes, issue);
     if (fromGeneration !== this.generation) return reject("stale generation");
@@ -237,6 +591,24 @@ export class AcpSession {
     if (responseEnvelope(value)) return this.response(value, frame.bytes);
     if ("result" in value || "error" in value) return reject("invalid response envelope");
     if (value.method === incoming.update && !("id" in value)) {
+      // Major 10: classify unknown sessionUpdate variants under Decision 3 before schema violation
+      if (
+        isObject(value.params) &&
+        typeof value.params.sessionId === "string" &&
+        this.sessionId &&
+        value.params.sessionId === this.sessionId &&
+        isObject(value.params.update) &&
+        typeof value.params.update.sessionUpdate === "string" &&
+        !KNOWN_SESSION_UPDATES.has(value.params.update.sessionUpdate)
+      ) {
+        const variant = value.params.update.sessionUpdate;
+        if (this.adapter.knownExtensions?.includes(`session/update:${variant}`) || this.adapter.knownExtensions?.includes(variant)) {
+          this.records.frame("in", frame.bytes);
+          return;
+        }
+        this.handleUnknownExtension(`session/update:${variant}`, value.params.update, frame.bytes);
+        return;
+      }
       if (!validPayload(value.params, "SessionNotification")) return reject("invalid update schema");
       const params = value.params as SessionNotification;
       if (!this.sessionId || params.sessionId !== this.sessionId) return reject("wrong update session");
@@ -246,6 +618,18 @@ export class AcpSession {
       this.update(update);
     } else if (value.method === incoming.requestPermission && rpcId(value.id) && value.id !== null) {
       this.permissionRequest(value.id, value.params, frame.bytes);
+    } else if (typeof value.method === "string" && !("id" in value)) {
+      if (value.method === incoming.requestPermission) return reject("invalid permission request envelope");
+      if (this.adapter.knownExtensions?.includes(value.method)) {
+        this.records.frame("in", frame.bytes);
+        return;
+      }
+      this.handleUnknownExtension(value.method, value.params, frame.bytes);
+    } else if (typeof value.method === "string" && rpcId(value.id) && value.id !== null) {
+      if (value.method === incoming.update) return reject("invalid update envelope");
+      // Never allow an unsupported request to collide with a live or recently seen client request ID
+      if (!this.recordIncomingRequestId(value.id)) return reject("duplicate request id");
+      this.handleUnknownExtension(value.method, value.params, frame.bytes, value.id);
     } else {
       reject("unexpected JSON-RPC message");
     }
@@ -255,10 +639,16 @@ export class AcpSession {
     const method = this.pending.get(response.id);
     if (!method) return this.violate(bytes, "unknown or already answered response id");
     if (method === session.prompt) {
+      // Major 1: verify response.id matches the exact active prompt RPC id
+      if (this.activePromptRpcId !== undefined && response.id !== this.activePromptRpcId) {
+        return this.violate(bytes, "stale prompt response id");
+      }
+      const errorObj = "error" in response ? response.error : undefined;
       const result = "result" in response ? promptSettlement(response.result)
-        : { outcome: "failed" as const, reason: "JSON-RPC error" };
+        : { outcome: "failed" as const, reason: isLimitError(errorObj) ? "Usage limit reached" : "JSON-RPC error" };
       if (!this.finishPrompt || !result || this.permissions.size) return this.violate(bytes, "invalid prompt response or outstanding permission");
       this.pending.delete(response.id);
+      this.activePromptRpcId = undefined;
       if (result.outcome === "invalid") {
         this.wire.enqueue({ jsonrpc: "2.0", id: response.id, error: { code: -32602, message: "Invalid stop reason" } });
         this.settle(result.outcome, result.reason);
@@ -266,21 +656,59 @@ export class AcpSession {
       } else {
         this.records.frame("in", bytes);
         this.wire.enqueue(response);
+        if (errorObj && isLimitError(errorObj)) {
+          this.emit({
+            class: "action",
+            type: "usage.exhausted",
+            title: "Usage limit reached",
+            view: { kind: "text", excerpt: "Agent turn failed because a usage or rate limit was reached." },
+          });
+        }
         this.settle(result.outcome, result.reason);
       }
       return;
     }
     if ("result" in response) {
-      if (method === initialize && !validPayload(response.result, "InitializeResponse")) {
-        return this.violate(bytes, "invalid initialise response");
-      }
-      if (method === session.new) {
-        const result = response.result;
-        if (!isObject(result) || !validPayload(result, "NewSessionResponse") || !printableId(result.sessionId, 128)) {
-          return this.violate(bytes, "invalid new session response");
+      if (method === initialize) {
+        // Minor 1: missing or wrong protocolVersion transitions to 'unsupported' (not generic 'failed')
+        if (isObject(response.result) && response.result.protocolVersion !== PROTOCOL_VERSION) {
+          this.records.frame("in", bytes);
+          this.pending.delete(response.id);
+          this.stop("unsupported", "ACP protocol version");
+          return;
         }
-        this.sessionId = result.sessionId;
-        this.makeEvent = createEventSource({ kind: "session", session: this.sessionId, generation: this.generation }, randomUUID);
+        if (!validPayload(response.result, "InitializeResponse")) {
+          return this.violate(bytes, "invalid initialise response");
+        }
+      }
+      if (method === session.new || method === "session/resume" || method === "session/load") {
+        const result = response.result;
+        if (method === session.new) {
+          if (!isObject(result) || !validPayload(result, "NewSessionResponse") || !printableId(result.sessionId, 128)) {
+            return this.violate(bytes, "invalid new session response");
+          }
+          this.sessionId = result.sessionId;
+          this.makeEvent = createEventSource({ kind: "session", session: this.sessionId, generation: this.generation }, randomUUID);
+        } else {
+          // Major 5 & Minor 3 (Round 11): Validate session/load and session/resume replies against the pinned
+          // SDK schema AND never allow an agent reply to switch sessionId away from the requested resumeSessionId.
+          const schemaName = method === "session/load" ? "LoadSessionResponse" : "ResumeSessionResponse";
+          if (
+            !isObject(result) ||
+            !validPayload(result, schemaName) ||
+            (Object.hasOwn(result, "sessionId") && result.sessionId !== this.options.resumeSessionId)
+          ) {
+            this.records.frame("in", bytes, "invalid resume session response");
+            this.stop("failed", "invalid resume session response");
+            return;
+          }
+          if (!this.options.resumeSessionId) {
+            this.records.frame("in", bytes, "invalid resume session response");
+            this.stop("failed", "invalid resume session response");
+            return;
+          }
+          this.sessionId = this.options.resumeSessionId;
+        }
         this.current = reduce(this.current, { kind: "ready" });
       }
     }
@@ -302,8 +730,11 @@ export class AcpSession {
       }
       case "user_message_chunk":
       case "agent_message_chunk":
-        if (update.content.type === "text") this.emit({ class: "happened", type: "message.chunk",
-          title: "Message", view: { kind: "text", excerpt: update.content.text } });
+        // User replay arrives during setup. Deck already recorded any live user prompts.
+        if (update.sessionUpdate === "user_message_chunk" && this.current.kind !== "starting") break;
+        if (update.content.type === "text") {
+          this.emitMessage(update.sessionUpdate === "user_message_chunk" ? "You" : "Message", update.content.text);
+        }
         break;
       case "plan": {
         let excerpt = "";
@@ -312,6 +743,21 @@ export class AcpSession {
           excerpt += (excerpt ? "; " : "") + displayText(content, 500 - excerpt.length);
         }
         this.emit({ class: "happened", type: "plan.updated", title: "Plan updated", view: { kind: "text", excerpt } });
+        break;
+      }
+      case "usage_update": {
+        const used = typeof update.used === "number" && Number.isFinite(update.used) ? update.used : undefined;
+        const size = typeof update.size === "number" && Number.isFinite(update.size) ? update.size : undefined;
+        if (used !== undefined && size !== undefined && size > 0) {
+          this.lastContextUsage = { used, size };
+          const pct = Math.min(100, Math.round((used / size) * 100));
+          this.emit({
+            class: "happened",
+            type: "usage.updated",
+            title: "Context usage",
+            view: { kind: "text", excerpt: `Context: ${used} / ${size} tokens (${pct}%)` },
+          });
+        }
         break;
       }
     }
@@ -325,8 +771,11 @@ export class AcpSession {
   }
 
   private permissionRequest(request: JsonRpcId, params: unknown, bytes: Buffer): void {
-    if (this.requests.has(request)) return this.violate(bytes, "duplicate permission request");
-    this.requests.add(request);
+    if (!this.recordIncomingRequestId(request)) return this.violate(bytes, "duplicate permission request");
+    if (this.permissions.size >= MAX_PENDING_PERMISSIONS) {
+      this.permissionResponse(request);
+      return this.violate(bytes, "too many pending permissions");
+    }
     if (validPayload(params, "RequestPermissionRequest")) {
       const { sessionId, toolCall, options } = params as RequestPermissionRequest;
       if (this.sessionId && sessionId === this.sessionId && this.finishPrompt &&
@@ -372,6 +821,7 @@ export class AcpSession {
     this.cancelling = false;
     const finish = this.finishPrompt;
     this.finishPrompt = undefined;
+    this.activePromptRpcId = undefined;
     this.current = reduce(this.current, { kind: "settle", outcome });
     finish?.(outcome);
     this.emit({ class: outcome === "completed" || outcome === "cancelled" ? "happened" : "action",
@@ -385,16 +835,35 @@ export class AcpSession {
 
   private stop(state: TerminalState, reason: string): void {
     if (terminal(this.current)) return;
+    const wasReady = this.current.kind === "idle" || this.current.kind === "settled" || this.current.kind === "busy" || this.current.kind === "waiting";
     this.current = reduce(this.current, { kind: "stop", state });
     const finish = this.finishPrompt;
     this.finishPrompt = undefined;
+    this.activePromptRpcId = undefined;
     clearTimeout(this.cancelTimer);
+
+    // Major 2: close all open permission cards before clearing permissions so thread UI never shows stale enabled buttons
+    for (const [id, permission] of this.permissions) {
+      try {
+        this.emit({
+          class: "happened",
+          type: "permission.answered",
+          answers: id,
+          title: "Permission closed on disconnect",
+          view: permission.view,
+        });
+      } catch {
+        // Best-effort during teardown.
+      }
+    }
     this.permissions.clear();
     this.pending.clear();
     this.connection.close();
     this.killGroup();
     if (finish) void this.exited.then(() => finish(state));
-    if (state !== "disconnected" || finish) {
+    // Emit disconnect card on unexpected idle exit as well as mid-turn disconnect (Minor 1)
+    const emitDisconnectCard = state === "disconnected" && (Boolean(finish) || (wasReady && !this.intentionalClose));
+    if (state !== "disconnected" || emitDisconnectCard) {
       const type = state === "disconnected" ? "turn.disconnected" : state === "failed" ? "session.failed" : "session.unsupported";
       try {
         this.emit({ class: "action", type, title: reason, view: { kind: "turn", outcome: state, reason } });
@@ -406,12 +875,25 @@ export class AcpSession {
 
   private killGroup(): void {
     if (this.groupStopped) return;
-    this.groupStopped = true;
     const pid = this.owned.pid;
-    if (pid) {
-      try { process.kill(-pid, "SIGKILL"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    if (!pid) {
+      this.groupStopped = true;
+      return;
     }
+    try {
+      process.kill(-pid, "SIGKILL");
+      this.groupStopped = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        this.groupStopped = true;
+      }
+      // Major 5 (Round 13): On EPERM or non-ESRCH error, do NOT set groupStopped=true and do NOT throw
+      // out of close()/stop() so registry shutdown always reaches bounded cleanup and transitions to orphaned.
+    }
+  }
+
+  private emitMessage(title: string, text: string): void {
+    this.emit({ class: "happened", type: "message.chunk", title, view: { kind: "text", excerpt: text } });
   }
 
   private emit(input: Parameters<typeof this.makeEvent>[0]): void { this.publish(this.makeEvent(input)); }
