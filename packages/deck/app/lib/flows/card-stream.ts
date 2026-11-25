@@ -284,7 +284,7 @@ export function projectFlowCardStream(params: {
     flowName: flow.flow,
     flowVersion: flow.version,
     runStatus: state.status,
-    waitingOn: deriveWaitingOn(state.status),
+    waitingOn: state.activeHandoff?.target ?? deriveWaitingOn(state.status),
     headSeq,
     eventCount: events.length,
     terminalOutcome: state.terminalOutcome,

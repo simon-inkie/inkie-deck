@@ -133,6 +133,11 @@ export function reduceFlowRun(
     currentStepId: null,
     currentAttemptId: null,
     activeDecision: null,
+    activeHandoff: null,
+    closedHandoffIds: [],
+    rewindsUsed: 0,
+    lastRewind: null,
+    nextStepId: null,
     stepStates: Object.create(null) as Record<string, StepState>,
     budgetUsed: { tokens: 0, steps: 0 },
     budgetRemaining: { ...initialBudget },
@@ -174,7 +179,14 @@ export function reduceFlowRun(
         // Disallowed execution continuation after halt
         continue;
       }
-      if ((state.status === "finished" || state.status === "stopped") && event.type === "judgement") {
+      if (
+        (state.status === "finished" || state.status === "stopped") &&
+        (event.type === "judgement" ||
+          event.type === "handoff_sent" ||
+          event.type === "handoff_returned" ||
+          event.type === "handoff_cancelled" ||
+          event.type === "step_rewound")
+      ) {
         continue;
       }
     }
@@ -216,6 +228,7 @@ export function reduceFlowRun(
         state.status = "running";
         state.currentStepId = event.stepId ?? null;
         state.currentAttemptId = event.attemptId ?? null;
+        state.nextStepId = null;
 
         const stepId = event.stepId ?? "unknown";
         const attemptId = event.attemptId ?? `${stepId}/${event.data.occurrence}`;
@@ -405,12 +418,99 @@ export function reduceFlowRun(
         break;
       }
 
+      case "handoff_sent": {
+        const stepDef = flow.steps.find((s) => s.id === event.stepId);
+        const options =
+          stepDef?.type === "decision"
+            ? stepDef.options.filter((o) => event.data.optionKeys.includes(o.key))
+            : event.data.optionKeys.map((k) => ({
+                key: k,
+                label: k.charAt(0).toUpperCase() + k.slice(1).replace(/[-_]/g, " "),
+                ...(k === "stop" ? { end: "stopped" as const } : {}),
+              }));
+        state.status = "waiting_decision";
+        state.activeHandoff = {
+          handoffId: event.data.handoffId,
+          stepId: event.stepId,
+          attemptId: event.attemptId,
+          kind: event.data.kind,
+          target: event.data.target,
+          reasonCode: event.data.reasonCode,
+          optionKeys: [...event.data.optionKeys],
+          alwaysDecide: event.data.alwaysDecide ?? false,
+          ...(event.data.expiresAt ? { expiresAt: event.data.expiresAt } : {}),
+        };
+        state.activeDecision = {
+          stepId: event.stepId,
+          reasonCode: event.data.reasonCode,
+          options,
+        };
+        break;
+      }
+
+      case "handoff_returned": {
+        if (state.activeHandoff && state.activeHandoff.handoffId === event.data.handoffId) {
+          state.activeHandoff = null;
+        }
+        if (!state.closedHandoffIds.includes(event.data.handoffId)) {
+          state.closedHandoffIds.push(event.data.handoffId);
+        }
+        state.activeDecision = null;
+        state.status = "running";
+        break;
+      }
+
+      case "handoff_cancelled": {
+        if (state.activeHandoff && state.activeHandoff.handoffId === event.data.handoffId) {
+          state.activeHandoff = null;
+        }
+        if (!state.closedHandoffIds.includes(event.data.handoffId)) {
+          state.closedHandoffIds.push(event.data.handoffId);
+        }
+        state.activeDecision = null;
+        state.status = "running";
+        break;
+      }
+
+      case "return_rejected": {
+        break;
+      }
+
+      case "step_rewound": {
+        state.rewindsUsed = event.data.rewindNumber;
+        state.lastRewind = {
+          fromStepId: event.data.fromStepId,
+          toStepId: event.data.toStepId,
+          rewindNumber: event.data.rewindNumber,
+          reasonCode: event.data.reasonCode,
+        };
+        state.nextStepId = event.data.toStepId;
+        state.activeDecision = null;
+        state.activeHandoff = null;
+        state.status = "running";
+
+        const toIdx = flow.steps.findIndex((s) => s.id === event.data.toStepId);
+        if (toIdx !== -1) {
+          for (let j = toIdx; j < flow.steps.length; j++) {
+            const targetId = flow.steps[j]!.id;
+            if (Object.hasOwn(state.stepStates, targetId)) {
+              state.stepStates[targetId] = {
+                ...state.stepStates[targetId]!,
+                status: "pending",
+                lastJudgement: undefined,
+              };
+            }
+          }
+        }
+        break;
+      }
+
       case "run_released":
       case "run_claimed":
       case "child_started":
       case "child_finished":
       case "operator_input": {
-        // Reserved events do not alter core replay state in slice 1a
+        // Reserved events do not alter core replay state in slice 1a/2
         break;
       }
 
@@ -423,6 +523,8 @@ export function reduceFlowRun(
         state.terminalOutcome = event.data.outcome;
         state.terminalReason = event.data.reasonCode;
         state.activeDecision = null;
+        state.activeHandoff = null;
+        state.nextStepId = null;
         state.currentStepId = null;
         state.currentAttemptId = null;
         return state;

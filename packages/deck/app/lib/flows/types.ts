@@ -98,6 +98,7 @@ export const FlowStepResultOutputsSchema = z
     check: FlowPublicOutputValueSchema.optional(),
     result: FlowPublicOutputValueSchema.optional(),
     verdict: FlowPublicOutputValueSchema.optional(),
+    choice: FlowIdSchema.optional(),
     ok: FlowPublicOutputValueSchema.optional(),
     output_file: FlowPublicOutputValueSchema.optional(),
     artifact: FlowPublicOutputValueSchema.optional(),
@@ -134,7 +135,35 @@ export const FlowRuleHitSchema = z.enum([
   "recovery_unknown_outcome",
   "retry_step",
   "stop_rule",
+  // 11 v1 rules (step_timeout already included above)
+  "loop_count",
+  "same_check_repeat",
+  "protected_path_touched",
+  "dependency_changed",
+  "files_changed_over",
+  "test_weakened",
+  "stale_sha",
+  "claimed_output_missing",
+  "secret_found",
+  "budget_near",
+  // Slice 2 scenario & handoff rule hits
+  "budget_exceeded",
+  "ceiling_reached",
+  "ticket_ambiguous",
+  "agent_question",
+  "merge_conflict",
+  "flaky_suspected",
+  "review_comment",
+  "human_gate",
+  "decision_required",
+  "handoff_required",
+  "step_rule_floor",
+  "on_fail_rewind",
+  "on_return_rewind",
+  "unanswered_expired",
+  "decision_dismissed",
 ]);
+export type FlowRuleHit = z.infer<typeof FlowRuleHitSchema>;
 
 export const FlowReasonCodeSchema = z.enum([
   "ok",
@@ -147,7 +176,45 @@ export const FlowReasonCodeSchema = z.enum([
   "result_unrecorded",
   "retry",
   "halted",
+  // Scenarios 1-20 & Slice 2 reason codes
+  "loop_exhausted",
+  "max_attempts_reached",
+  "max_rewinds_reached",
+  "same_check_repeat",
+  "test_weakened",
+  "protected_path_touched",
+  "dependency_changed",
+  "budget_near",
+  "ceiling_reached",
+  "ambiguous_ticket",
+  "question_to_human",
+  "merge_conflict",
+  "merge_conflict_out_of_scope",
+  "secret_found",
+  "flaky_suspected",
+  "flaky_repeated",
+  "scope_drift",
+  "files_changed_over",
+  "claimed_output_missing",
+  "stale_sha",
+  "review_comment",
+  "human_gate",
+  "decision_required",
+  "handoff_required",
+  "handoff_returned",
+  "handoff_cancelled",
+  "decision_answered",
+  "decision_dismissed",
+  "unanswered_expired",
+  "operator_stopped",
+  "operator_dropped",
+  "on_fail_rewind",
+  "on_return_rewind",
+  "rule_floor",
+  "off_track",
+  "other",
 ]);
+export type FlowReasonCode = z.infer<typeof FlowReasonCodeSchema>;
 
 export const FlowJudgementDataSchema = z
   .object({
@@ -200,10 +267,70 @@ export const FlowOperatorInputDataSchema = z
   })
   .strict();
 
+export const FlowHandoffSentDataSchema = z
+  .object({
+    handoffId: FlowIdSchema,
+    kind: z.enum(["decision", "handoff"]),
+    target: FlowIdSchema,
+    reasonCode: FlowReasonCodeSchema,
+    optionKeys: z.array(FlowIdSchema).min(1).max(16),
+    alwaysDecide: z.boolean().optional(),
+    expiresAt: FlowIsoTimestampSchema.optional(),
+  })
+  .strict();
+
+export const FlowHandoffReturnedDataSchema = z
+  .object({
+    handoffId: FlowIdSchema,
+    choiceKey: FlowIdSchema,
+    resolution: z.enum(["answered", "dismissed", "expired"]),
+    actorId: FlowIdSchema,
+  })
+  .strict();
+
+export const FlowHandoffCancelledDataSchema = z
+  .object({
+    handoffId: FlowIdSchema,
+    reasonCode: FlowReasonCodeSchema,
+  })
+  .strict();
+
+export const FlowReturnRejectedDataSchema = z
+  .object({
+    handoffId: FlowIdSchema,
+    attemptedChoiceKey: FlowIdSchema,
+    rejectReason: z.enum([
+      "duplicate_return",
+      "late_return",
+      "unknown_handoff",
+      "invalid_option",
+      "human_required",
+    ]),
+  })
+  .strict();
+
+export const FlowStepRewoundDataSchema = z
+  .object({
+    fromStepId: FlowIdSchema,
+    toStepId: FlowIdSchema,
+    rewindNumber: z.number().int().positive(),
+    reasonCode: FlowReasonCodeSchema,
+  })
+  .strict();
+
 export const FlowRunFinishedDataSchema = z
   .object({
     outcome: z.enum(["done", "stopped", "dropped"]),
-    reasonCode: z.enum(["completed", "ceiling_reached", "manual_stop", "unrecoverable_failure"]),
+    reasonCode: z.enum([
+      "completed",
+      "ceiling_reached",
+      "manual_stop",
+      "unrecoverable_failure",
+      "unanswered_expired",
+      "decision_dismissed",
+      "operator_stopped",
+      "operator_dropped",
+    ]),
   })
   .strict();
 
@@ -277,6 +404,31 @@ export const FlowJudgementEventSchema = StepLevelEnvelopeSchema.extend({
   data: FlowJudgementDataSchema,
 }).strict();
 
+export const FlowHandoffSentEventSchema = StepLevelEnvelopeSchema.extend({
+  type: z.literal("handoff_sent"),
+  data: FlowHandoffSentDataSchema,
+}).strict();
+
+export const FlowHandoffReturnedEventSchema = StepLevelEnvelopeSchema.extend({
+  type: z.literal("handoff_returned"),
+  data: FlowHandoffReturnedDataSchema,
+}).strict();
+
+export const FlowHandoffCancelledEventSchema = StepLevelEnvelopeSchema.extend({
+  type: z.literal("handoff_cancelled"),
+  data: FlowHandoffCancelledDataSchema,
+}).strict();
+
+export const FlowReturnRejectedEventSchema = StepLevelEnvelopeSchema.extend({
+  type: z.literal("return_rejected"),
+  data: FlowReturnRejectedDataSchema,
+}).strict();
+
+export const FlowStepRewoundEventSchema = StepLevelEnvelopeSchema.extend({
+  type: z.literal("step_rewound"),
+  data: FlowStepRewoundDataSchema,
+}).strict();
+
 export const FlowRunReleasedEventSchema = RunLevelEnvelopeSchema.extend({
   type: z.literal("run_released"),
   data: FlowRunReleasedDataSchema,
@@ -318,6 +470,11 @@ export const FlowEventSchema = z.discriminatedUnion("type", [
   FlowStepFailedEventSchema,
   FlowStepOutcomeUnknownEventSchema,
   FlowJudgementEventSchema,
+  FlowHandoffSentEventSchema,
+  FlowHandoffReturnedEventSchema,
+  FlowHandoffCancelledEventSchema,
+  FlowReturnRejectedEventSchema,
+  FlowStepRewoundEventSchema,
   FlowRunReleasedEventSchema,
   FlowRunClaimedEventSchema,
   FlowChildStartedEventSchema,
@@ -339,6 +496,11 @@ export type FlowStepResultEvent = z.infer<typeof FlowStepResultEventSchema>;
 export type FlowStepFailedEvent = z.infer<typeof FlowStepFailedEventSchema>;
 export type FlowStepOutcomeUnknownEvent = z.infer<typeof FlowStepOutcomeUnknownEventSchema>;
 export type FlowJudgementEvent = z.infer<typeof FlowJudgementEventSchema>;
+export type FlowHandoffSentEvent = z.infer<typeof FlowHandoffSentEventSchema>;
+export type FlowHandoffReturnedEvent = z.infer<typeof FlowHandoffReturnedEventSchema>;
+export type FlowHandoffCancelledEvent = z.infer<typeof FlowHandoffCancelledEventSchema>;
+export type FlowReturnRejectedEvent = z.infer<typeof FlowReturnRejectedEventSchema>;
+export type FlowStepRewoundEvent = z.infer<typeof FlowStepRewoundEventSchema>;
 export type FlowRunReleasedEvent = z.infer<typeof FlowRunReleasedEventSchema>;
 export type FlowRunClaimedEvent = z.infer<typeof FlowRunClaimedEventSchema>;
 export type FlowChildStartedEvent = z.infer<typeof FlowChildStartedEventSchema>;
@@ -449,6 +611,25 @@ export interface StepState {
   attempts: Record<string, AttemptState>;
 }
 
+export interface ActiveHandoffState {
+  handoffId: string;
+  stepId: string;
+  attemptId: string;
+  kind: "decision" | "handoff";
+  target: string;
+  reasonCode: FlowReasonCode;
+  optionKeys: string[];
+  alwaysDecide: boolean;
+  expiresAt?: string;
+}
+
+export interface LastRewindState {
+  fromStepId: string;
+  toStepId: string;
+  rewindNumber: number;
+  reasonCode: FlowReasonCode;
+}
+
 export interface FlowRunState {
   runId: string;
   status:
@@ -466,6 +647,11 @@ export interface FlowRunState {
     reasonCode: string;
     options: FlowOption[];
   } | null;
+  activeHandoff: ActiveHandoffState | null;
+  closedHandoffIds: string[];
+  rewindsUsed: number;
+  lastRewind: LastRewindState | null;
+  nextStepId: string | null;
   stepStates: Record<string, StepState>;
   budgetUsed: { tokens: number; steps: number };
   budgetRemaining: { tokens: number; steps: number };

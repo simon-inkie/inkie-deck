@@ -46,6 +46,7 @@ import {
   verifyOpenedSqliteFileInDirFd,
   type OwnerLock,
 } from "./owner.server.js";
+import { resolveFlowLimits } from "./engine.js";
 import { resolvePinnedBudget, resolvePinnedCheckTarget, type ResolvedCheckTarget } from "./replay.js";
 
 // Track open SQLite connections per canonical flows.db path so we never open/close a raw fd
@@ -305,6 +306,25 @@ const ALLOWED_MULTI_EVENT_BATCH_SHAPES = new Set([
   "step_outcome_unknown,judgement,run_finished",
   "step_failed,judgement,run_finished",
   "judgement,run_finished",
+  // Slice 2 deterministic successor batches
+  "check_result,step_failed,judgement",
+  "check_result,step_failed,judgement,step_rewound",
+  "check_result,step_failed,judgement,handoff_sent",
+  "check_result,step_result,judgement,handoff_sent",
+  "step_result,judgement",
+  "step_result,judgement,run_finished",
+  "step_result,judgement,handoff_sent",
+  "step_result,judgement,step_rewound",
+  "step_failed,judgement,step_rewound",
+  "step_failed,judgement,handoff_sent",
+  "judgement,step_rewound",
+  "judgement,handoff_sent",
+  "handoff_returned,step_result,judgement",
+  "handoff_returned,step_result,judgement,run_finished",
+  "handoff_returned,step_result,judgement,step_rewound",
+  "handoff_returned,step_failed,judgement,run_finished",
+  "handoff_returned,run_finished",
+  "handoff_returned,step_rewound",
 ]);
 
 function assertLegalBatchShape(runId: string, items: readonly PreparedAppendItem[]): void {
@@ -345,10 +365,10 @@ function assertLegalBatchShape(runId: string, items: readonly PreparedAppendItem
       );
     }
     const chk = events[0]!;
-    if (chk.data.passed) {
+    if (chk.data.passed && events[1]!.type === "step_result") {
       const res = events[1]!;
       const jdg = events[2]!;
-      if (res.type !== "step_result" || res.actor !== "runner" || res.data.tokensUsed !== 0) {
+      if (res.actor !== "runner" || res.data.tokensUsed !== 0) {
         throw new IllegalFlowTransitionError(
           runId,
           "Passing check batch requires runner step_result with tokensUsed === 0"
@@ -366,62 +386,154 @@ function assertLegalBatchShape(runId: string, items: readonly PreparedAppendItem
       if (
         jdg.type !== "judgement" ||
         jdg.actor !== "system" ||
-        jdg.data.engineTokens !== 0 ||
-        jdg.data.final !== "continue" ||
-        jdg.data.ruleHits.length === 0 ||
-        !jdg.data.ruleHits.every((h) => h === "check_passed" || h === "step_passed") ||
-        jdg.data.reasonCodes.length === 0 ||
-        !jdg.data.reasonCodes.every((c) => c === "ok")
+        jdg.data.engineTokens !== 0
       ) {
         throw new IllegalFlowTransitionError(
           runId,
-          "Passing check batch requires system judgement(continue) with engineTokens === 0, passing ruleHits, and reasonCodes ['ok']"
+          "Passing check batch requires system judgement with engineTokens === 0"
         );
       }
-      if (events.length === 4) {
-        const fin = events[3]!;
-        if (fin.type !== "run_finished" || fin.actor !== "system" || fin.data.outcome !== "done" || fin.data.reasonCode !== "completed") {
+      if (events.length === 3) {
+        if (jdg.data.final === "continue") {
+          if (
+            jdg.data.ruleHits.length === 0 ||
+            !jdg.data.ruleHits.every((h) => h === "check_passed" || h === "step_passed") ||
+            jdg.data.reasonCodes.length === 0 ||
+            !jdg.data.reasonCodes.every((c) => c === "ok")
+          ) {
+            throw new IllegalFlowTransitionError(
+              runId,
+              "Passing check batch requires system judgement(continue) with engineTokens === 0, passing ruleHits, and reasonCodes ['ok']"
+            );
+          }
+        } else if (jdg.data.final !== "notify") {
           throw new IllegalFlowTransitionError(
             runId,
-            "Passing check 4-event batch requires system run_finished(done, completed)"
+            "Passing 3-event check batch requires system judgement(continue | notify)"
           );
         }
+      } else if (events.length === 4) {
+        const tail = events[3]!;
+        if (tail.type === "run_finished") {
+          if (jdg.data.final === "continue") {
+            if (
+              jdg.data.ruleHits.length === 0 ||
+              !jdg.data.ruleHits.every((h) => h === "check_passed" || h === "step_passed") ||
+              jdg.data.reasonCodes.length === 0 ||
+              !jdg.data.reasonCodes.every((c) => c === "ok") ||
+              tail.actor !== "system" ||
+              tail.data.outcome !== "done" ||
+              tail.data.reasonCode !== "completed"
+            ) {
+              throw new IllegalFlowTransitionError(
+                runId,
+                "Passing check 4-event batch requires system run_finished(done, completed)"
+              );
+            }
+          } else if (jdg.data.final === "stop") {
+            if (tail.actor !== "system" || tail.data.outcome !== "stopped") {
+              throw new IllegalFlowTransitionError(
+                runId,
+                "Stop check 4-event batch requires system run_finished(stopped)"
+              );
+            }
+          } else {
+            throw new IllegalFlowTransitionError(
+              runId,
+              "Passing check 4-event batch ending in run_finished requires judgement(continue | stop)"
+            );
+          }
+        } else if (tail.type === "handoff_sent") {
+          if (jdg.data.final !== "decide") {
+            throw new IllegalFlowTransitionError(
+              runId,
+              "Check batch ending in handoff_sent requires judgement(decide)"
+            );
+          }
+        }
       }
-    } else {
+    } else if (chk.data.passed && events[1]!.type === "step_failed") {
+      // Scenario 17: stale_sha check rerun batch (check_result(passed:true), step_failed, judgement(continue), step_rewound)
       const fail = events[1]!;
       const jdg = events[2]!;
-      const fin = events[3];
-      if (fail.type !== "step_failed" || fail.actor !== "runner" || fail.data.errorCode !== "check_failed") {
+      const rew = events[3]!;
+      if (fail.actor !== "runner" || fail.data.errorCode !== "check_failed") {
         throw new IllegalFlowTransitionError(
           runId,
-          "Failing check batch requires runner step_failed(check_failed)"
+          "Stale check batch requires runner step_failed(check_failed)"
         );
       }
       if (
         jdg.type !== "judgement" ||
         jdg.actor !== "system" ||
         jdg.data.engineTokens !== 0 ||
-        jdg.data.final !== "stop" ||
-        jdg.data.ruleHits.length === 0 ||
-        !jdg.data.ruleHits.every((h) => h === "check_failed") ||
-        jdg.data.reasonCodes.length === 0 ||
-        !jdg.data.reasonCodes.every((c) => c === "check_failed")
+        (jdg.data.final !== "continue" && jdg.data.final !== "notify")
       ) {
         throw new IllegalFlowTransitionError(
           runId,
-          "Failing check batch requires system judgement(stop) with engineTokens === 0 and check_failed ruleHits/reasonCodes"
+          "Stale check batch requires system judgement(continue | notify) with engineTokens === 0"
         );
       }
-      if (!fin || fin.type !== "run_finished" || fin.actor !== "system" || fin.data.outcome !== "stopped" || fin.data.reasonCode !== "unrecoverable_failure") {
+      if (rew.type !== "step_rewound") {
+        throw new IllegalFlowTransitionError(runId, "Stale check batch must end with step_rewound");
+      }
+    } else {
+      const fail = events[1]!;
+      const jdg = events[2]!;
+      if (fail.type !== "step_failed" || fail.actor !== "runner" || fail.data.errorCode !== "check_failed") {
         throw new IllegalFlowTransitionError(
           runId,
-          "Failing check batch requires system run_finished(stopped, unrecoverable_failure)"
+          "Failing check batch requires runner step_failed(check_failed)"
         );
+      }
+      if (jdg.type !== "judgement" || jdg.actor !== "system" || jdg.data.engineTokens !== 0) {
+        throw new IllegalFlowTransitionError(
+          runId,
+          "Failing check batch requires system judgement with engineTokens === 0"
+        );
+      }
+      if (events.length === 4) {
+        const tail = events[3]!;
+        if (tail.type === "run_finished") {
+          if (
+            jdg.data.final !== "stop" ||
+            tail.actor !== "system" ||
+            tail.data.outcome !== "stopped"
+          ) {
+            throw new IllegalFlowTransitionError(
+              runId,
+              "Failing check batch requires system judgement(stop) and system run_finished(stopped)"
+            );
+          }
+        } else if (tail.type === "step_rewound") {
+          if (jdg.data.final !== "continue" && jdg.data.final !== "notify") {
+            throw new IllegalFlowTransitionError(
+              runId,
+              "Failing check rewind batch requires system judgement(continue | notify)"
+            );
+          }
+        } else if (tail.type === "handoff_sent") {
+          if (jdg.data.final !== "decide") {
+            throw new IllegalFlowTransitionError(
+              runId,
+              "Failing check handoff batch requires system judgement(decide)"
+            );
+          }
+        }
       }
     }
   } else {
-    // Recovery / timeout stop batches: deterministic successors (judgement, run_finished) must be
-    // system-authored stop/stopped with zero engineTokens and zero privateDetail.
+    // Recovery / timeout / handoff-followup batches: deterministic successors at idx >= 1
+    // must carry zero privateDetail, and judgement / run_finished must be system-authored.
+    if (events[0]!.type === "step_result") {
+      if (events[0]!.actor !== "runner" || events[0]!.data.tokensUsed !== 0) {
+        throw new IllegalFlowTransitionError(
+          runId,
+          "Handoff/decision follow-up batch requires runner step_result with tokensUsed === 0"
+        );
+      }
+    }
+    const isHandoffBatch = events[0]!.type === "handoff_returned";
     for (let idx = 1; idx < items.length; idx++) {
       if (items[idx]!.privateDetail !== undefined) {
         throw new IllegalFlowTransitionError(
@@ -431,14 +543,31 @@ function assertLegalBatchShape(runId: string, items: readonly PreparedAppendItem
       }
       const ev = items[idx]!.event;
       if (ev.type === "judgement") {
-        if (ev.actor !== "system" || ev.data.engineTokens !== 0 || ev.data.final !== "stop") {
+        if (ev.actor !== "system" || ev.data.engineTokens !== 0) {
+          throw new IllegalFlowTransitionError(
+            runId,
+            "Deterministic batch requires system judgement with engineTokens === 0"
+          );
+        }
+        if (
+          !isHandoffBatch &&
+          (events[0]!.type === "step_outcome_unknown" ||
+            (events[0]!.type === "step_failed" && !events.some((e) => e.type === "step_rewound" || e.type === "handoff_sent"))) &&
+          ev.data.final !== "stop"
+        ) {
           throw new IllegalFlowTransitionError(
             runId,
             "Recovery/stop batch requires system judgement(stop) with engineTokens === 0"
           );
         }
       } else if (ev.type === "run_finished") {
-        if (ev.actor !== "system" || ev.data.outcome !== "stopped") {
+        if (ev.actor !== "system") {
+          throw new IllegalFlowTransitionError(
+            runId,
+            "Batch run_finished must be system-authored"
+          );
+        }
+        if (!isHandoffBatch && events[0]!.type !== "step_result" && ev.data.outcome !== "stopped") {
           throw new IllegalFlowTransitionError(
             runId,
             "Recovery/stop batch requires system run_finished(stopped)"
@@ -484,6 +613,25 @@ interface TransitionContext {
   hasStopJudgement: boolean;
   hasPendingDecide: boolean;
   hasPendingUnknown: boolean;
+  rewindsUsed: number;
+  expectedNextStepId: string | null;
+  openHandoff: {
+    handoffId: string;
+    stepId: string;
+    attemptId: string;
+    kind: "decision" | "handoff";
+    optionKeys: string[];
+    alwaysDecide: boolean;
+    target: string;
+  } | null;
+  closedHandoffIds: Set<string>;
+  returnedHandoffByAttempt: Map<
+    string,
+    { handoffId: string; choiceKey: string; resolution: "answered" | "dismissed" | "expired" }
+  >;
+  unknownAttempts: Set<string>;
+  pendingDecideAttemptKey: string | null;
+  terminalDecisionEnd: { outcome: "done" | "stopped" | "dropped"; stepId: string; choiceKey: string } | null;
   seenOccurrences: Set<string>;
   startedAttempts: Set<string>;
   settledAttempts: Set<string>;
@@ -494,6 +642,10 @@ interface TransitionContext {
   judgedAttempts: Set<string>;
   passedStepIds: Set<string>;
   passedCheckProvenanceByStep: Map<
+    string,
+    { producerStepId: string; producerAttemptId: string; producerOccurrence: number; targetSha: string }
+  >;
+  passedCheckProvenanceByAttempt: Map<
     string,
     { producerStepId: string; producerAttemptId: string; producerOccurrence: number; targetSha: string }
   >;
@@ -513,6 +665,18 @@ interface TransitionContext {
   ) => void;
   verifyPublicArtefactShaOnDisk: (sha256: string, requireNonEmpty?: boolean) => void;
 }
+
+const REWIND_ELIGIBLE_REASON_CODES = new Set([
+  "check_failed",
+  "on_fail_rewind",
+  "on_return_rewind",
+  "claimed_output_missing",
+  "stale_sha",
+  "retry",
+  "merge_conflict",
+  "flaky_suspected",
+  "review_comment",
+]);
 
 type TransitionRule<T extends FlowEvent["type"] = FlowEvent["type"]> = (
   ctx: TransitionContext,
@@ -580,7 +744,7 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
     if (!ctx.hasStarted) {
       throw new IllegalFlowTransitionError(ctx.runId, "step_started requires run_started first");
     }
-    if (ctx.hasPendingDecide || ctx.hasPendingUnknown) {
+    if (ctx.hasPendingDecide || ctx.hasPendingUnknown || ctx.openHandoff !== null) {
       throw new IllegalFlowTransitionError(ctx.runId, "step_started forbidden while waiting on decision or unknown outcome");
     }
     if (ctx.hasActiveUnsettledAttempt() || ctx.hasUnjudgedSettledAttempt()) {
@@ -600,7 +764,14 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
     if (stepIdx === undefined) {
       throw new IllegalFlowTransitionError(ctx.runId, `step_started references undeclared step '${ev.stepId}'`);
     }
-    if (stepIdx > 0) {
+    if (ctx.expectedNextStepId !== null) {
+      if (ev.stepId !== ctx.expectedNextStepId) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `step_started expected rewound step '${ctx.expectedNextStepId}', got '${ev.stepId}'`
+        );
+      }
+    } else if (stepIdx > 0) {
       const prevStep = ctx.pinnedFlow.steps[stepIdx - 1]!;
       if (!ctx.passedStepIds.has(prevStep.id)) {
         throw new IllegalFlowTransitionError(
@@ -759,6 +930,14 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
       );
     }
     const step = ctx.stepById.get(ev.stepId);
+    if (step?.type === "decision" || step?.type === "handoff") {
+      if (!ctx.returnedHandoffByAttempt.has(attKey)) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `${step.type} step '${ev.stepId}' cannot record step_result before handoff_returned`
+        );
+      }
+    }
     if (step?.type === "check") {
       if (!ctx.passedCheckAttempts.has(attKey)) {
         throw new IllegalFlowTransitionError(
@@ -835,18 +1014,200 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
     if (ctx.judgedAttempts.has(attKey)) {
       throw new IllegalFlowTransitionError(ctx.runId, `Attempt '${attKey}' already has a judgement`);
     }
-    // Major 1: judgement(continue) is FORBIDDEN after step_failed or step_outcome_unknown!
-    if (ev.data.final === "continue" && !ctx.succeededAttempts.has(attKey)) {
+    if (ev.data.final === "continue") {
+      if (ctx.unknownAttempts.has(attKey)) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `judgement(continue) forbidden for failed or unknown attempt '${attKey}'`
+        );
+      }
+      if (!ctx.succeededAttempts.has(attKey)) {
+        const limits = resolveFlowLimits(ctx.pinnedFlow);
+        const hasValidRewindReason =
+          ev.data.reasonCodes.length > 0 &&
+          !ev.data.reasonCodes.includes("ok") &&
+          ev.data.reasonCodes.every((c) => REWIND_ELIGIBLE_REASON_CODES.has(c));
+        if (!hasValidRewindReason || ctx.rewindsUsed >= limits.maxRewinds) {
+          throw new IllegalFlowTransitionError(
+            ctx.runId,
+            `judgement(continue) forbidden for failed or unknown attempt '${attKey}'`
+          );
+        }
+      } else if (ev.data.reasonCodes.length === 0 || !ev.data.reasonCodes.every((c) => c === "ok")) {
+        // Major 2 (Round 12): judgement(continue) on a succeeded attempt cannot carry contradictory failure reasonCodes.
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `judgement(continue) requires reasonCodes ['ok'], got ${JSON.stringify(ev.data.reasonCodes)}`
+        );
+      }
+    }
+  },
+
+  handoff_sent(ctx, ev) {
+    if (!ctx.hasStarted || ctx.hasRunFinished || ctx.hasStopJudgement) {
+      throw new IllegalFlowTransitionError(ctx.runId, "handoff_sent requires an active non-terminal run");
+    }
+    if (ctx.openHandoff !== null) {
       throw new IllegalFlowTransitionError(
         ctx.runId,
-        `judgement(continue) forbidden for failed or unknown attempt '${attKey}'`
+        `Cannot open handoff '${ev.data.handoffId}' while '${ctx.openHandoff.handoffId}' is still open`
       );
     }
-    // Major 2 (Round 12): judgement(continue) cannot carry contradictory failure reasonCodes (e.g. 'timeout').
-    if (ev.data.final === "continue" && (ev.data.reasonCodes.length === 0 || !ev.data.reasonCodes.every((c) => c === "ok"))) {
+    if (ctx.closedHandoffIds.has(ev.data.handoffId)) {
       throw new IllegalFlowTransitionError(
         ctx.runId,
-        `judgement(continue) requires reasonCodes ['ok'], got ${JSON.stringify(ev.data.reasonCodes)}`
+        `Cannot reuse closed handoffId '${ev.data.handoffId}'`
+      );
+    }
+    const step = ctx.stepById.get(ev.stepId);
+    if (!step) {
+      throw new IllegalFlowTransitionError(ctx.runId, `handoff_sent references undeclared step '${ev.stepId}'`);
+    }
+    const attKey = `${ev.stepId}:${ev.attemptId}`;
+    if (!ctx.startedAttempts.has(attKey)) {
+      throw new IllegalFlowTransitionError(ctx.runId, `handoff_sent requires started attempt '${attKey}'`);
+    }
+    if (step.type === "decision" || step.type === "handoff") {
+      if (ctx.settledAttempts.has(attKey) || ctx.returnedHandoffByAttempt.has(attKey)) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `handoff_sent on ${step.type} step '${ev.stepId}' must precede handoff_returned and settlement`
+        );
+      }
+      if (step.type === "decision" && step.always === "decide" && ev.data.alwaysDecide !== true) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `Decision step '${ev.stepId}' with always: decide must set alwaysDecide: true`
+        );
+      }
+    } else {
+      if (!ctx.judgedAttempts.has(attKey) || !ctx.hasPendingDecide || ctx.pendingDecideAttemptKey !== attKey) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `handoff_sent on ${step.type} step '${ev.stepId}' requires pending judgement(decide) on attempt '${attKey}'`
+        );
+      }
+    }
+  },
+
+  handoff_returned(ctx, ev) {
+    if (ctx.openHandoff === null) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `handoff_returned '${ev.data.handoffId}' rejected: no open handoff`
+      );
+    }
+    if (ev.data.handoffId !== ctx.openHandoff.handoffId) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `handoff_returned '${ev.data.handoffId}' does not match open handoff '${ctx.openHandoff.handoffId}'`
+      );
+    }
+    if (ev.stepId !== ctx.openHandoff.stepId || ev.attemptId !== ctx.openHandoff.attemptId) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `handoff_returned step/attempt '${ev.stepId}:${ev.attemptId}' mismatches open handoff '${ctx.openHandoff.stepId}:${ctx.openHandoff.attemptId}'`
+      );
+    }
+    if (ctx.openHandoff.alwaysDecide) {
+      if (
+        (ev.data.resolution === "answered" || ev.data.resolution === "dismissed") &&
+        ev.actor !== "human"
+      ) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `handoff_returned (${ev.data.resolution}) on always: decide handoff '${ev.data.handoffId}' requires actor 'human'`
+        );
+      }
+      if (ev.data.resolution === "expired" && ev.actor === "agent") {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `handoff_returned (expired) on always: decide handoff '${ev.data.handoffId}' forbids actor 'agent'`
+        );
+      }
+    }
+    if (ev.data.resolution === "answered" && !ctx.openHandoff.optionKeys.includes(ev.data.choiceKey)) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `handoff_returned choiceKey '${ev.data.choiceKey}' is not in optionKeys [${ctx.openHandoff.optionKeys.join(", ")}]`
+      );
+    }
+  },
+
+  handoff_cancelled(ctx, ev) {
+    if (ctx.openHandoff === null || ev.data.handoffId !== ctx.openHandoff.handoffId) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `handoff_cancelled '${ev.data.handoffId}' requires matching open handoff`
+      );
+    }
+    if (ev.stepId !== ctx.openHandoff.stepId || ev.attemptId !== ctx.openHandoff.attemptId) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `handoff_cancelled step/attempt mismatches open handoff`
+      );
+    }
+  },
+
+  return_rejected(ctx, ev) {
+    if (!ctx.hasStarted || ctx.hasRunFinished || ctx.hasStopJudgement) {
+      throw new IllegalFlowTransitionError(ctx.runId, "return_rejected requires an active non-terminal run");
+    }
+    const attKey = `${ev.stepId}:${ev.attemptId}`;
+    if (!ctx.startedAttempts.has(attKey)) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `return_rejected requires started attempt '${attKey}'`
+      );
+    }
+  },
+
+  step_rewound(ctx, ev) {
+    if (!ctx.hasStarted || ctx.hasRunFinished || ctx.hasStopJudgement) {
+      throw new IllegalFlowTransitionError(ctx.runId, "step_rewound requires an active non-terminal run");
+    }
+    if (ctx.openHandoff !== null) {
+      throw new IllegalFlowTransitionError(ctx.runId, "step_rewound forbidden while a handoff is still open");
+    }
+    if (ev.data.fromStepId !== ev.stepId) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `step_rewound fromStepId '${ev.data.fromStepId}' must match envelope stepId '${ev.stepId}'`
+      );
+    }
+    const attKey = `${ev.stepId}:${ev.attemptId}`;
+    if (!ctx.judgedAttempts.has(attKey)) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `step_rewound requires judged attempt '${attKey}'`
+      );
+    }
+    const fromIdx = ctx.stepIndexById.get(ev.data.fromStepId);
+    const toIdx = ctx.stepIndexById.get(ev.data.toStepId);
+    if (fromIdx === undefined || toIdx === undefined) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `step_rewound references unknown step '${ev.data.fromStepId}' -> '${ev.data.toStepId}'`
+      );
+    }
+    if (toIdx > fromIdx) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `step_rewound can only target same or earlier step (got '${ev.data.fromStepId}' -> '${ev.data.toStepId}')`
+      );
+    }
+    const expectedRewindNumber = ctx.rewindsUsed + 1;
+    if (ev.data.rewindNumber !== expectedRewindNumber) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `step_rewound rewindNumber must be contiguous (${expectedRewindNumber}, got ${ev.data.rewindNumber})`
+      );
+    }
+    const maxRewinds = resolveFlowLimits(ctx.pinnedFlow).maxRewinds;
+    if (ev.data.rewindNumber > maxRewinds) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `step_rewound rewindNumber (${ev.data.rewindNumber}) exceeds max_rewinds (${maxRewinds})`
       );
     }
   },
@@ -856,6 +1217,12 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
       throw new IllegalFlowTransitionError(
         ctx.runId,
         `run_finished(${ev.data.outcome}) forbidden while an attempt is unsettled or awaiting judgement`
+      );
+    }
+    if (ctx.openHandoff !== null) {
+      throw new IllegalFlowTransitionError(
+        ctx.runId,
+        `run_finished(${ev.data.outcome}) forbidden while a handoff is still open (${ctx.openHandoff.handoffId})`
       );
     }
     if (ev.data.outcome === "done") {
@@ -871,7 +1238,15 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
           "run_finished(done) requires run_started, within budget, no stop judgement, and no pending decisions"
         );
       }
-      for (const declaredStep of ctx.pinnedFlow.steps) {
+      const decisionEndIdx =
+        ctx.terminalDecisionEnd?.outcome === "done"
+          ? ctx.stepIndexById.get(ctx.terminalDecisionEnd.stepId)
+          : undefined;
+      const requiredMaxIdx =
+        decisionEndIdx !== undefined ? decisionEndIdx : ctx.pinnedFlow.steps.length - 1;
+
+      for (let i = 0; i <= requiredMaxIdx; i++) {
+        const declaredStep = ctx.pinnedFlow.steps[i]!;
         if (!ctx.passedStepIds.has(declaredStep.id)) {
           throw new IllegalFlowTransitionError(
             ctx.runId,
@@ -1698,6 +2073,14 @@ class FlowsStoreImpl {
       hasStopJudgement: false,
       hasPendingDecide: false,
       hasPendingUnknown: false,
+      rewindsUsed: 0,
+      expectedNextStepId: null,
+      openHandoff: null,
+      closedHandoffIds: new Set<string>(),
+      returnedHandoffByAttempt: new Map(),
+      unknownAttempts: new Set<string>(),
+      pendingDecideAttemptKey: null,
+      terminalDecisionEnd: null,
       seenOccurrences: new Set<string>(),
       startedAttempts: new Set<string>(),
       settledAttempts: new Set<string>(),
@@ -1708,6 +2091,7 @@ class FlowsStoreImpl {
       judgedAttempts: new Set<string>(),
       passedStepIds: new Set<string>(),
       passedCheckProvenanceByStep: new Map(),
+      passedCheckProvenanceByAttempt: new Map(),
       publicRecordedArtefactShas: new Set<string>(),
       events: [],
       budgetStepsRemaining: null,
@@ -1777,18 +2161,29 @@ class FlowsStoreImpl {
       else if (ev.type === "step_started") {
         ctx.seenOccurrences.add(`${ev.stepId}:${ev.data.occurrence}`);
         ctx.startedAttempts.add(`${ev.stepId}:${ev.attemptId}`);
+        ctx.expectedNextStepId = null;
+        ctx.terminalDecisionEnd = null;
         if (ctx.budgetStepsRemaining !== null) ctx.budgetStepsRemaining -= 1;
         // Critical 2 (Round 10) & Major 4 (Round 11): Starting a new occurrence clears pass state
         // for this step AND every downstream step (invalidating checks whose producer re-ran,
         // without touching earlier checks when a later step starts).
+        const clearProvenanceForStep = (id: string) => {
+          ctx.passedCheckProvenanceByStep.delete(id);
+          const prefix = `${id}:`;
+          for (const key of ctx.passedCheckProvenanceByAttempt.keys()) {
+            if (key.startsWith(prefix)) {
+              ctx.passedCheckProvenanceByAttempt.delete(key);
+            }
+          }
+        };
         ctx.passedStepIds.delete(ev.stepId);
-        ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+        clearProvenanceForStep(ev.stepId);
         const startedIdx = ctx.stepIndexById.get(ev.stepId);
         if (startedIdx !== undefined) {
           for (let j = startedIdx + 1; j < ctx.pinnedFlow.steps.length; j++) {
             const downstreamId = ctx.pinnedFlow.steps[j]!.id;
             ctx.passedStepIds.delete(downstreamId);
-            ctx.passedCheckProvenanceByStep.delete(downstreamId);
+            clearProvenanceForStep(downstreamId);
           }
         }
       } else if (ev.type === "artefact_recorded") {
@@ -1801,17 +2196,21 @@ class FlowsStoreImpl {
           ctx.passedCheckAttempts.add(k);
           const resolvedTarget = ctx.resolveExpectedCheckTarget(checkStep);
           if (resolvedTarget && resolvedTarget.sha256 === ev.data.targetSha) {
-            ctx.passedCheckProvenanceByStep.set(ev.stepId, {
+            const prov = {
               producerStepId: resolvedTarget.stepId,
               producerAttemptId: resolvedTarget.attemptId,
               producerOccurrence: resolvedTarget.occurrence,
               targetSha: ev.data.targetSha,
-            });
+            };
+            ctx.passedCheckProvenanceByStep.set(ev.stepId, prov);
+            ctx.passedCheckProvenanceByAttempt.set(k, prov);
           } else {
             ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+            ctx.passedCheckProvenanceByAttempt.delete(k);
           }
         } else {
           ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+          ctx.passedCheckProvenanceByAttempt.delete(k);
         }
       } else if (ev.type === "step_result") {
         const k = `${ev.stepId}:${ev.attemptId}`;
@@ -1824,12 +2223,15 @@ class FlowsStoreImpl {
         ctx.failedAttempts.add(k);
         ctx.passedStepIds.delete(ev.stepId);
         ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+        ctx.passedCheckProvenanceByAttempt.delete(k);
       } else if (ev.type === "step_outcome_unknown") {
         const k = `${ev.stepId}:${ev.attemptId}`;
         ctx.settledAttempts.add(k);
         ctx.failedAttempts.add(k);
+        ctx.unknownAttempts.add(k);
         ctx.passedStepIds.delete(ev.stepId);
         ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+        ctx.passedCheckProvenanceByAttempt.delete(k);
         ctx.hasPendingUnknown = true;
       } else if (ev.type === "judgement") {
         const k = `${ev.stepId}:${ev.attemptId}`;
@@ -1838,17 +2240,124 @@ class FlowsStoreImpl {
           ctx.hasStopJudgement = true;
           ctx.hasPendingUnknown = false;
           ctx.hasPendingDecide = false;
+          ctx.pendingDecideAttemptKey = null;
           ctx.passedStepIds.delete(ev.stepId);
           ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+          ctx.passedCheckProvenanceByAttempt.delete(k);
         } else if (ev.data.final === "decide") {
           ctx.hasPendingDecide = true;
+          ctx.pendingDecideAttemptKey = k;
           ctx.passedStepIds.delete(ev.stepId);
           ctx.passedCheckProvenanceByStep.delete(ev.stepId);
-        } else if (ev.data.final === "continue" && ctx.succeededAttempts.has(k)) {
+        } else if (
+          (ev.data.final === "continue" || ev.data.final === "notify") &&
+          ctx.succeededAttempts.has(k)
+        ) {
           ctx.passedStepIds.add(ev.stepId);
+          const stepDef = ctx.stepById.get(ev.stepId);
+          if (stepDef?.type === "decision") {
+            const ret = ctx.returnedHandoffByAttempt.get(k);
+            if (ret && ret.resolution === "answered") {
+              const opt = stepDef.options.find((o) => o.key === ret.choiceKey);
+              if (opt?.end) {
+                ctx.terminalDecisionEnd = {
+                  outcome: opt.end,
+                  stepId: ev.stepId,
+                  choiceKey: ret.choiceKey,
+                };
+              }
+            }
+          }
         } else {
           ctx.passedStepIds.delete(ev.stepId);
           ctx.passedCheckProvenanceByStep.delete(ev.stepId);
+        }
+      } else if (ev.type === "handoff_sent") {
+        const k = `${ev.stepId}:${ev.attemptId}`;
+        ctx.openHandoff = {
+          handoffId: ev.data.handoffId,
+          stepId: ev.stepId,
+          attemptId: ev.attemptId,
+          kind: ev.data.kind,
+          optionKeys: [...ev.data.optionKeys],
+          alwaysDecide: ev.data.alwaysDecide ?? false,
+          target: ev.data.target,
+        };
+        ctx.hasPendingDecide = true;
+        ctx.pendingDecideAttemptKey = k;
+      } else if (ev.type === "handoff_returned") {
+        const k = `${ev.stepId}:${ev.attemptId}`;
+        ctx.openHandoff = null;
+        ctx.closedHandoffIds.add(ev.data.handoffId);
+        ctx.hasPendingDecide = false;
+        ctx.pendingDecideAttemptKey = null;
+        ctx.returnedHandoffByAttempt.set(k, {
+          handoffId: ev.data.handoffId,
+          choiceKey: ev.data.choiceKey,
+          resolution: ev.data.resolution,
+        });
+        if (ctx.succeededAttempts.has(k)) {
+          const stepDef = ctx.stepById.get(ev.stepId);
+          if (stepDef?.type === "decision") {
+            if (ev.data.resolution === "answered") {
+              const opt = stepDef.options.find((o) => o.key === ev.data.choiceKey);
+              if (opt?.end) {
+                ctx.terminalDecisionEnd = {
+                  outcome: opt.end,
+                  stepId: ev.stepId,
+                  choiceKey: ev.data.choiceKey,
+                };
+              } else if (!opt?.goto) {
+                ctx.passedStepIds.add(ev.stepId);
+              }
+            }
+          } else if (stepDef?.type === "handoff") {
+            if (ev.data.resolution === "answered" && !stepDef.on_return?.[ev.data.choiceKey]?.goto) {
+              ctx.passedStepIds.add(ev.stepId);
+            }
+          } else {
+            const caseBContinue =
+              (ev.data.resolution === "answered" &&
+                ev.data.choiceKey !== "stop" &&
+                ev.data.choiceKey !== "retry") ||
+              (ev.data.resolution === "expired" &&
+                (ctx.pinnedFlow.on_unanswered?.outcome === "continue" ||
+                  ctx.pinnedFlow.on_unanswered?.outcome === "notify"));
+            if (caseBContinue) {
+              ctx.passedStepIds.add(ev.stepId);
+              if (stepDef?.type === "check") {
+                const attemptProv = ctx.passedCheckProvenanceByAttempt.get(k);
+                if (attemptProv) {
+                  ctx.passedCheckProvenanceByStep.set(ev.stepId, attemptProv);
+                }
+              }
+            }
+          }
+        }
+      } else if (ev.type === "handoff_cancelled") {
+        ctx.openHandoff = null;
+        ctx.closedHandoffIds.add(ev.data.handoffId);
+        ctx.hasPendingDecide = false;
+        ctx.pendingDecideAttemptKey = null;
+      } else if (ev.type === "step_rewound") {
+        ctx.rewindsUsed = ev.data.rewindNumber;
+        ctx.hasPendingDecide = false;
+        ctx.pendingDecideAttemptKey = null;
+        ctx.expectedNextStepId = ev.data.toStepId;
+        ctx.terminalDecisionEnd = null;
+        const toIdx = ctx.stepIndexById.get(ev.data.toStepId);
+        if (toIdx !== undefined) {
+          for (let j = toIdx; j < ctx.pinnedFlow.steps.length; j++) {
+            const targetId = ctx.pinnedFlow.steps[j]!.id;
+            ctx.passedStepIds.delete(targetId);
+            ctx.passedCheckProvenanceByStep.delete(targetId);
+            const prefix = `${targetId}:`;
+            for (const key of ctx.passedCheckProvenanceByAttempt.keys()) {
+              if (key.startsWith(prefix)) {
+                ctx.passedCheckProvenanceByAttempt.delete(key);
+              }
+            }
+          }
         }
       }
     };
@@ -1931,7 +2440,14 @@ class FlowsStoreImpl {
       else if (validatedEvent.type === "flow_approved") currentStatus = "approved";
       else if (validatedEvent.type === "run_started") currentStatus = "running";
       else if (validatedEvent.type === "step_outcome_unknown") currentStatus = "waiting_decision";
-      else if (validatedEvent.type === "judgement") {
+      else if (validatedEvent.type === "handoff_sent") currentStatus = "waiting_decision";
+      else if (
+        validatedEvent.type === "handoff_returned" ||
+        validatedEvent.type === "handoff_cancelled" ||
+        validatedEvent.type === "step_rewound"
+      ) {
+        currentStatus = "running";
+      } else if (validatedEvent.type === "judgement") {
         if (validatedEvent.data.final === "stop") currentStatus = "stopped";
         else if (validatedEvent.data.final === "decide") currentStatus = "waiting_decision";
       } else if (validatedEvent.type === "run_finished") {

@@ -1182,6 +1182,11 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
         runPlanned: null,
         terminalOutcome: null,
         terminalReason: null,
+        activeHandoff: null,
+        closedHandoffIds: [],
+        rewindsUsed: 0,
+        lastRewind: null,
+        nextStepId: null,
       },
     });
     expect(view.waitingOn).toBe("operator");
@@ -1213,6 +1218,11 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
         runPlanned: null,
         terminalOutcome: null,
         terminalReason: null,
+        activeHandoff: null,
+        closedHandoffIds: [],
+        rewindsUsed: 0,
+        lastRewind: null,
+        nextStepId: null,
       },
     });
     const finishedView: FlowCardStreamView = {
