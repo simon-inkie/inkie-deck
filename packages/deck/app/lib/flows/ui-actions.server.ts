@@ -412,7 +412,7 @@ export async function decideFlowFromUi(
     projectId, runId, handoffId, choiceKey, dataRoot: params.dataRoot,
     actor: "human", actorId: "operator-1",
   });
-  if (!result.accepted) {
+  if (!result.accepted && !result.activeHandoffExpired) {
     throw new FlowDecisionConflictError();
   }
   return startFlowFromUi(params);

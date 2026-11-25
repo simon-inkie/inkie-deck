@@ -277,6 +277,17 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
           </span>
         </div>
 
+        {stream.terminalReason === "runtime_adapter_missing" ? (
+          <p role="status" className="mt-2 text-xs text-destructive">
+            No runtime adapter is configured. Live runtimes arrive in slice 3b. For fixture mode, run{" "}
+            <code>pnpm -C packages/deck exec vitest run test/flows/slice-3-e2e.test.ts</code>.
+          </p>
+        ) : null}
+        {stream.terminalReason === "unanswered_expired" ? (
+          <p role="status" className="mt-2 text-xs text-destructive">
+            The decision expired. The run has stopped.
+          </p>
+        ) : null}
         {pollError ? (
           <p
             data-testid="flows-poll-error"

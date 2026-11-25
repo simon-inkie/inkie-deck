@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import type { DeckEvent } from "../deck-event.js";
-import type { StepSignals } from "./engine.js";
+import { getHandoffOptionKeys, type StepSignals } from "./engine.js";
 import type { FlowDefinition, FlowStep } from "./types.js";
 
 export interface FlowStepAdapterContext {
@@ -179,7 +179,7 @@ function parseDefaultStructuredOutput(
   }
 
   if (ctx.step.type === "handoff") {
-    const allowedVerdicts = ctx.step.returns ? Object.values(ctx.step.returns).flat() : [];
+    const allowedVerdicts = getHandoffOptionKeys(ctx.step);
     const lastWord = lines[lines.length - 1]?.trim().toLowerCase() ?? "";
     return {
       kind: "handoff",

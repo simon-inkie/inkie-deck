@@ -98,10 +98,7 @@ function isInsideGitWorktree(targetPath: string): boolean {
   for (const start of candidates) {
     let current = start;
     while (true) {
-      const marker = path.join(current, ".git");
-      // An empty directory is not Git metadata. A gitfile or a nonempty
-      // metadata directory (including a damaged one) still blocks storage.
-      if (fs.existsSync(marker) && (!fs.lstatSync(marker).isDirectory() || fs.readdirSync(marker).length > 0)) {
+      if (fs.existsSync(path.join(current, ".git"))) {
         return true;
       }
       const parent = path.dirname(current);

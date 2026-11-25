@@ -1330,7 +1330,6 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
     const gitWorktree = path.join(scratchDir, "sandbox-repo");
     const devDataRoot = path.join(gitWorktree, ".runtime", "data");
     fs.mkdirSync(path.join(gitWorktree, ".git"), { recursive: true });
-    fs.writeFileSync(path.join(gitWorktree, ".git", "HEAD"), "ref: refs/heads/main\n");
     fs.mkdirSync(devDataRoot, { recursive: true });
     vi.stubEnv("DATA_ROOT", devDataRoot);
 

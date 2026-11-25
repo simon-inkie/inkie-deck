@@ -212,10 +212,13 @@ describe("Deck Flows Slice 3 - PTY/ACP Fixture Adapters, Differs-From, Repro & G
     ).rejects.toThrow(FlowRoleConflictError);
   }, 15_000);
 
-  it("keeps review waiting when the ACP fixture returns no verdict", async () => {
-    const projectId = "proj-empty-review";
-    const runId = "run-empty-review";
-    const flowYaml = `flow: empty-review
+  it.each([
+    { name: "accepts a plain default verdict", transcript: "approve\n", status: "finished", verdict: "approve" },
+    { name: "keeps review waiting with no verdict", transcript: "", status: "waiting_decision", verdict: null },
+  ])("$name when returns is omitted", async ({ transcript, status, verdict }) => {
+    const projectId = "proj-default-review";
+    const runId = "run-default-review";
+    const flowYaml = `flow: default-review
 version: 1
 roles:
   reviewer:
@@ -224,24 +227,27 @@ steps:
   - id: review
     type: handoff
     to: reviewer
-    returns:
-      verdict:
-        - approve
-        - changes
 `;
     const reviewer = createAcpFixtureFlowAdapter({
-      id: "empty-reviewer",
+      id: "fixture-reviewer",
       scriptPath: ACP_FIXTURE_PATH,
       cwd: repoRoot,
-      script: { prompts: [[{ kind: "result", result: { stopReason: "end_turn" } }]] },
+      script: { prompts: [[
+        ...(transcript ? [{
+          kind: "update",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: transcript } },
+        }] : []),
+        { kind: "result", result: { stopReason: "end_turn" } },
+      ]] },
     });
     const planned = planRun({ projectId, runId, flowYaml, dataRoot });
     approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
     const run = await runFlow(projectId, runId, { dataRoot, adaptersByRuntime: { acp: reviewer } });
-    expect(run.finalStatus).toBe("waiting_decision");
+    expect(run.finalStatus).toBe(status);
     const { events } = loadRunState(projectId, runId, { dataRoot });
-    expect(events.some((event) => event.type === "handoff_returned")).toBe(false);
-    expect(events).toContainEqual(expect.objectContaining({ type: "return_rejected", stepId: "review" }));
+    const returns = events.flatMap((event) => event.type === "handoff_returned" ? [event.data.choiceKey] : []);
+    expect(returns).toEqual(verdict ? [verdict] : []);
+    expect(events.some((event) => event.type === "return_rejected" && event.stepId === "review")).toBe(verdict === null);
   }, 15_000);
 
   it("kills PTY child and SIGTERM-ignoring descendant PIDs cleanly on timeout (zero orphan PIDs)", async () => {

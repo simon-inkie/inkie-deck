@@ -33,6 +33,7 @@ import {
 } from "./checks.server.js";
 import {
   evaluateStepJudgement,
+  getHandoffOptionKeys,
   resolveFlowLimits,
   type StepSignals,
 } from "./engine.js";
@@ -164,6 +165,13 @@ class WorktreeOutcomeRejectedError extends Error {
   constructor(reason: string) {
     super(reason);
     this.name = "WorktreeOutcomeRejectedError";
+  }
+}
+
+class MissingRuntimeAdapterError extends Error {
+  constructor(runtime: string) {
+    super(`No adapter configured for runtime '${runtime}'`);
+    this.name = "MissingRuntimeAdapterError";
   }
 }
 
@@ -494,18 +502,14 @@ function getHandoffSpecForStep(
   }
 
   if (step.type === "handoff") {
-    const rawKeys = step.returns ? Object.values(step.returns).flat() : [];
-    const uniqueKeys = Array.from(new Set(rawKeys.length > 0 ? rawKeys : ["approve", "changes", "comment"])).slice(
-      0,
-      16,
-    );
+    const optionKeys = getHandoffOptionKeys(step);
     return {
       kind: "handoff",
       target: step.to && FlowIdRegex.test(step.to) ? step.to : "reviewer",
       reasonCode: "handoff_required",
-      optionKeys: uniqueKeys,
+      optionKeys,
       expiresAt,
-      options: uniqueKeys.map((k) => ({
+      options: optionKeys.map((k) => ({
         key: k,
         label: k.charAt(0).toUpperCase() + k.slice(1).replace(/[-_]/g, " "),
         detail: step.on_return?.[k]?.goto ? `Rewind to ${step.on_return[k]!.goto}` : `Return ${k}`,
@@ -1025,7 +1029,7 @@ export function submitHandoffReturn(params: {
   note?: string;
   resolution?: "answered" | "dismissed" | "expired";
   dataRoot?: string;
-}): { accepted: boolean; rejectReason?: string } {
+}): { accepted: boolean; rejectReason?: string; activeHandoffExpired?: true } {
   if (!FlowIdRegex.test(params.handoffId)) {
     throw new Error(`Invalid handoffId '${params.handoffId}'`);
   }
@@ -1119,7 +1123,10 @@ export function submitHandoffReturn(params: {
       return recordRejection("invalid_option", sentEv.stepId, sentEv.attemptId);
     }
     if (resolution !== "expired" && state.activeHandoff.expiresAt && nowIso >= state.activeHandoff.expiresAt) {
-      return recordRejection("late_return", sentEv.stepId, sentEv.attemptId);
+      return {
+        ...recordRejection("late_return", sentEv.stepId, sentEv.attemptId),
+        activeHandoffExpired: true,
+      };
     }
 
     const head = findHead(store, params.runId);
@@ -2498,7 +2505,7 @@ export async function runFlow(
             const boundAdapter =
               (step.role ? roleAdapters.get(step.role) : undefined) ?? (runtime === undefined ? options.adapter : undefined);
             if (runtime !== undefined && !boundAdapter) {
-              throw new WorktreeOutcomeRejectedError(`No adapter configured for runtime '${runtime}'`);
+              throw new MissingRuntimeAdapterError(runtime);
             }
 
             let adapterOutputs: Record<string, string> | undefined;
@@ -3591,7 +3598,8 @@ export async function runFlow(
           }
         }
       } catch (err) {
-        if (err instanceof WorktreeOutcomeRejectedError || err instanceof GitDiffEvidenceError) {
+        const adapterMissing = err instanceof MissingRuntimeAdapterError;
+        if (adapterMissing || err instanceof WorktreeOutcomeRejectedError || err instanceof GitDiffEvidenceError) {
           keepWorktreeBranch = false;
           const tsIso = nowIso();
           store.appendChainedBatch(runId, [
@@ -3609,7 +3617,7 @@ export async function runFlow(
                 data: {
                   final: "stop",
                   ruleHits: ["step_failed_recovery"],
-                  reasonCodes: ["execution_error"],
+                  reasonCodes: [adapterMissing ? "runtime_adapter_missing" : "execution_error"],
                   engineTokens: 0,
                 },
               },
@@ -3618,7 +3626,7 @@ export async function runFlow(
               event: {
                 v: 1, runId, seq, eventId: nextEventId("ev_fin", seq), prev, at: tsIso,
                 actor: "system", type: "run_finished",
-                data: { outcome: "stopped", reasonCode: "unrecoverable_failure" },
+                data: { outcome: "stopped", reasonCode: adapterMissing ? "runtime_adapter_missing" : "unrecoverable_failure" },
               },
             }),
           ]);

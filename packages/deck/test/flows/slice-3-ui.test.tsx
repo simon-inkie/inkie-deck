@@ -115,6 +115,7 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (scratchDir && fs.existsSync(scratchDir)) {
@@ -388,7 +389,26 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
     expect(fs.readFileSync(draftFile)).toEqual(originalBytes);
   });
 
-  it("answers the Ticket to PR intake from its card and resumes into build", async () => {
+  it.each([
+    {
+      name: "shows the missing runtime guidance after Start work",
+      expired: false,
+      actor: "human",
+      choiceKey: "start",
+      resolution: "answered",
+      terminalReason: "runtime_adapter_missing",
+      message: "No runtime adapter is configured. Live runtimes arrive in slice 3b. For fixture mode, run pnpm -C packages/deck exec vitest run test/flows/slice-3-e2e.test.ts.",
+    },
+    {
+      name: "settles expired intake from its card without starting build",
+      expired: true,
+      actor: "system",
+      choiceKey: "unanswered_expired",
+      resolution: "expired",
+      terminalReason: "unanswered_expired",
+      message: "The decision expired. The run has stopped.",
+    },
+  ])("$name", async ({ expired, actor, choiceKey, resolution, terminalReason, message }) => {
     vi.unstubAllGlobals();
     const projectId = "proj-intake";
     const runId = "run-intake";
@@ -402,6 +422,12 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
     expect((await postFlowAction({
       intent: "decide", projectId, runId, handoffId: handoffId!, choiceKey: "invalid",
     })).status).toBe(409);
+    if (expired) {
+      const expiresAt = loadRunState(projectId, runId).state.activeHandoff?.expiresAt;
+      expect(expiresAt).toBeDefined();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(expiresAt!));
+    }
 
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) =>
       postFlowAction(JSON.parse(String(init?.body))),
@@ -415,11 +441,16 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-testid="flow-card-decision"]')).toBeNull();
-    const { events } = loadRunState(projectId, runId);
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "handoff_returned", actor: "human", stepId: "intake", data: expect.objectContaining({ choiceKey: "start" }),
-    }));
-    expect(events).toContainEqual(expect.objectContaining({ type: "step_started", stepId: "build" }));
+    expect(container.querySelector('[data-testid="flow-run-status"]')?.textContent).toBe("stopped");
+    expect(container.textContent).toContain(message);
+    const { events, state } = loadRunState(projectId, runId);
+    expect(state.terminalReason).toBe(terminalReason);
+    expect(events.filter((event) => event.type === "handoff_returned")).toEqual([
+      expect.objectContaining({
+        actor, stepId: "intake", data: expect.objectContaining({ choiceKey, resolution }),
+      }),
+    ]);
+    expect(events.some((event) => event.type === "step_started" && event.stepId === "build")).toBe(!expired);
     expect((await postFlowAction({
       intent: "decide", projectId, runId, handoffId: handoffId!, choiceKey: "stop",
     })).status).toBe(409);

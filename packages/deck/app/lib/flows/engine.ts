@@ -17,6 +17,7 @@ import type {
   FlowReasonCode,
   FlowRuleHit,
   FlowStep,
+  HandoffStep,
 } from "./types.js";
 
 export type FlowJudgementOutcome = "continue" | "notify" | "decide" | "stop";
@@ -29,6 +30,12 @@ export const OUTCOME_RANK: Readonly<Record<FlowJudgementOutcome, number>> = {
 };
 
 export const DEFAULT_MAX_FILES_CHANGED = 15;
+
+export function getHandoffOptionKeys(step: HandoffStep): string[] {
+  const declared = Object.values(step.returns ?? {}).flat();
+  const keys = declared.length > 0 ? declared : ["approve", "changes", "comment"];
+  return [...new Set(keys)].slice(0, 16);
+}
 
 export interface ResolvedFlowLimits {
   maxAttempts: number;

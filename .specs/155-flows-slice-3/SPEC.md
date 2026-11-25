@@ -14,6 +14,8 @@ Connect the landed Slices 1a, 1b, and 2 SQLite flow engine (`#246`) to real codi
 5. Add a deterministic check runner (`typecheck`, `test`, `lint`, `leak_scan`, `build`, `repro` fail-on-base/pass-on-head) and git-diff signal extraction (`changedFiles`, `protected_path_touched`, `dependency_changed`, `files_changed_over`, `stale_sha`, `secret_found`, `test_weakened`) feeding `evaluateStepJudgement`.
 6. Add a minimal same-origin-gated choose/draft-diff/approve/start panel on `/flows` backed solely by the event-driven `planRun`/`approveRun`/`runFlow` library functions.
 
+The UI stops at a coding step that needs an unconfigured runtime adapter and shows how to run the fixture suite. Fixture execution is enabled by passing the scripted adapters to `runFlow`, as in `pnpm -C packages/deck exec vitest run test/flows/slice-3-e2e.test.ts`. Live runtimes arrive in Slice 3b.
+
 ## Scope
 
 In scope:
@@ -95,3 +97,11 @@ Out of scope:
 - Empty reviewer output: require an explicit verdict and reject missing or unrecognised answers.
 - Large diffs: capture up to 8 MiB per Git command and refuse to judge incomplete evidence.
 - Protected-path renames: include the source and destination in changed paths.
+
+### 2026-11-25: PR #248 verification fixes
+
+- R2-1: stop with a recorded missing-adapter reason and show the Slice 3b and fixture-suite guidance in the run stream.
+- R2-2: share the handoff verdict keys between the fixture parser and the runner.
+- R2-3: resume on an expired active decision to apply the run's unanswered policy and clear the card.
+- Restore the shared Git marker guard and its test fixture. Default dev uses `FLOWS_DATA_ROOT` outside the checkout. Restore the Slice 2 handoff test roots.
+- R2-4 and R2-5 are follow-ups for interrupted draft publication and interrupted decision resume.
