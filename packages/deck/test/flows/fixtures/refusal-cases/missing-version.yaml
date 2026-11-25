@@ -1,0 +1,4 @@
+flow: test-missing-version
+steps:
+  - id: step1
+    type: agent

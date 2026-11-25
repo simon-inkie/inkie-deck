@@ -1,0 +1,7 @@
+flow: test-duplicate-id
+version: 1
+steps:
+  - id: step1
+    type: agent
+  - id: step1
+    type: check

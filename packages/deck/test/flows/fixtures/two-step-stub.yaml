@@ -1,0 +1,22 @@
+flow: test-two-step
+version: 1
+title: Two-step test stub flow
+limits:
+  max_attempts: 3
+  budget:
+    tokens: 10000
+    steps: 10
+steps:
+  - id: generate
+    type: agent
+    role: builder
+    prompt: Generate test output
+    outputs:
+      - output_file
+  - id: verify
+    type: check
+    against: generate.output_file
+    run:
+      - check_exists
+    on_fail:
+      goto: generate

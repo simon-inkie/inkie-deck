@@ -30,6 +30,8 @@ export default [
   route("api/file-pins", "routes/api.file-pins.tsx"),
   // #66: workspace Markdown drafts (read, create, save with conflict check).
   route("api/drafts", "routes/api.drafts.tsx"),
+  // Read-only card stream for Deck Flows Slice 1b.
+  route("api/flows", "routes/api.flows.tsx"),
   layout("routes/shell.tsx", [
     route("drafts", "routes/drafts.tsx"),
     index("routes/home.tsx"),
@@ -37,6 +39,7 @@ export default [
     // Thread C: dedicated Decisions + Actions tab (additive second surface).
     route("cards", "routes/cards.tsx"),
     route("projects", "routes/projects.tsx"),
+    route("flows", "routes/flows.tsx"),
     // Live tmux Team tab (readonly v1)
     route("tmux", "routes/tmux.tsx"),
     route("tickets/:ticketId", "routes/tickets.$ticketId.tsx"),

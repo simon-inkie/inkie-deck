@@ -44,7 +44,8 @@
     "web-push": "^3.6.7",
     "ws": "^8.21.0",
     "yaml": "^2.9.0",
-    "zod": "^4.4.0"
+    "zod": "^4.4.0",
+    "better-sqlite3": "13.2.0"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "2.7.0",
@@ -64,7 +65,8 @@
     "typescript": "^5.7.0",
     "vite": "^7.0.0",
     "vite-tsconfig-paths": "^6.1.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "@types/better-sqlite3": "^7.6.12"
   },
   "version": "0.0.0",
   "description": "Web control plane for a fleet of AI agents speaking the inkie-agents-base protocol: inboxes, decision cards, briefs, projects and tmux-backed agent sessions",

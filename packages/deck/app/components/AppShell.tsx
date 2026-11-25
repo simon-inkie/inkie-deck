@@ -15,7 +15,7 @@
  */
 import { useEffect, useState } from "react";
 import { Outlet, Link, NavLink, useLocation, useParams } from "react-router";
-import { Bell, CalendarClock, Gauge, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, TriangleAlert, X } from "lucide-react";
+import { Bell, CalendarClock, Gauge, KanbanSquare, MessageSquare, SquareStack, TerminalSquare, TriangleAlert, Workflow, X } from "lucide-react";
 import { Sidebar, type SidebarAgent } from "./Sidebar";
 import {
   ResizablePanelGroup,
@@ -268,6 +268,16 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
             }
           >
             Projects
+          </NavLink>
+          <NavLink
+            to="/flows"
+            className={({ isActive }) =>
+              isActive
+                ? "label-mono min-h-[44px] hidden md:flex items-center text-foreground underline underline-offset-4"
+                : "label-mono min-h-[44px] hidden md:flex items-center text-muted-foreground transition-colors hover:text-foreground"
+            }
+          >
+            Flows
           </NavLink>
           {draftsNavOn ? (
             <NavLink
@@ -672,6 +682,16 @@ export function AppShell({ agents, needsItems, needsCount, workCards, tmuxOn = t
         >
           <KanbanSquare className="size-5" />
           <span className="text-[8px] font-bold uppercase tracking-wider">Board</span>
+        </Link>
+        <Link
+          to="/flows"
+          data-testid="agent-strip-flows"
+          aria-label="Flows"
+          className="relative mx-0.5 flex min-h-11 min-w-11 shrink-0 flex-col items-center justify-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted"
+          style={{ scrollSnapAlign: "start" }}
+        >
+          <Workflow className="size-5" />
+          <span className="text-[8px] font-bold uppercase tracking-wider">Flows</span>
         </Link>
         {cronAdminOn ? (
           <Link
