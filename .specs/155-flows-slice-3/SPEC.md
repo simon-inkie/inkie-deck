@@ -75,3 +75,7 @@ Out of scope:
 ### 2026-11-25: Pass 2 triage fixes (R1-2 and R2-1)
 - What changed: updated `runner.server.ts` so `handoffAdapter.dispatch` timeout with `step_timeout: decide` returns `waiting_decision` even without `options.inbox`, and updated `flows.tsx` `loadCatalogSafely()` + `loader` to return sanitised HTTP 422 data on symlink/confinement failures without throwing raw host paths, with regression tests in `slice-3-adapter-checks.test.ts` and `slice-3-ui.test.tsx`.
 - Why: resolve Pass 2 triage items R1-2 and R2-1.
+
+### 2026-11-25: Pass 3 triage fixes (R3-1 through R3-3)
+- What changed: route fixture PTY creation through the runner registry. Use the durable step intent ID in Git's worktree lock reason to identify and remove an interrupted coding worktree before recording a terminal stop. Run Example A with the 153 PTY and 154 ACP fixtures, TypeScript checking and emit, the smoke and repro tests, Git whitespace checks, and the leak gate.
+- Why: resolve the three Pass 3 triage findings on `4438f18`.

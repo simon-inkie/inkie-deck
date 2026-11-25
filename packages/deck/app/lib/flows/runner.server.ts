@@ -65,12 +65,14 @@ import {
   type FlowReasonCode,
   type FlowRunState,
   type FlowStep,
+  type FlowStepStartedEvent,
 } from "./types.js";
 import { parseFlowYamlOrThrow } from "./validator.js";
 import {
   captureWorktreeOutcome,
   createDetachedCommitWorktree,
   createEphemeralWorktree,
+  recoverEphemeralWorktree,
   resolveBaseCommitSha,
   rollbackWorktree,
   type WorktreeHandle,
@@ -81,6 +83,7 @@ const SUPPORTED_BUILT_IN_CHECKS = new Set(["check_exists", "check_nonempty"]);
 
 export type CrashPoint =
   | "K1_AFTER_INTENT"
+  | "K_AFTER_WORKTREE_CREATED"
   | "K3_AFTER_ARTEFACT"
   | "K4_AFTER_OUTCOME"
   | "K8_BEFORE_CHECK_BATCH"
@@ -1150,6 +1153,7 @@ export async function runFlow(
     // 1. Load, verify pin hash, verify hash chain, verify artefacts on disk, replay state
     const loaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
     const { flow } = loaded;
+    const worktreeBaseDir = options.worktreeRoot ?? path.join(store.projectDir, "worktrees");
     const stepTimeoutMs =
       options.stepTimeoutMs ??
       (flow.limits?.step_timeout_min ? Math.round(flow.limits.step_timeout_min * 60_000) : 5_000);
@@ -1555,7 +1559,7 @@ export async function runFlow(
     }
 
     // 4. Crash Recovery Scan
-    const startedAttempts: Array<{ stepId: string; attemptId: string }> = [];
+    const startedAttempts: FlowStepStartedEvent[] = [];
     const outcomeAttempts = new Set<string>();
     const judgedAttempts = new Set<string>();
     const handoffAttempts = new Set<string>();
@@ -1568,7 +1572,7 @@ export async function runFlow(
 
     for (const ev of events) {
       if (ev.type === "step_started") {
-        startedAttempts.push({ stepId: ev.stepId, attemptId: ev.attemptId });
+        startedAttempts.push(ev);
       } else if (ev.type === "step_result") {
         const key = `${ev.stepId}:${ev.attemptId}`;
         outcomeAttempts.add(key);
@@ -1590,6 +1594,19 @@ export async function runFlow(
     for (const att of startedAttempts) {
       const key = `${att.stepId}:${att.attemptId}`;
       if (!outcomeAttempts.has(key) && !handoffAttempts.has(key)) {
+        if (
+          options.workspaceRepoRoot &&
+          flow.workspace?.kind === "git-worktree" &&
+          flow.steps.some((step) => step.id === att.stepId && step.type === "agent")
+        ) {
+          await recoverEphemeralWorktree({
+            repoRoot: options.workspaceRepoRoot,
+            worktreeBaseDir,
+            runId,
+            attemptId: att.attemptId,
+            intentEventId: att.eventId,
+          });
+        }
         const tsIso = nowIso();
         store.appendChainedBatch(runId, [
           (seq, prev) => ({
@@ -2376,7 +2393,6 @@ export async function runFlow(
           }
         | { kind: "noop" } = { kind: "noop" };
 
-      const worktreeBaseDir = options.worktreeRoot ?? path.join(store.projectDir, "worktrees");
       let activeWorktree: WorktreeHandle | undefined;
       let keepWorktreeBranch = false;
 
@@ -2393,8 +2409,10 @@ export async function runFlow(
             runId,
             stepId: step.id,
             attemptId: intent.attemptId,
+            intentEventId: intent.eventId,
             timeoutMs: Math.min(stepTimeoutMs, 15_000),
           });
+          fireCrash("K_AFTER_WORKTREE_CREATED");
         }
 
         stepWorkOutcome = await runWithTimeout(step.id, stepTimeoutMs, async (signal) => {

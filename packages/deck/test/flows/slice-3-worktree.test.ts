@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FlowStepAdapter } from "../../app/lib/flows/adapter.server.js";
+import { loadRunState } from "../../app/lib/flows/load-run.server.js";
 import { approveRun, planRun, runFlow } from "../../app/lib/flows/runner.server.js";
 import {
   captureWorktreeOutcome,
@@ -137,6 +138,40 @@ describe("Deck Flows Slice 3 - Ephemeral Git Worktree Isolation & Rollback", () 
     // Second rollback call is cleanly idempotent
     await expect(rollbackWorktree(handle)).resolves.toBeUndefined();
   }, 15_000);
+
+  it("removes only the interrupted attempt's worktree when recovering after SIGKILL", async () => {
+    const projectId = "proj-crashed-worktree";
+    const runId = "run-crashed-worktree";
+    const planned = planRun({ projectId, runId, flowYaml: WORKTREE_FLOW_YAML, dataRoot });
+    approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+
+    const unrelatedPath = path.join(worktreeBaseDir, runId, "unrelated");
+    git(repoRoot, ["worktree", "add", "--detach", unrelatedPath, baseSha]);
+    const originalWorktrees = listWorktrees(repoRoot);
+
+    const killed = spawnSync(process.execPath, [
+      "--import", "tsx", path.resolve(__dirname, "fixtures/run-flow-child.ts"),
+      projectId, runId, dataRoot, repoRoot, worktreeBaseDir,
+    ], {
+      cwd: path.resolve(__dirname, "../.."),
+      env: { ...process.env, FLOW_CRASH_POINT: "K_AFTER_WORKTREE_CREATED" },
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    expect(killed.signal, killed.stderr).toBe("SIGKILL");
+    expect(listWorktrees(repoRoot)).toHaveLength(originalWorktrees.length + 1);
+
+    const options = { dataRoot, workspaceRepoRoot: repoRoot, worktreeRoot: worktreeBaseDir };
+    const resumed = await runFlow(projectId, runId, options);
+    expect(resumed.finalStatus).toBe("stopped");
+    expect(resumed.dispatchedSteps).toEqual([]);
+    expect(listWorktrees(repoRoot)).toEqual(originalWorktrees);
+    expect(git(repoRoot, ["status", "--porcelain"])).toBe("");
+    expect(loadRunState(projectId, runId, { dataRoot }).events.filter((event) =>
+      event.type === "step_outcome_unknown",
+    )).toHaveLength(1);
+    expect(await runFlow(projectId, runId, options)).toEqual(resumed);
+  }, 20_000);
 
   it("rolls back dirty worktree cleanly on step timeout without dirtying repoRoot", async () => {
     const projectId = "proj-wt-timeout";

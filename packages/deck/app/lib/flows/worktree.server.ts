@@ -29,6 +29,7 @@ export interface WorktreeHandle {
   baseRef: string;
   baseSha: string;
   branch?: string;
+  intentEventId?: string;
   detached: boolean;
   runId: string;
   stepId: string;
@@ -105,6 +106,10 @@ export function buildEphemeralBranchName(runId: string, attemptId: string): stri
   return `flow-${digest}`;
 }
 
+function worktreeLockReason(intentEventId: string): string {
+  return `Deck flow attempt ${intentEventId}`;
+}
+
 async function execGit(
   cwd: string,
   args: string[],
@@ -171,6 +176,7 @@ export async function createEphemeralWorktree(params: {
   runId: string;
   stepId: string;
   attemptId: string;
+  intentEventId?: string;
   detached?: boolean;
   timeoutMs?: number;
 }): Promise<WorktreeHandle> {
@@ -210,17 +216,21 @@ export async function createEphemeralWorktree(params: {
 
   const detached = params.detached ?? false;
   let branch: string | undefined;
-  let addArgs: string[];
+  const addArgs = ["worktree", "add"];
+  if (params.intentEventId) {
+    // Git writes the ownership marker as part of creating the worktree.
+    addArgs.push("--lock", "--reason", worktreeLockReason(params.intentEventId));
+  }
   if (detached) {
-    addArgs = ["worktree", "add", "--detach", worktreePath, baseSha];
+    addArgs.push("--detach");
   } else {
     branch = buildEphemeralBranchName(params.runId, params.attemptId);
     // Remove stale temp branch if left behind by a prior crash
     await execGit(resolvedRepo, ["branch", "-D", branch], timeoutMs);
-    addArgs = ["worktree", "add", "-b", branch, worktreePath, baseSha];
+    addArgs.push("-b", branch);
   }
 
-  const added = await execGit(resolvedRepo, addArgs, timeoutMs);
+  const added = await execGit(resolvedRepo, [...addArgs, worktreePath, baseSha], timeoutMs);
   if (added.code !== 0) {
     throw new WorktreeError(
       `git worktree add failed for '${worktreePath}': ${added.stderr.trim() || added.stdout.trim()}`,
@@ -234,11 +244,40 @@ export async function createEphemeralWorktree(params: {
     baseRef: params.baseRef,
     baseSha,
     ...(branch ? { branch } : {}),
+    intentEventId: params.intentEventId,
     detached,
     runId: params.runId,
     stepId: params.stepId,
     attemptId: params.attemptId,
   };
+}
+
+/** Remove the registered worktree owned by an interrupted step intent, if it still exists. */
+export async function recoverEphemeralWorktree(params: {
+  repoRoot: string;
+  worktreeBaseDir: string;
+  runId: string;
+  attemptId: string;
+  intentEventId: string;
+}): Promise<void> {
+  const worktreePath = path.resolve(params.worktreeBaseDir, params.runId, params.attemptId);
+  const listed = await execGit(params.repoRoot, ["worktree", "list", "--porcelain", "-z"]);
+  if (listed.code !== 0 || !listed.stdout.endsWith("\0\0")) {
+    throw new WorktreeError("Could not list git worktrees during flow recovery");
+  }
+  const reason = `locked ${worktreeLockReason(params.intentEventId)}`;
+  const owned = listed.stdout.split("\0\0").some((record) => {
+    const [entry, ...fields] = record.split("\0");
+    return entry === `worktree ${worktreePath}` && fields.includes(reason);
+  });
+  if (!owned) return;
+
+  assertConfinedPath(worktreePath, params.worktreeBaseDir);
+  const removed = await execGit(params.repoRoot, ["worktree", "remove", "--force", "--force", "--", worktreePath]);
+  if (removed.code !== 0) {
+    throw new WorktreeError(`Could not remove interrupted flow worktree: ${removed.stderr.trim()}`);
+  }
+  await execGit(params.repoRoot, ["branch", "-D", buildEphemeralBranchName(params.runId, params.attemptId)]);
 }
 
 /**
@@ -316,7 +355,7 @@ export async function rollbackWorktree(
   if (fs.existsSync(handle.worktreePath)) {
     const rmRes = await execGit(
       handle.repoRoot,
-      ["worktree", "remove", "--force", handle.worktreePath],
+      ["worktree", "remove", "--force", ...(handle.intentEventId ? ["--force"] : []), handle.worktreePath],
       timeoutMs,
     );
     if (rmRes.code !== 0 && fs.existsSync(handle.worktreePath)) {

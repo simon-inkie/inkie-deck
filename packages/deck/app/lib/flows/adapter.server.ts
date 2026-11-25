@@ -17,7 +17,6 @@ import os from "node:os";
 import path from "node:path";
 import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import type { DeckEvent } from "../deck-event.js";
-import { PtyRunner } from "../runner/pty-runner.server.js";
 import type { StepSignals } from "./engine.js";
 import type { FlowDefinition, FlowStep } from "./types.js";
 
@@ -217,11 +216,12 @@ export function createPtyFixtureFlowAdapter(
     runtimeKind: "pty",
     ...(opts.identity ? { identity: opts.identity } : {}),
     async dispatch(ctx: FlowStepAdapterContext): Promise<FlowStepAdapterResult> {
+      const { createPtyRunner } = await import("../runner/registry.server.js");
       if (ctx.signal.aborted) {
         throw new FlowAdapterAbortedError(ctx.step.id, opts.id);
       }
 
-      const runner = new PtyRunner();
+      const runner = createPtyRunner();
       const command = opts.command ?? process.execPath;
       const args = typeof opts.args === "function" ? opts.args(ctx) : [...opts.args];
       const cwd = path.resolve(ctx.worktreePath ?? opts.cwd ?? process.cwd());

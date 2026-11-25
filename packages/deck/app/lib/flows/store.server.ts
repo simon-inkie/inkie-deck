@@ -2001,7 +2001,7 @@ class FlowsStoreImpl {
     effectKey?: string;
     eventId?: string;
     at?: string;
-  }): { seq: number; hash: string; occurrence: number; attemptId: string; effectKey: string } {
+  }): { seq: number; hash: string; occurrence: number; attemptId: string; effectKey: string; eventId: string } {
     const runId = params.runId;
     const stepId = params.stepId;
     const providedEffectKey = params.effectKey;
@@ -2061,6 +2061,7 @@ class FlowsStoreImpl {
         occurrence,
         attemptId,
         effectKey,
+        eventId: prepared.event.eventId,
       };
     });
   }

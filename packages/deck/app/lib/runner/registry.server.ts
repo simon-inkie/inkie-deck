@@ -425,3 +425,7 @@ export class RunnerRegistry {
 }
 
 export const runnerRegistry = new RunnerRegistry();
+
+export function createPtyRunner(): PtyRunner {
+  return new PtyRunner();
+}
