@@ -52,18 +52,21 @@ interface FlowsLoaderData {
   error: string | null;
 }
 
-function loadCatalogSafely(): FlowLaunchCatalog {
+function loadCatalogSafely(): { catalog: FlowLaunchCatalog; error: string | null } {
   try {
-    return listFlowLaunchCatalog();
+    return { catalog: listFlowLaunchCatalog(), error: null };
   } catch (err) {
     if (
       err instanceof PathConfinementError ||
       err instanceof SymlinkNotAllowedError ||
       (err instanceof Error && /symlink|hard-link|non-directory|non-regular/i.test(err.message))
     ) {
-      throw err;
+      return {
+        catalog: EMPTY_CATALOG,
+        error: "Flow library failed safety verification.",
+      };
     }
-    return EMPTY_CATALOG;
+    return { catalog: EMPTY_CATALOG, error: null };
   }
 }
 
@@ -104,7 +107,22 @@ export async function loader({ request }: Route.LoaderArgs) {
     );
   }
 
-  const catalog = loadCatalogSafely();
+  const catalogResult = loadCatalogSafely();
+  if (catalogResult.error) {
+    return data<FlowsLoaderData>(
+      {
+        projects: [],
+        selectedProject: null,
+        runs: [],
+        selectedRunId: null,
+        stream: null,
+        catalog: EMPTY_CATALOG,
+        error: catalogResult.error,
+      },
+      { status: 422 },
+    );
+  }
+  const catalog = catalogResult.catalog;
 
   if (requestedProject !== null && !FlowIdRegex.test(requestedProject)) {
     return data<FlowsLoaderData>(

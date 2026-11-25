@@ -592,11 +592,44 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
       catalog: FlowLaunchCatalog;
     };
     expect(routeData.catalog.flows.some((f) => f.flowRef === "ticket-to-pr")).toBe(true);
+  });
 
-    // Symlink escape in .deck/flows STILL fails closed on /flows loader
+  it("R2-1: /flows loader returns HTTP 422 with sanitised message and zero host paths when .deck/flows has a symlink", async () => {
+    const projFlowsDir = path.join(projectRoot, ".deck", "flows");
+    fs.mkdirSync(projFlowsDir, { recursive: true });
     const outside = path.join(scratchDir, "outside-ui.yaml");
     fs.writeFileSync(outside, "flow: x\nversion: 1\nsteps: []\n", "utf8");
     fs.symlinkSync(outside, path.join(projFlowsDir, "evil-link.yaml"));
-    await expect(callFlowsRouteLoader("http://localhost/flows")).rejects.toThrow(/symlink/i);
+
+    const routeResult = (await callFlowsRouteLoader("http://localhost/flows")) as {
+      init: { status: number } | null;
+      data: { error: string | null; catalog: FlowLaunchCatalog };
+    };
+    expect(routeResult.init?.status).toBe(422);
+    expect(routeResult.data.error).toBe("Flow library failed safety verification.");
+    expect(routeResult.data.catalog).toEqual({ flows: [], drafts: [] });
+
+    const serialized = JSON.stringify(routeResult);
+    expect(serialized).not.toContain(scratchDir);
+    expect(serialized).not.toContain(projectRoot);
+    expect(serialized).not.toContain("/var/tmp");
+
+    const ErrorStub = createRoutesStub([
+      {
+        path: "/flows",
+        Component: () => (
+          <FlowsRoute
+            loaderData={routeResult.data as never}
+            params={{}}
+            matches={[] as never}
+          />
+        ),
+      },
+    ]);
+    const html = renderToStaticMarkup(<ErrorStub initialEntries={["/flows"]} />);
+    expect(html).toContain("Flow library failed safety verification.");
+    expect(html).not.toContain(scratchDir);
+    expect(html).not.toContain(projectRoot);
+    expect(html).not.toContain("/var/tmp");
   });
 });

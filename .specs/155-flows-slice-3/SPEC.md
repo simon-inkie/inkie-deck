@@ -64,10 +64,14 @@ Out of scope:
   - Pass B: extracted pure `diff.ts`, added `ui-actions.server.ts` seam (`listFlowLaunchCatalog`, `planFlowFromUi`, `approveFlowFromUi`, `startFlowFromUi`), added `GET /api/flows?view=library` and same-origin-guarded `POST /api/flows` intents (`plan`, `approve`, `start`), added `FlowLaunchPanel` + `FlowRunApprovalBar` on `/flows`, and added `slice-3-ui.test.tsx`.
 - Why: complete the end-to-end Slice 3 choose, draft-diff, approve (`flow_approved`), and start loop on `/flows`.
 - Supersedes: nothing, additive.
-- Commits: b52d174, bd7dd55
+- Commits: `b52d174`, `bd7dd55`
 
 ### 2026-11-25: Pass 1 standard review fixes (R1-1 through R1-7)
 - What changed: fixed `ReproTestCommand` `{ buildCommand }` dispatch (`checks.server.ts`), wrapped `handoffAdapter.dispatch` timeout/abort handling cleanly (`runner.server.ts`, `store.server.ts`), aligned `run: [repro]` and `repro:`-only checks (`checks.server.ts`, `store.server.ts`, `runner.server.ts`), passed `options.adapter` fallback into `resolveRoleAdapters` `differs_from` checks (`adapter.server.ts`, `runner.server.ts`), deferred `keepWorktreeBranch = true` until post-judgement pass (`runner.server.ts`), enforced `wtOutcome.isClean` and verified `wtOutcome.headSha` + git-diff signal precedence (`runner.server.ts`), and skipped malformed `.yaml` files in `scanFlowDirectory` while keeping symlink/confinement fail-closed (`library.server.ts`, `flows.tsx`). Added regression tests for all 7 items (152/152 tests passing).
 - Why: resolve all 7 Pass 1 triage FIX items before Pass 2 verification.
 - Supersedes: updates `b52d174` and `bd7dd55` in place.
-- Commits: pending
+- Commits: 183ef5f
+
+### 2026-11-25: Pass 2 triage fixes (R1-2 and R2-1)
+- What changed: updated `runner.server.ts` so `handoffAdapter.dispatch` timeout with `step_timeout: decide` returns `waiting_decision` even without `options.inbox`, and updated `flows.tsx` `loadCatalogSafely()` + `loader` to return sanitised HTTP 422 data on symlink/confinement failures without throwing raw host paths, with regression tests in `slice-3-adapter-checks.test.ts` and `slice-3-ui.test.tsx`.
+- Why: resolve Pass 2 triage items R1-2 and R2-1.

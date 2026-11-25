@@ -2132,22 +2132,24 @@ export async function runFlow(
                 },
               });
               const tsIso = nowIso();
-              if (timeoutDecision.final === "decide" && options.inbox) {
-                const emitRes = await emitDecisionCardToInbox({
-                  target: options.inbox,
-                  handoffId,
-                  runId,
-                  headSeq: sentEv.seq,
-                  headHash: sentEv.hash,
-                  stepId: step.id,
-                  reasonCode: "timeout",
-                  title: step.title,
-                  alwaysDecide: spec.alwaysDecide,
-                  options: spec.options,
-                  nowIso: tsIso,
-                });
-                if (emitRes.emitted) {
-                  fireCrash("K_AFTER_INBOX_CARD_WRITTEN");
+              if (timeoutDecision.final === "decide") {
+                if (options.inbox) {
+                  const emitRes = await emitDecisionCardToInbox({
+                    target: options.inbox,
+                    handoffId,
+                    runId,
+                    headSeq: sentEv.seq,
+                    headHash: sentEv.hash,
+                    stepId: step.id,
+                    reasonCode: "timeout",
+                    title: step.title,
+                    alwaysDecide: spec.alwaysDecide,
+                    options: spec.options,
+                    nowIso: tsIso,
+                  });
+                  if (emitRes.emitted) {
+                    fireCrash("K_AFTER_INBOX_CARD_WRITTEN");
+                  }
                 }
               } else {
                 store.appendChainedBatch(runId, [

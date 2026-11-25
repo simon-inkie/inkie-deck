@@ -589,6 +589,63 @@ steps:
     expect(types).toContain("run_finished");
   }, 15_000);
 
+  it("R1-2 (Pass 2): handoffAdapter timeout with step_timeout: decide and no options.inbox enters waiting_decision", async () => {
+    const handoffDecideYaml = `flow: handoff-timeout-decide
+version: 1
+roles:
+  reviewer:
+    runtime: acp
+steps:
+  - id: review
+    type: handoff
+    to: reviewer
+    returns:
+      verdict:
+        - approve
+        - changes
+    rules:
+      - step_timeout: decide
+`;
+    const projectId = "proj-hnd-timeout-decide";
+    const runId = "run-hnd-timeout-decide-1";
+    const planned = planRun({ projectId, runId, flowYaml: handoffDecideYaml, dataRoot });
+    approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+
+    const hangingReviewer: FlowStepAdapter = {
+      id: "hanging-reviewer-decide",
+      runtimeKind: "acp",
+      async dispatch(ctx) {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            resolve({ kind: "handoff", verdict: "approve" });
+          }, 5_000);
+          ctx.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const res = await runFlow(projectId, runId, {
+      dataRoot,
+      stepTimeoutMs: 120,
+      adapters: { reviewer: hangingReviewer },
+    });
+    expect(res.finalStatus).toBe("waiting_decision");
+
+    const loaded = loadRunState(projectId, runId, { dataRoot });
+    expect(loaded.state.status).toBe("waiting_decision");
+    expect(loaded.state.activeHandoff?.stepId).toBe("review");
+    const types = loaded.events.map((e) => e.type);
+    expect(types).toContain("handoff_sent");
+    expect(types).not.toContain("handoff_cancelled");
+    expect(types).not.toContain("run_finished");
+  }, 15_000);
+
   it("R1-3: supports both run: [repro] and repro:-only check steps without check_unsupported crash", async () => {
     const buildFixAdapter: FlowStepAdapter = {
       id: "builder-repro-fix",
