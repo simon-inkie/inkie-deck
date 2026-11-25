@@ -40,7 +40,7 @@ it("allows only the registry to import the PTY adapter in production", () => {
         (target === pty && importer !== registry) ||
         (target === core && ![
           pty, registry, join(runner, "lock.server.ts"),
-          join(runner, "acp-manifest.ts"), join(runner, "acp-registry.server.ts"),
+          join(runner, "acp-manifest.ts"), join(runner, "acp-manifest.server.ts"), join(runner, "acp-registry.server.ts"),
         ].includes(importer))) {
         violations.push(`${importer} -> ${fileName}`);
       } else if (dependency && !resolved.isExternalLibraryImport && sourceFile.test(dependency)) {

@@ -321,7 +321,7 @@ let activeObserver: CodexQuotaObserver | undefined;
 export function ensureCodexQuotaObserver(
   options: ObserverOptions = {}
 ): CodexQuotaObserver | undefined {
-  if (!codexQuotaTelemetryEnabled(process.env)) return undefined;
+  if (!codexQuotaTelemetryEnabled(options.env ?? process.env)) return undefined;
   if (!activeObserver) {
     activeObserver = startCodexQuotaObserver(options);
   }

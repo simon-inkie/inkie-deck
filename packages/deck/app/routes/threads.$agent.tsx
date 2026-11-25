@@ -80,7 +80,8 @@ import {
 } from "~/lib/tmux.server";
 import { isPtyOptedIn, runnerRegistry, type SessionStatus } from "~/lib/runner/registry.server";
 import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
-import { antigravityUsageReading, isAcpOptedIn } from "~/lib/runner/acp-manifest";
+import { readAcpUsageReading } from "~/lib/acp-usage.server";
+import { isAcpOptedIn } from "~/lib/runner/acp-manifest";
 import { AcpThreadView } from "~/components/AcpThreadView";
 import { classifyPaneHint } from "~/lib/pane-hints";
 import { TmuxPane } from "~/components/TmuxPane";
@@ -296,7 +297,7 @@ export async function loader({ params, request, context }: Route.LoaderArgs) {
       events: trusted ? acpRunnerRegistry.events(agent) : [],
       lastSessionId: trusted ? acpRunnerRegistry.lastSessionId(agent) ?? null : null,
       canResume: trusted && acpRunnerRegistry.canResume(agent),
-      usageReading: antigravityUsageReading(),
+      usageReading: readAcpUsageReading(process.env, agent),
       canWrite: trusted,
     }
     : undefined;

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AcpRecords, expireOldRecords } from "../app/lib/acp-records.server";
-import { AcpSession } from "../app/lib/acp-session.server";
+import { AcpSession, type AcpAdapter } from "../app/lib/acp-session.server";
 import { LineFramer } from "../app/lib/acp-wire.server";
 import { createEventSource } from "../app/lib/deck-event";
 import type { DeckEvent } from "../app/lib/deck-event";
@@ -34,10 +34,10 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function start(script: object = {}, options: SetupOptions = {}, environment?: string[]) {
+async function start(script: object = {}, options: SetupOptions = {}, environment?: string[], adapter: Partial<AcpAdapter> = {}) {
   const events: DeckEvent[] = [];
   const owner = await AcpSession.start({ executable: process.execPath, args: [fixture, JSON.stringify(script)],
-    version: "fixture-1", environment }, { cwd: root, dataRoot: root, onEvent: (event) => events.push(event), ...options });
+    version: "fixture-1", environment, ...adapter }, { cwd: root, dataRoot: root, onEvent: (event) => events.push(event), ...options });
   owners.push(owner);
   return { owner, events };
 }
@@ -103,6 +103,31 @@ describe.skipIf(process.platform !== "linux")("ACP v1 scripted agent", () => {
       ["FIXTURE_ALLOWED", "DEEPGRAM_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]);
     expect(await owner.prompt("inspect environment")).toBe("completed");
     expect(events[1]?.view).toEqual({ kind: "text", excerpt: "[true,true,false,false,false]" });
+  });
+
+  test("applies allowlisted defaults, preserves explicit values and strips reserved defaults", async () => {
+    const keys = ["NO_BROWSER", "CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY",
+      "DECK_SECRET", "MC_SECRET", "INKIE_SECRET", "DEEPGRAM_SECRET", "UNLISTED"];
+    vi.stubEnv("NO_BROWSER", undefined);
+    vi.stubEnv("CODEX_HOME", "explicit-home");
+    vi.stubEnv("OPENAI_API_KEY", "fixture-secret");
+    vi.stubEnv("CODEX_API_KEY", "fixture-secret");
+    const { owner, events } = await start({ prompts: [[{ kind: "environment", keys, values: true }, result("end_turn")]] }, {},
+      ["NO_BROWSER", "CODEX_HOME", "DECK_SECRET", "MC_SECRET", "INKIE_SECRET", "DEEPGRAM_SECRET"],
+      { envDefaults: Object.fromEntries(keys.map((key) => [key, "default"])) });
+    expect(await owner.prompt("inspect defaults")).toBe("completed");
+    expect(events[1]?.view).toEqual({ kind: "text", excerpt: '["default","explicit-home",null,null,null,null,null,null,null]' });
+  });
+
+  test("uses adapter auth instructions and usage hook", async () => {
+    const reading = { state: "low" as const, source: "codex", readAt: "2026-11-25T00:00:00.000Z" };
+    const { owner, events } = await start({ initializeErrorCode: -32000 }, {}, [], { displayName: "Codex ACP", authHint: "Sign in with `codex login` in a terminal.", readUsage: () => reading });
+    expect(owner.usageReading()).toEqual(reading);
+    expect(await owner.prompt("auth")).toBe("failed");
+    expect(events.find((event) => event.type === "auth.required")?.view).toEqual({
+      kind: "text", excerpt: "Sign in with `codex login` in a terminal.",
+    });
+    expect((await start()).owner.usageReading()).toMatchObject({ state: "unknown", source: "antigravity" });
   });
 
   test.each([

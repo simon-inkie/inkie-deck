@@ -4,7 +4,8 @@ import type { Route } from "./+types/api.acp";
 import { MAX_QUEUED_PROMPTS } from "~/lib/acp-session.server";
 import { canWriteFromRequest, requireSameOriginWrite } from "~/lib/request-origin.server";
 import { acpRunnerRegistry } from "~/lib/runner/acp-registry.server";
-import { antigravityUsageReading, isAcpOptedIn } from "~/lib/runner/acp-manifest";
+import { readAcpUsageReading } from "~/lib/acp-usage.server";
+import { isAcpOptedIn } from "~/lib/runner/acp-manifest";
 import { StartRefusal } from "~/lib/runner/registry.server";
 import { AGENT_NAME_RE } from "~/lib/safe-fs.server";
 
@@ -102,7 +103,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     events: trusted ? acpRunnerRegistry.events(agent) : [],
     lastSessionId: trusted ? acpRunnerRegistry.lastSessionId(agent) ?? null : null,
     canResume: trusted && acpRunnerRegistry.canResume(agent),
-    usageReading: antigravityUsageReading(),
+    usageReading: readAcpUsageReading(process.env, agent),
   };
 }
 

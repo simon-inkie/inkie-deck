@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -111,6 +111,55 @@ done
       globals[registryKey].recoveryFailed = false;
     }
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it("runs agy and Codex concurrently with isolated control, resume identity and shutdown", async () => {
+    writeFileSync(join(otherHome, ".runtime"), "codex\n");
+    const script = `#!${process.execPath}
+import readline from "node:readline";
+if (process.argv.includes("--version")) { console.log("fixture 2.6.0"); process.exit(0); }
+let pending;
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  const reply = (result, id = msg.id) => console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  if (msg.method === "initialize") reply({ protocolVersion: 1, agentCapabilities: { loadSession: true } });
+  else if (msg.method === "session/new") reply({ sessionId: "fixture-session" });
+  else if (msg.method === "session/prompt") {
+    if (msg.params.prompt[0].text === "hold") pending = msg.id;
+    else reply({ stopReason: "end_turn" });
+  } else if (msg.method === "session/cancel" && pending) reply({ stopReason: "cancelled" }, pending);
+});
+`;
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    // Both adapter names resolve to the same executable identity.
+    writeFileSync(join(bin, "agy"), script, { mode: 0o755 });
+    symlinkSync(join(bin, "agy"), join(bin, "codex-acp"));
+    const reg = new AcpRunnerRegistry({ ...env, PATH: bin }, { listWindows: () => [] });
+    const [agy, codex] = await Promise.all([reg.start(agent), reg.start(otherAgent)]);
+    expect(agy.adapter.displayName).toBe("Antigravity");
+    expect(codex.adapter.displayName).toBe("Codex ACP");
+    expect(codex.usageReading()).toMatchObject({ source: "codex", state: "unknown" });
+    expect(await agy.prompt("first")).toBe("completed");
+    expect(await codex.prompt("second")).toBe("completed");
+    await expect(reg.start(agent)).rejects.toMatchObject({ reason: "busy" });
+    const pending = codex.prompt("hold");
+    await delay(50);
+    expect(await reg.cancel(otherAgent)).toBe(true);
+    expect(await pending).toBe("cancelled");
+    expect(await agy.prompt("still independent")).toBe("completed");
+    await reg.stop(otherAgent);
+    expect(reg.status(agent)?.state).toBe("running");
+    expect(reg.canResume(otherAgent)).toBe(true);
+    writeFileSync(join(otherHome, ".runtime"), "agy\n");
+    expect(reg.canResume(otherAgent)).toBe(false);
+    writeFileSync(join(otherHome, ".runtime"), "codex\n");
+    await reg.start(otherAgent, { resume: false });
+    await reg.shutdown({ permanent: false });
+    expect(reg.status(agent)?.state).toBe("stopped");
+    expect(reg.status(otherAgent)?.state).toBe("stopped");
+    expect(existsSync(join(home, ".runner.lock"))).toBe(false);
+    expect(existsSync(join(otherHome, ".runner.lock"))).toBe(false);
   });
 
   it("refuses to start when agent is not opted in", async () => {
@@ -347,7 +396,7 @@ rl.on("line", (line) => {
     await session.close();
   });
 
-  it("Major 2: reserves starting state during negotiation, blocks concurrent second home, and aborts on stop()", async () => {
+  it("Major 2: reserves starting state during negotiation, blocks the same home, and aborts on stop()", async () => {
     let releaseNegotiation!: () => void;
     let abortedObserved = false;
     const reg = new AcpRunnerRegistry(env, {
@@ -368,8 +417,8 @@ rl.on("line", (line) => {
     // Status is visibly 'starting' during negotiation
     expect(reg.status(agent)).toMatchObject({ state: "starting" });
 
-    // Second home is refused as 'busy' (enforces one-ACP-agent limit)
-    await expect(reg.start(otherAgent)).rejects.toMatchObject({
+    // The same home remains busy while negotiation is in flight.
+    await expect(reg.start(agent)).rejects.toMatchObject({
       name: "StartRefusal",
       reason: "busy",
     });

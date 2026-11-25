@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AcpThreadView, deriveAcpCards } from "../../app/components/AcpThreadView.js";
+import * as quotaObserver from "../../app/lib/codex-quota-observer.server.js";
+import { initialQuotaState } from "../../app/lib/codex-quota.js";
 import { AcpSession } from "../../app/lib/acp-session.server.js";
 import type { DeckEvent } from "../../app/lib/deck-event.js";
 import { antigravity1Manifest, antigravityUsageReading } from "../../app/lib/runner/acp-manifest.js";
@@ -308,6 +310,38 @@ rl.on("line", (line) => {
       optedIn: true,
       usageReading: { state: "unknown", source: "antigravity" },
     });
+  });
+
+  it("dispatches Codex quota through both loaders and renders its windows", async () => {
+    const now = Date.now();
+    vi.spyOn(quotaObserver, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    for (const [key, value] of Object.entries({ AGENTS_HOME: root, DATA_ROOT: root,
+      INBOX_ROOT: join(root, "inbox"), PROJECTS_ROOT: join(root, "projects"),
+      MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" })) vi.stubEnv(key, value);
+    writeFileSync(join(agentHome, ".runtime"), "codex\n");
+    writeFileSync(join(root, "codex-quota.json"), JSON.stringify({ ...initialQuotaState(),
+      status: "AVAILABLE_CONFIRMED", observedAt: now,
+      snapshot: { primary: { usedPercent: 92, windowDurationMins: 300, resetsAt: null },
+        secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: now / 1000 } } }));
+    const api = await acpLoader({ request: new Request(`http://localhost/api/acp?agent=${agent}`),
+      params: {}, context: {} } as Parameters<typeof acpLoader>[0]);
+    if (!("usageReading" in api)) throw new Error("Expected successful ACP loader response");
+    const thread = await threadLoader({ request: new Request(`http://localhost/threads/${agent}`),
+      params: { agent }, context: {} } as Parameters<typeof threadLoader>[0]);
+    for (const reading of [api.usageReading, thread.acp?.usageReading]) {
+      expect(reading).toMatchObject({ source: "codex", state: "low", windows: [
+        { label: "5-hour", usedPercent: 92, resetsAt: null },
+        { label: "7-day", usedPercent: 42, resetsAt: new Date(now).toISOString() },
+      ] });
+    }
+    const html = renderToStaticMarkup(<AcpThreadView agent={agent}
+      initialStatus={{ state: "stopped" }} initialEvents={[]} initialLastSessionId={null}
+      initialUsageReading={api.usageReading} canWrite={false} />);
+    expect(html).toContain('data-testid="acp-quota-reading"');
+    expect(html).toContain("Quota (codex): low");
+    expect(html).toContain("5-hour: 92% used. Reset: unknown");
+    expect(html).toContain(`dateTime="${new Date(now).toISOString()}"`);
+    expect(html).not.toContain("null");
   });
 
   it.each([

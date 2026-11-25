@@ -1390,7 +1390,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     });
 
     // Round 11 Major 4: Persistent lock-release failure (replaced lock inode) MUST NOT hang shutdown(),
-    // transitions to 'orphaned', closes lock fd, AND STILL blocks registry-wide Start for a second agent (beta)!
+    // transitions to 'orphaned', closes lock fd, and leaves other homes available.
     const betaHome = join(root, "beta");
     mkdirSync(betaHome, { recursive: true });
     writeFileSync(join(betaHome, ".runner"), "acp\n");
@@ -1404,7 +1404,9 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(Date.now() - shutdownStart).toBeLessThan(1500);
     expect(persistSess.state.kind).toBe("disconnected");
     expect(regRestart.status(agent)?.state).toBe("orphaned");
-    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    expect((await regRestart.start("beta")).state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
     // Round 12 Minor 1: Orphaned thread view hides Start/Resume, shows recovery reason, and offers Retry recovery
     const orphanedHtml = renderToStaticMarkup(
@@ -1424,7 +1426,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(orphanedHtml).toContain("Retry recovery");
 
     // Round 12 Major 3: Unverifiable orphanIdentity stays orphaned even when .runner.lock is absent,
-    // AND cold-start 'locked' on alpha blocks starting beta!
+    // and other homes remain available.
     const sharedRegState = (globalThis as unknown as Record<symbol, { sessions: Map<string, Record<string, unknown>> }>)[Symbol.for("inkie-deck.acp.registry")]!;
     rmSync(lockFile, { force: true });
     sharedRegState.sessions.set(agentHome, {
@@ -1434,7 +1436,9 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     });
     await regRestart.recover();
     expect(regRestart.status(agent)?.state).toBe("orphaned");
-    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    expect((await regRestart.start("beta")).state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
     // Round 13 Minor 1: Orphaned home retains canControl() and recoverAgent() even after opting out of .runner=acp
     rmSync(join(agentHome, ".runner"), { force: true });
@@ -1443,9 +1447,10 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(regRestart.status(agent)?.state).toBe("orphaned");
     writeFileSync(join(agentHome, ".runner"), "acp\n");
 
-    // Cold-start 'locked' entry on alpha ALSO blocks starting beta
+    // Cold-start 'locked' entry on alpha is isolated from beta
     sharedRegState.sessions.set(agentHome, { state: "locked", reason: "Unrecovered lock on cold start." });
-    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    expect((await regRestart.start("beta")).state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
     await regRestart.recover();
     const betaSess = await regRestart.start("beta");

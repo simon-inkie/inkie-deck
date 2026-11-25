@@ -167,6 +167,13 @@ export function AcpThreadView({
           )}
           <div data-testid="acp-quota-reading" className="text-xs text-muted-foreground">
             Quota ({usageReading.source}): {usageReading.state}
+            {usageReading.windows?.map((window, index) => (
+              <div key={`${window.label}-${index}`}>
+                {window.label}: {window.usedPercent}% used. Reset: {window.resetsAt
+                  ? <time dateTime={window.resetsAt}>{window.resetsAt}</time>
+                  : "unknown"}
+              </div>
+            ))}
           </div>
           {advertisedCapNames.length > 0 && (
             <div data-testid="acp-capabilities" className="text-xs text-muted-foreground">

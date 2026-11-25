@@ -32,6 +32,10 @@ export type AcpAdapter = {
   executable: string;
   args: readonly string[];
   version: string;
+  displayName?: string;
+  authHint?: string;
+  envDefaults?: Readonly<Record<string, string>>;
+  readUsage?: () => UsageReading;
   environment?: readonly string[];
   knownExtensions?: readonly string[];
 };
@@ -108,7 +112,7 @@ function childEnvironment(adapter: AcpAdapter, sessionMarker?: string): NodeJS.P
   const env: NodeJS.ProcessEnv = Object.create(null);
   for (const key of [...environment, ...(adapter.environment ?? [])]) {
     if (deckVariable.test(key) || explicitDeckVariables.has(key)) continue;
-    const value = process.env[key];
+    const value = process.env[key] ?? adapter.envDefaults?.[key];
     if (value !== undefined) {
       env[key] = key === "PATH" ? sanitizePathEnv(value) : value;
     }
@@ -352,7 +356,7 @@ export class AcpSession {
   }
 
   usageReading(): UsageReading {
-    return antigravityUsageReading();
+    return this.adapter.readUsage?.() ?? antigravityUsageReading();
   }
 
   prompt(text: string): Promise<Outcome> {
@@ -420,7 +424,7 @@ export class AcpSession {
         class: "action",
         type: "auth.required",
         title: "Sign in required",
-        view: { kind: "text", excerpt: "Sign in with `agy acp --login` in a terminal." },
+        view: { kind: "text", excerpt: this.adapter.authHint ?? "Sign in with `agy acp --login` in a terminal." },
       });
     } catch {
       // Best-effort event emission during teardown.

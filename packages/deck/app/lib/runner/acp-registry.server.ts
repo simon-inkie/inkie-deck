@@ -16,13 +16,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { readAcpUsageReading } from "../acp-usage.server.js";
 import { AcpSession, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
 import { AGENT_NAME_RE } from "../safe-fs.server.js";
 import { listTmuxWindows } from "../tmux.server.js";
 import {
-  antigravity1Manifest,
+  resolveAcpManifestForAgent,
   isAcpOptedIn,
   probeAgyVersion,
   resolveAcpExecutable,
@@ -431,13 +432,14 @@ export class AcpRunnerRegistry {
    */
   canResume(agent: string): boolean {
     const home = agentHome(this.env, agent);
-    if (!home || !readStoredSessionId(home)) return false;
+    if (!this.isOptedIn(agent) || !home || !readStoredSessionId(home)) return false;
     const recorded = shared.resumeSupport.get(home) ?? readStoredCapabilities(home);
     if (!recorded || !recorded.supported) return false;
     try {
-      const manifest = this.options.manifest ?? antigravity1Manifest;
+      const manifest = this.options.manifest ?? resolveAcpManifestForAgent(this.env, agent);
+      if (!manifest) return false;
       const currentExec = resolveAcpExecutable(manifest.executableName, this.env, home);
-      return executableKey(statExecutableIdentity(currentExec)) === recorded.executableKey;
+      return `${manifest.name}:${executableKey(statExecutableIdentity(currentExec))}` === recorded.executableKey;
     } catch {
       return false;
     }
@@ -473,17 +475,10 @@ export class AcpRunnerRegistry {
     const home = this.isOptedIn(agent) ? agentHome(this.env, agent) : undefined;
     if (!home) throw new StartRefusal("not-opted-in");
 
-    // Major 3 (Round 12): Block admission across ALL homes while any session is active, cleanup-pending,
-    // orphaned, or locked on another home (cold-start unrecovered lock blocks beta until recovered).
-    for (const [entryHome, session] of shared.sessions.entries()) {
-      if ("abortController" in session) throw new StartRefusal("busy");
-      if (
-        session.state === "cleanup-pending" ||
-        session.state === "orphaned" ||
-        (session.state === "locked" && entryHome !== home)
-      ) {
-        throw new StartRefusal("locked");
-      }
+    const existing = shared.sessions.get(home);
+    if (existing && "abortController" in existing) throw new StartRefusal("busy");
+    if (existing?.state === "cleanup-pending" || existing?.state === "orphaned") {
+      throw new StartRefusal("locked");
     }
 
     if (process.platform !== "linux") {
@@ -499,7 +494,8 @@ export class AcpRunnerRegistry {
     }
 
     const priorEntry = shared.sessions.get(home);
-    const manifest = this.options.manifest ?? antigravity1Manifest;
+    const manifest = this.options.manifest ?? resolveAcpManifestForAgent(this.env, agent);
+    if (!manifest) throw new StartRefusal("not-opted-in");
     const abortController = new AbortController();
     let resolveSettled!: () => void;
     const settledPromise = new Promise<void>((resolve) => { resolveSettled = resolve; });
@@ -568,6 +564,7 @@ export class AcpRunnerRegistry {
       executable = resolveAcpExecutable(manifest.executableName, this.env, home);
       execIdentity = statExecutableIdentity(executable);
       const versionInfo = await probeAgyVersion(executable, manifest.semverFloor, {
+        displayName: manifest.displayName,
         allowMismatch: this.options.allowVersionMismatch,
         cwd: home,
         env: this.env,
@@ -580,7 +577,7 @@ export class AcpRunnerRegistry {
         clearReservation();
         throw new StartRefusal("shutting-down");
       }
-      if (!this.isOptedIn(agent)) {
+      if (!this.isOptedIn(agent) || (!this.options.manifest && resolveAcpManifestForAgent(this.env, agent) !== manifest)) {
         clearReservation();
         throw new StartRefusal("not-opted-in");
       }
@@ -620,7 +617,7 @@ export class AcpRunnerRegistry {
     // Re-verify opt-in, tmux window absence, locked resume checkpoint, and pinned executable identity AFTER lock claim
     let lockedResumeSessionId = resumeSessionId;
     try {
-      if (!this.isOptedIn(agent)) {
+      if (!this.isOptedIn(agent) || (!this.options.manifest && resolveAcpManifestForAgent(this.env, agent) !== manifest)) {
         throw new StartRefusal("not-opted-in");
       }
       this.assertNoTmuxWindow(agent);
@@ -653,6 +650,10 @@ export class AcpRunnerRegistry {
       version: detectedVersion || manifest.semverFloor,
       environment: manifest.envAllowlist,
       knownExtensions: manifest.knownExtensions,
+      displayName: manifest.displayName,
+      authHint: manifest.authHint,
+      envDefaults: manifest.envDefaults,
+      readUsage: () => readAcpUsageReading(this.env, agent, this.now()),
     };
 
     const sessionOptions = {
@@ -708,7 +709,7 @@ export class AcpRunnerRegistry {
     if (session.negotiated) {
       const capRecord = {
         supported: Boolean(session.supportsResume?.()),
-        executableKey: executableKey(execIdentity),
+        executableKey: `${manifest.name}:${executableKey(execIdentity)}`,
       };
       shared.resumeSupport.set(home, capRecord);
       writeStoredCapabilities(home, capRecord);
@@ -970,7 +971,7 @@ export class AcpRunnerRegistry {
               const nonRetryable = msg.includes("changed owners");
               if (nonRetryable || attempt === MAX_SHUTDOWN_CLEANUP_ATTEMPTS) {
                 // Major 4 (Round 11): Kill process group, close lock fd, and transition to 'orphaned'
-                // which STILL blocks registry-wide admission for any second agent until recovered.
+                // which blocks admission for that home until recovered.
                 session.abandon();
               } else {
                 anyRetryableFailure = true;
