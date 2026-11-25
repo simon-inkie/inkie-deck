@@ -215,4 +215,115 @@ describe("Deck Flows Slice 3 - Ephemeral Git Worktree Isolation & Rollback", () 
     expect(git(repoRoot, ["status", "--porcelain"])).toBe("");
     expect(listWorktrees(repoRoot)).toHaveLength(1);
   }, 20_000);
+
+  it("R1-5: cleans up ephemeral flow-* branch when agent step stops on rule (secret_found)", async () => {
+    const stopFlowYaml = `flow: wt-stop-branch
+version: 1
+workspace:
+  kind: git-worktree
+  base: main
+roles:
+  builder:
+    runtime: pty
+steps:
+  - id: build
+    type: agent
+    role: builder
+    outputs:
+      - branch
+      - head_sha
+    rules:
+      - secret_found: stop
+`;
+    const projectId = "proj-wt-stop";
+    const runId = "run-wt-stop-1";
+    const planned = planRun({ projectId, runId, flowYaml: stopFlowYaml, dataRoot });
+    approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+
+    const leakyBuilder: FlowStepAdapter = {
+      id: "leaky-builder",
+      runtimeKind: "stub",
+      async dispatch(ctx) {
+        const wt = ctx.worktreePath!;
+        const marker = ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ");
+        fs.writeFileSync(path.join(wt, "secret.txt"), `${marker}\n`, "utf8");
+        git(wt, ["add", "secret.txt"]);
+        git(wt, ["commit", "-m", "commit leak marker"]);
+        const sha = git(wt, ["rev-parse", "HEAD"]);
+        // Also attempt to silence secretFound via adapter signals (R1-6 guard)
+        return {
+          kind: "agent",
+          outputs: { head_sha: sha },
+          signals: { secretFound: false },
+        };
+      },
+    };
+
+    const res = await runFlow(projectId, runId, {
+      dataRoot,
+      workspaceRepoRoot: repoRoot,
+      worktreeRoot: worktreeBaseDir,
+      adapters: { builder: leakyBuilder },
+    });
+
+    expect(res.finalStatus).toBe("stopped");
+    expect(git(repoRoot, ["branch", "--list", "flow-*"])).toBe("");
+    expect(listWorktrees(repoRoot)).toHaveLength(1);
+  }, 20_000);
+
+  it("R1-6: rejects spoofed adapter head_sha and dirty uncommitted worktree cleanly and rolls back", async () => {
+    // 1. Spoofed head_sha
+    const spoofProject = "proj-wt-spoof";
+    const spoofRun = "run-wt-spoof-1";
+    const plannedSpoof = planRun({ projectId: spoofProject, runId: spoofRun, flowYaml: WORKTREE_FLOW_YAML, dataRoot });
+    approveRun({ projectId: spoofProject, runId: spoofRun, flowHash: plannedSpoof.flowHash, actorId: "operator-1", dataRoot });
+
+    const spoofAdapter: FlowStepAdapter = {
+      id: "spoof-builder",
+      runtimeKind: "stub",
+      async dispatch(ctx) {
+        const wt = ctx.worktreePath!;
+        fs.writeFileSync(path.join(wt, "real.txt"), "real change\n", "utf8");
+        git(wt, ["add", "real.txt"]);
+        git(wt, ["commit", "-m", "real commit"]);
+        return { kind: "agent", outputs: { head_sha: "0".repeat(40) } };
+      },
+    };
+
+    const spoofRes = await runFlow(spoofProject, spoofRun, {
+      dataRoot,
+      workspaceRepoRoot: repoRoot,
+      worktreeRoot: worktreeBaseDir,
+      adapters: { builder: spoofAdapter },
+    });
+    expect(spoofRes.finalStatus).toBe("stopped");
+    expect(git(repoRoot, ["branch", "--list", "flow-*"])).toBe("");
+    expect(listWorktrees(repoRoot)).toHaveLength(1);
+
+    // 2. Dirty uncommitted worktree
+    const dirtyProject = "proj-wt-dirty";
+    const dirtyRun = "run-wt-dirty-1";
+    const plannedDirty = planRun({ projectId: dirtyProject, runId: dirtyRun, flowYaml: WORKTREE_FLOW_YAML, dataRoot });
+    approveRun({ projectId: dirtyProject, runId: dirtyRun, flowHash: plannedDirty.flowHash, actorId: "operator-1", dataRoot });
+
+    const dirtyAdapter: FlowStepAdapter = {
+      id: "dirty-builder",
+      runtimeKind: "stub",
+      async dispatch(ctx) {
+        fs.writeFileSync(path.join(ctx.worktreePath!, "uncommitted.txt"), "not committed\n", "utf8");
+        return { kind: "agent", outputs: { status: "ok" } };
+      },
+    };
+
+    const dirtyRes = await runFlow(dirtyProject, dirtyRun, {
+      dataRoot,
+      workspaceRepoRoot: repoRoot,
+      worktreeRoot: worktreeBaseDir,
+      adapters: { builder: dirtyAdapter },
+    });
+    expect(dirtyRes.finalStatus).toBe("stopped");
+    expect(git(repoRoot, ["status", "--porcelain"])).toBe("");
+    expect(git(repoRoot, ["branch", "--list", "flow-*"])).toBe("");
+    expect(listWorktrees(repoRoot)).toHaveLength(1);
+  }, 20_000);
 });

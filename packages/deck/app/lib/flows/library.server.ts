@@ -268,14 +268,24 @@ function scanFlowDirectory(
     if (!FlowIdRegex.test(base)) continue;
 
     const fullPath = path.join(dirPath, entry.name);
-    const loaded = readConfinedYamlFile(fullPath, rootDir, base);
-    if (loaded) {
-      results.push({
-        name: base,
-        filePath: fullPath,
-        flow: loaded.flow,
-        hash: loaded.hash,
-      });
+    try {
+      const loaded = readConfinedYamlFile(fullPath, rootDir, base);
+      if (loaded) {
+        results.push({
+          name: base,
+          filePath: fullPath,
+          flow: loaded.flow,
+          hash: loaded.hash,
+        });
+      }
+    } catch (err) {
+      if (
+        err instanceof FlowValidationError ||
+        (err instanceof Error && err.name === "YAMLParseError")
+      ) {
+        continue;
+      }
+      throw err;
     }
   }
   return results;

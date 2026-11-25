@@ -103,10 +103,17 @@ export interface ReproTestRunnerContext {
   signal?: AbortSignal;
 }
 
+export interface ReproTestRunnerResult {
+  passed: boolean;
+  code: number | null;
+  stdout?: string;
+  stderr?: string;
+}
+
 export type ReproTestCommand =
   | AllowlistedCheckCommand
-  | ((reproTestPath: string) => AllowlistedCheckCommand)
-  | ((ctx: ReproTestRunnerContext) => Promise<{ passed: boolean; code: number | null; stdout?: string; stderr?: string }>);
+  | ((ctx: ReproTestRunnerContext) => Promise<ReproTestRunnerResult> | ReproTestRunnerResult)
+  | { buildCommand: (reproTestPath: string) => AllowlistedCheckCommand };
 
 export interface ReproCheckResult {
   passed: boolean;
@@ -117,6 +124,10 @@ export interface ReproCheckResult {
 
 export function isFlowCommandCheckId(value: string): value is FlowCommandCheckId {
   return ALLOWED_COMMAND_CHECK_IDS.has(value as FlowCommandCheckId);
+}
+
+export function isSupportedSuiteCheckId(value: string): boolean {
+  return value === "repro" || isFlowCommandCheckId(value);
 }
 
 function assertNonShellCommand(spec: AllowlistedCheckCommand): void {
@@ -225,35 +236,17 @@ async function executeReproTestCommand(
   ctx: ReproTestRunnerContext,
 ): Promise<{ passed: boolean; code: number | null }> {
   if (typeof runTestCommand === "function") {
-    // Distinguish builder `(reproTestPath) => AllowlistedCheckCommand` from async runner `(ctx) => Promise<...>`
-    // by inspecting the return value shape.
-    const maybeSpecOrPromise = (runTestCommand as (arg: unknown) => unknown)(
-      runTestCommand.length === 1 ? ctx : ctx.reproTestPath,
-    );
-    if (
-      maybeSpecOrPromise &&
-      typeof maybeSpecOrPromise === "object" &&
-      "command" in maybeSpecOrPromise &&
-      "args" in maybeSpecOrPromise
-    ) {
-      const spec = maybeSpecOrPromise as AllowlistedCheckCommand;
-      assertNonShellCommand(spec);
-      const res = await runBoundedProcessGroup(spec.command, spec.args, {
-        cwd: ctx.cwd,
-        timeoutMs: ctx.timeoutMs,
-        signal: ctx.signal,
-        env: { ...process.env, ...(spec.env ?? {}) },
-      });
-      return { passed: !res.timedOut && res.code === 0, code: res.code };
-    }
-    const callbackRes = await (maybeSpecOrPromise as Promise<{ passed: boolean; code: number | null }>);
+    const callbackRes = await runTestCommand(ctx);
     return { passed: Boolean(callbackRes.passed), code: callbackRes.code };
   }
 
-  const spec: AllowlistedCheckCommand = runTestCommand ?? {
-    command: process.execPath,
-    args: ["--test", ctx.reproTestPath],
-  };
+  const spec: AllowlistedCheckCommand =
+    runTestCommand && "buildCommand" in runTestCommand
+      ? runTestCommand.buildCommand(ctx.reproTestPath)
+      : (runTestCommand ?? {
+          command: process.execPath,
+          args: ["--test", ctx.reproTestPath],
+        });
   assertNonShellCommand(spec);
   const res = await runBoundedProcessGroup(spec.command, spec.args, {
     cwd: ctx.cwd,

@@ -574,4 +574,29 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
       flowHash: planned.flowHash,
     });
   });
+
+  it("R1-7: GET /api/flows?view=library and /flows loader still return ticket-to-pr when a broken yaml exists", async () => {
+    const projFlowsDir = path.join(projectRoot, ".deck", "flows");
+    const draftsDir = path.join(projFlowsDir, "drafts");
+    fs.mkdirSync(draftsDir, { recursive: true });
+    fs.writeFileSync(path.join(projFlowsDir, "broken-proj.yaml"), "flow: [broken\n", "utf8");
+    fs.writeFileSync(path.join(draftsDir, "broken-draft.yaml"), "flow: bad\nversion: 2\n", "utf8");
+
+    const apiRes = await callApiLoader("http://localhost/api/flows?view=library");
+    expect(apiRes.status).toBe(200);
+    const apiJson = (await apiRes.json()) as { ok: boolean; catalog: FlowLaunchCatalog };
+    expect(apiJson.ok).toBe(true);
+    expect(apiJson.catalog.flows.some((f) => f.flowRef === "ticket-to-pr")).toBe(true);
+
+    const routeData = (await callFlowsRouteLoader("http://localhost/flows")) as {
+      catalog: FlowLaunchCatalog;
+    };
+    expect(routeData.catalog.flows.some((f) => f.flowRef === "ticket-to-pr")).toBe(true);
+
+    // Symlink escape in .deck/flows STILL fails closed on /flows loader
+    const outside = path.join(scratchDir, "outside-ui.yaml");
+    fs.writeFileSync(outside, "flow: x\nversion: 1\nsteps: []\n", "utf8");
+    fs.symlinkSync(outside, path.join(projFlowsDir, "evil-link.yaml"));
+    await expect(callFlowsRouteLoader("http://localhost/flows")).rejects.toThrow(/symlink/i);
+  });
 });

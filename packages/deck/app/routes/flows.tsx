@@ -19,6 +19,10 @@ import type {
   FlowRunSummary,
 } from "~/lib/flows/card-stream";
 import {
+  PathConfinementError,
+  SymlinkNotAllowedError,
+} from "~/lib/flows/load-run.server";
+import {
   FlowIntegrityError,
   InvalidFlowQueryError,
   listFlowProjects,
@@ -51,7 +55,14 @@ interface FlowsLoaderData {
 function loadCatalogSafely(): FlowLaunchCatalog {
   try {
     return listFlowLaunchCatalog();
-  } catch {
+  } catch (err) {
+    if (
+      err instanceof PathConfinementError ||
+      err instanceof SymlinkNotAllowedError ||
+      (err instanceof Error && /symlink|hard-link|non-directory|non-regular/i.test(err.message))
+    ) {
+      throw err;
+    }
     return EMPTY_CATALOG;
   }
 }

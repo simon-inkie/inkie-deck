@@ -329,4 +329,25 @@ describe("Deck Flows Slice 3 - Library, Drafts, Diff, and Split Plan/Approve", (
       FlowStepResultOutputsSchema.safeParse({ extra_free_text: "hello" }).success,
     ).toBe(false);
   });
+
+  it("R1-7: skips malformed yaml in .deck/flows and drafts while still failing closed on symlinks", () => {
+    const projFlowsDir = path.join(projectRoot, ".deck", "flows");
+    const draftsDir = path.join(projFlowsDir, "drafts");
+    fs.mkdirSync(draftsDir, { recursive: true });
+    fs.writeFileSync(path.join(projFlowsDir, "good-flow.yaml"), SIMPLE_FLOW_YAML, "utf8");
+    fs.writeFileSync(path.join(projFlowsDir, "broken-flow.yaml"), "flow: [unclosed\n", "utf8");
+    fs.writeFileSync(path.join(draftsDir, "broken-draft.yaml"), "flow: bad\nversion: 99\n", "utf8");
+
+    const listed = listAvailableFlows({ projectRoot, dataRoot });
+    expect(listed.flows.map((f) => f.flowRef)).toContain("ticket-to-pr");
+    expect(listed.flows.map((f) => f.flowRef)).toContain("good-flow");
+    expect(listed.flows.map((f) => f.flowRef)).not.toContain("broken-flow");
+    expect(listed.drafts.map((d) => d.draftName)).not.toContain("broken-draft");
+
+    // Symlink escape inside .deck/flows STILL fails closed
+    const outside = path.join(scratchRoot, "outside-scan.yaml");
+    fs.writeFileSync(outside, SIMPLE_FLOW_YAML, "utf8");
+    fs.symlinkSync(outside, path.join(projFlowsDir, "symlink-flow.yaml"));
+    expect(() => listAvailableFlows({ projectRoot, dataRoot })).toThrow(SymlinkNotAllowedError);
+  });
 });

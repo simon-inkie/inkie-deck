@@ -325,6 +325,7 @@ const ALLOWED_MULTI_EVENT_BATCH_SHAPES = new Set([
   "handoff_returned,step_failed,judgement,run_finished",
   "handoff_returned,run_finished",
   "handoff_returned,step_rewound",
+  "handoff_cancelled,step_failed,judgement,run_finished",
 ]);
 
 function assertLegalBatchShape(runId: string, items: readonly PreparedAppendItem[]): void {
@@ -843,7 +844,12 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
 
     // Critical 2: Enforce the exact pinned check contract (declared run + against target) AND forbid
     // unrecorded 64-hex secrets in targetSha on BOTH passed and failed check results.
-    const declaredChecks = step.run && step.run.length > 0 ? step.run : ["check_nonempty"];
+    const declaredChecks =
+      step.run && step.run.length > 0
+        ? step.run
+        : step.repro
+          ? ["repro"]
+          : ["check_nonempty"];
     const isArtefactOnly =
       declaredChecks.every((n) => n === "check_exists" || n === "check_nonempty") && !step.repro;
     const isCommandSuite =

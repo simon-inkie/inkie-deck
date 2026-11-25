@@ -90,6 +90,7 @@ function adapterIdentity(adapter: FlowStepAdapter): string {
 export function resolveRoleAdapters(
   flow: FlowDefinition,
   adaptersByRole: Readonly<Record<string, FlowStepAdapter | undefined>>,
+  fallbackAdapter?: FlowStepAdapter,
 ): Map<string, FlowStepAdapter> {
   const resolved = new Map<string, FlowStepAdapter>();
   for (const [roleName, adapter] of Object.entries(adaptersByRole)) {
@@ -101,8 +102,8 @@ export function resolveRoleAdapters(
   if (flow.roles) {
     for (const [roleName, roleConfig] of Object.entries(flow.roles)) {
       if (!roleConfig.differs_from) continue;
-      const roleAdapter = resolved.get(roleName);
-      const otherAdapter = resolved.get(roleConfig.differs_from);
+      const roleAdapter = resolved.get(roleName) ?? fallbackAdapter;
+      const otherAdapter = resolved.get(roleConfig.differs_from) ?? fallbackAdapter;
       if (roleAdapter && otherAdapter) {
         const leftId = adapterIdentity(roleAdapter);
         const rightId = adapterIdentity(otherAdapter);

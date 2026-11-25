@@ -495,4 +495,204 @@ steps:
     const loaded = loadRunState(projectId, runId, { dataRoot });
     expect(loaded.state.activeDecision?.reasonCode).toBe("protected_path_touched");
   }, 20_000);
+
+  it("R1-1: executes ReproTestCommand { buildCommand } unambiguously with reproTestPath string", async () => {
+    fs.writeFileSync(
+      path.join(repoRoot, "src", "math.mjs"),
+      "export function add(a, b) {\n  return a + b;\n}\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(repoRoot, "test", "repro-script.mjs"),
+      "import { add } from '../src/math.mjs';\nif (typeof process.argv[1] !== 'string' || add(2, 3) !== 5) process.exit(1);\n",
+      "utf8",
+    );
+    git(repoRoot, ["add", "src/math.mjs", "test/repro-script.mjs"]);
+    git(repoRoot, ["commit", "-m", "fix add with direct repro script"]);
+    const headSha = git(repoRoot, ["rev-parse", "HEAD"]);
+
+    const seenArgs: string[] = [];
+    const reproRes = await runReproCheck({
+      repoRoot,
+      worktreeBaseDir,
+      baseSha,
+      headSha,
+      reproTestPath: "test/repro-script.mjs",
+      runTestCommand: {
+        buildCommand: (reproTestPath) => {
+          seenArgs.push(reproTestPath);
+          return { command: process.execPath, args: [reproTestPath] };
+        },
+      },
+      timeoutMs: 10_000,
+    });
+    expect(reproRes.passed).toBe(true);
+    expect(reproRes.failedOnBase).toBe(true);
+    expect(reproRes.passedOnHead).toBe(true);
+    expect(seenArgs).toEqual(["test/repro-script.mjs", "test/repro-script.mjs"]);
+  }, 20_000);
+
+  it("R1-2: handles handoffAdapter timeout cleanly without throwing or wedging in waiting_decision", async () => {
+    const handoffFlowYaml = `flow: handoff-timeout
+version: 1
+roles:
+  reviewer:
+    runtime: acp
+steps:
+  - id: review
+    type: handoff
+    to: reviewer
+    returns:
+      verdict:
+        - approve
+        - changes
+`;
+    const projectId = "proj-hnd-timeout";
+    const runId = "run-hnd-timeout-1";
+    const planned = planRun({ projectId, runId, flowYaml: handoffFlowYaml, dataRoot });
+    approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+
+    const hangingReviewer: FlowStepAdapter = {
+      id: "hanging-reviewer",
+      runtimeKind: "acp",
+      async dispatch(ctx) {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            resolve({ kind: "handoff", verdict: "approve" });
+          }, 5_000);
+          ctx.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const res = await runFlow(projectId, runId, {
+      dataRoot,
+      stepTimeoutMs: 120,
+      adapters: { reviewer: hangingReviewer },
+    });
+    expect(res.finalStatus).toBe("stopped");
+
+    const loaded = loadRunState(projectId, runId, { dataRoot });
+    expect(loaded.state.status).toBe("stopped");
+    expect(loaded.state.activeHandoff).toBeNull();
+    const types = loaded.events.map((e) => e.type);
+    expect(types).toContain("handoff_sent");
+    expect(types).toContain("handoff_cancelled");
+    expect(types).toContain("step_failed");
+    expect(types).toContain("judgement");
+    expect(types).toContain("run_finished");
+  }, 15_000);
+
+  it("R1-3: supports both run: [repro] and repro:-only check steps without check_unsupported crash", async () => {
+    const buildFixAdapter: FlowStepAdapter = {
+      id: "builder-repro-fix",
+      runtimeKind: "stub",
+      async dispatch(ctx) {
+        const wt = ctx.worktreePath!;
+        fs.writeFileSync(
+          path.join(wt, "src", "math.mjs"),
+          "export function add(a, b) {\n  return a + b;\n}\n",
+          "utf8",
+        );
+        fs.writeFileSync(
+          path.join(wt, "test", "repro-bug.test.mjs"),
+          "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { add } from '../src/math.mjs';\ntest('repro add', () => {\n  assert.strictEqual(add(2, 3), 5);\n});\n",
+          "utf8",
+        );
+        git(wt, ["add", "src/math.mjs", "test/repro-bug.test.mjs"]);
+        git(wt, ["commit", "-m", "fix add and add repro test"]);
+        const sha = git(wt, ["rev-parse", "HEAD"]);
+        return {
+          kind: "agent",
+          outputs: { head_sha: sha, repro_test: "test/repro-bug.test.mjs" },
+        };
+      },
+    };
+
+    for (const [idx, runBlock] of ["    run:\n      - repro\n", ""].entries()) {
+      const flowYaml = `flow: repro-only-${idx}
+version: 1
+workspace:
+  kind: git-worktree
+  base: main
+roles:
+  builder:
+    runtime: pty
+steps:
+  - id: build
+    type: agent
+    role: builder
+    outputs:
+      - head_sha
+      - repro_test
+  - id: verify
+    type: check
+    against: build.head_sha
+${runBlock}    repro:
+      test:
+        from: build.repro_test
+`;
+      const projectId = `proj-repro-${idx}`;
+      const runId = `run-repro-${idx}`;
+      const planned = planRun({ projectId, runId, flowYaml, dataRoot });
+      approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+
+      const res = await runFlow(projectId, runId, {
+        dataRoot,
+        workspaceRepoRoot: repoRoot,
+        worktreeRoot: worktreeBaseDir,
+        adapters: { builder: buildFixAdapter },
+        reproTestCommand: {
+          buildCommand: (reproTestPath) => ({
+            command: process.execPath,
+            args: ["--test", reproTestPath],
+          }),
+        },
+      });
+      expect(res.finalStatus).toBe("finished");
+      expect(res.terminalOutcome).toBe("done");
+
+      const loaded = loadRunState(projectId, runId, { dataRoot });
+      const checkEv = loaded.events.find((e) => e.type === "check_result");
+      expect(checkEv?.type).toBe("check_result");
+      if (checkEv?.type === "check_result") {
+        expect(checkEv.data.checkId).toBe("repro");
+        expect(checkEv.data.passed).toBe(true);
+      }
+    }
+  }, 30_000);
+
+  it("R1-4: rejects differs_from conflict when one role uses options.adapter fallback", async () => {
+    const ticketFlow = loadFlowDefinition("ticket-to-pr", { dataRoot });
+    const sharedAdapter: FlowStepAdapter = {
+      id: "shared-fallback-agent",
+      runtimeKind: "stub",
+      async dispatch() {
+        return { kind: "agent", outputs: { status: "ok" } };
+      },
+    };
+
+    expect(() =>
+      resolveRoleAdapters(ticketFlow.flow, { reviewer: sharedAdapter }, sharedAdapter),
+    ).toThrow(FlowRoleConflictError);
+
+    const projectId = "proj-differs-fallback";
+    const runId = "run-differs-fallback-1";
+    const planned = planRun({ projectId, runId, flowYaml: ticketFlow.yaml, dataRoot });
+    approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        adapters: { reviewer: sharedAdapter },
+        adapter: sharedAdapter,
+      }),
+    ).rejects.toThrow(FlowRoleConflictError);
+  }, 15_000);
 });
