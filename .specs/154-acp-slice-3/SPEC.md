@@ -23,7 +23,8 @@ Flows, releases, pushes and pull requests.
   first non-empty line. Errors name the selected adapter.
 - Sessions are uncapped across homes. Per-home busy, lock, orphan and recovery
   guards, global recovery failure and shutdown gates remain fail closed.
-- Resume binds capability evidence to the executable and manifest identity.
+- Resume binds capability evidence to the saved checkpoint, executable and
+  manifest identity.
 - Environment defaults cannot forward reserved application variables.
 - Azure quota is unknown from codex-azure. Missing, malformed, telemetry-off,
   stale and UNKNOWN quota is unknown from codex. Fresh confirmed blocked is
@@ -127,6 +128,58 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   metadata. The SPEC was created before implementation; its attempted initial
   signed-off commit failed before staging. All edits remain in this worktree
   on 154-acp-slice-3, unstaged. No other repository was edited or pushed.
+
+### 2026-11-25: Pass 1 triage fixes (R1-1 and R1-2)
+- What changed:
+  - R1-1: Enforced manifest and executable identity binding inside
+    `AcpRunnerRegistry.start(..., { resume: true })` before spawning so a
+    switched runtime rejects with `LaunchFailure("start-failed")` and preserves
+    `.acp-last-session`, with a regression test in `acp-registry.test.ts`.
+  - R1-2: Gated `readAcpUsageReading` on `trusted && optedIn` in `api.acp.tsx`
+    and `trusted` in `threads.$agent.tsx`, and enforced `acpRunnerEnabled(env)`
+    inside `readAcpUsageReading` so untrusted or flag-off calls return an
+    unknown reading without touching `loadCodexQuotaDisplay` or the observer,
+    with `.runtime=codex` tests in `acp-routes-and-steps4-6.test.tsx`.
+- Why: Address the Pass 1 review findings scoped to this change.
+- Supersedes: nothing, additive.
+- Commits: `d2d9d15` (SPEC), `515dff1` (implementation); Pass 1 fixes unstaged
+  pending review.
+
+### 2026-11-25: Finish resume and quota guards
+- What changed: Completed the pending direct-start resume and request-origin
+  quota fixes (retrospective for the previously unstaged changes). Bound
+  resume evidence to the exact saved checkpoint as well as the adapter and
+  executable. Updated the original resume fixtures to negotiate a checkpoint
+  before testing adapter failures, and supplied same-origin proof in trusted
+  route fixtures.
+- Why: A failed start under another runtime can advertise resume support
+  without saving a checkpoint. Capability evidence must stay with the
+  checkpoint that generated it. Cross-site and flag-off requests must avoid
+  the Codex quota observer and return a generic unknown reading.
+- Compatibility: Legacy capability records lack checkpoint identity. They
+  fail closed until a successful new session saves fresh evidence.
+- Supersedes: previous in-progress verification status.
+- Commits: this signed-off follow-up to `515dff1`.
+
+### 2026-11-25: Local verification of the follow-up
+- Focused checks passed: 78 manifest, session, quota and import/seam tests;
+  2 registry tests, including concurrent scripted adapters and runtime-switch
+  refusal; 3 resume failure tests and 5 route cases.
+- Required checks passed: `TMPDIR=/var/tmp pnpm typecheck`, boundaries,
+  licence, library version and build.
+- The normal leak wrapper hit `spawnSync git EPERM` here and on the base
+  revision. The same scanner passed 632 repository files and 33 rules when
+  supplied the `git ls-files` selection directly. The dash wrapper timed out;
+  its direct ripgrep scan found zero matches. The changed files passed the
+  ASCII and whitespace checks.
+- Base conformance failed with `spawnSync python3 EPERM` on both the Slice 3
+  checkout and base revision. The bounded `pnpm test` rerun timed out while
+  still in Base. The independent Deck run encountered sandbox temporary
+  directory, subprocess and timeout failures before it was interrupted.
+  No aggregate test count was available for those runs.
+- The original worktree's Git metadata is read-only in this environment.
+  The commit and clean-tree checks used a local writable checkout.
+- Live verification remains open for every item in Manual Live Verification.
 
 ## Exact changed files
 

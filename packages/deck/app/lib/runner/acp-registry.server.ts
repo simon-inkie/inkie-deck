@@ -107,7 +107,6 @@ const globals = globalThis as typeof globalThis & {
     shutdownInFlight: number;
     shutdownPromise?: Promise<void>;
     recoveryFailed: false | symbol;
-    resumeSupport: Map<string, { supported: boolean; executableKey: string }>;
   };
   [closingAlsKey]?: AsyncLocalStorage<() => boolean>;
 };
@@ -117,10 +116,8 @@ const shared: NonNullable<(typeof globals)[typeof registryKey]> = globals[regist
   shutdownInFlight: 0,
   shutdownPromise: undefined,
   recoveryFailed: false,
-  resumeSupport: new Map(),
 };
 if (typeof shared.shutdownInFlight !== "number") shared.shutdownInFlight = 0;
-if (!shared.resumeSupport) shared.resumeSupport = new Map();
 
 function isRequestServerClosing(): boolean {
   return globals[closingAlsKey]?.getStore()?.() === true;
@@ -130,8 +127,8 @@ function isShuttingDown(): boolean {
   return shared.closing || shared.shutdownInFlight > 0 || isRequestServerClosing();
 }
 
-function executableKey(id: ExecutableIdentity): string {
-  return `${id.dev}:${id.ino}:${id.size}:${id.mtimeMs}:${id.sha256}`;
+function executableKey(manifest: AcpAdapterManifest, id: ExecutableIdentity): string {
+  return `${manifest.name}:${id.dev}:${id.ino}:${id.size}:${id.mtimeMs}:${id.sha256}`;
 }
 
 function agentsRoot(env: NodeJS.ProcessEnv): string {
@@ -167,7 +164,9 @@ function literalSessionFile(home: string): string {
   return join(realHome, lastSessionName);
 }
 
-function readStoredSessionId(home: string): string | undefined {
+type Checkpoint = { sessionId: string; fileKey: string };
+
+function readStoredSession(home: string): Checkpoint | undefined {
   try {
     const file = literalSessionFile(home);
     const stat = lstatSync(file, { throwIfNoEntry: false });
@@ -181,7 +180,11 @@ function readStoredSessionId(home: string): string | undefined {
       const n = readSync(fd, buf, 0, 256, 0);
       // Major 3: Strip only trailing newline so printable leading/trailing spaces round-trip verbatim
       const value = buf.subarray(0, n).toString("utf8").replace(/\r?\n$/, "");
-      return value.length > 0 && value.length <= 128 && !/[^ -~]/.test(value) ? value : undefined;
+      if (value.length === 0 || value.length > 128 || /[^ -~]/.test(value)) return undefined;
+      return {
+        sessionId: value,
+        fileKey: `${fdStat.dev}:${fdStat.ino}:${fdStat.mtimeMs}:${fdStat.ctimeMs}`,
+      };
     } finally {
       closeSync(fd);
     }
@@ -190,9 +193,9 @@ function readStoredSessionId(home: string): string | undefined {
   }
 }
 
-function clearStoredSessionId(home: string, expectedSessionId?: string): void {
+function clearStoredSessionId(home: string, expected: Checkpoint): void {
   try {
-    if (expectedSessionId !== undefined && readStoredSessionId(home) !== expectedSessionId) {
+    if (readStoredSession(home)?.fileKey !== expected.fileKey) {
       return;
     }
     const file = literalSessionFile(home);
@@ -209,7 +212,7 @@ function clearStoredSessionId(home: string, expectedSessionId?: string): void {
  * Major 4 & 5: Atomic temp-file + full-write + size verification + rename so an existing
  * or concurrently created hard-linked inode, symlink, or short write can NEVER corrupt .acp-last-session.
  */
-function writeStoredSessionId(home: string, sessionId: string): void {
+function writeStoredSessionId(home: string, sessionId: string): Checkpoint | undefined {
   try {
     const realHome = realpathSync(home);
     const file = join(realHome, lastSessionName);
@@ -244,6 +247,7 @@ function writeStoredSessionId(home: string, sessionId: string): void {
       }
       renameSync(tmp, file);
       renamed = true;
+      return readStoredSession(home);
     } finally {
       if (!renamed) {
         try { unlinkSync(tmp); } catch { /* ignore cleanup error */ }
@@ -251,10 +255,13 @@ function writeStoredSessionId(home: string, sessionId: string): void {
     }
   } catch {
     // Refuse symlink/hard-link/short-write/invalid targets silently without replacing valid checkpoint.
+    return undefined;
   }
 }
 
-function readStoredCapabilities(home: string): { supported: boolean; executableKey: string } | undefined {
+type ResumeEvidence = { supported: boolean; executableKey: string; checkpointKey: string };
+
+function readStoredCapabilities(home: string): ResumeEvidence | undefined {
   try {
     const file = join(realpathSync(home), capabilitiesName);
     const stat = lstatSync(file, { throwIfNoEntry: false });
@@ -267,14 +274,12 @@ function readStoredCapabilities(home: string): { supported: boolean; executableK
       if (!fdStat.isFile() || fdStat.nlink > 1 || fdStat.size <= 0 || fdStat.size > 512) return undefined;
       const buf = Buffer.allocUnsafe(512);
       const n = readSync(fd, buf, 0, 512, 0);
-      const parsed = JSON.parse(buf.subarray(0, n).toString("utf8")) as Partial<{
-        supported: unknown;
-        executableKey: unknown;
-      }> | null;
-      if (!parsed || typeof parsed.supported !== "boolean" || typeof parsed.executableKey !== "string") {
+      const parsed = JSON.parse(buf.subarray(0, n).toString("utf8")) as Partial<ResumeEvidence> | null;
+      if (!parsed || typeof parsed.supported !== "boolean" ||
+          typeof parsed.executableKey !== "string" || typeof parsed.checkpointKey !== "string") {
         return undefined;
       }
-      return { supported: parsed.supported, executableKey: parsed.executableKey };
+      return { supported: parsed.supported, executableKey: parsed.executableKey, checkpointKey: parsed.checkpointKey };
     } finally {
       closeSync(fd);
     }
@@ -283,7 +288,7 @@ function readStoredCapabilities(home: string): { supported: boolean; executableK
   }
 }
 
-function writeStoredCapabilities(home: string, record: { supported: boolean; executableKey: string }): void {
+function writeStoredCapabilities(home: string, record: ResumeEvidence): void {
   try {
     const realHome = realpathSync(home);
     const file = join(realHome, capabilitiesName);
@@ -422,7 +427,7 @@ export class AcpRunnerRegistry {
 
   lastSessionId(agent: string): string | undefined {
     const home = agentHome(this.env, agent);
-    return home ? readStoredSessionId(home) : undefined;
+    return home ? readStoredSession(home)?.sessionId : undefined;
   }
 
   /**
@@ -432,14 +437,15 @@ export class AcpRunnerRegistry {
    */
   canResume(agent: string): boolean {
     const home = agentHome(this.env, agent);
-    if (!this.isOptedIn(agent) || !home || !readStoredSessionId(home)) return false;
-    const recorded = shared.resumeSupport.get(home) ?? readStoredCapabilities(home);
-    if (!recorded || !recorded.supported) return false;
+    if (!this.isOptedIn(agent) || !home) return false;
+    const checkpoint = readStoredSession(home);
+    const recorded = readStoredCapabilities(home);
+    if (!recorded?.supported || recorded.checkpointKey !== checkpoint?.fileKey) return false;
     try {
       const manifest = this.options.manifest ?? resolveAcpManifestForAgent(this.env, agent);
       if (!manifest) return false;
       const currentExec = resolveAcpExecutable(manifest.executableName, this.env, home);
-      return `${manifest.name}:${executableKey(statExecutableIdentity(currentExec))}` === recorded.executableKey;
+      return executableKey(manifest, statExecutableIdentity(currentExec)) === recorded.executableKey;
     } catch {
       return false;
     }
@@ -488,8 +494,7 @@ export class AcpRunnerRegistry {
     }
 
     // Fail fast on explicit resume with no valid saved checkpoint (never fall back to session/new)
-    const resumeSessionId = options.resume ? readStoredSessionId(home) : undefined;
-    if (options.resume && !resumeSessionId) {
+    if (options.resume && !readStoredSession(home)) {
       throw new LaunchFailure("start-failed", "No valid saved session checkpoint to resume.");
     }
 
@@ -615,16 +620,25 @@ export class AcpRunnerRegistry {
     }
 
     // Re-verify opt-in, tmux window absence, locked resume checkpoint, and pinned executable identity AFTER lock claim
-    let lockedResumeSessionId = resumeSessionId;
+    let resumeCheckpoint: Checkpoint | undefined;
+    const adapterKey = executableKey(manifest, execIdentity);
     try {
       if (!this.isOptedIn(agent) || (!this.options.manifest && resolveAcpManifestForAgent(this.env, agent) !== manifest)) {
         throw new StartRefusal("not-opted-in");
       }
       this.assertNoTmuxWindow(agent);
       if (options.resume) {
-        lockedResumeSessionId = readStoredSessionId(home);
-        if (!lockedResumeSessionId) {
+        resumeCheckpoint = readStoredSession(home);
+        if (!resumeCheckpoint) {
           throw new LaunchFailure("start-failed", "No valid saved session checkpoint to resume.");
+        }
+        const recorded = readStoredCapabilities(home);
+        if (!recorded?.supported || recorded.executableKey !== adapterKey ||
+            recorded.checkpointKey !== resumeCheckpoint.fileKey) {
+          throw new LaunchFailure(
+            "start-failed",
+            "Saved session checkpoint cannot be resumed with this runtime or executable.",
+          );
         }
       }
       const currentIdentity = statExecutableIdentity(executable);
@@ -660,7 +674,7 @@ export class AcpRunnerRegistry {
       cwd: home,
       dataRoot: this.options.dataRoot ?? home,
       sessionMarker: sessionId,
-      resumeSessionId: lockedResumeSessionId,
+      resumeSessionId: resumeCheckpoint?.sessionId,
       signal: abortController.signal,
       onEvent: (event: DeckEvent) => {
         if (event.type === "permission.requested") {
@@ -706,20 +720,17 @@ export class AcpRunnerRegistry {
     }
 
     activeSession.session = session;
-    if (session.negotiated) {
-      const capRecord = {
-        supported: Boolean(session.supportsResume?.()),
-        executableKey: `${manifest.name}:${executableKey(execIdentity)}`,
-      };
-      shared.resumeSupport.set(home, capRecord);
-      writeStoredCapabilities(home, capRecord);
+    if (session.negotiated && !session.supportsResume?.()) {
+      const recorded = readStoredCapabilities(home);
+      if (recorded?.supported && recorded.executableKey === adapterKey) {
+        writeStoredCapabilities(home, { ...recorded, supported: false });
+      }
     }
     const terminalKind = session.state.kind;
     if (terminalKind === "unsupported" || terminalKind === "failed" || terminalKind === "disconnected") {
-      // Major 2: Clear stale checkpoint ONLY when resume was explicitly rejected for lockedResumeSessionId
-      // AND the file on disk still contains that exact ID (never clobber a newer checkpoint).
-      if (options.resume && session.resumeRejected && lockedResumeSessionId) {
-        clearStoredSessionId(home, lockedResumeSessionId);
+      // Clear only the checkpoint this resume attempted.
+      if (session.resumeRejected && resumeCheckpoint) {
+        clearStoredSessionId(home, resumeCheckpoint);
       }
       await session.close().catch(() => {});
       await this.cleanupFailedStart(home, activeSession, lock);
@@ -742,7 +753,11 @@ export class AcpRunnerRegistry {
     // Never delete a previously saved valid checkpoint on a fresh Start with a downgraded binary;
     // checkpoints are cleared ONLY on explicit session-not-found for that exact ID.
     if (session.activeSessionId && session.supportsResume?.()) {
-      writeStoredSessionId(home, session.activeSessionId);
+      const checkpoint = writeStoredSessionId(home, session.activeSessionId);
+      // A failed start or partial write cannot attach the adapter to an older checkpoint.
+      if (checkpoint?.sessionId === session.activeSessionId) {
+        writeStoredCapabilities(home, { supported: true, executableKey: adapterKey, checkpointKey: checkpoint.fileKey });
+      }
     }
 
     activeSession.abandonOnUnkillable = () => {

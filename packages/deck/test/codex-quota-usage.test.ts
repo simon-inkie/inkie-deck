@@ -71,7 +71,7 @@ describe("Codex ACP usage mapping", () => {
     mkdirSync(home);
     writeFileSync(join(home, ".runner"), "acp\n");
     writeFileSync(join(home, ".runtime"), "codex\n");
-    const env = { AGENTS_HOME: root, DATA_ROOT: root, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
+    const env = { AGENTS_HOME: root, DATA_ROOT: root, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
     writeFileSync(join(root, "codex-quota.json"), "malformed");
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);

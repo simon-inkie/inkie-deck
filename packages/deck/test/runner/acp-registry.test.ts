@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -115,20 +115,23 @@ done
 
   it("runs agy and Codex concurrently with isolated control, resume identity and shutdown", async () => {
     writeFileSync(join(otherHome, ".runtime"), "codex\n");
+    const fixture = new URL("../fixtures/acp-agent.mjs", import.meta.url);
+    const sharedScript = { sessionId: "fixture-session", capabilities: { loadSession: true } };
+    const codexScript = {
+      ...sharedScript,
+      prompts: [null, []],
+      onCancel: [{ kind: "result", result: { stopReason: "cancelled" } }],
+    };
     const script = `#!${process.execPath}
-import readline from "node:readline";
-if (process.argv.includes("--version")) { console.log("fixture 2.6.0"); process.exit(0); }
-let pending;
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
-  const msg = JSON.parse(line);
-  const reply = (result, id = msg.id) => console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
-  if (msg.method === "initialize") reply({ protocolVersion: 1, agentCapabilities: { loadSession: true } });
-  else if (msg.method === "session/new") reply({ sessionId: "fixture-session" });
-  else if (msg.method === "session/prompt") {
-    if (msg.params.prompt[0].text === "hold") pending = msg.id;
-    else reply({ stopReason: "end_turn" });
-  } else if (msg.method === "session/cancel" && pending) reply({ stopReason: "cancelled" }, pending);
-});
+import { writeSync } from "node:fs";
+if (process.argv.includes("--version")) {
+  writeSync(1, "fixture 2.6.0\\n");
+} else {
+  process.argv[2] = process.argv[2] === "acp"
+    ? ${JSON.stringify(JSON.stringify(sharedScript))}
+    : ${JSON.stringify(JSON.stringify(codexScript))};
+  await import(${JSON.stringify(fixture.href)});
+}
 `;
     const bin = join(root, "bin");
     mkdirSync(bin);
@@ -154,7 +157,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     writeFileSync(join(otherHome, ".runtime"), "agy\n");
     expect(reg.canResume(otherAgent)).toBe(false);
     writeFileSync(join(otherHome, ".runtime"), "codex\n");
-    await reg.start(otherAgent, { resume: false });
+    expect((await reg.start(otherAgent, { resume: true })).activeSessionId).toBe("fixture-session");
     await reg.shutdown({ permanent: false });
     expect(reg.status(agent)?.state).toBe("stopped");
     expect(reg.status(otherAgent)?.state).toBe("stopped");
@@ -569,5 +572,57 @@ rl.on("line", (line) => {
       shutdownAcp.mockRestore();
       shutdownPty.mockRestore();
     }
+  });
+
+  it("refuses to resume a checkpoint after switching runtime, even after the new adapter negotiates", async () => {
+    const bin = join(root, "resume-bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "agy"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    symlinkSync(join(bin, "agy"), join(bin, "codex-acp"));
+    const sessionId = "sess-agy-preserved";
+    const startSession = vi.fn(async (adapter: AcpAdapter) => {
+      const failed = adapter.displayName === "Codex ACP";
+      let resolveExit!: () => void;
+      return {
+        state: { kind: failed ? "failed" : "idle" },
+        negotiated: true,
+        supportsResume: () => true,
+        activeSessionId: failed ? undefined : sessionId,
+        exited: new Promise<void>((resolve) => { resolveExit = resolve; }),
+        exitInfo: { code: 0, signal: null },
+        close: async () => resolveExit(),
+      } as unknown as AcpSession;
+    });
+    const reg = new AcpRunnerRegistry({ ...env, PATH: bin }, {
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "fixture 2.6.0", stderr: "" }),
+      startSession,
+    });
+
+    await reg.start(agent);
+    await reg.stop(agent);
+    expect(reg.lastSessionId(agent)).toBe(sessionId);
+    expect(reg.canResume(agent)).toBe(true);
+
+    writeFileSync(join(home, ".runtime"), "codex\n");
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    expect(startSession).toHaveBeenCalledTimes(1);
+
+    await expect(reg.start(agent)).rejects.toThrow(/negotiation ended/);
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    expect(startSession).toHaveBeenCalledTimes(2);
+    expect(existsSync(lockFile)).toBe(false);
+    expect(reg.lastSessionId(agent)).toBe(sessionId);
+
+    writeFileSync(join(home, ".runtime"), "agy\n");
+    expect(reg.canResume(agent)).toBe(true);
+
+    const replacement = join(home, "replacement-checkpoint");
+    writeFileSync(replacement, sessionId + "\n");
+    renameSync(replacement, join(home, ".acp-last-session"));
+    expect(reg.lastSessionId(agent)).toBe(sessionId);
+    expect(reg.canResume(agent)).toBe(false);
   });
 });
