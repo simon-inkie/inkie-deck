@@ -1,0 +1,108 @@
+flow: ticket-to-pr
+version: 1
+title: Ticket to PR
+trigger:
+  kind: manual
+output:
+  kind: branch_ready
+inputs:
+  ticket:
+    kind: string
+    required: false
+workspace:
+  kind: git-worktree
+  base: main
+roles:
+  builder:
+    runtime: pty
+  reviewer:
+    runtime: acp
+    differs_from: builder
+limits:
+  max_attempts: 3
+  max_rewinds: 6
+  same_check_fail_limit: 3
+  step_timeout_min: 15
+  budget:
+    tokens: 200000
+    steps: 25
+protected_paths:
+  - ".github/**"
+  - "package.json"
+  - "pnpm-lock.yaml"
+  - "scripts/**"
+on_unanswered:
+  after_hours: 24
+  outcome: stop
+steps:
+  - id: intake
+    type: decision
+    title: Confirm ticket scope
+    options:
+      - key: start
+        label: Start work
+      - key: stop
+        label: Stop run
+        end: stopped
+  - id: build
+    type: agent
+    title: Implement fix and repro test
+    role: builder
+    prompt: Implement the ticket fix with a failing-on-base reproduction test in an isolated git worktree.
+    outputs:
+      - branch
+      - head_sha
+      - repro_test
+    rules:
+      - protected_path_touched: decide
+      - dependency_changed: decide
+      - files_changed_over: decide
+      - step_timeout: decide
+  - id: verify
+    type: check
+    title: Run deterministic verification and repro check
+    against: build.head_sha
+    run:
+      - typecheck
+      - test
+      - lint
+      - leak_scan
+      - build
+    repro:
+      test:
+        from: build.repro_test
+      fail_on: base
+      pass_on: head
+    on_fail:
+      goto: build
+    rules:
+      - same_check_repeat: decide
+      - test_weakened: stop
+      - secret_found: stop
+      - stale_sha: notify
+  - id: review
+    type: handoff
+    title: Independent reviewer check
+    to: reviewer
+    returns:
+      verdict:
+        - approve
+        - changes
+        - comment
+    on_return:
+      changes:
+        goto: build
+  - id: ready
+    type: decision
+    title: Ready for human PR action
+    always: decide
+    options:
+      - key: open-pr-myself
+        label: Open PR myself
+        end: done
+      - key: rewind-to-build
+        label: Rewind to build
+        goto: build
+      - key: stop
+        label: Stop run
+        end: stopped

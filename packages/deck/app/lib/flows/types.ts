@@ -14,18 +14,35 @@ export type FlowActor = z.infer<typeof FlowActorSchema>;
 // Strict identifiers and hashes
 export const FlowIdRegex = /^[a-z0-9_-]{1,64}$/;
 export const FlowSha256Regex = /^[a-f0-9]{64}$/;
+export const FlowGitShaRegex = /^[a-f0-9]{40}$/;
 export const FlowSafeValueRegex = /^[a-z0-9_.-]{1,64}$/;
+export const FlowSafePathRegex = /^[A-Za-z0-9._/-]{1,128}$/;
 export const FlowPrivateRefRegex = /^priv_[a-f0-9]{32}$/;
 export const FlowEffectKeyRegex = /^eff_[a-f0-9]{24}$/;
 export const FlowIsoTimestampRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 
 export const FlowIdSchema = z.string().regex(FlowIdRegex, "Must be a valid identifier (/^[a-z0-9_-]{1,64}$/)");
 export const FlowSha256Schema = z.string().regex(FlowSha256Regex, "Must be a 64-character hex SHA-256 string");
+export const FlowGitShaSchema = z.string().regex(FlowGitShaRegex, "Must be a 40-character hex git SHA string");
 export const FlowSafeValueSchema = z.string().regex(FlowSafeValueRegex, "Must be a bounded safe identifier (max 64 chars)");
+export const FlowSafePathSchema = z
+  .string()
+  .regex(FlowSafePathRegex, "Must be a bounded relative path (max 128 chars)")
+  .refine((s) => !s.startsWith("/") && !s.includes(".."), "Path must be relative and cannot contain '..'");
 export const FlowPrivateRefSchema = z.string().regex(FlowPrivateRefRegex, "Must be an opaque CSPRNG private ref (priv_<32 hex>)");
 export const FlowEffectKeySchema = z.string().regex(FlowEffectKeyRegex, "Must be a deterministic effect key (eff_<24 hex>)");
 export const FlowIsoTimestampSchema = z.string().regex(FlowIsoTimestampRegex, "Must be a strict ISO-8601 UTC timestamp");
-export const FlowBuiltInCheckIdSchema = z.enum(["check_exists", "check_nonempty", "check_unsupported"]);
+export const FlowBuiltInCheckIdSchema = z.enum([
+  "check_exists",
+  "check_nonempty",
+  "check_unsupported",
+  "typecheck",
+  "test",
+  "lint",
+  "leak_scan",
+  "build",
+  "repro",
+]);
 export type FlowBuiltInCheckId = z.infer<typeof FlowBuiltInCheckIdSchema>;
 export const FlowPublicOutputValueSchema = z
   .enum(["ok", "passed", "failed", "skipped", "approve", "continue", "stop", "yes", "no", "true", "false"])
@@ -102,6 +119,10 @@ export const FlowStepResultOutputsSchema = z
     ok: FlowPublicOutputValueSchema.optional(),
     output_file: FlowPublicOutputValueSchema.optional(),
     artifact: FlowPublicOutputValueSchema.optional(),
+    branch: FlowSafeValueSchema.optional(),
+    head_sha: FlowGitShaSchema.optional(),
+    base_sha: FlowGitShaSchema.optional(),
+    repro_test: FlowSafePathSchema.optional(),
   })
   .strict();
 

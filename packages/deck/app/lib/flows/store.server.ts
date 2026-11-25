@@ -666,6 +666,8 @@ interface TransitionContext {
   verifyPublicArtefactShaOnDisk: (sha256: string, requireNonEmpty?: boolean) => void;
 }
 
+const COMMAND_CHECK_IDS = new Set(["typecheck", "test", "lint", "leak_scan", "build", "repro"]);
+
 const REWIND_ELIGIBLE_REASON_CODES = new Set([
   "check_failed",
   "on_fail_rewind",
@@ -842,18 +844,35 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
     // Critical 2: Enforce the exact pinned check contract (declared run + against target) AND forbid
     // unrecorded 64-hex secrets in targetSha on BOTH passed and failed check results.
     const declaredChecks = step.run && step.run.length > 0 ? step.run : ["check_nonempty"];
-    const allSupported = declaredChecks.every((n) => n === "check_exists" || n === "check_nonempty");
-    const requiresNonEmpty = declaredChecks.includes("check_nonempty");
-    const expectedCheckId = !allSupported
-      ? "check_unsupported"
-      : requiresNonEmpty
-        ? "check_nonempty"
-        : "check_exists";
+    const isArtefactOnly =
+      declaredChecks.every((n) => n === "check_exists" || n === "check_nonempty") && !step.repro;
+    const isCommandSuite =
+      !isArtefactOnly && declaredChecks.every((n) => COMMAND_CHECK_IDS.has(n));
+    const requiresNonEmpty = isArtefactOnly && declaredChecks.includes("check_nonempty");
 
-    if (ev.data.checkId !== expectedCheckId) {
+    if (isArtefactOnly) {
+      const expectedCheckId = requiresNonEmpty ? "check_nonempty" : "check_exists";
+      if (ev.data.checkId !== expectedCheckId) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `check_result checkId '${ev.data.checkId}' disagrees with pinned check requirement '${expectedCheckId}'`
+        );
+      }
+    } else if (isCommandSuite) {
+      const allowedCheckIds = new Set(declaredChecks);
+      if (step.repro) {
+        allowedCheckIds.add("repro");
+      }
+      if (!allowedCheckIds.has(ev.data.checkId)) {
+        throw new IllegalFlowTransitionError(
+          ctx.runId,
+          `check_result checkId '${ev.data.checkId}' is not in pinned command checks [${Array.from(allowedCheckIds).join(", ")}]`
+        );
+      }
+    } else if (ev.data.checkId !== "check_unsupported") {
       throw new IllegalFlowTransitionError(
         ctx.runId,
-        `check_result checkId '${ev.data.checkId}' disagrees with pinned check requirement '${expectedCheckId}'`
+        `check_result checkId '${ev.data.checkId}' disagrees with pinned check requirement 'check_unsupported'`
       );
     }
 
@@ -888,11 +907,11 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
         );
       }
       if (ev.data.passed) {
-        if (!allSupported) {
+        if (!isArtefactOnly && !isCommandSuite) {
           throw new IllegalFlowTransitionError(ctx.runId, "check_unsupported cannot record passed: true");
         }
         ctx.verifyPublicArtefactShaOnDisk(ev.data.targetSha, requiresNonEmpty);
-      } else if (allSupported) {
+      } else if (isArtefactOnly) {
         // Critical 1: Reject forged passed: false when the pinned target actually exists and passes on disk
         let targetPassesOnDisk = false;
         try {
@@ -902,6 +921,7 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
           targetPassesOnDisk = false;
         }
         if (targetPassesOnDisk) {
+          const expectedCheckId = requiresNonEmpty ? "check_nonempty" : "check_exists";
           throw new IllegalFlowTransitionError(
             ctx.runId,
             `Cannot record check_result passed: false when pinned target '${expectedTargetSha}' passes '${expectedCheckId}' on disk`
@@ -1608,6 +1628,155 @@ class FlowsStoreImpl {
     for (const r of runs) {
       this.#verifyHashChainInternal(r.run_id);
     }
+  }
+
+  public planRun(params: {
+    runId: string;
+    flowRef: string;
+    flowHash: string;
+    flowYamlBytes: string | Buffer;
+    source: "project" | "library" | "builtin";
+    expectedDecisions: string[];
+    metadata?: Record<string, string>;
+  }): AppendResult {
+    const runId = params.runId;
+    const flowRef = params.flowRef;
+    const flowHash = params.flowHash;
+    const rawYaml = params.flowYamlBytes;
+    const source = params.source;
+    const expectedDecisions = Array.from(params.expectedDecisions);
+    const rawMeta = params.metadata !== undefined ? materializePlain(params.metadata) : undefined;
+
+    this.#assertWritableAndOwned(runId);
+    assertValidRunId(runId);
+
+    let validatedMeta: string | null = null;
+    if (rawMeta !== undefined) {
+      const metaRes = FlowRunMetadataSchema.safeParse(rawMeta);
+      if (!metaRes.success) {
+        throw new Error(`Invalid flow run metadata: ${JSON.stringify(metaRes.error.issues)}`);
+      }
+      validatedMeta = canonicalJsonStringify(metaRes.data);
+    }
+
+    const yamlBuf = Buffer.isBuffer(rawYaml) ? Buffer.from(rawYaml) : Buffer.from(rawYaml, "utf8");
+    const calculatedHash = crypto.createHash("sha256").update(yamlBuf).digest("hex");
+    if (calculatedHash !== flowHash) {
+      throw new Error(`Flow hash mismatch: calculated ${calculatedHash}, provided ${flowHash}`);
+    }
+
+    const now = Date.now();
+    const nowIso = new Date().toISOString();
+    const planItem = parseAndFreezeAppendItem(
+      {
+        event: {
+          v: 1,
+          runId,
+          seq: 1,
+          eventId: "ev_plan_1",
+          prev: "0".repeat(64),
+          at: nowIso,
+          actor: "runner",
+          type: "run_planned",
+          data: {
+            flowRef,
+            flowHash,
+            source,
+            expectedDecisions,
+          },
+        },
+      },
+      runId,
+    );
+
+    return this.#runInTx(() => {
+      assertActiveOwnerLock(this.#ownerLock, this.projectId, this.projectDir);
+      this.#db
+        .prepare(`INSERT OR IGNORE INTO pinned_flows (hash, bytes, created_at) VALUES (?, ?, ?)`)
+        .run(flowHash, yamlBuf, now);
+      this.#db
+        .prepare(
+          `INSERT INTO flow_runs (
+             run_id, flow_hash, parent_run_id, owner_epoch, spec_version,
+             status, created_at, updated_at, metadata
+           ) VALUES (?, ?, NULL, 1, 1, 'planned', ?, ?, ?)`
+        )
+        .run(runId, flowHash, now, now, validatedMeta);
+
+      const res = this.#appendItemsInOpenTx(runId, [planItem])[0]!;
+      assertActiveOwnerLock(this.#ownerLock, this.projectId, this.projectDir);
+      return res;
+    });
+  }
+
+  public approveRun(params: {
+    runId: string;
+    flowHash: string;
+    actorId: string;
+  }): AppendResult {
+    const runId = params.runId;
+    const flowHash = params.flowHash;
+    const actorId = params.actorId;
+
+    this.#assertWritableAndOwned(runId);
+    assertValidRunId(runId);
+    if (!FlowIdRegex.test(actorId)) {
+      throw new Error(`Invalid actorId '${actorId}': must match ${FlowIdRegex.source}`);
+    }
+
+    return this.#runInTx(() => {
+      assertActiveOwnerLock(this.#ownerLock, this.projectId, this.projectDir);
+      const run = this.#getRunInternal(runId);
+      if (!run) {
+        throw new Error(`Flow run '${runId}' not found`);
+      }
+      if (flowHash !== run.flow_hash) {
+        throw new IllegalFlowTransitionError(
+          runId,
+          `flow_approved flowHash '${flowHash}' does not match pinned flow_hash '${run.flow_hash}'`
+        );
+      }
+      const existing = this.#getParsedEventsInternal(runId);
+      if (existing.some((e) => e.type === "flow_approved")) {
+        throw new IllegalFlowTransitionError(runId, `Flow run '${runId}' is already approved`);
+      }
+      if (run.status !== "planned" || !existing.some((e) => e.type === "run_planned")) {
+        throw new IllegalFlowTransitionError(
+          runId,
+          `Flow run '${runId}' must be in 'planned' status before approval (got '${run.status}')`
+        );
+      }
+
+      const head = this.#db
+        .prepare(`SELECT seq, hash FROM flow_events WHERE run_id = ? ORDER BY seq DESC LIMIT 1`)
+        .get(runId) as { seq: number; hash: string } | undefined;
+      if (!head) {
+        throw new IllegalFlowTransitionError(runId, `Flow run '${runId}' has no run_planned event`);
+      }
+
+      const approveItem = parseAndFreezeAppendItem(
+        {
+          event: {
+            v: 1,
+            runId,
+            seq: head.seq + 1,
+            eventId: "ev_approve_2",
+            prev: head.hash,
+            at: new Date().toISOString(),
+            actor: "human",
+            type: "flow_approved",
+            data: {
+              flowHash,
+              actorId,
+            },
+          },
+        },
+        runId,
+      );
+      const res = this.#appendItemsInOpenTx(runId, [approveItem])[0]!;
+      assertActiveOwnerLock(this.#ownerLock, this.projectId, this.projectDir);
+      return res;
+    });
   }
 
   public createAndApproveRun(params: {
