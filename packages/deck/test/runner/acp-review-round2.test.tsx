@@ -913,7 +913,8 @@ fi
         else if (msg.method === "session/prompt") {
           for (let i = 1; i <= 17; i++) send({ jsonrpc: "2.0", id: i, method: "_ext/unsupported_req", params: {} });
           for (let i = 0; i < 501; i++) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s-bd", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "c" + i } } } });
-          setTimeout(() => process.exit(1), 30);
+          // Flush the flood and disconnect even if a blocking stdin read is pending.
+          output.end();
         }
       `),
     );
@@ -925,9 +926,12 @@ fi
     });
     const discSess = await regDisc.start(agent);
     expect(await discSess.prompt("flood and disconnect")).toBe("disconnected");
-    await delay(80);
-    expect(regDisc.status(agent)?.state).toBe("stopped");
-    expect(regDisc.events(agent).some((e) => e.type === "extension.blocking")).toBe(true);
+    await vi.waitFor(() => expect(regDisc.status(agent)?.state).toBe("stopped"));
+    const retainedEvents = regDisc.events(agent);
+    expect(retainedEvents.some((e) =>
+      e.type === "message.chunk" && e.view.kind === "text" && e.view.excerpt === "c500",
+    )).toBe(true);
+    expect(retainedEvents.some((e) => e.type === "extension.blocking")).toBe(true);
 
     // Major 4 & Minor 4: -32603 text-only rate-limit ambiguity emits NO exhaustion; { reason: provider_error, code: quota_exhausted } DOES; severity: fatal terminates turn
     const quotaScript = join(root, "r6-quota.mjs");
