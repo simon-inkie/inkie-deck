@@ -583,10 +583,13 @@ function findNearestExistingAncestor(targetPath: string): string {
   return current;
 }
 
+export function configuredFlowsDataRoot(customDataRoot?: string): string | undefined {
+  return customDataRoot ?? process.env["FLOWS_DATA_ROOT"] ?? process.env["DATA_ROOT"];
+}
+
 export function resolveFlowsRootDir(customDataRoot?: string): string {
   const rawRoot =
-    customDataRoot ??
-    process.env["DATA_ROOT"] ??
+    configuredFlowsDataRoot(customDataRoot) ??
     path.join(os.homedir(), ".local", "share", "inkie-deck");
   const resolvedRoot = path.resolve(rawRoot);
   // Reject symlink dataRoot itself, git-worktree targets, AND any non-Git symlinked ancestor on Linux

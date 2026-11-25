@@ -16,7 +16,24 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
 import {
+  FlowAdapterAbortedError,
+  resolveRoleAdapters,
+  type FlowStepAdapter,
+} from "./adapter.server.js";
+import {
+  extractGitDiffSignals,
+  GitDiffEvidenceError,
+  isFlowCommandCheckId,
+  isSupportedSuiteCheckId,
+  runAllowlistedCheckSuite,
+  runReproCheck,
+  type CheckCommandMap,
+  type FlowCommandCheckId,
+  type ReproTestCommand,
+} from "./checks.server.js";
+import {
   evaluateStepJudgement,
+  getHandoffOptionKeys,
   resolveFlowLimits,
   type StepSignals,
 } from "./engine.js";
@@ -35,7 +52,11 @@ import { acquireOwnerLock } from "./owner.server.js";
 import { resolvePinnedBudget, resolvePinnedCheckTarget } from "./replay.js";
 import { openFlowsStore, StepDeadlineExceededError, type FlowsStore } from "./store.server.js";
 import {
+  FlowGitShaRegex,
   FlowIdRegex,
+  FlowSafePathSchema,
+  FlowSafeValueRegex,
+  FlowStepResultOutputsSchema,
   type CheckStep,
   type FlowActor,
   type FlowBuiltInCheckId,
@@ -46,14 +67,25 @@ import {
   type FlowReasonCode,
   type FlowRunState,
   type FlowStep,
+  type FlowStepStartedEvent,
 } from "./types.js";
 import { parseFlowYamlOrThrow } from "./validator.js";
+import {
+  captureWorktreeOutcome,
+  createDetachedCommitWorktree,
+  createEphemeralWorktree,
+  recoverEphemeralWorktree,
+  resolveBaseCommitSha,
+  rollbackWorktree,
+  type WorktreeHandle,
+} from "./worktree.server.js";
 
 const DEFAULT_STUB_TOKEN_COST = 100;
 const SUPPORTED_BUILT_IN_CHECKS = new Set(["check_exists", "check_nonempty"]);
 
 export type CrashPoint =
   | "K1_AFTER_INTENT"
+  | "K_AFTER_WORKTREE_CREATED"
   | "K3_AFTER_ARTEFACT"
   | "K4_AFTER_OUTCOME"
   | "K8_BEFORE_CHECK_BATCH"
@@ -95,6 +127,22 @@ export interface RunFlowOptions {
     occurrence: number;
     signal: AbortSignal;
   }) => void | Promise<void>;
+  /** Optional git repository root for flows declaring workspace.kind === "git-worktree". */
+  workspaceRepoRoot?: string;
+  /** Optional base directory outside workspaceRepoRoot for ephemeral git worktrees. */
+  worktreeRoot?: string;
+  /** Optional role-keyed step adapters (subject to roles.<name>.differs_from checks). */
+  adapters?: Record<string, FlowStepAdapter>;
+  /** Available adapters keyed by the runtime declared in the pinned flow. */
+  adaptersByRuntime?: Record<string, FlowStepAdapter>;
+  /** Optional fallback adapter, subject to the declared runtime for named roles. */
+  adapter?: FlowStepAdapter;
+  /** Optional explicit allowlisted command map for Slice 3 check steps. */
+  checkCommands?: CheckCommandMap;
+  /** Optional explicit command/runner for check repro fail-on-base/pass-on-head verification. */
+  reproTestCommand?: ReproTestCommand;
+  /** Optional expected head SHA for stale_sha detection in check steps. */
+  expectedHeadSha?: string;
 }
 
 export interface NotifyReplayFailure {
@@ -121,6 +169,20 @@ class StepTimeoutError extends Error {
   }
 }
 
+class WorktreeOutcomeRejectedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "WorktreeOutcomeRejectedError";
+  }
+}
+
+class MissingRuntimeAdapterError extends Error {
+  constructor(runtime: string) {
+    super(`No adapter configured for runtime '${runtime}'`);
+    this.name = "MissingRuntimeAdapterError";
+  }
+}
+
 /**
  * Execute a bounded command in its own POSIX process group and guarantee
  * that the entire process group (child + grandchildren) is killed on timeout, abort, or exit.
@@ -128,8 +190,21 @@ class StepTimeoutError extends Error {
 export async function runBoundedProcessGroup(
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
-): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }> {
+  options: {
+    cwd?: string;
+    timeoutMs: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    stdoutLimitBytes?: number;
+  },
+): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stdoutTruncated: boolean;
+  stderr: string;
+  timedOut: boolean;
+}> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -138,7 +213,10 @@ export async function runBoundedProcessGroup(
       stdio: ["ignore", "pipe", "pipe"],
     });
     const pid = child.pid;
-    let stdout = "";
+    const stdoutChunks: Buffer[] = [];
+    const stdoutLimit = options.stdoutLimitBytes ?? 65_536;
+    let stdoutBytes = 0;
+    let stdoutTruncated = false;
     let stderr = "";
     let timedOut = false;
     let killEscalation: NodeJS.Timeout | undefined;
@@ -167,7 +245,13 @@ export async function runBoundedProcessGroup(
     const timer = setTimeout(triggerTimeout, options.timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < 65536) stdout += chunk.toString("utf8");
+      const remaining = stdoutLimit - stdoutBytes;
+      if (chunk.length > remaining) stdoutTruncated = true;
+      if (remaining > 0) {
+        const captured = chunk.subarray(0, remaining);
+        stdoutChunks.push(captured);
+        stdoutBytes += captured.length;
+      }
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       if (stderr.length < 65536) stderr += chunk.toString("utf8");
@@ -184,7 +268,8 @@ export async function runBoundedProcessGroup(
       if (killEscalation) clearTimeout(killEscalation);
       options.signal?.removeEventListener("abort", onAbort);
       killGroup("SIGKILL");
-      resolve({ code, signal, stdout, stderr, timedOut });
+      const stdout = Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8");
+      resolve({ code, signal, stdout, stdoutTruncated, stderr, timedOut });
     });
   });
 }
@@ -236,6 +321,104 @@ export function buildCollisionFreeArtifactId(
     .digest("hex")
     .slice(0, 24);
   return `art_${digest}`;
+}
+
+function collectExpectedDecisions(flow: FlowDefinition): string[] {
+  const result: string[] = [];
+  for (const step of flow.steps) {
+    const isDecisionStep = step.type === "decision";
+    const hasDecideRule = Boolean(
+      step.rules?.some((ruleMap) => Object.values(ruleMap).includes("decide")),
+    );
+    if ((isDecisionStep || hasDecideRule) && !result.includes(step.id)) {
+      result.push(step.id);
+    }
+  }
+  return result;
+}
+
+/**
+ * Plan a flow run without approving it (appends ONLY run_planned at seq 1).
+ * The run cannot start until approveRun records a matching flow_approved event.
+ */
+export function planRun(params: {
+  projectId: string;
+  runId: string;
+  flowYaml: string;
+  source?: "project" | "library" | "builtin";
+  metadata?: Record<string, string>;
+  dataRoot?: string;
+}): {
+  runId: string;
+  flowHash: string;
+  flow: FlowDefinition;
+  expectedDecisions: string[];
+} {
+  const { flow, hash } = parseFlowYamlOrThrow(params.flowYaml);
+  const expectedDecisions = collectExpectedDecisions(flow);
+
+  const lock = acquireOwnerLock(params.projectId, params.dataRoot);
+  let store: FlowsStore | undefined;
+  try {
+    store = openFlowsStore(params.projectId, { dataRoot: params.dataRoot, ownerLock: lock });
+    store.planRun({
+      runId: params.runId,
+      flowRef: flow.flow,
+      flowHash: hash,
+      flowYamlBytes: params.flowYaml,
+      source: params.source ?? "builtin",
+      expectedDecisions,
+      ...(params.metadata ? { metadata: params.metadata } : {}),
+    });
+    return {
+      runId: params.runId,
+      flowHash: hash,
+      flow,
+      expectedDecisions,
+    };
+  } finally {
+    store?.close();
+    lock.release();
+  }
+}
+
+/**
+ * Approve an existing planned run for its exact pinned flow_hash.
+ * Refuses missing runs, mismatched flowHash, non-planned runs, or duplicate approvals.
+ */
+export function approveRun(params: {
+  projectId: string;
+  runId: string;
+  flowHash: string;
+  actorId: string;
+  dataRoot?: string;
+}): {
+  runId: string;
+  flowHash: string;
+  actorId: string;
+} {
+  if (!FlowIdRegex.test(params.actorId)) {
+    throw new Error(`Invalid actorId '${params.actorId}': must match ${FlowIdRegex.source}`);
+  }
+
+  const lock = acquireOwnerLock(params.projectId, params.dataRoot);
+  let store: FlowsStore | undefined;
+  try {
+    store = openFlowsStore(params.projectId, { dataRoot: params.dataRoot, ownerLock: lock });
+    store.approveRun({
+      runId: params.runId,
+      flowHash: params.flowHash,
+      actorId: params.actorId,
+    });
+    return {
+      runId: params.runId,
+      flowHash: params.flowHash,
+      actorId: params.actorId,
+    };
+  } finally {
+    store?.close();
+    lock.release();
+  }
 }
 
 /**
@@ -327,18 +510,14 @@ function getHandoffSpecForStep(
   }
 
   if (step.type === "handoff") {
-    const rawKeys = step.returns ? Object.values(step.returns).flat() : [];
-    const uniqueKeys = Array.from(new Set(rawKeys.length > 0 ? rawKeys : ["approve", "changes", "comment"])).slice(
-      0,
-      16,
-    );
+    const optionKeys = getHandoffOptionKeys(step);
     return {
       kind: "handoff",
       target: step.to && FlowIdRegex.test(step.to) ? step.to : "reviewer",
       reasonCode: "handoff_required",
-      optionKeys: uniqueKeys,
+      optionKeys,
       expiresAt,
-      options: uniqueKeys.map((k) => ({
+      options: optionKeys.map((k) => ({
         key: k,
         label: k.charAt(0).toUpperCase() + k.slice(1).replace(/[-_]/g, " "),
         detail: step.on_return?.[k]?.goto ? `Rewind to ${step.on_return[k]!.goto}` : `Return ${k}`,
@@ -920,7 +1099,7 @@ export function submitHandoffReturn(params: {
   note?: string;
   resolution?: "answered" | "dismissed" | "expired";
   dataRoot?: string;
-}): { accepted: boolean; rejectReason?: string } {
+}): { accepted: boolean; rejectReason?: string; activeHandoffExpired?: true } {
   if (!FlowIdRegex.test(params.handoffId)) {
     throw new Error(`Invalid handoffId '${params.handoffId}'`);
   }
@@ -1013,6 +1192,12 @@ export function submitHandoffReturn(params: {
     if (resolution === "answered" && !sentEv.data.optionKeys.includes(params.choiceKey)) {
       return recordRejection("invalid_option", sentEv.stepId, sentEv.attemptId);
     }
+    if (resolution !== "expired" && state.activeHandoff.expiresAt && nowIso >= state.activeHandoff.expiresAt) {
+      return {
+        ...recordRejection("late_return", sentEv.stepId, sentEv.attemptId),
+        activeHandoffExpired: true,
+      };
+    }
 
     const head = findHead(store, params.runId);
     store.appendEvent(
@@ -1074,6 +1259,7 @@ export async function runFlow(
     // 1. Load, verify pin hash, verify hash chain, verify artefacts on disk, replay state
     const loaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
     const { flow } = loaded;
+    const worktreeBaseDir = options.worktreeRoot ?? path.join(store.projectDir, "worktrees");
     const stepTimeoutMs =
       options.stepTimeoutMs ??
       (flow.limits?.step_timeout_min ? Math.round(flow.limits.step_timeout_min * 60_000) : 5_000);
@@ -1107,6 +1293,17 @@ export async function runFlow(
         ...(notifyReplayErrors.length > 0 ? { notifyReplayErrors } : {}),
       };
     }
+
+    const approvedAtEntry = events.some(
+      (e) => e.type === "flow_approved" && e.data.flowHash === loaded.run.flow_hash,
+    );
+    if (state.status === "planned" || !approvedAtEntry) {
+      throw new Error(
+        `Flow run '${runId}' is not approved for pinned flow_hash '${loaded.run.flow_hash}'`,
+      );
+    }
+
+    const roleAdapters = resolveRoleAdapters(flow, options.adapters ?? {}, options.adapter, options.adaptersByRuntime);
 
     // 2b. Handle waiting_decision (Slice 1a unknown/artefact_missing vs Slice 2 handoff/inbox bridge)
     if (state.status === "waiting_decision") {
@@ -1483,11 +1680,11 @@ export async function runFlow(
     }
 
     // 4. Crash Recovery Scan
-    const startedAttempts: Array<{ stepId: string; attemptId: string }> = [];
+    const startedAttempts: FlowStepStartedEvent[] = [];
     const outcomeAttempts = new Set<string>();
     const judgedAttempts = new Set<string>();
     const handoffAttempts = new Set<string>();
-    const passedResultAttempts: Array<{ stepId: string; attemptId: string }> = [];
+    const passedResultAttempts: Array<Extract<FlowEvent, { type: "step_result" }>> = [];
     const failedResultAttempts: Array<{
       stepId: string;
       attemptId: string;
@@ -1496,11 +1693,11 @@ export async function runFlow(
 
     for (const ev of events) {
       if (ev.type === "step_started") {
-        startedAttempts.push({ stepId: ev.stepId, attemptId: ev.attemptId });
+        startedAttempts.push(ev);
       } else if (ev.type === "step_result") {
         const key = `${ev.stepId}:${ev.attemptId}`;
         outcomeAttempts.add(key);
-        passedResultAttempts.push({ stepId: ev.stepId, attemptId: ev.attemptId });
+        passedResultAttempts.push(ev);
       } else if (ev.type === "step_failed") {
         const key = `${ev.stepId}:${ev.attemptId}`;
         outcomeAttempts.add(key);
@@ -1518,6 +1715,19 @@ export async function runFlow(
     for (const att of startedAttempts) {
       const key = `${att.stepId}:${att.attemptId}`;
       if (!outcomeAttempts.has(key) && !handoffAttempts.has(key)) {
+        if (
+          options.workspaceRepoRoot &&
+          flow.workspace?.kind === "git-worktree" &&
+          flow.steps.some((step) => step.id === att.stepId && step.type === "agent")
+        ) {
+          await recoverEphemeralWorktree({
+            repoRoot: options.workspaceRepoRoot,
+            worktreeBaseDir,
+            runId,
+            attemptId: att.attemptId,
+            intentEventId: att.eventId,
+          });
+        }
         const tsIso = nowIso();
         store.appendChainedBatch(runId, [
           (seq, prev) => ({
@@ -1566,7 +1776,27 @@ export async function runFlow(
       if (!judgedAttempts.has(key)) {
         const step = flow.steps.find((s) => s.id === att.stepId);
         const occurrence = getOccurrenceForAttempt(events, att.stepId, att.attemptId);
-        const signals =
+        let gitSignals: StepSignals = {};
+        if (step?.type === "agent" && flow.workspace?.kind === "git-worktree") {
+          const { base_sha: baseSha, head_sha: headSha } = att.data.outputs;
+          if (options.workspaceRepoRoot || baseSha || headSha) {
+            if (!options.workspaceRepoRoot || !baseSha || !headSha) {
+              throw new GitDiffEvidenceError("Recovered worktree result is missing its repository or commit pair");
+            }
+            gitSignals = await extractGitDiffSignals({
+              repoRoot: options.workspaceRepoRoot,
+              baseSha,
+              headSha,
+              expectedHeadSha: options.expectedHeadSha,
+              flow,
+              timeoutMs: Math.min(stepTimeoutMs, 15_000),
+            });
+            if (!gitSignals.changedFiles) {
+              throw new GitDiffEvidenceError("Recovered worktree commits could not be compared");
+            }
+          }
+        }
+        const hookSignals =
           step && options.evaluateSignals
             ? await options.evaluateSignals({
                 step,
@@ -1583,7 +1813,7 @@ export async function runFlow(
               rewindsUsed: state.rewindsUsed,
               outcome: "passed",
               budgetUsed: state.budgetUsed,
-              signals,
+              signals: { ...gitSignals, ...hookSignals },
             })
           : {
               final: "continue" as const,
@@ -1593,6 +1823,20 @@ export async function runFlow(
               shouldRewind: false,
               shouldRerunCheck: false,
             };
+
+        if (gitSignals.changedFiles && options.workspaceRepoRoot) {
+          const intent = startedAttempts.find((event) => event.attemptId === att.attemptId && event.stepId === att.stepId);
+          if (intent) {
+            await recoverEphemeralWorktree({
+              repoRoot: options.workspaceRepoRoot,
+              worktreeBaseDir,
+              runId,
+              attemptId: att.attemptId,
+              intentEventId: intent.eventId,
+              keepBranch: decision.final !== "stop" && !decision.shouldRewind && !decision.shouldRerunCheck,
+            });
+          }
+        }
 
         if (decision.final === "stop") {
           const tsIso = nowIso();
@@ -1955,7 +2199,39 @@ export async function runFlow(
 
       fireCrash("K1_AFTER_INTENT");
 
-      // Handle decision & handoff steps via handoff_sent + optional inbox card
+      const collectPreviousOutputs = (): Record<string, Record<string, string>> => {
+        const prevOut: Record<string, Record<string, string>> = Object.create(null);
+        for (const [sid, st] of Object.entries(state.stepStates)) {
+          prevOut[sid] = { ...st.outputs };
+        }
+        return prevOut;
+      };
+
+      const filterStepOutputs = (
+        raw: Record<string, string> | undefined,
+      ): Record<string, string> => {
+        const candidate: Record<string, string> = { status: "ok" };
+        if (raw) {
+          for (const [k, v] of Object.entries(raw)) {
+            if (typeof v !== "string") continue;
+            if (k === "branch" && !FlowSafeValueRegex.test(v)) continue;
+            if ((k === "head_sha" || k === "base_sha") && !FlowGitShaRegex.test(v)) continue;
+            if (k === "repro_test" && !FlowSafePathSchema.safeParse(v).success) continue;
+            candidate[k] = v;
+          }
+        }
+        const parsed = FlowStepResultOutputsSchema.safeParse(candidate);
+        if (parsed.success) {
+          const clean: Record<string, string> = {};
+          for (const [k, v] of Object.entries(parsed.data)) {
+            if (typeof v === "string") clean[k] = v;
+          }
+          return clean;
+        }
+        return { status: "ok" };
+      };
+
+      // Handle decision & handoff steps via handoff_sent + optional inbox card or bound role adapter
       if (step.type === "decision" || step.type === "handoff") {
         const handoffId = buildDeterministicHandoffId(runId, step.id, intent.occurrence);
         const spec = getHandoffSpecForStep(flow, step, "passed", "decision_required", nowDate());
@@ -1981,6 +2257,243 @@ export async function runFlow(
           },
         });
         fireCrash("K_AFTER_HANDOFF_SENT");
+
+        const handoffAdapter =
+          step.type === "handoff" && step.to ? roleAdapters.get(step.to) : undefined;
+
+        if (step.type === "handoff" && handoffAdapter) {
+          let adapterRes: Awaited<ReturnType<FlowStepAdapter["dispatch"]>>;
+          try {
+            adapterRes = await runWithTimeout(step.id, stepTimeoutMs, async (signal) => {
+              if (options.onStepDispatch) {
+                await options.onStepDispatch({
+                  stepId: step.id,
+                  attemptId: intent.attemptId,
+                  occurrence: intent.occurrence,
+                  signal,
+                });
+              }
+              return handoffAdapter.dispatch({
+                runId,
+                step,
+                attemptId: intent.attemptId,
+                occurrence: intent.occurrence,
+                roleName: step.to,
+                runtime: step.to ? flow.roles?.[step.to]?.runtime : undefined,
+                previousOutputs: collectPreviousOutputs(),
+                signal,
+                timeoutMs: stepTimeoutMs,
+              });
+            });
+          } catch (err) {
+            if (
+              err instanceof StepTimeoutError ||
+              err instanceof StepDeadlineExceededError ||
+              err instanceof FlowAdapterAbortedError
+            ) {
+              const timeoutDecision = evaluateStepJudgement({
+                flow,
+                step,
+                occurrence: intent.occurrence,
+                rewindsUsed: state.rewindsUsed,
+                outcome: "failed",
+                errorCode: "timeout",
+                budgetUsed: {
+                  tokens: state.budgetUsed.tokens,
+                  steps: state.budgetUsed.steps + 1,
+                },
+              });
+              const tsIso = nowIso();
+              if (timeoutDecision.final === "decide") {
+                if (options.inbox) {
+                  const emitRes = await emitDecisionCardToInbox({
+                    target: options.inbox,
+                    handoffId,
+                    runId,
+                    headSeq: sentEv.seq,
+                    headHash: sentEv.hash,
+                    stepId: step.id,
+                    reasonCode: "timeout",
+                    title: step.title,
+                    alwaysDecide: spec.alwaysDecide,
+                    options: spec.options,
+                    nowIso: tsIso,
+                  });
+                  if (emitRes.emitted) {
+                    fireCrash("K_AFTER_INBOX_CARD_WRITTEN");
+                  }
+                }
+              } else {
+                store.appendChainedBatch(runId, [
+                  (seq, prev) => ({
+                    event: {
+                      v: 1, runId, seq, eventId: nextEventId("ev_hcancel", seq), prev, at: tsIso,
+                      actor: "runner", type: "handoff_cancelled", stepId: step.id, attemptId: intent.attemptId,
+                      data: { handoffId, reasonCode: "timeout" },
+                    },
+                  }),
+                  (seq, prev) => ({
+                    event: {
+                      v: 1, runId, seq, eventId: nextEventId("ev_fail", seq), prev, at: tsIso,
+                      actor: "runner", type: "step_failed", stepId: step.id, attemptId: intent.attemptId,
+                      data: { errorCode: "timeout" },
+                    },
+                  }),
+                  (seq, prev) => ({
+                    event: {
+                      v: 1, runId, seq, eventId: nextEventId("ev_judge", seq), prev, at: tsIso,
+                      actor: "system", type: "judgement", stepId: step.id, attemptId: intent.attemptId,
+                      data: {
+                        final: "stop",
+                        ruleHits: timeoutDecision.ruleHits,
+                        reasonCodes: timeoutDecision.reasonCodes,
+                        engineTokens: 0,
+                      },
+                    },
+                  }),
+                  (seq, prev) => ({
+                    event: {
+                      v: 1, runId, seq, eventId: nextEventId("ev_fin", seq), prev, at: tsIso,
+                      actor: "system", type: "run_finished",
+                      data: { outcome: "stopped", reasonCode: "unrecoverable_failure" },
+                    },
+                  }),
+                ]);
+              }
+              store.checkpointPassive();
+              const finalLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+              return {
+                runId,
+                finalStatus: finalLoaded.state.status,
+                terminalOutcome: finalLoaded.state.terminalOutcome,
+                terminalReason: finalLoaded.state.terminalReason,
+                dispatchedSteps,
+                eventCount: finalLoaded.events.length,
+              };
+            }
+            throw err;
+          }
+
+          if (adapterRes.kind !== "handoff") {
+            throw new Error(
+              `Handoff step '${step.id}' adapter '${handoffAdapter.id}' returned non-handoff result`,
+            );
+          }
+
+          if (!spec.optionKeys.includes(adapterRes.verdict)) {
+            const safeAttempted = FlowIdRegex.test(adapterRes.verdict) ? adapterRes.verdict : "invalid";
+            const rejHead = findHead(store, runId);
+            store.appendEvent({
+              v: 1,
+              runId,
+              seq: rejHead.seq + 1,
+              eventId: nextEventId("ev_rej", rejHead.seq + 1),
+              prev: rejHead.hash,
+              at: nowIso(),
+              actor: "agent",
+              type: "return_rejected",
+              stepId: step.id,
+              attemptId: intent.attemptId,
+              data: {
+                handoffId,
+                attemptedChoiceKey: safeAttempted,
+                rejectReason: "invalid_option",
+              },
+            });
+            store.checkpointPassive();
+            const waitLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+            return {
+              runId,
+              finalStatus: waitLoaded.state.status,
+              terminalOutcome: waitLoaded.state.terminalOutcome,
+              terminalReason: waitLoaded.state.terminalReason,
+              dispatchedSteps,
+              eventCount: waitLoaded.events.length,
+            };
+          }
+
+          const resolvedActorId =
+            adapterRes.actorId && FlowIdRegex.test(adapterRes.actorId)
+              ? adapterRes.actorId
+              : FlowIdRegex.test(handoffAdapter.id)
+                ? handoffAdapter.id
+                : "reviewer-1";
+
+          const retHead = findHead(store, runId);
+          store.appendEvent(
+            {
+              v: 1,
+              runId,
+              seq: retHead.seq + 1,
+              eventId: nextEventId("ev_ret", retHead.seq + 1),
+              prev: retHead.hash,
+              at: nowIso(),
+              actor: "agent",
+              type: "handoff_returned",
+              stepId: step.id,
+              attemptId: intent.attemptId,
+              data: {
+                handoffId,
+                choiceKey: adapterRes.verdict,
+                resolution: "answered",
+                actorId: resolvedActorId,
+              },
+            },
+            adapterRes.note !== undefined ? { privateDetail: adapterRes.note } : undefined,
+          );
+          fireCrash("K_AFTER_HANDOFF_RETURNED");
+
+          const afterRet = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+          events = afterRet.events;
+          state = afterRet.state;
+
+          const sentEventObj = events.find(
+            (e): e is FlowHandoffSentEvent =>
+              e.type === "handoff_sent" && e.data.handoffId === handoffId,
+          );
+          const returnedEventObj = events.find(
+            (e): e is FlowHandoffReturnedEvent =>
+              e.type === "handoff_returned" && e.data.handoffId === handoffId,
+          );
+          if (sentEventObj && returnedEventObj) {
+            completeHandoffFollowUp({
+              store,
+              runId,
+              flow,
+              state,
+              events,
+              sentEv: sentEventObj,
+              returnedEv: returnedEventObj,
+              nowIso: nowIso(),
+              fireCrash,
+            });
+          }
+
+          const reloadedAfterHandoff = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+          events = reloadedAfterHandoff.events;
+          state = reloadedAfterHandoff.state;
+
+          if (
+            state.status === "stopped" ||
+            state.status === "finished" ||
+            state.status === "waiting_decision"
+          ) {
+            store.checkpointPassive();
+            return {
+              runId,
+              finalStatus: state.status,
+              terminalOutcome: state.terminalOutcome,
+              terminalReason: state.terminalReason,
+              dispatchedSteps,
+              eventCount: events.length,
+            };
+          }
+
+          if (!state.nextStepId) {
+            cursor += 1;
+          }
+          continue;
+        }
 
         if (options.inbox) {
           const emitRes = await emitDecisionCardToInbox({
@@ -2016,11 +2529,47 @@ export async function runFlow(
       const startMs = Date.now();
       const deadlineMs = startMs + stepTimeoutMs;
       let stepWorkOutcome:
-        | { kind: "agent"; artifactId: string; contentHash: string; size: number }
-        | { kind: "check"; primaryCheckId: FlowBuiltInCheckId; targetSha: string; passed: boolean; errorClass?: string }
+        | {
+            kind: "agent";
+            artifactId: string;
+            contentHash: string;
+            size: number;
+            outputs: Record<string, string>;
+            tokensUsed: number;
+            signals?: StepSignals;
+          }
+        | {
+            kind: "check";
+            primaryCheckId: FlowBuiltInCheckId;
+            targetSha: string;
+            passed: boolean;
+            errorClass?: string;
+            signals?: StepSignals;
+          }
         | { kind: "noop" } = { kind: "noop" };
 
+      let activeWorktree: WorktreeHandle | undefined;
+      let keepWorktreeBranch = false;
+
       try {
+        if (
+          step.type === "agent" &&
+          flow.workspace?.kind === "git-worktree" &&
+          options.workspaceRepoRoot
+        ) {
+          activeWorktree = await createEphemeralWorktree({
+            repoRoot: options.workspaceRepoRoot,
+            baseRef: flow.workspace.base ?? "main",
+            worktreeBaseDir,
+            runId,
+            stepId: step.id,
+            attemptId: intent.attemptId,
+            intentEventId: intent.eventId,
+            timeoutMs: Math.min(stepTimeoutMs, 15_000),
+          });
+          fireCrash("K_AFTER_WORKTREE_CREATED");
+        }
+
         stepWorkOutcome = await runWithTimeout(step.id, stepTimeoutMs, async (signal) => {
           if (options.onStepDispatch) {
             await options.onStepDispatch({
@@ -2035,27 +2584,292 @@ export async function runFlow(
           }
 
           if (step.type === "agent") {
-            const declaredOutputName = step.outputs?.[0];
-            const artifactId = buildCollisionFreeArtifactId(step.id, declaredOutputName, intent.occurrence);
-            const agentBytes = options.getStubAgentBytes
-              ? options.getStubAgentBytes({ step, occurrence: intent.occurrence })
-              : Buffer.from(`stub output for ${step.id}\n`, "utf8");
+            const runtime = step.role && Object.hasOwn(flow.roles ?? {}, step.role)
+              ? flow.roles?.[step.role]?.runtime
+              : undefined;
+            const boundAdapter =
+              (step.role ? roleAdapters.get(step.role) : undefined) ?? (runtime === undefined ? options.adapter : undefined);
+            if (runtime !== undefined && !boundAdapter) {
+              throw new MissingRuntimeAdapterError(runtime);
+            }
+
+            let adapterOutputs: Record<string, string> | undefined;
+            let adapterArtifactBytes: Buffer | undefined;
+            let adapterArtifactName: string | undefined;
+            let adapterTokensUsed = DEFAULT_STUB_TOKEN_COST;
+            let combinedSignals: StepSignals = {};
+
+            if (boundAdapter) {
+              const adapterRes = await boundAdapter.dispatch({
+                runId,
+                step,
+                attemptId: intent.attemptId,
+                occurrence: intent.occurrence,
+                roleName: step.role,
+                runtime,
+                worktreePath: activeWorktree?.worktreePath,
+                baseSha: activeWorktree?.baseSha,
+                previousOutputs: collectPreviousOutputs(),
+                signal,
+                timeoutMs: stepTimeoutMs,
+              });
+              if (adapterRes.kind !== "agent") {
+                throw new Error(
+                  `Agent step '${step.id}' adapter '${boundAdapter.id}' returned non-agent result`,
+                );
+              }
+              adapterOutputs = adapterRes.outputs;
+              adapterArtifactBytes = adapterRes.artifactBytes;
+              adapterArtifactName = adapterRes.artifactName;
+              adapterTokensUsed = adapterRes.tokensUsed ?? DEFAULT_STUB_TOKEN_COST;
+              if (adapterRes.signals) {
+                combinedSignals = { ...combinedSignals, ...adapterRes.signals };
+              }
+            }
+
+            if (signal.aborted || Date.now() > deadlineMs) {
+              throw new StepTimeoutError(step.id, stepTimeoutMs);
+            }
+
+            const rawOutputs: Record<string, string> = { ...(adapterOutputs ?? {}) };
+            if (activeWorktree && options.workspaceRepoRoot) {
+              const wtOutcome = await captureWorktreeOutcome(activeWorktree);
+              if (!wtOutcome.isClean) {
+                throw new WorktreeOutcomeRejectedError(
+                  `Worktree '${activeWorktree.worktreePath}' has uncommitted or untracked changes`,
+                );
+              }
+              if (
+                adapterOutputs?.["head_sha"] !== undefined &&
+                adapterOutputs["head_sha"] !== wtOutcome.headSha
+              ) {
+                throw new WorktreeOutcomeRejectedError(
+                  `Adapter head_sha '${adapterOutputs["head_sha"]}' disagrees with verified worktree HEAD '${wtOutcome.headSha}'`,
+                );
+              }
+              rawOutputs["base_sha"] = wtOutcome.baseSha;
+              rawOutputs["head_sha"] = wtOutcome.headSha;
+              if (wtOutcome.branch && !rawOutputs["branch"]) {
+                rawOutputs["branch"] = wtOutcome.branch;
+              }
+              const gitSignals = await extractGitDiffSignals({
+                repoRoot: options.workspaceRepoRoot,
+                baseSha: wtOutcome.baseSha,
+                headSha: wtOutcome.headSha,
+                expectedHeadSha: options.expectedHeadSha,
+                flow,
+                timeoutMs: Math.min(stepTimeoutMs, 15_000),
+                signal,
+              });
+              combinedSignals = { ...combinedSignals, ...gitSignals };
+            }
+
+            const filteredOutputs = filterStepOutputs(rawOutputs);
+            if (activeWorktree && rawOutputs["head_sha"]) {
+              filteredOutputs["base_sha"] = activeWorktree.baseSha;
+              filteredOutputs["head_sha"] = rawOutputs["head_sha"];
+            }
+            const wantsHeadShaArtifact =
+              Boolean(filteredOutputs["head_sha"]) &&
+              Boolean(step.outputs?.includes("head_sha"));
+
+            const declaredOutputName = wantsHeadShaArtifact
+              ? "head_sha"
+              : (adapterArtifactName ?? step.outputs?.[0]);
+            const artifactId = buildCollisionFreeArtifactId(
+              step.id,
+              declaredOutputName,
+              intent.occurrence,
+            );
+            const agentBytes =
+              adapterArtifactBytes ??
+              (wantsHeadShaArtifact
+                ? Buffer.from(JSON.stringify(filteredOutputs) + "\n", "utf8")
+                : options.getStubAgentBytes
+                  ? options.getStubAgentBytes({ step, occurrence: intent.occurrence })
+                  : Buffer.from(`stub output for ${step.id}\n`, "utf8"));
+
             const rec = store!.writeAndRecordArtifact({
               artifactId,
               runId,
               stepId: step.id,
               attemptId: intent.attemptId,
               name: declaredOutputName ?? `${step.id.slice(0, 32)}.txt`,
-              mediaType: "text/plain",
+              mediaType: wantsHeadShaArtifact ? "application/json" : "text/plain",
               bytes: agentBytes,
               deadlineMs,
             });
-            return { kind: "agent" as const, artifactId, contentHash: rec.contentHash, size: rec.size };
+            return {
+              kind: "agent" as const,
+              artifactId,
+              contentHash: rec.contentHash,
+              size: rec.size,
+              outputs: filteredOutputs,
+              tokensUsed: adapterTokensUsed,
+              ...(Object.keys(combinedSignals).length > 0 ? { signals: combinedSignals } : {}),
+            };
           }
 
           if (step.type === "check") {
-            const declaredChecks = step.run && step.run.length > 0 ? step.run : ["check_nonempty"];
-            const allChecksSupported = declaredChecks.every((name) => SUPPORTED_BUILT_IN_CHECKS.has(name));
+            const declaredChecks =
+              step.run && step.run.length > 0
+                ? step.run
+                : step.repro
+                  ? ["repro"]
+                  : ["check_nonempty"];
+            const isArtefactCheckOnly =
+              declaredChecks.every((name) => SUPPORTED_BUILT_IN_CHECKS.has(name)) && !step.repro;
+            const isCommandCheckSuite =
+              !isArtefactCheckOnly && declaredChecks.every((name) => isSupportedSuiteCheckId(name));
+
+            const artifactsDir = path.join(store!.projectDir, "artifacts", runId);
+            const receiptNameById = new Map(store!.listArtifacts(runId).map((r) => [r.artifact_id, r.name]));
+            const targetRec = resolvePinnedCheckTarget(step, events, receiptNameById, flow);
+            const targetSha = targetRec ? targetRec.sha256 : "0".repeat(64);
+
+            if (isCommandCheckSuite) {
+              const commandCheckIds = declaredChecks.filter((name): name is FlowCommandCheckId =>
+                isFlowCommandCheckId(name),
+              );
+              const requiresRepro = Boolean(step.repro) || declaredChecks.includes("repro");
+              let primaryCheckId: FlowBuiltInCheckId = commandCheckIds[0] ?? "repro";
+              let defaultPassed = false;
+              let errorClass: string | undefined;
+              let checkSignals: StepSignals | undefined;
+
+              const againstDot = step.against?.indexOf(".") ?? -1;
+              const producerStepId =
+                againstDot !== -1
+                  ? step.against!.slice(0, againstDot)
+                  : targetRec?.stepId;
+              const producerOutputs = producerStepId
+                ? state.stepStates[producerStepId]?.outputs
+                : undefined;
+
+              let reproTestPath: string | undefined;
+              if (step.repro?.test.from) {
+                const reproDot = step.repro.test.from.indexOf(".");
+                if (reproDot !== -1) {
+                  const reproProducer = step.repro.test.from.slice(0, reproDot);
+                  const reproField = step.repro.test.from.slice(reproDot + 1);
+                  reproTestPath = state.stepStates[reproProducer]?.outputs[reproField];
+                }
+              } else if (requiresRepro) {
+                reproTestPath = producerOutputs?.["repro_test"];
+              }
+
+              const headSha = producerOutputs?.["head_sha"];
+              let baseSha = producerOutputs?.["base_sha"];
+              if (!baseSha && options.workspaceRepoRoot) {
+                baseSha = await resolveBaseCommitSha(
+                  options.workspaceRepoRoot,
+                  flow.workspace?.base ?? "main",
+                  Math.min(stepTimeoutMs, 15_000),
+                );
+              }
+
+              if (
+                options.workspaceRepoRoot &&
+                headSha &&
+                baseSha &&
+                FlowGitShaRegex.test(headSha) &&
+                FlowGitShaRegex.test(baseSha) &&
+                targetRec
+              ) {
+                let checkWt: WorktreeHandle | undefined;
+                try {
+                  let suiteRes: Awaited<ReturnType<typeof runAllowlistedCheckSuite>> = {
+                    passed: true,
+                    results: [],
+                  };
+                  if (commandCheckIds.length > 0) {
+                    checkWt = await createDetachedCommitWorktree({
+                      repoRoot: options.workspaceRepoRoot,
+                      commitSha: headSha,
+                      worktreeBaseDir,
+                      label: `chk_${step.id}_${intent.occurrence}`,
+                      timeoutMs: Math.min(stepTimeoutMs, 15_000),
+                    });
+
+                    suiteRes = await runAllowlistedCheckSuite({
+                      checkIds: commandCheckIds,
+                      cwd: checkWt.worktreePath,
+                      checkCommands: options.checkCommands,
+                      timeoutMs: stepTimeoutMs,
+                      signal,
+                    });
+                  }
+
+                  checkSignals = await extractGitDiffSignals({
+                    repoRoot: options.workspaceRepoRoot,
+                    baseSha,
+                    headSha,
+                    expectedHeadSha: options.expectedHeadSha,
+                    flow,
+                    checkResults: suiteRes.results,
+                    timeoutMs: Math.min(stepTimeoutMs, 15_000),
+                    signal,
+                  });
+
+                  if (!suiteRes.passed) {
+                    defaultPassed = false;
+                    primaryCheckId = suiteRes.failedCheckId ?? commandCheckIds[0] ?? "test";
+                    errorClass = suiteRes.errorClass;
+                  } else if (requiresRepro) {
+                    if (!reproTestPath) {
+                      defaultPassed = false;
+                      primaryCheckId = "repro";
+                      errorClass = "repro:missing_repro_test_output";
+                    } else {
+                      const reproRes = await runReproCheck({
+                        repoRoot: options.workspaceRepoRoot,
+                        worktreeBaseDir,
+                        baseSha,
+                        headSha,
+                        reproTestPath,
+                        runTestCommand: options.reproTestCommand,
+                        timeoutMs: stepTimeoutMs,
+                        signal,
+                      });
+                      defaultPassed = reproRes.passed;
+                      if (!reproRes.passed) {
+                        primaryCheckId = "repro";
+                        errorClass = `repro:${reproRes.reason ?? "failed"}`;
+                      }
+                    }
+                  } else {
+                    defaultPassed = true;
+                  }
+                } finally {
+                  if (checkWt) {
+                    await rollbackWorktree(checkWt);
+                  }
+                }
+              }
+
+              let passed = defaultPassed;
+              if (options.onCheckRun) {
+                const checkHookRes = await options.onCheckRun({
+                  step,
+                  attemptId: intent.attemptId,
+                  occurrence: intent.occurrence,
+                  defaultPassed,
+                  targetSha,
+                });
+                passed = checkHookRes.passed;
+                errorClass = checkHookRes.errorClass ?? errorClass;
+              }
+              return {
+                kind: "check" as const,
+                primaryCheckId,
+                targetSha,
+                passed,
+                errorClass,
+                ...(checkSignals ? { signals: checkSignals } : {}),
+              };
+            }
+
+            const allChecksSupported = isArtefactCheckOnly;
             const requiresNonEmpty = declaredChecks.includes("check_nonempty");
             const primaryCheckId: FlowBuiltInCheckId = !allChecksSupported
               ? "check_unsupported"
@@ -2063,15 +2877,7 @@ export async function runFlow(
                 ? "check_nonempty"
                 : "check_exists";
 
-            const artifactsDir = path.join(store!.projectDir, "artifacts", runId);
-            const receiptNameById = new Map(store!.listArtifacts(runId).map((r) => [r.artifact_id, r.name]));
-            const targetRec = resolvePinnedCheckTarget(step, events, receiptNameById, flow);
-
             let defaultPassed = false;
-            let targetSha = "0".repeat(64);
-            if (targetRec) {
-              targetSha = targetRec.sha256;
-            }
             if (allChecksSupported && targetRec) {
               const artPath = path.join(artifactsDir, targetRec.sha256);
               const okOnDisk = verifyArtifactFileOnDisk(artPath, artifactsDir, targetRec.sha256, targetRec.sizeBytes);
@@ -2102,7 +2908,7 @@ export async function runFlow(
         }
 
         if (stepWorkOutcome.kind === "agent") {
-          const signals = options.evaluateSignals
+          const hookSignals = options.evaluateSignals
             ? await options.evaluateSignals({
                 step,
                 attemptId: intent.attemptId,
@@ -2110,6 +2916,7 @@ export async function runFlow(
                 outcome: "passed",
               })
             : {};
+          const signals: StepSignals = { ...(stepWorkOutcome.signals ?? {}), ...hookSignals };
 
           const missingClaim = (signals.claimedOutputMissingCount ?? 0) > 0;
 
@@ -2309,8 +3116,8 @@ export async function runFlow(
                 stepId: step.id,
                 attemptId: intent.attemptId,
                 data: {
-                  outputs: { status: "ok" },
-                  tokensUsed: DEFAULT_STUB_TOKEN_COST,
+                  outputs: stepWorkOutcome.outputs,
+                  tokensUsed: stepWorkOutcome.tokensUsed,
                   wallTimeMs: Math.max(1, Date.now() - startMs),
                 },
               },
@@ -2359,11 +3166,19 @@ export async function runFlow(
               rewindsUsed: state.rewindsUsed,
               outcome: "passed",
               budgetUsed: {
-                tokens: state.budgetUsed.tokens + DEFAULT_STUB_TOKEN_COST,
+                tokens: state.budgetUsed.tokens + stepWorkOutcome.tokensUsed,
                 steps: state.budgetUsed.steps + 1,
               },
               signals,
             });
+
+            if (
+              decision.final !== "stop" &&
+              !decision.shouldRewind &&
+              !decision.shouldRerunCheck
+            ) {
+              keepWorktreeBranch = true;
+            }
 
             if (decision.final === "stop") {
               const tsIso = nowIso();
@@ -2598,7 +3413,7 @@ export async function runFlow(
             }
           }
 
-          const signals = options.evaluateSignals
+          const hookSignals = options.evaluateSignals
             ? await options.evaluateSignals({
                 step,
                 attemptId: intent.attemptId,
@@ -2607,6 +3422,7 @@ export async function runFlow(
                 errorCode: passed ? undefined : "check_failed",
               })
             : {};
+          const signals: StepSignals = { ...(stepWorkOutcome.signals ?? {}), ...hookSignals };
 
           const decision = evaluateStepJudgement({
             flow,
@@ -2867,7 +3683,55 @@ export async function runFlow(
           }
         }
       } catch (err) {
-        if (err instanceof StepTimeoutError || err instanceof StepDeadlineExceededError) {
+        const adapterMissing = err instanceof MissingRuntimeAdapterError;
+        if (adapterMissing || err instanceof WorktreeOutcomeRejectedError || err instanceof GitDiffEvidenceError) {
+          keepWorktreeBranch = false;
+          const tsIso = nowIso();
+          store.appendChainedBatch(runId, [
+            (seq, prev) => ({
+              event: {
+                v: 1, runId, seq, eventId: nextEventId("ev_fail", seq), prev, at: tsIso,
+                actor: "runner", type: "step_failed", stepId: step.id, attemptId: intent.attemptId,
+                data: { errorCode: "execution_error" },
+              },
+            }),
+            (seq, prev) => ({
+              event: {
+                v: 1, runId, seq, eventId: nextEventId("ev_judge", seq), prev, at: tsIso,
+                actor: "system", type: "judgement", stepId: step.id, attemptId: intent.attemptId,
+                data: {
+                  final: "stop",
+                  ruleHits: ["step_failed_recovery"],
+                  reasonCodes: [adapterMissing ? "runtime_adapter_missing" : "execution_error"],
+                  engineTokens: 0,
+                },
+              },
+            }),
+            (seq, prev) => ({
+              event: {
+                v: 1, runId, seq, eventId: nextEventId("ev_fin", seq), prev, at: tsIso,
+                actor: "system", type: "run_finished",
+                data: { outcome: "stopped", reasonCode: adapterMissing ? "runtime_adapter_missing" : "unrecoverable_failure" },
+              },
+            }),
+          ]);
+          store.checkpointPassive();
+          const finalLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+          return {
+            runId,
+            finalStatus: finalLoaded.state.status,
+            terminalOutcome: finalLoaded.state.terminalOutcome,
+            terminalReason: finalLoaded.state.terminalReason,
+            dispatchedSteps,
+            eventCount: finalLoaded.events.length,
+          };
+        }
+        if (
+          err instanceof StepTimeoutError ||
+          err instanceof StepDeadlineExceededError ||
+          err instanceof FlowAdapterAbortedError
+        ) {
+          keepWorktreeBranch = false;
           const timeoutDecision = evaluateStepJudgement({
             flow,
             step,
@@ -2968,6 +3832,14 @@ export async function runFlow(
           };
         }
         throw err;
+      } finally {
+        if (activeWorktree) {
+          try {
+            await rollbackWorktree(activeWorktree, { keepBranch: keepWorktreeBranch });
+          } catch {
+            // Best-effort cleanup so failed attempts never leak worktrees
+          }
+        }
       }
 
       const reloaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });

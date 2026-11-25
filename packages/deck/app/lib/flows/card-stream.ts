@@ -77,10 +77,37 @@ export interface FlowCardStreamView {
   planningCard: FlowPlanningCard;
   stepCards: FlowStepCard[];
   activeDecision: {
+    handoffId?: string;
     stepId: string;
     reasonCode: string;
     options: Array<{ key: string; label: string }>;
   } | null;
+}
+
+export interface FlowLaunchCatalogEntry {
+  flowRef: string;
+  source: "project" | "library" | "builtin";
+  title?: string;
+  hash: string;
+  yaml: string;
+  stepCount: number;
+  hasWorkspace: boolean;
+}
+
+export interface FlowLaunchDraftEntry {
+  draftName: string;
+  flowRef: string;
+  source: "draft";
+  title?: string;
+  hash: string;
+  yaml: string;
+  stepCount: number;
+  diffFromTemplate?: string;
+}
+
+export interface FlowLaunchCatalog {
+  flows: FlowLaunchCatalogEntry[];
+  drafts: FlowLaunchDraftEntry[];
 }
 
 export function deriveWaitingOn(status: string): string | null {
@@ -269,6 +296,7 @@ export function projectFlowCardStream(params: {
 
   const activeDecision = state.activeDecision
     ? {
+        ...(state.activeHandoff ? { handoffId: state.activeHandoff.handoffId } : {}),
         stepId: state.activeDecision.stepId,
         reasonCode: state.activeDecision.reasonCode,
         options: state.activeDecision.options.map((opt) => ({

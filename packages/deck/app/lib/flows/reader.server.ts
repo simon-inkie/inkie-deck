@@ -25,6 +25,7 @@ import {
 } from "./load-run.server.js";
 import {
   assertNoSymlinkInChain,
+  configuredFlowsDataRoot,
   resolveFlowsRootDir,
   resolveProjectDataDir,
   UnsafeFilesystemError,
@@ -94,8 +95,7 @@ function checkExistingProjectDb(
   projectId: string,
   dataRoot?: string,
 ): "missing" | "ready" {
-  const effectiveRoot = dataRoot ?? process.env["DATA_ROOT"];
-  if (!effectiveRoot) {
+  if (!configuredFlowsDataRoot(dataRoot)) {
     return "missing";
   }
 
@@ -153,8 +153,7 @@ function checkExistingProjectDb(
 }
 
 export function listFlowProjects(options?: { dataRoot?: string }): string[] {
-  const effectiveRoot = options?.dataRoot ?? process.env["DATA_ROOT"];
-  if (!effectiveRoot) {
+  if (!configuredFlowsDataRoot(options?.dataRoot)) {
     return [];
   }
 

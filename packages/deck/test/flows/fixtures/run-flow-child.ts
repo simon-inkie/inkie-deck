@@ -6,13 +6,13 @@
 import fs from "node:fs";
 import { runFlow } from "../../../app/lib/flows/runner.server.js";
 
-const [, , projectId, runId, dataRoot] = process.argv;
+const [, , projectId, runId, dataRoot, workspaceRepoRoot, worktreeRoot] = process.argv;
 if (!projectId || !runId || !dataRoot) {
-  console.error("Usage: run-flow-child.ts <projectId> <runId> <dataRoot>");
+  console.error("Usage: run-flow-child.ts <projectId> <runId> <dataRoot> [workspaceRepoRoot] [worktreeRoot]");
   process.exit(2);
 }
 
-runFlow(projectId, runId, { dataRoot })
+runFlow(projectId, runId, { dataRoot, workspaceRepoRoot, worktreeRoot })
   .then((res) => {
     process.stdout.write(JSON.stringify(res) + "\n");
     const holdFile = process.env["FLOW_HOLD_AFTER_DONE_FILE"];

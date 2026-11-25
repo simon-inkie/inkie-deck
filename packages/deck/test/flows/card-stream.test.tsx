@@ -1142,20 +1142,47 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
     expect(errorEl?.textContent).not.toContain(scratchDir);
   });
 
-  it("7. POST /api/flows returns 405 with Allow: GET", async () => {
-    const actionRes = await apiFlowsAction();
-    expect(actionRes.status).toBe(405);
-    expect(actionRes.headers.get("Allow")).toBe("GET");
-    expect(await actionRes.json()).toEqual({
+  it("7. DELETE /api/flows returns 405 with Allow: GET, POST and cross-origin POST returns 403", async () => {
+    const deleteActionRes = await apiFlowsAction({
+      request: new Request("http://localhost/api/flows", { method: "DELETE" }),
+      url: new URL("http://localhost/api/flows"),
+      params: {},
+      context: {},
+      pattern: "/api/flows",
+    });
+    expect(deleteActionRes.status).toBe(405);
+    expect(deleteActionRes.headers.get("Allow")).toBe("GET, POST");
+    expect(await deleteActionRes.json()).toEqual({
       ok: false,
-      error: "Flows Slice 1b stream is strictly read-only.",
+      error: "Method not allowed.",
     });
 
-    const postLoaderRes = await callApiFlows("http://localhost/api/flows", {
-      method: "POST",
+    const deleteLoaderRes = await callApiFlows("http://localhost/api/flows", {
+      method: "DELETE",
     });
-    expect(postLoaderRes.status).toBe(405);
-    expect(postLoaderRes.headers.get("Allow")).toBe("GET");
+    expect(deleteLoaderRes.status).toBe(405);
+    expect(deleteLoaderRes.headers.get("Allow")).toBe("GET, POST");
+
+    try {
+      await apiFlowsAction({
+        request: new Request("http://localhost/api/flows", {
+          method: "POST",
+          headers: {
+            host: "localhost",
+            origin: "https://evil.example",
+            "sec-fetch-site": "cross-site",
+          },
+        }),
+        url: new URL("http://localhost/api/flows"),
+        params: {},
+        context: {},
+        pattern: "/api/flows",
+      });
+      expect.unreachable("Expected 403 Response for cross-origin POST");
+    } catch (thrown) {
+      expect(thrown).toBeInstanceOf(Response);
+      expect((thrown as Response).status).toBe(403);
+    }
   });
 
   it("pure projectFlowCardStream tolerates unstarted planned run cleanly", () => {
@@ -1321,9 +1348,10 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
       runs: unknown[];
       selectedRunId: string | null;
       stream: FlowCardStreamView | null;
+      catalog: { flows: Array<{ flowRef: string; source: string }>; drafts: unknown[] };
       error: string | null;
     };
-    expect(routeEmptyData).toEqual({
+    expect(routeEmptyData).toMatchObject({
       projects: [],
       selectedProject: null,
       runs: [],
@@ -1331,6 +1359,7 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
       stream: null,
       error: null,
     });
+    expect(routeEmptyData.catalog.flows.some((f) => f.flowRef === "ticket-to-pr")).toBe(true);
 
     const Stub = createRoutesStub([
       {
