@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
 import { z } from "zod";
 import {
@@ -84,6 +84,19 @@ const SparseUpdateSchema = z
   .object({ rateLimits: SnapshotSchema })
   .strip();
 const MAX_STDERR_BYTES = 4096;
+const STDERR_CLOSE_GRACE_MS = 100;
+const SAFE_SPAWN_ERROR_CODES = [
+  "ENOENT", "EACCES", "EPERM", "ENOEXEC", "EAGAIN", "EMFILE", "ENFILE", "ENOMEM", "ENOTDIR",
+  "ERR_INVALID_ARG_VALUE",
+];
+
+export class CodexQuotaLifecycleError extends Error {}
+
+function startupError(error: unknown): CodexQuotaLifecycleError {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  const detail = code && SAFE_SPAWN_ERROR_CODES.includes(code) ? code : "unknown error";
+  return new CodexQuotaLifecycleError(`Could not start Codex quota app-server (${detail}).`);
+}
 
 function stderrDiagnostic(stderr: string): string {
   // Use fixed diagnostics because raw stderr can contain credentials and paths.
@@ -103,45 +116,65 @@ class StdioAppServerConnection implements AppServerConnection {
   private lineHandler: (line: string) => void = () => {};
   private closeHandler: (error?: Error) => void = () => {};
   private closed = false;
-  private readonly child;
+  private readonly child: ChildProcess;
 
   constructor(env: Env) {
     const childEnv: NodeJS.ProcessEnv = { ...env };
     const codexHome = env["MC_CODEX_QUOTA_CODEX_HOME"]?.trim();
     if (codexHome) childEnv["CODEX_HOME"] = codexHome;
-    this.child = spawn("codex", ["app-server", "--stdio"], {
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    this.child.stdin.on("error", () => {
+    try {
+      this.child = spawn("codex", ["app-server", "--stdio"], {
+        env: childEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      throw startupError(error);
+    }
+    // Node may leave the pipes unset if spawning runs out of file descriptors.
+    const { stdin, stdout, stderr } = this.child;
+    stdin?.on("error", () => {
       // Catch EPIPE or write errors if codex process exits prematurely
     });
-    const lines = readline.createInterface({ input: this.child.stdout });
-    lines.on("line", (line) => this.lineHandler(line));
-    let stderr = "";
-    this.child.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < MAX_STDERR_BYTES) {
-        stderr += chunk.subarray(0, MAX_STDERR_BYTES - stderr.length).toString("utf8");
+    const lines = stdout ? readline.createInterface({ input: stdout }) : undefined;
+    lines?.on("line", (line) => this.lineHandler(line));
+    let stderrText = "";
+    stderr?.on("data", (chunk: Buffer) => {
+      if (stderrText.length < MAX_STDERR_BYTES) {
+        stderrText += chunk.subarray(0, MAX_STDERR_BYTES - stderrText.length).toString("utf8");
       }
     });
-    const closed = (error: Error) => {
+    let stderrCloseTimer: NodeJS.Timeout | undefined;
+    const closed = (error: CodexQuotaLifecycleError) => {
       if (this.closed) return;
       this.closed = true;
-      lines.close();
+      clearTimeout(stderrCloseTimer);
+      lines?.close();
+      stdin?.destroy();
+      stdout?.destroy();
+      stderr?.destroy();
       this.closeHandler(error);
     };
-    this.child.on("error", (error: NodeJS.ErrnoException) => {
-      closed(new Error(`Could not start Codex quota app-server (${error.code ?? "unknown error"}).`));
-    });
-    this.child.on("close", (code, signal) => {
+    this.child.on("error", (error) => closed(startupError(error)));
+    this.child.once("exit", (code, signal) => {
+      if (this.closed) return;
       const status = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-      closed(new Error(`Codex quota app-server closed with ${status}. ${stderrDiagnostic(stderr)}`));
+      const finish = () => {
+        stderr?.removeListener("close", finish);
+        closed(new CodexQuotaLifecycleError(`Codex quota app-server closed with ${status}. ${stderrDiagnostic(stderrText)}`));
+      };
+      if (!stderr || stderr.closed) {
+        finish();
+      } else {
+        // A descendant can hold the inherited pipes open after the launcher exits.
+        stderr.once("close", finish);
+        stderrCloseTimer = setTimeout(finish, STDERR_CLOSE_GRACE_MS);
+      }
     });
   }
 
   send(message: unknown): void {
     try {
-      if (!this.closed && this.child.stdin.writable) {
+      if (!this.closed && this.child.stdin?.writable) {
         this.child.stdin.write(JSON.stringify(message) + "\n");
       }
     } catch {

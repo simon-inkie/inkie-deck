@@ -201,6 +201,47 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - Commits: pending writable Git metadata. The signed-off commit attempt could
   not create the index lock.
 
+### 2026-11-25 - Round 6 disconnect fixture
+
+- The Round 6 blocker-retention test stalled after receiving all 501 chunks.
+  Both halves of the Pass 1 diff reproduced the timeout when reverted
+  separately. The previous commit, `725e817`, also timed out. That commit
+  switched the fixture to filesystem streams on stdin and stdout. A standalone
+  reproduction confirmed that `process.exit()` can hang during shutdown with
+  a blocking filesystem read on stdin and complete once the parent closes stdin.
+- End the fixture's stdout after the queued writes so Deck sees EOF. Wait for
+  the registry to finish stopping and assert that it retained both the final
+  chunk and the blocking card.
+- The isolated Round 6 test passed 2 of 8 runs before the fix and 8 of 8 after
+  at a 30-second diagnostic timeout. The six failures were timeouts. The fixed
+  test also passed 8 of 8 at the standard 5-second timeout. Typecheck passed.
+- The file passed 15 tests before stalling in the separate Rounds 9-10 case.
+  That case also stalled on unmodified HEAD. A run excluding it passed all 15
+  selected tests.
+- Git could not create the index lock on the read-only metadata mount. The
+  fixture and SPEC edits remain uncommitted.
+
+### 2026-11-25: Review pass 2 resume and quota fixes
+
+- The branch already contains the Round 6 fixture repair in `3f2aba0`. R2-5
+  is accepted. The repair stays because the blocking stdin read caused a
+  real fixture shutdown hang. The preceding working-tree Log entry records
+  its reproduction and verification.
+- R2-1 adds the resolved Codex store directory's device and inode to resume
+  evidence. A replacement directory at the same path requires a fresh Start.
+  Existing Codex checkpoints also need a fresh Start to record the new key.
+- R2-2 uses Deck's literal `DATA_ROOT` resolver in both quota paths to keep
+  reads and writes in the same instance when the path contains whitespace.
+- R2-3 reports sanitized observer startup and exit errors in Deck's server
+  log. R2-4 starts a bounded stderr drain at child exit so inherited pipes
+  cannot hold up reconnect indefinitely.
+- Verification passed for typecheck, 33 quota tests and four focused registry
+  and fixture tests. The concurrent-adapter and Round 6 cases timed out on the
+  first parallel run and passed on a single-worker rerun at the standard
+  timeout. Both also passed with one worker on `3f2aba0`.
+- The worktree changes remain unstaged. Git could not create the index lock
+  on the read-only metadata mount for the signed-off commit.
+
 ## Exact changed files
 
 - `.specs/154-acp-slice-3/SPEC.md`

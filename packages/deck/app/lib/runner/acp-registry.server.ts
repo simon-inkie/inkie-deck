@@ -185,9 +185,12 @@ function resumeEvidenceKey(
       codexExecutable = resolveBundledCodexFile(executable, "@openai/codex/bin/codex.js");
     }
     const codexHome = resolve(home, childEnv.CODEX_HOME || join(childEnv.HOME || userInfo().homedir, ".codex"));
-    let store = codexHome;
+    let storeIdentity = [codexHome];
     try {
-      store = realpathSync(codexHome);
+      const store = realpathSync(codexHome);
+      const info = statSync(store, { bigint: true });
+      if (!info.isDirectory()) return undefined;
+      storeIdentity = [store, info.dev.toString(), info.ino.toString()];
     } catch (error) {
       if (!hasCode(error, "ENOENT") || childEnv.CODEX_HOME) throw error;
     }
@@ -196,7 +199,7 @@ function resumeEvidenceKey(
     const nativeExecutable = codexExecutable && codexNativeExecutable(codexExecutable);
     const nativeIdentity = nativeExecutable && codexFileIdentity(nativeExecutable);
     return `${manifest.name}:${createHash("sha256")
-      .update(JSON.stringify([wrapperKey, override || null, codexIdentity, nativeIdentity, store]))
+      .update(JSON.stringify([wrapperKey, override || null, codexIdentity, nativeIdentity, storeIdentity]))
       .digest("hex")}`;
   } catch {
     // A fresh start can proceed, but resume requires a verifiable identity.

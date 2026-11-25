@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { loadCodexQuotaDisplay } from "../app/lib/codex-quota-display.server";
 import {
   CodexQuotaObserver,
   codexQuotaTelemetryEnabled,
@@ -110,15 +111,19 @@ describe("CodexQuotaObserver", () => {
     expect(JSON.stringify(store.state)).not.toContain("must-not-persist");
   });
 
-  it("persists quota under the supplied DATA_ROOT", () => {
+  it("writes and displays quota under the supplied literal DATA_ROOT", () => {
     const root = mkdtempSync(join(tmpdir(), "deck-quota-observer-"));
     const ambient = join(root, "ambient");
+    const sibling = join(root, "instance");
+    const dataRoot = `${sibling} `;
     mkdirSync(ambient);
+    mkdirSync(sibling);
+    mkdirSync(dataRoot);
     vi.stubEnv("DATA_ROOT", ambient);
     const connection = new FakeConnection();
     const onError = vi.fn();
     const observer = new CodexQuotaObserver({
-      env: { DATA_ROOT: root, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" },
+      env: { DATA_ROOT: dataRoot, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" },
       connect: () => connection,
       now: () => 1_000_000,
       onError,
@@ -131,8 +136,11 @@ describe("CodexQuotaObserver", () => {
         result: { rateLimits: { primary: { usedPercent: 20 } } },
       });
       expect(onError).not.toHaveBeenCalled();
-      expect(JSON.parse(readFileSync(join(root, "codex-quota.json"), "utf8")))
+      expect(JSON.parse(readFileSync(join(dataRoot, "codex-quota.json"), "utf8")))
         .toMatchObject({ observedAt: 1_000_000, status: "AVAILABLE_CONFIRMED" });
+      expect(loadCodexQuotaDisplay({ DATA_ROOT: dataRoot }, 1_000_000, []).quota)
+        .toMatchObject({ freshness: "fresh", status: "AVAILABLE_CONFIRMED" });
+      expect(existsSync(join(sibling, "codex-quota.json"))).toBe(false);
       expect(existsSync(join(ambient, "codex-quota.json"))).toBe(false);
     } finally {
       observer.stop();
@@ -141,7 +149,26 @@ describe("CodexQuotaObserver", () => {
     }
   });
 
-  it("reports the app-server exit code and a sanitized stderr diagnostic", () => {
+  it("reports a startup error when spawning fails before creating pipes", () => {
+    const child = Object.assign(new EventEmitter(), { stdin: null, stdout: null, stderr: null });
+    vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+    const onError = vi.fn();
+    const observer = new CodexQuotaObserver({
+      env: { MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" },
+      store: new MemoryStore(),
+      scheduleReconnect: () => 1,
+      cancelReconnect: () => {},
+      onError,
+    });
+    observer.start();
+    child.emit("error", Object.assign(new Error("startup-secret"), { code: "EMFILE" }));
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      new Error("Could not start Codex quota app-server (EMFILE)."),
+    );
+    observer.stop();
+  });
+
+  it("reports the app-server exit code and a sanitized stderr diagnostic", async () => {
     const child = Object.assign(new EventEmitter(), {
       stdin: new PassThrough(),
       stdout: new PassThrough(),
@@ -157,12 +184,51 @@ describe("CodexQuotaObserver", () => {
       onError,
     });
     observer.start();
-    child.stderr.write("error: unexpected argument 'token-secret'\n");
-    child.emit("close", 2, null);
+    child.emit("exit", 2, null);
+    const stderrClosed = new Promise<void>((resolve) => child.stderr.once("close", resolve));
+    child.stderr.end("error: unexpected argument 'token-secret'\n");
+    await stderrClosed;
     expect(onError).toHaveBeenCalledExactlyOnceWith(
       new Error("Codex quota app-server closed with exit code 2. Unsupported command-line option."),
     );
     observer.stop();
+  });
+
+  it("reconnects after exit with a bounded wait for inherited pipes", () => {
+    vi.useFakeTimers();
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(),
+    });
+    vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+    const scheduleReconnect = vi.fn(() => 1);
+    const onError = vi.fn();
+    const observer = new CodexQuotaObserver({
+      env: { MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" },
+      store: new MemoryStore(),
+      scheduleReconnect,
+      cancelReconnect: () => {},
+      onError,
+    });
+    try {
+      observer.start();
+      child.emit("exit", 2, null);
+      vi.advanceTimersByTime(99);
+      expect(scheduleReconnect).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      child.emit("close", 2, null);
+      expect(scheduleReconnect).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledExactlyOnceWith(
+        new Error("Codex quota app-server closed with exit code 2. Codex provided no stderr diagnostic."),
+      );
+      expect(child.stderr.destroyed).toBe(true);
+      expect(child.stdout.destroyed).toBe(true);
+    } finally {
+      observer.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("merges sparse updates without clearing a confirmed block", () => {

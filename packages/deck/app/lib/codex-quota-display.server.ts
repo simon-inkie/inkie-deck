@@ -3,6 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { FileCodexQuotaStore } from "./codex-quota-store.server";
 import {
+  CodexQuotaLifecycleError,
   ensureCodexQuotaObserver,
   codexQuotaTelemetryEnabled,
 } from "./codex-quota-observer.server";
@@ -11,6 +12,7 @@ import {
   type CodexProvider,
   type CodexQuotaDisplayData,
 } from "./codex-quota-display";
+import { resolveDataRoot } from "./queue.server";
 import { AGENT_NAME_RE, confineToRootReal } from "./safe-fs.server";
 
 type Env = Record<string, string | undefined>;
@@ -62,20 +64,15 @@ function readProvider(dataRoot: string, agent: string): CodexProvider {
   }
 }
 
-function resolveDisplayDataRoot(env: Env): string | null {
-  const configured = env["DATA_ROOT"]?.trim();
-  return configured !== undefined && configured !== "" && path.isAbsolute(configured)
-    ? configured
-    : null;
-}
-
 export function loadCodexQuotaDisplay(
   env: Env,
   now: number,
   agents: string[]
 ): CodexQuotaDisplayData {
-  const dataRoot = resolveDisplayDataRoot(env);
-  if (dataRoot === null) {
+  let dataRoot: string;
+  try {
+    dataRoot = resolveDataRoot(env);
+  } catch {
     return {
       quota: buildCodexQuotaDisplay(
         { kind: "missing" },
@@ -88,7 +85,14 @@ export function loadCodexQuotaDisplay(
     };
   }
   if (codexQuotaTelemetryEnabled(env)) {
-    ensureCodexQuotaObserver({ env });
+    ensureCodexQuotaObserver({
+      env,
+      onError(error) {
+        if (error instanceof CodexQuotaLifecycleError) {
+          console.warn(`[codex-quota] ${error.message}`);
+        }
+      },
+    });
   }
   const store = new FileCodexQuotaStore(
     path.join(dataRoot, "codex-quota.json"),

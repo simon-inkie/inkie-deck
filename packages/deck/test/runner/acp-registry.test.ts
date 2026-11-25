@@ -710,6 +710,17 @@ rl.on("line", (line) => {
     env.CODEX_HOME = store;
     expect(reg.canResume(agent)).toBe(true);
 
+    writeFileSync(join(store, "session.json"), "{}");
+    expect(reg.canResume(agent)).toBe(true);
+    const originalStore = join(root, "original-store");
+    renameSync(store, originalStore);
+    mkdirSync(store);
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    rmSync(store, { recursive: true });
+    renameSync(originalStore, store);
+    expect(reg.canResume(agent)).toBe(true);
+
     writeFileSync(codex, "#!/bin/sh\nexit 2\n");
     expect(reg.canResume(agent)).toBe(false);
     await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });

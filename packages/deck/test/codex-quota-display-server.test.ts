@@ -1,8 +1,17 @@
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCodexQuotaDisplay } from "~/lib/codex-quota-display.server";
+import { ensureCodexQuotaObserver } from "~/lib/codex-quota-observer.server";
 import { mkdtempSync, rmSync } from "~/lib/test-helpers";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const childProcess = await importOriginal<typeof import("node:child_process")>();
+  return { ...childProcess, spawn: vi.fn(childProcess.spawn) };
+});
 
 const roots: string[] = [];
 const NOW = Date.parse("2026-09-16T08:00:00Z");
@@ -33,6 +42,41 @@ afterEach(() => {
 });
 
 describe("Codex quota display server loader", () => {
+  it("logs only sanitized observer startup and exit diagnostics", () => {
+    const env = { DATA_ROOT: root(), MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
+    const child = () => Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      kill: vi.fn(),
+    });
+    const failed = child();
+    const exited = child();
+    vi.mocked(spawn)
+      .mockReturnValueOnce(failed as unknown as ReturnType<typeof spawn>)
+      .mockReturnValueOnce(exited as unknown as ReturnType<typeof spawn>);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      expect(loadCodexQuotaDisplay(env, NOW, []).quota.status).toBe("UNKNOWN");
+      failed.emit("error", Object.assign(new Error("startup-secret"), { code: "ENOENT" }));
+      vi.advanceTimersByTime(5_000);
+      exited.stdout.write("invalid frame protocol-secret\n");
+      exited.stderr.write("error: permission denied for stderr-secret\n");
+      exited.emit("exit", 2, null);
+      vi.advanceTimersByTime(100);
+
+      expect(warn.mock.calls).toEqual([
+        ["[codex-quota] Could not start Codex quota app-server (ENOENT)."],
+        ["[codex-quota] Codex quota app-server closed with exit code 2. Permission denied."],
+      ]);
+    } finally {
+      ensureCodexQuotaObserver({ env })?.stop();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it("distinguishes missing and malformed quota snapshots", () => {
     const dataRoot = root();
     const missing = loadCodexQuotaDisplay({ DATA_ROOT: dataRoot }, NOW, ["alex"]);
