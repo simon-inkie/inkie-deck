@@ -1406,4 +1406,208 @@ steps:
     expect(noticeBlocks[0]!.rawMeta).toContain(`flow-head-seq: ${notifyRow!.seq}`);
     expect(noticeBlocks[0]!.rawMeta).toContain(`flow-head-hash: ${notifyRow!.hash}`);
   }, 15_000);
+
+  it("D7 (writeReply failure): failing writeReply once then resuming twice emits exactly one linked notice", async () => {
+    const repo = new FileInboxRepository(inboxRoot);
+    const inbox = { inboxRoot, agentName, participantName, repo };
+    const runId = "run-d7-write-reply-fail-once";
+    const twoStepFlow = `flow: d7_write_fail_once
+version: 1
+title: D7 rejected writeReply recovery flow
+limits:
+  max_attempts: 3
+  max_rewinds: 4
+  same_check_fail_limit: 3
+  step_timeout_min: 5
+  budget:
+    tokens: 5000
+    steps: 10
+steps:
+  - id: draft
+    type: agent
+    outputs: [draft_doc]
+  - id: publish
+    type: agent
+    outputs: [pub_doc]
+`;
+    planAndApproveRun({ projectId, runId, flowYaml: twoStepFlow, dataRoot });
+
+    const originalWriteReply = repo.writeReply.bind(repo);
+    let writeAttempts = 0;
+    repo.writeReply = async (...args) => {
+      writeAttempts += 1;
+      if (writeAttempts === 1) {
+        throw new Error("SIMULATED_INBOX_WRITE_EIO");
+      }
+      return originalWriteReply(...args);
+    };
+
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        inbox,
+        evaluateSignals: ({ step }) => (step.id === "draft" ? { flakyFlipCount: 1 } : {}),
+      }),
+    ).rejects.toThrow("SIMULATED_INBOX_WRITE_EIO");
+    expect(writeAttempts).toBe(1);
+
+    const mid = loadRunState(projectId, runId, { dataRoot });
+    const notifyEv = mid.events.find(
+      (e) => e.type === "judgement" && e.stepId === "draft" && e.data.final === "notify",
+    );
+    expect(notifyEv).toBeDefined();
+    const store = openFlowsStore(projectId, { dataRoot, readonly: true });
+    const notifyRow = store.getEvents(runId).find((r) => r.seq === notifyEv!.seq);
+    store.close();
+    expect(notifyRow).toBeDefined();
+
+    const blocksBeforeResume = await repo.readBlocks(agentName, participantName);
+    expect(blocksBeforeResume.filter((b) => b.actionCard)).toHaveLength(0);
+
+    const resume1 = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(resume1.finalStatus).toBe("finished");
+    expect(resume1.terminalOutcome).toBe("done");
+    expect(resume1.notifyReplayErrors).toBeUndefined();
+
+    const blocksAfterResume1 = await repo.readBlocks(agentName, participantName);
+    const noticesAfterResume1 = blocksAfterResume1.filter((b) => b.actionCard);
+    expect(noticesAfterResume1).toHaveLength(1);
+    const expectedActionId = buildDeterministicNotifyCardId(runId, "draft", 1, "flaky_suspected");
+    expect(noticesAfterResume1[0]!.actionCard?.actionId).toBe(expectedActionId);
+    expect(noticesAfterResume1[0]!.rawMeta).toContain(`flow-head-seq: ${notifyRow!.seq}`);
+    expect(noticesAfterResume1[0]!.rawMeta).toContain(`flow-head-hash: ${notifyRow!.hash}`);
+
+    const resume2 = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(resume2.finalStatus).toBe("finished");
+    expect(resume2.terminalOutcome).toBe("done");
+    expect(resume2.notifyReplayErrors).toBeUndefined();
+
+    const blocksAfterResume2 = await repo.readBlocks(agentName, participantName);
+    expect(blocksAfterResume2.filter((b) => b.actionCard)).toHaveLength(1);
+  }, 15_000);
+
+  it("D7 (terminal inbox failure): inbox read or write error on a completed run preserves finished status, reports notifyReplayErrors, and stays retryable", async () => {
+    const repo = new FileInboxRepository(inboxRoot);
+    const inbox = { inboxRoot, agentName, participantName, repo };
+    const twoStepFlow = `flow: d7_terminal_inbox_err
+version: 1
+title: D7 terminal inbox error flow
+limits:
+  max_attempts: 3
+  max_rewinds: 4
+  same_check_fail_limit: 3
+  step_timeout_min: 5
+  budget:
+    tokens: 5000
+    steps: 10
+steps:
+  - id: draft
+    type: agent
+    outputs: [draft_doc]
+  - id: publish
+    type: agent
+    outputs: [pub_doc]
+`;
+
+    // Part A: Completed run whose notice already exists; inbox read error must preserve finished status
+    const runIdReadErr = "run-d7-terminal-read-err";
+    planAndApproveRun({ projectId, runId: runIdReadErr, flowYaml: twoStepFlow, dataRoot });
+    const firstDone = await runFlow(projectId, runIdReadErr, {
+      dataRoot,
+      inbox,
+      evaluateSignals: ({ step }) => (step.id === "draft" ? { flakyFlipCount: 1 } : {}),
+    });
+    expect(firstDone.finalStatus).toBe("finished");
+    expect(firstDone.terminalOutcome).toBe("done");
+
+    const loadedReadErr = loadRunState(projectId, runIdReadErr, { dataRoot });
+    const notifyEvA = loadedReadErr.events.find(
+      (e) => e.type === "judgement" && e.stepId === "draft" && e.data.final === "notify",
+    )!;
+    const expectedActionIdA = buildDeterministicNotifyCardId(runIdReadErr, "draft", 1, "flaky_suspected");
+
+    const originalReadBlocks = repo.readBlocks.bind(repo);
+    repo.readBlocks = async () => {
+      throw new Error("SIMULATED_INBOX_READ_EACCES");
+    };
+    try {
+      const resDuringOutage = await runFlow(projectId, runIdReadErr, { dataRoot, inbox });
+      expect(resDuringOutage.finalStatus).toBe("finished");
+      expect(resDuringOutage.terminalOutcome).toBe("done");
+      expect(resDuringOutage.notifyReplayErrors).toEqual([
+        {
+          seq: notifyEvA.seq,
+          stepId: "draft",
+          actionId: expectedActionIdA,
+          message: "SIMULATED_INBOX_READ_EACCES",
+        },
+      ]);
+    } finally {
+      repo.readBlocks = originalReadBlocks;
+    }
+
+    const resAfterReadRecovery = await runFlow(projectId, runIdReadErr, { dataRoot, inbox });
+    expect(resAfterReadRecovery.finalStatus).toBe("finished");
+    expect(resAfterReadRecovery.terminalOutcome).toBe("done");
+    expect(resAfterReadRecovery.notifyReplayErrors).toBeUndefined();
+    const blocksA = await repo.readBlocks(agentName, participantName);
+    expect(blocksA.filter((b) => b.actionCard?.actionId === expectedActionIdA)).toHaveLength(1);
+
+    // Part B: Completed run with missing notice; inbox write error preserves finished status and stays retryable
+    const runIdWriteErr = "run-d7-terminal-write-err";
+    planAndApproveRun({ projectId, runId: runIdWriteErr, flowYaml: twoStepFlow, dataRoot });
+    const completedWithoutInbox = await runFlow(projectId, runIdWriteErr, {
+      dataRoot,
+      evaluateSignals: ({ step }) => (step.id === "draft" ? { flakyFlipCount: 1 } : {}),
+    });
+    expect(completedWithoutInbox.finalStatus).toBe("finished");
+    expect(completedWithoutInbox.terminalOutcome).toBe("done");
+
+    const loadedWriteErr = loadRunState(projectId, runIdWriteErr, { dataRoot });
+    const notifyEvB = loadedWriteErr.events.find(
+      (e) => e.type === "judgement" && e.stepId === "draft" && e.data.final === "notify",
+    )!;
+    const storeB = openFlowsStore(projectId, { dataRoot, readonly: true });
+    const notifyRowB = storeB.getEvents(runIdWriteErr).find((r) => r.seq === notifyEvB.seq)!;
+    storeB.close();
+    const expectedActionIdB = buildDeterministicNotifyCardId(runIdWriteErr, "draft", 1, "flaky_suspected");
+
+    const originalWriteReply = repo.writeReply.bind(repo);
+    repo.writeReply = async () => {
+      throw new Error("SIMULATED_TERMINAL_WRITE_FAILURE");
+    };
+    try {
+      const failedReplay = await runFlow(projectId, runIdWriteErr, { dataRoot, inbox });
+      expect(failedReplay.finalStatus).toBe("finished");
+      expect(failedReplay.terminalOutcome).toBe("done");
+      expect(failedReplay.notifyReplayErrors).toEqual([
+        {
+          seq: notifyRowB.seq,
+          stepId: "draft",
+          actionId: expectedActionIdB,
+          message: "SIMULATED_TERMINAL_WRITE_FAILURE",
+        },
+      ]);
+    } finally {
+      repo.writeReply = originalWriteReply;
+    }
+
+    const retriedReplay = await runFlow(projectId, runIdWriteErr, { dataRoot, inbox });
+    expect(retriedReplay.finalStatus).toBe("finished");
+    expect(retriedReplay.terminalOutcome).toBe("done");
+    expect(retriedReplay.notifyReplayErrors).toBeUndefined();
+
+    const blocksB = await repo.readBlocks(agentName, participantName);
+    const noticesB = blocksB.filter((b) => b.actionCard?.actionId === expectedActionIdB);
+    expect(noticesB).toHaveLength(1);
+    expect(noticesB[0]!.rawMeta).toContain(`flow-head-seq: ${notifyRowB.seq}`);
+    expect(noticesB[0]!.rawMeta).toContain(`flow-head-hash: ${notifyRowB.hash}`);
+
+    // Second retry stays idempotent
+    const retriedAgain = await runFlow(projectId, runIdWriteErr, { dataRoot, inbox });
+    expect(retriedAgain.finalStatus).toBe("finished");
+    expect(retriedAgain.notifyReplayErrors).toBeUndefined();
+    const blocksBAfter = await repo.readBlocks(agentName, participantName);
+    expect(blocksBAfter.filter((b) => b.actionCard?.actionId === expectedActionIdB)).toHaveLength(1);
+  }, 15_000);
 });

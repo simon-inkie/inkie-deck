@@ -97,6 +97,13 @@ export interface RunFlowOptions {
   }) => void | Promise<void>;
 }
 
+export interface NotifyReplayFailure {
+  seq: number;
+  stepId: string;
+  actionId: string;
+  message: string;
+}
+
 export interface RunFlowResult {
   runId: string;
   finalStatus: FlowRunState["status"];
@@ -104,6 +111,7 @@ export interface RunFlowResult {
   terminalReason: FlowRunState["terminalReason"];
   dispatchedSteps: Array<{ stepId: string; attemptId: string; occurrence: number }>;
   eventCount: number;
+  notifyReplayErrors?: NotifyReplayFailure[];
 }
 
 class StepTimeoutError extends Error {
@@ -379,19 +387,21 @@ async function replayCommittedNotifyCards(params: {
   events: readonly FlowEvent[];
   inbox: InboxBridgeTarget;
   nowIso: string;
-}): Promise<void> {
-  const { store, runId, events, inbox, nowIso } = params;
+  continueOnError: boolean;
+}): Promise<NotifyReplayFailure[]> {
+  const { store, runId, events, inbox, nowIso, continueOnError } = params;
   const notifyJudgements = events.filter(
     (ev): ev is Extract<FlowEvent, { type: "judgement" }> =>
       ev.type === "judgement" && ev.data.final === "notify",
   );
-  if (notifyJudgements.length === 0) return;
+  if (notifyJudgements.length === 0) return [];
 
   const hashBySeq = new Map<number, string>();
   for (const row of store.getEvents(runId)) {
     hashBySeq.set(row.seq, row.hash);
   }
 
+  const failures: NotifyReplayFailure[] = [];
   for (const ev of notifyJudgements) {
     const headHash = hashBySeq.get(ev.seq);
     if (!headHash) continue;
@@ -409,17 +419,28 @@ async function replayCommittedNotifyCards(params: {
       occurrence,
       notifyReason,
     );
-    await emitNotifyCardToInbox({
-      target: inbox,
-      actionId,
-      runId,
-      headSeq: ev.seq,
-      headHash,
-      stepId: ev.stepId,
-      reasonCode: notifyReason,
-      nowIso,
-    });
+    try {
+      await emitNotifyCardToInbox({
+        target: inbox,
+        actionId,
+        runId,
+        headSeq: ev.seq,
+        headHash,
+        stepId: ev.stepId,
+        reasonCode: notifyReason,
+        nowIso,
+      });
+    } catch (err) {
+      if (!continueOnError) throw err;
+      failures.push({
+        seq: ev.seq,
+        stepId: ev.stepId,
+        actionId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
+  return failures;
 }
 
 function completeHandoffFollowUp(params: {
@@ -1060,18 +1081,21 @@ export async function runFlow(
     let state = loaded.state;
 
     // 1b. Idempotently replay any committed judgement(notify) notices to inbox
+    const isTerminal = state.status === "finished" || state.status === "stopped";
+    let notifyReplayErrors: NotifyReplayFailure[] = [];
     if (options.inbox) {
-      await replayCommittedNotifyCards({
+      notifyReplayErrors = await replayCommittedNotifyCards({
         store,
         runId,
         events,
         inbox: options.inbox,
         nowIso: nowIso(),
+        continueOnError: isTerminal,
       });
     }
 
-    // 2. Halt cleanly on finished or stopped
-    if (state.status === "finished" || state.status === "stopped") {
+    // 2. Halt cleanly on finished or stopped (preserving terminal status even if replay failed)
+    if (isTerminal) {
       store.checkpointPassive();
       return {
         runId,
@@ -1080,6 +1104,7 @@ export async function runFlow(
         terminalReason: state.terminalReason,
         dispatchedSteps,
         eventCount: events.length,
+        ...(notifyReplayErrors.length > 0 ? { notifyReplayErrors } : {}),
       };
     }
 
