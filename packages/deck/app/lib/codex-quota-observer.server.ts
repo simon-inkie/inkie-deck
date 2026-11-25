@@ -19,7 +19,7 @@ export interface QuotaStore {
 export interface AppServerConnection {
   send(message: unknown): void;
   onLine(handler: (line: string) => void): void;
-  onClose(handler: () => void): void;
+  onClose(handler: (error?: Error) => void): void;
   close(): void;
 }
 
@@ -83,6 +83,16 @@ const FullReadSchema = z
 const SparseUpdateSchema = z
   .object({ rateLimits: SnapshotSchema })
   .strip();
+const MAX_STDERR_BYTES = 4096;
+
+function stderrDiagnostic(stderr: string): string {
+  // Use fixed diagnostics because raw stderr can contain credentials and paths.
+  if (/permission denied|operation not permitted/i.test(stderr)) return "Permission denied.";
+  if (/no such file or directory|command not found/i.test(stderr)) return "Required file or command missing.";
+  if (/unexpected argument|unknown (?:argument|option|flag)|unrecognized option/i.test(stderr)) return "Unsupported command-line option.";
+  if (/not authenticated|not logged in|authentication required/i.test(stderr)) return "Authentication required.";
+  return stderr.trim() ? "Codex wrote to stderr." : "Codex provided no stderr diagnostic.";
+}
 
 export function codexQuotaTelemetryEnabled(env: Env): boolean {
   const value = env["MC_CODEX_QUOTA_TELEMETRY_ENABLED"]?.trim().toLowerCase();
@@ -91,12 +101,12 @@ export function codexQuotaTelemetryEnabled(env: Env): boolean {
 
 class StdioAppServerConnection implements AppServerConnection {
   private lineHandler: (line: string) => void = () => {};
-  private closeHandler: () => void = () => {};
+  private closeHandler: (error?: Error) => void = () => {};
   private closed = false;
   private readonly child;
 
   constructor(env: Env) {
-    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    const childEnv: NodeJS.ProcessEnv = { ...env };
     const codexHome = env["MC_CODEX_QUOTA_CODEX_HOME"]?.trim();
     if (codexHome) childEnv["CODEX_HOME"] = codexHome;
     this.child = spawn("codex", ["app-server", "--stdio"], {
@@ -108,14 +118,25 @@ class StdioAppServerConnection implements AppServerConnection {
     });
     const lines = readline.createInterface({ input: this.child.stdout });
     lines.on("line", (line) => this.lineHandler(line));
-    const closed = () => {
+    let stderr = "";
+    this.child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < MAX_STDERR_BYTES) {
+        stderr += chunk.subarray(0, MAX_STDERR_BYTES - stderr.length).toString("utf8");
+      }
+    });
+    const closed = (error: Error) => {
       if (this.closed) return;
       this.closed = true;
       lines.close();
-      this.closeHandler();
+      this.closeHandler(error);
     };
-    this.child.on("error", closed);
-    this.child.on("exit", closed);
+    this.child.on("error", (error: NodeJS.ErrnoException) => {
+      closed(new Error(`Could not start Codex quota app-server (${error.code ?? "unknown error"}).`));
+    });
+    this.child.on("close", (code, signal) => {
+      const status = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+      closed(new Error(`Codex quota app-server closed with ${status}. ${stderrDiagnostic(stderr)}`));
+    });
   }
 
   send(message: unknown): void {
@@ -132,7 +153,7 @@ class StdioAppServerConnection implements AppServerConnection {
     this.lineHandler = handler;
   }
 
-  onClose(handler: () => void): void {
+  onClose(handler: (error?: Error) => void): void {
     this.closeHandler = handler;
   }
 
@@ -171,7 +192,7 @@ export class CodexQuotaObserver {
 
   constructor(options: ObserverOptions = {}) {
     this.env = options.env ?? process.env;
-    this.store = options.store ?? new FileCodexQuotaStore();
+    this.store = options.store ?? FileCodexQuotaStore.fromEnv(this.env);
     this.connectAppServer =
       options.connect ?? (() => new StdioAppServerConnection(this.env));
     this.now = options.now ?? Date.now;
@@ -209,7 +230,7 @@ export class CodexQuotaObserver {
       this.initializeId = this.nextId++;
       this.fullReadId = null;
       connection.onLine((line) => this.handleLine(connection, line));
-      connection.onClose(() => this.handleClose(connection));
+      connection.onClose((error) => this.handleClose(connection, error));
       connection.send({
         id: this.initializeId,
         method: "initialize",
@@ -294,11 +315,12 @@ export class CodexQuotaObserver {
     }
   }
 
-  private handleClose(connection: AppServerConnection): void {
+  private handleClose(connection: AppServerConnection, error?: Error): void {
     if (connection !== this.connection) return;
     this.connection = null;
     this.initializeId = null;
     this.fullReadId = null;
+    if (error) this.report(error);
     this.queueReconnect();
   }
 
@@ -332,6 +354,7 @@ export function ensureCodexQuotaObserver(
 export function startCodexQuotaObserver(
   options: ObserverOptions = {}
 ): CodexQuotaObserver | undefined {
+  if (!codexQuotaTelemetryEnabled(options.env ?? process.env)) return undefined;
   const observer = new CodexQuotaObserver(options);
   return observer.start() ? observer : undefined;
 }

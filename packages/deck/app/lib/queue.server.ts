@@ -43,8 +43,8 @@ import {
  * DATA_ROOT is the declared root for Deck's own state files (queue state).
  * Explicit env, no derivation: throws if unset/empty/relative.
  */
-export function resolveDataRoot(): string {
-  const root = process.env["DATA_ROOT"];
+export function resolveDataRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env["DATA_ROOT"];
   if (!root || root.trim() === "") {
     throw new Error(
       "DATA_ROOT is required but not set. " +

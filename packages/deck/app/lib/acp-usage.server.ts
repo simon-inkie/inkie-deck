@@ -2,7 +2,7 @@ import { loadCodexQuotaDisplay } from "./codex-quota-display.server";
 import { codexQuotaTelemetryEnabled } from "./codex-quota-observer.server";
 import { codexUsageReading } from "./codex-quota-usage";
 import { acpRunnerEnabled } from "./instance.server";
-import { antigravityUsageReading, resolveAcpManifestForAgent, type UsageReading } from "./runner/acp-manifest";
+import { antigravityUsageReading, resolveAcpManifestForAgent, type AcpAdapterManifest, type UsageReading } from "./runner/acp-manifest";
 
 export function unknownUsageReading(now = Date.now()): UsageReading {
   return {
@@ -17,11 +17,12 @@ export function readAcpUsageReading(
   env: NodeJS.ProcessEnv,
   agent: string,
   now = Date.now(),
+  activeManifest?: AcpAdapterManifest,
 ): UsageReading {
   if (!acpRunnerEnabled(env)) {
     return unknownUsageReading(now);
   }
-  const manifest = resolveAcpManifestForAgent(env, agent);
+  const manifest = activeManifest ?? resolveAcpManifestForAgent(env, agent);
   if (!manifest) {
     return unknownUsageReading(now);
   }

@@ -94,11 +94,12 @@ export function AcpThreadView({
     }
   }, [agent]);
 
+  const isLive = status.state === "starting" || status.state === "running" || status.state === "stopping";
   useEffect(() => {
-    if (status.state !== "starting" && status.state !== "running" && status.state !== "stopping") return;
-    const timer = setInterval(() => void refresh(), 1500);
+    if (!canWrite) return;
+    const timer = setInterval(() => void refresh(), isLive ? 1500 : 15_000);
     return () => clearInterval(timer);
-  }, [status.state, refresh]);
+  }, [canWrite, isLive, refresh]);
 
   const postOp = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     setErrorBanner(null);

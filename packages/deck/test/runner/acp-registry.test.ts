@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,8 +14,26 @@ import { AcpRunnerRegistry } from "../../app/lib/runner/acp-registry.server.js";
 import { StartRefusal } from "../../app/lib/runner/registry.server.js";
 import { LaunchFailure } from "../../app/lib/runner/runner.js";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, writeSync: vi.fn(fs.writeSync) };
+});
+
 const agent = "fixture-acp-agent";
 const otherAgent = "fixture-acp-agent-2";
+
+function resumableSession(activeSessionId: string): AcpSession {
+  let resolveExit!: () => void;
+  return {
+    state: { kind: "idle" },
+    negotiated: true,
+    supportsResume: () => true,
+    activeSessionId,
+    exited: new Promise<void>((resolve) => { resolveExit = resolve; }),
+    exitInfo: { code: 0, signal: null },
+    close: async () => resolveExit(),
+  } as unknown as AcpSession;
+}
 
 describe("ACP Runner Registry, Lock, Lifecycle and Descendant-Kill", () => {
   let root: string;
@@ -625,4 +643,108 @@ rl.on("line", (line) => {
     expect(reg.lastSessionId(agent)).toBe(sessionId);
     expect(reg.canResume(agent)).toBe(false);
   });
+
+  it("keeps the previous resumable checkpoint if writing new evidence runs out of space", async () => {
+    let sessionId = "previous-session";
+    const reg = new AcpRunnerRegistry(env, {
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession: async () => resumableSession(sessionId),
+    });
+    await reg.start(agent);
+    await reg.stop(agent);
+    expect(reg.canResume(agent)).toBe(true);
+
+    sessionId = "new-session";
+    const write = vi.mocked(writeSync);
+    const realWrite = write.getMockImplementation()!;
+    write.mockImplementation((...args) => {
+      if (Buffer.isBuffer(args[1]) && args[1].includes('"supported":true')) {
+        throw Object.assign(new Error("No space left"), { code: "ENOSPC" });
+      }
+      return realWrite(...args);
+    });
+    try {
+      expect((await reg.start(agent)).activeSessionId).toBe("new-session");
+      await reg.stop(agent);
+      expect(reg.lastSessionId(agent)).toBe("previous-session");
+      expect(reg.canResume(agent)).toBe(true);
+    } finally {
+      write.mockReset();
+    }
+  });
+
+  it("refuses Codex resume when the selected binary or session store changes", async () => {
+    const wrapper = join(root, "codex-acp");
+    const codex = join(root, "codex");
+    const replacement = join(root, "other-codex");
+    for (const file of [wrapper, codex, replacement]) {
+      writeFileSync(file, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    }
+    writeFileSync(join(home, ".runtime"), "codex\n");
+    const store = join(root, "codex-store");
+    mkdirSync(store);
+    env.PATH = root;
+    env.CODEX_PATH = codex;
+    env.CODEX_HOME = store;
+    const startSession = vi.fn(async () => resumableSession("codex-session"));
+    const reg = new AcpRunnerRegistry(env, {
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "2.6.0", stderr: "" }),
+      startSession,
+    });
+    await reg.start(agent);
+    await reg.stop(agent);
+    expect(reg.canResume(agent)).toBe(true);
+
+    env.CODEX_PATH = replacement;
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    env.CODEX_PATH = codex;
+    expect(reg.canResume(agent)).toBe(true);
+
+    env.CODEX_HOME = root;
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    env.CODEX_HOME = store;
+    expect(reg.canResume(agent)).toBe(true);
+
+    writeFileSync(codex, "#!/bin/sh\nexit 2\n");
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(reg.lastSessionId(agent)).toBe("codex-session");
+  });
+
+  it.runIf(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch))(
+    "refuses Codex resume after replacing the npm-bundled native binary",
+    async () => {
+      const platform = process.platform;
+      const arch = process.arch;
+      const target = `${arch === "x64" ? "x86_64" : "aarch64"}-${platform === "linux" ? "unknown-linux-musl" : "apple-darwin"}`;
+      const packages = join(root, "node_modules", "@openai");
+      const launcherDir = join(packages, "codex", "bin");
+      const nativePackage = join(packages, `codex-${platform}-${arch}`);
+      const nativeDir = join(nativePackage, "vendor", target, "bin");
+      mkdirSync(launcherDir, { recursive: true });
+      mkdirSync(nativeDir, { recursive: true });
+      writeFileSync(join(nativePackage, "package.json"), "{}");
+      writeFileSync(join(launcherDir, "codex.js"), "// bundled launcher\n");
+      writeFileSync(join(root, "codex-acp"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      const native = join(nativeDir, "codex");
+      writeFileSync(native, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      writeFileSync(join(home, ".runtime"), "codex\n");
+      const reg = new AcpRunnerRegistry({ ...env, PATH: root }, {
+        listWindows: () => [],
+        execVersion: () => ({ status: 0, stdout: "2.6.0", stderr: "" }),
+        startSession: async () => resumableSession("codex-session"),
+      });
+      await reg.start(agent);
+      await reg.stop(agent);
+      expect(reg.canResume(agent)).toBe(true);
+      writeFileSync(native, "#!/bin/sh\nexit 20\n");
+      expect(reg.canResume(agent)).toBe(false);
+    },
+  );
 });

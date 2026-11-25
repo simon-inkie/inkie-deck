@@ -146,6 +146,7 @@ export interface VersionProbeOptions {
     status: number | null;
     stdout: string;
     stderr: string;
+    error?: NodeJS.ErrnoException;
   };
 }
 
@@ -156,12 +157,16 @@ function evaluateVersionOutput(
   displayName = "Antigravity",
 ): { version: string; ok: boolean } {
   const firstLine = rawOutput.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+  if (!firstLine) {
+    if (allowMismatch) return { version: "unknown", ok: false };
+    throw new LaunchFailure("unavailable", `${displayName} version probe returned empty stdout.`);
+  }
   const parts = firstLine.split(/\s+/);
   const version = parts.length === 2 ? parts[1]! : firstLine;
   const semver = parseSemver(version);
   if (!semver) {
     if (allowMismatch) {
-      return { version: firstLine || "unknown", ok: false };
+      return { version: firstLine, ok: false };
     }
     throw new LaunchFailure("unavailable", `Failed to parse ${displayName} version output.`);
   }
@@ -183,6 +188,12 @@ function evaluateVersionOutput(
   return { version, ok };
 }
 
+function versionProbeFailure(displayName: string, error: unknown): LaunchFailure {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  const detail = typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code) ? ` (${code})` : "";
+  return new LaunchFailure("unavailable", `Could not verify ${displayName} version${detail}.`, error);
+}
+
 export function checkAgyVersion(
   executable: string,
   semverFloor: string,
@@ -198,12 +209,13 @@ export function checkAgyVersion(
       cwd: options.cwd,
       env: probeEnv,
     });
-    return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+    return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "", error: res.error };
   });
 
   let rawOutput = "";
   try {
     const res = runner(executable, ["--version"], { cwd: options.cwd, env: probeEnv });
+    if (res.error) throw res.error;
     if (res.status !== 0) {
       throw new Error(`Version probe exited with status ${res.status ?? "null"}.`);
     }
@@ -212,7 +224,7 @@ export function checkAgyVersion(
     if (options.allowMismatch) {
       return { version: "unknown", ok: false };
     }
-    throw new LaunchFailure("unavailable", `Could not verify ${options.displayName ?? "Antigravity"} version.`, err);
+    throw versionProbeFailure(options.displayName ?? "Antigravity", err);
   }
 
   return evaluateVersionOutput(rawOutput, semverFloor, Boolean(options.allowMismatch), options.displayName);
@@ -281,7 +293,7 @@ export async function probeAgyVersion(
       throw new LaunchFailure("start-failed", `${options.displayName ?? "Antigravity"} version probe aborted.`, err);
     }
     if (options.allowMismatch) return null;
-    throw new LaunchFailure("unavailable", `Could not verify ${options.displayName ?? "Antigravity"} version.`, err);
+    throw versionProbeFailure(options.displayName ?? "Antigravity", err);
   });
 
   if (rawOutput === null) {

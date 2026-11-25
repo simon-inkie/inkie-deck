@@ -77,6 +77,11 @@ const QuotaStateSchema = z.object({
 });
 
 export class FileCodexQuotaStore {
+  static fromEnv(env: NodeJS.ProcessEnv): FileCodexQuotaStore {
+    const dataRoot = resolveDataRoot({ DATA_ROOT: env.DATA_ROOT?.trim() });
+    return new FileCodexQuotaStore(path.join(dataRoot, "codex-quota.json"), dataRoot);
+  }
+
   constructor(
     private readonly statePath = path.join(resolveDataRoot(), "codex-quota.json"),
     private readonly dataRoot = resolveDataRoot()

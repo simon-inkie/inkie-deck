@@ -1,3 +1,9 @@
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   CodexQuotaObserver,
@@ -5,6 +11,11 @@ import {
   type AppServerConnection,
 } from "../app/lib/codex-quota-observer.server";
 import { initialQuotaState, type QuotaState } from "../app/lib/codex-quota";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const childProcess = await importOriginal<typeof import("node:child_process")>();
+  return { ...childProcess, spawn: vi.fn(childProcess.spawn) };
+});
 
 class FakeConnection implements AppServerConnection {
   readonly sent: unknown[] = [];
@@ -97,6 +108,61 @@ describe("CodexQuotaObserver", () => {
       planType: "plus",
     });
     expect(JSON.stringify(store.state)).not.toContain("must-not-persist");
+  });
+
+  it("persists quota under the supplied DATA_ROOT", () => {
+    const root = mkdtempSync(join(tmpdir(), "deck-quota-observer-"));
+    const ambient = join(root, "ambient");
+    mkdirSync(ambient);
+    vi.stubEnv("DATA_ROOT", ambient);
+    const connection = new FakeConnection();
+    const onError = vi.fn();
+    const observer = new CodexQuotaObserver({
+      env: { DATA_ROOT: root, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" },
+      connect: () => connection,
+      now: () => 1_000_000,
+      onError,
+    });
+    try {
+      observer.start();
+      initialise(connection);
+      connection.line({
+        id: methodId(connection, "account/rateLimits/read"),
+        result: { rateLimits: { primary: { usedPercent: 20 } } },
+      });
+      expect(onError).not.toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(join(root, "codex-quota.json"), "utf8")))
+        .toMatchObject({ observedAt: 1_000_000, status: "AVAILABLE_CONFIRMED" });
+      expect(existsSync(join(ambient, "codex-quota.json"))).toBe(false);
+    } finally {
+      observer.stop();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the app-server exit code and a sanitized stderr diagnostic", () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+    const onError = vi.fn();
+    const observer = new CodexQuotaObserver({
+      env: { MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" },
+      store: new MemoryStore(),
+      scheduleReconnect: () => 1,
+      cancelReconnect: () => {},
+      onError,
+    });
+    observer.start();
+    child.stderr.write("error: unexpected argument 'token-secret'\n");
+    child.emit("close", 2, null);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(
+      new Error("Codex quota app-server closed with exit code 2. Unsupported command-line option."),
+    );
+    observer.stop();
   });
 
   it("merges sparse updates without clearing a confirmed block", () => {

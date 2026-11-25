@@ -74,9 +74,6 @@ export function loadCodexQuotaDisplay(
   now: number,
   agents: string[]
 ): CodexQuotaDisplayData {
-  if (codexQuotaTelemetryEnabled(env)) {
-    ensureCodexQuotaObserver({ env });
-  }
   const dataRoot = resolveDisplayDataRoot(env);
   if (dataRoot === null) {
     return {
@@ -89,6 +86,9 @@ export function loadCodexQuotaDisplay(
         agents.map((agent) => [agent, "unknown" as const])
       ),
     };
+  }
+  if (codexQuotaTelemetryEnabled(env)) {
+    ensureCodexQuotaObserver({ env });
   }
   const store = new FileCodexQuotaStore(
     path.join(dataRoot, "codex-quota.json"),

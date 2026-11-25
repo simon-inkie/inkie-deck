@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -188,7 +188,7 @@ rl.on("line", (line) => {
     expect(s1.activeSessionId).toBe("sess-persist-42");
     expect(existsSync(join(agentHome, ".acp-last-session"))).toBe(true);
     expect(existsSync(join(agentHome, ".session-id"))).toBe(false);
-    expect(readFileSync(join(agentHome, ".acp-last-session"), "utf8").trim()).toBe("sess-persist-42");
+    expect(reg.lastSessionId(agent)).toBe("sess-persist-42");
     await reg.stop(agent);
 
     // Resume uses the stored session id via session/resume
@@ -347,6 +347,39 @@ rl.on("line", (line) => {
     expect(html).toContain("5-hour: 92% used. Reset: unknown");
     expect(html).toContain(`dateTime="${new Date(now).toISOString()}"`);
     expect(html).not.toContain("null");
+  });
+
+  it("keeps the running adapter's quota source after editing .runtime", async () => {
+    for (const [key, value] of Object.entries({ AGENTS_HOME: root, DATA_ROOT: root,
+      INBOX_ROOT: join(root, "inbox"), PROJECTS_ROOT: join(root, "projects"),
+      MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "0" })) vi.stubEnv(key, value);
+    const executable = join(root, "agy");
+    writeFileSync(executable, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    let resolveExit!: () => void;
+    const reg = new AcpRunnerRegistry(process.env, {
+      manifest: { ...antigravity1Manifest, executableName: executable },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession: async () => ({
+        state: { kind: "idle" },
+        capabilities: {},
+        supportsResume: () => false,
+        exited: new Promise<void>((resolve) => { resolveExit = resolve; }),
+        exitInfo: { code: 0, signal: null },
+        close: async () => resolveExit(),
+      }) as unknown as AcpSession,
+    });
+    await reg.start(agent);
+    writeFileSync(join(agentHome, ".runtime"), "codex\n");
+
+    const api = await acpLoader({ request: sameOriginGet(`http://localhost/api/acp?agent=${agent}`),
+      params: {}, context: {} } as Parameters<typeof acpLoader>[0]);
+    const thread = await threadLoader({ request: sameOriginGet(`http://localhost/threads/${agent}`),
+      params: { agent }, context: {} } as Parameters<typeof threadLoader>[0]);
+    expect(api).toMatchObject({ usageReading: { source: "antigravity" } });
+    expect(thread.acp?.usageReading.source).toBe("antigravity");
+    await reg.stop(agent);
+    expect(reg.usageReading(agent).source).toBe("codex");
   });
 
   it.each([

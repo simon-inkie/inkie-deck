@@ -43,6 +43,7 @@ export type AcpAdapter = {
 type Options = RecordOptions & {
   cwd: string;
   dataRoot: string;
+  env?: NodeJS.ProcessEnv;
   requireCapability?: "session/load";
   maxLineBytes?: number;
   violationLimit?: number;
@@ -108,17 +109,17 @@ const KNOWN_SESSION_UPDATES = new Set([
 ]);
 let generation = 0;
 
-function childEnvironment(adapter: AcpAdapter, sessionMarker?: string): NodeJS.ProcessEnv {
+export function buildAcpSessionEnv(
+  adapter: Pick<AcpAdapter, "environment" | "envDefaults">,
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.create(null);
   for (const key of [...environment, ...(adapter.environment ?? [])]) {
     if (deckVariable.test(key) || explicitDeckVariables.has(key)) continue;
-    const value = process.env[key] ?? adapter.envDefaults?.[key];
+    const value = source[key] ?? adapter.envDefaults?.[key];
     if (value !== undefined) {
       env[key] = key === "PATH" ? sanitizePathEnv(value) : value;
     }
-  }
-  if (sessionMarker) {
-    env[ptySessionEnv] = sessionMarker;
   }
   return env;
 }
@@ -224,9 +225,11 @@ export class AcpSession {
     this.cancelMs = positive(options.cancelMs ?? 1000, "ACP cancellation timeout");
     // Construct records BEFORE onBeforeSpawn and spawn so pre-spawn failures never strand the runner lock.
     this.records = new AcpRecords(options.dataRoot, `acp-${randomUUID()}-${this.generation}`, options);
+    const env = buildAcpSessionEnv(adapter, options.env);
+    if (options.sessionMarker) env[ptySessionEnv] = options.sessionMarker;
     options.onBeforeSpawn?.();
     this.owned = spawn(adapter.executable, adapter.args, {
-      cwd: options.cwd, env: childEnvironment(adapter, options.sessionMarker), detached: true, stdio: ["pipe", "pipe", "ignore"],
+      cwd: options.cwd, env, detached: true, stdio: ["pipe", "pipe", "ignore"],
     });
     if (this.owned.pid !== undefined) options.onSpawn?.(this.owned.pid);
     this.closePromise = new Promise((resolve) => this.owned.once("close", (code, signal) => {

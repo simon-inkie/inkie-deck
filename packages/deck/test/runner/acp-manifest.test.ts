@@ -1,7 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   antigravity1Manifest,
   codexAcp1Manifest,
@@ -17,6 +18,11 @@ import {
   type UsageReading,
 } from "../../app/lib/runner/acp-manifest.js";
 import { LaunchFailure } from "../../app/lib/runner/runner.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const childProcess = await importOriginal<typeof import("node:child_process")>();
+  return { ...childProcess, spawnSync: vi.fn(childProcess.spawnSync) };
+});
 
 describe("ACP Manifest, Version and Opt-In Guards", () => {
   let tempDir: string;
@@ -94,6 +100,23 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
       displayName: codexAcp1Manifest.displayName,
       exec: () => ({ status: 0, stdout, stderr: "" }),
     })).toThrow(/Codex ACP/);
+  });
+
+  it("distinguishes empty version stdout from malformed output", async () => {
+    const options = (stdout: string) => ({
+      displayName: "Codex ACP", exec: () => ({ status: 0, stdout, stderr: "" }),
+    });
+    expect(() => checkAgyVersion("fixture", "2.6.0", options(" \n "))).toThrow(/empty stdout/);
+    await expect(probeAgyVersion("fixture", "2.6.0", options("unparseable"))).rejects.toThrow(/Failed to parse/);
+  });
+
+  it("surfaces the spawnSync error code on version probe failure", () => {
+    const error = Object.assign(new Error("spawn denied"), { code: "EPERM" });
+    vi.mocked(spawnSync).mockReturnValueOnce({
+      pid: 0, output: [], stdout: "", stderr: "", status: null, signal: null, error,
+    });
+    expect(() => checkAgyVersion("fixture", "2.6.0", { displayName: "Codex ACP" }))
+      .toThrow(expect.objectContaining({ message: "Could not verify Codex ACP version (EPERM).", cause: error }));
   });
 
   describe("Version check (semver floor)", () => {

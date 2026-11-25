@@ -181,6 +181,26 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   The commit and clean-tree checks used a local writable checkout.
 - Live verification remains open for every item in Manual Live Verification.
 
+### 2026-11-25: ACP resume and quota review fixes
+- What changed: Store the checkpoint and its resume evidence in one atomic
+  write (R1-1). Bind Codex resume to the executable selected by the adapter
+  and its session store (R1-2). Keep the active adapter's quota source and
+  refresh quota on stopped threads (R1-3 and R1-4). Use the supplied quota
+  environment and surface version-probe and observer startup failures (R1-5
+  and R1-7).
+- Why: Preserve the previous checkpoint after a failed write, refuse resume
+  under changed Codex configuration, and keep quota status current and
+  diagnosable.
+- Compatibility: Existing Codex checkpoints require a fresh Start to record
+  the executable and store. Existing Antigravity resume evidence is readable.
+- Verification: Typecheck and all nine new regression cases passed. The five
+  focused Vitest files had 50 passes and 11 failures. The same 11 tmux and
+  ACP subprocess failures and the same unhandled rejection reproduced at the
+  original revision.
+- Supersedes: Separate writes of the checkpoint and resume evidence.
+- Commits: pending writable Git metadata. The signed-off commit attempt could
+  not create the index lock.
+
 ## Exact changed files
 
 - `.specs/154-acp-slice-3/SPEC.md`
