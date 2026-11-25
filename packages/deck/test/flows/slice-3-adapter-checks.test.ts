@@ -825,7 +825,7 @@ ${runBlock}    repro:
         reproTestCommand: {
           buildCommand: (reproTestPath) => ({
             command: process.execPath,
-            args: ["--test", reproTestPath],
+            args: ["--test", "--test-reporter=tap", reproTestPath],
           }),
         },
       });

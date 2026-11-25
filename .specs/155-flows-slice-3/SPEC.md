@@ -105,3 +105,8 @@ Out of scope:
 - R2-3: resume on an expired active decision to apply the run's unanswered policy and clear the card.
 - Restore the shared Git marker guard and its test fixture. Default dev uses `FLOWS_DATA_ROOT` outside the checkout. Restore the Slice 2 handoff test roots.
 - R2-4 and R2-5 are follow-ups for interrupted draft publication and interrupted decision resume.
+
+### 2026-11-25: Pin the repro check fixture reporter
+
+- What changed: explicitly select TAP in the custom Node test command used by the R1-3 fixture for both repro check forms.
+- Why: Node 24 defaults to the spec reporter. Repro verification requires TAP evidence of an assertion failure on base, so the fixture must request TAP just as the built-in command does.
