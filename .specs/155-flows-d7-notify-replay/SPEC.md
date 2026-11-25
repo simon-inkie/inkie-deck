@@ -1,7 +1,7 @@
 # #155: Replay committed notify judgements to inbox on resume
 
 - Issue: https://github.com/simon-inkie/inkie-deck/issues/155 (follow-up to #246)
-- Branch: `fix/flows-d7-notify-replay`
+- Branch: `155-flows-d7-notify-replay`
 - Started: 2026-11-25
 
 ## TL;DR
@@ -41,7 +41,7 @@ None.
 
 ## Log
 
-### 2026-11-25: Initial notify replay fix and K9 tests
+### 2026-11-25: Initial notify replay fix and K9 tests (retrospective)
 - What changed: added `replayCommittedNotifyCards` in `runner.server.ts` and K9 / K4+K9 double-resume regression tests in `slice-2-handoffs.test.ts`.
 - Why: close the crash/write-failure gap after durable `judgement(notify)` commits.
 - Supersedes: nothing, additive.
