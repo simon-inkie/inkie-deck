@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AcpSession, type AcpAdapter } from "../../app/lib/acp-session.server.js";
 import {
   antigravity1Manifest,
+  statExecutableIdentity,
   type AcpAdapterManifest,
 } from "../../app/lib/runner/acp-manifest.js";
 import { claimRunnerLock, hasCode } from "../../app/lib/runner/lock.server.js";
@@ -156,7 +157,7 @@ if (process.argv.includes("--version")) {
     // Both adapter names resolve to the same executable identity.
     writeFileSync(join(bin, "agy"), script, { mode: 0o755 });
     symlinkSync(join(bin, "agy"), join(bin, "codex-acp"));
-    const reg = new AcpRunnerRegistry({ ...env, PATH: bin }, { listWindows: () => [] });
+    const reg = new AcpRunnerRegistry({ ...env, PATH: bin, CODEX_PATH: join(bin, "agy") }, { listWindows: () => [] });
     const [agy, codex] = await Promise.all([reg.start(agent), reg.start(otherAgent)]);
     expect(agy.adapter.displayName).toBe("Antigravity");
     expect(codex.adapter.displayName).toBe("Codex ACP");
@@ -673,6 +674,63 @@ rl.on("line", (line) => {
     } finally {
       write.mockReset();
     }
+  });
+
+  it.each(["legacy sidecar", "embedded evidence"])(
+    "upgrades Antigravity checkpoints from %s and writes a rollback-compatible pair",
+    async (format) => {
+      const sessionId = " previous-session ";
+      const idFile = join(home, ".acp-last-session");
+      const sidecar = join(home, ".acp-capabilities");
+      const { dev, ino, size, mtimeMs, sha256 } = statExecutableIdentity(fakeAgyScript);
+      const legacyKey = `${dev}:${ino}:${size}:${mtimeMs}:${sha256}`;
+      if (format === "legacy sidecar") {
+        writeFileSync(idFile, sessionId + "\n");
+        writeFileSync(sidecar, JSON.stringify({ supported: true, executableKey: legacyKey }));
+      } else {
+        const evidence = { supported: true, executableKey: `${antigravity1Manifest.name}:${legacyKey}` };
+        writeFileSync(idFile, sessionId + "\n" + JSON.stringify(evidence) + "\n");
+      }
+      const startSession = vi.fn(async (_adapter: AcpAdapter, options: { resumeSessionId?: string }) => {
+        expect(options.resumeSessionId).toBe(sessionId);
+        return resumableSession(sessionId);
+      });
+      const reg = new AcpRunnerRegistry(env, {
+        manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+        listWindows: () => [],
+        execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+        startSession,
+      });
+
+      expect(reg.canResume(agent)).toBe(true);
+      await reg.start(agent, { resume: true });
+      await reg.stop(agent);
+      expect(startSession).toHaveBeenCalledOnce();
+      // These are the fields and literal session ID consumed by the base reader.
+      expect(readFileSync(idFile, "utf8")).toBe(sessionId + "\n");
+      expect(JSON.parse(readFileSync(sidecar, "utf8"))).toMatchObject({
+        supported: true, executableKey: legacyKey, checkpointKey: expect.any(String),
+      });
+      expect(reg.canResume(agent)).toBe(true);
+    },
+  );
+
+  it("starts Codex through a shim without saving Resume evidence for an unresolved backend", async () => {
+    writeFileSync(join(home, ".runtime"), "codex\n");
+    writeFileSync(join(root, "codex-acp"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const startSession = vi.fn(async () => resumableSession("unverified-codex-session"));
+    const reg = new AcpRunnerRegistry({ ...env, PATH: root }, {
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "2.6.0", stderr: "" }),
+      startSession,
+    });
+    expect((await reg.start(agent)).activeSessionId).toBe("unverified-codex-session");
+    await reg.stop(agent);
+    expect(reg.lastSessionId(agent)).toBeUndefined();
+    expect(existsSync(join(home, ".acp-capabilities"))).toBe(false);
+    expect(reg.canResume(agent)).toBe(false);
+    await expect(reg.start(agent, { resume: true })).rejects.toMatchObject({ reason: "start-failed" });
+    expect(startSession).toHaveBeenCalledOnce();
   });
 
   it("refuses Codex resume when the selected binary or session store changes", async () => {

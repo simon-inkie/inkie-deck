@@ -14,18 +14,20 @@ import {
   statSync,
   unlinkSync,
   writeSync,
+  type Stats,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { readAcpUsageReading } from "../acp-usage.server.js";
+import { acpQuotaContext, readAcpUsageReading } from "../acp-usage.server.js";
 import { AcpSession, buildAcpSessionEnv, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
 import { AGENT_NAME_RE } from "../safe-fs.server.js";
 import { listTmuxWindows } from "../tmux.server.js";
 import {
+  antigravity1Manifest,
   resolveAcpManifestForAgent,
   isAcpOptedIn,
   probeAgyVersion,
@@ -35,6 +37,7 @@ import {
   type ExecutableIdentity,
   type UsageReading,
 } from "./acp-manifest.js";
+import { resolveAcpAgentHome as agentHome } from "./acp-manifest.server.js";
 import {
   claimRunnerLock,
   hasCode,
@@ -50,6 +53,7 @@ import { LaunchFailure, signalGroup } from "./runner.js";
 const lockName = ".runner.lock";
 const lastSessionName = ".acp-last-session";
 const capabilitiesName = ".acp-capabilities";
+const legacyAgyPrefix = `${antigravity1Manifest.name}:`;
 const MAX_EVENTS_PER_SESSION = 500;
 const MAX_SHUTDOWN_CLEANUP_ATTEMPTS = 3;
 const SHUTDOWN_CLEANUP_RETRY_DELAY_MS = 50;
@@ -61,6 +65,7 @@ export type AcpActiveSession = {
   pid: number;
   home: string;
   manifest: AcpAdapterManifest;
+  codexQuotaContext?: string;
   abortController: AbortController;
   settled: Promise<void>;
   stopPromise?: Promise<void>;
@@ -184,6 +189,7 @@ function resumeEvidenceKey(
     } else {
       codexExecutable = resolveBundledCodexFile(executable, "@openai/codex/bin/codex.js");
     }
+    if (!codexExecutable) return undefined;
     const codexHome = resolve(home, childEnv.CODEX_HOME || join(childEnv.HOME || userInfo().homedir, ".codex"));
     let storeIdentity = [codexHome];
     try {
@@ -195,8 +201,8 @@ function resumeEvidenceKey(
       if (!hasCode(error, "ENOENT") || childEnv.CODEX_HOME) throw error;
     }
 
-    const codexIdentity = codexExecutable && codexFileIdentity(codexExecutable);
-    const nativeExecutable = codexExecutable && codexNativeExecutable(codexExecutable);
+    const codexIdentity = codexFileIdentity(codexExecutable);
+    const nativeExecutable = codexNativeExecutable(codexExecutable);
     const nativeIdentity = nativeExecutable && codexFileIdentity(nativeExecutable);
     return `${manifest.name}:${createHash("sha256")
       .update(JSON.stringify([wrapperKey, override || null, codexIdentity, nativeIdentity, storeIdentity]))
@@ -209,16 +215,6 @@ function resumeEvidenceKey(
 
 function agentsRoot(env: NodeJS.ProcessEnv): string {
   return resolveAgentsRoot({ AGENTS_ROOT: env.AGENTS_HOME?.trim() || env.AGENTS_ROOT });
-}
-
-function agentHome(env: NodeJS.ProcessEnv, agent: string): string | undefined {
-  if (!AGENT_NAME_RE.test(agent)) return undefined;
-  try {
-    const home = join(realpathSync(agentsRoot(env)), agent);
-    return lstatSync(home).isDirectory() ? home : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function homeWantsAcp(home: string): boolean {
@@ -244,7 +240,12 @@ type ResumeEvidence = { supported: boolean; executableKey: string };
 type Checkpoint = { sessionId: string; fileKey: string; evidence?: ResumeEvidence };
 const MAX_CHECKPOINT_BYTES = 512;
 
-function readCheckpointFile(file: string): { text: string; fileKey: string } | undefined {
+// Device, inode and mtime are stable when the staged file is renamed.
+function checkpointBinding(stat: Stats): string {
+  return `${stat.dev}:${stat.ino}:${stat.mtimeMs}`;
+}
+
+function readCheckpointFile(file: string): { text: string; fileKey: string; binding: string } | undefined {
   try {
     const stat = lstatSync(file, { throwIfNoEntry: false });
     if (!stat || !stat.isFile() || stat.nlink > 1 || stat.size > MAX_CHECKPOINT_BYTES) return undefined;
@@ -254,9 +255,11 @@ function readCheckpointFile(file: string): { text: string; fileKey: string } | u
       if (!fdStat.isFile() || fdStat.nlink > 1 || fdStat.size > MAX_CHECKPOINT_BYTES) return undefined;
       const buf = Buffer.allocUnsafe(MAX_CHECKPOINT_BYTES);
       const n = readSync(fd, buf, 0, buf.length, 0);
+      const binding = checkpointBinding(fdStat);
       return {
         text: buf.subarray(0, n).toString("utf8").replace(/\r?\n$/, ""),
-        fileKey: `${fdStat.dev}:${fdStat.ino}:${fdStat.mtimeMs}:${fdStat.ctimeMs}`,
+        fileKey: `${binding}:${fdStat.ctimeMs}`,
+        binding,
       };
     } finally {
       closeSync(fd);
@@ -270,15 +273,29 @@ function validSessionId(value: string): boolean {
   return value.length > 0 && value.length <= 128 && !/[^ -~]/.test(value);
 }
 
-function parseResumeEvidence(text: string, legacyFileKey?: string): ResumeEvidence | undefined {
+function parseResumeEvidence(text: string, checkpoint?: { fileKey: string; binding: string }): ResumeEvidence | undefined {
   try {
     const parsed = JSON.parse(text) as (Partial<ResumeEvidence> & { checkpointKey?: string }) | null;
-    if (!parsed || typeof parsed.supported !== "boolean" || typeof parsed.executableKey !== "string" ||
-        (legacyFileKey !== undefined && parsed.checkpointKey !== legacyFileKey)) return undefined;
+    if (!parsed || typeof parsed.supported !== "boolean" || typeof parsed.executableKey !== "string") return undefined;
+    if (checkpoint) {
+      // Only the original Antigravity reader wrote evidence without a binding.
+      if (parsed.checkpointKey === undefined) {
+        return { supported: parsed.supported, executableKey: legacyAgyPrefix + parsed.executableKey };
+      }
+      if (parsed.checkpointKey !== checkpoint.binding && parsed.checkpointKey !== checkpoint.fileKey) return undefined;
+    }
     return { supported: parsed.supported, executableKey: parsed.executableKey };
   } catch {
     return undefined;
   }
+}
+
+function rollbackExecutableKey(key: string): string {
+  return key.startsWith(legacyAgyPrefix) ? key.slice(legacyAgyPrefix.length) : key;
+}
+
+function matchesResumeEvidence(evidence: ResumeEvidence, key: string | undefined): boolean {
+  return key !== undefined && (evidence.executableKey === key || evidence.executableKey === rollbackExecutableKey(key));
 }
 
 function readStoredSession(home: string): Checkpoint | undefined {
@@ -286,16 +303,15 @@ function readStoredSession(home: string): Checkpoint | undefined {
     const file = literalSessionFile(home);
     const stored = readCheckpointFile(file);
     if (!stored) return undefined;
-    // The first line preserves printable session IDs verbatim. New checkpoints
-    // carry their evidence on line two. Legacy sidecars must match the old inode.
+    // Keep reading the intermediate format that embedded evidence on line two.
     const [sessionId, evidenceLine, ...extra] = stored.text.split(/\r?\n/);
     if (!sessionId || !validSessionId(sessionId) || extra.length > 0) return undefined;
     let evidence: ResumeEvidence | undefined;
     if (evidenceLine !== undefined) {
       evidence = parseResumeEvidence(evidenceLine);
     } else {
-      const legacy = readCheckpointFile(join(dirname(file), capabilitiesName));
-      if (legacy) evidence = parseResumeEvidence(legacy.text, stored.fileKey);
+      const sidecar = readCheckpointFile(join(dirname(file), capabilitiesName));
+      if (sidecar) evidence = parseResumeEvidence(sidecar.text, stored);
     }
     return { sessionId, fileKey: stored.fileKey, evidence };
   } catch {
@@ -318,7 +334,27 @@ function clearStoredSessionId(home: string, expected: Checkpoint): void {
   }
 }
 
-/** Publish the session ID and resume evidence together after a complete write. */
+function stageCheckpointFile(tmp: string, bytes: Buffer): string {
+  const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+  const fd = openSync(tmp, flags, 0o600);
+  try {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (written <= 0 || offset + written > bytes.length) {
+        throw new Error("Short write while persisting ACP session checkpoint");
+      }
+      offset += written;
+    }
+    const stat = fstatSync(fd);
+    if (stat.size !== bytes.length) throw new Error("Truncated write while persisting ACP session checkpoint");
+    return checkpointBinding(stat);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Publish a checkpoint the original Antigravity reader can still load. */
 function writeStoredCheckpoint(
   home: string,
   sessionId: string,
@@ -328,41 +364,44 @@ function writeStoredCheckpoint(
   if (!validSessionId(sessionId)) return;
   try {
     const file = literalSessionFile(home);
-    const existing = lstatSync(file, { throwIfNoEntry: false });
-    if (existing && (!existing.isFile() || existing.nlink > 1)) return;
-    const bytes = Buffer.from(sessionId + "\n" + JSON.stringify(evidence) + "\n", "utf8");
-    if (bytes.length > MAX_CHECKPOINT_BYTES) return;
+    const sidecar = join(dirname(file), capabilitiesName);
+    const idStat = lstatSync(file, { throwIfNoEntry: false });
+    const sidecarStat = lstatSync(sidecar, { throwIfNoEntry: false });
+    if ((idStat && (!idStat.isFile() || idStat.nlink > 1)) ||
+        (sidecarStat && (!sidecarStat.isFile() || sidecarStat.nlink > 1))) return;
 
-    const tmp = `${file}.tmp.${randomUUID()}`;
-    const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
-    const fd = openSync(tmp, flags, 0o600);
-    let renamed = false;
+    const suffix = randomUUID();
+    const tmp = `${file}.tmp.${suffix}`;
+    const tmpSidecar = `${sidecar}.tmp.${suffix}`;
+    const previousSidecar = `${sidecar}.previous.${suffix}`;
     try {
-      try {
-        let offset = 0;
-        while (offset < bytes.length) {
-          const written = writeSync(fd, bytes, offset, bytes.length - offset, offset);
-          if (written <= 0 || offset + written > bytes.length) {
-            throw new Error("Short write while persisting ACP session checkpoint");
-          }
-          offset += written;
-        }
-        if (fstatSync(fd).size !== bytes.length) {
-          throw new Error("Truncated write while persisting ACP session checkpoint");
-        }
-      } finally {
-        closeSync(fd);
-      }
+      const checkpointKey = stageCheckpointFile(tmp, Buffer.from(sessionId + "\n", "utf8"));
+      const bytes = Buffer.from(JSON.stringify({
+        supported: evidence.supported,
+        executableKey: rollbackExecutableKey(evidence.executableKey),
+        checkpointKey,
+      }) + "\n", "utf8");
+      if (bytes.length > MAX_CHECKPOINT_BYTES) return;
+      stageCheckpointFile(tmpSidecar, bytes);
       if (expected && readStoredSession(home)?.fileKey !== expected.fileKey) return;
-      renameSync(tmp, file);
-      renamed = true;
+
+      // Retire stale evidence before replacing the ID because older readers
+      // do not check the binding. An interrupted publication fails closed.
+      if (sidecarStat) renameSync(sidecar, previousSidecar);
+      try {
+        renameSync(tmp, file);
+      } catch (error) {
+        if (sidecarStat) renameSync(previousSidecar, sidecar);
+        throw error;
+      }
+      renameSync(tmpSidecar, sidecar);
     } finally {
-      if (!renamed) {
-        try { unlinkSync(tmp); } catch { /* ignore cleanup error */ }
+      for (const staged of [tmp, tmpSidecar, previousSidecar]) {
+        try { unlinkSync(staged); } catch { /* ignore cleanup error */ }
       }
     }
   } catch {
-    // Failed writes leave the previous checkpoint and its evidence together.
+    // Staging failures leave the previous checkpoint and evidence in place.
   }
 }
 
@@ -412,8 +451,7 @@ export class AcpRunnerRegistry {
 
   usageReading(agent: string): UsageReading {
     const session = this.session(agent);
-    const manifest = session && "manifest" in session ? session.manifest : undefined;
-    return readAcpUsageReading(this.env, agent, this.now(), manifest);
+    return readAcpUsageReading(this.env, agent, this.now(), session && "manifest" in session ? session : undefined);
   }
 
   canControl(agent: string): boolean {
@@ -484,7 +522,7 @@ export class AcpRunnerRegistry {
       const manifest = this.options.manifest ?? resolveAcpManifestForAgent(this.env, agent);
       if (!manifest) return false;
       const currentExec = resolveAcpExecutable(manifest.executableName, this.env, home);
-      return resumeEvidenceKey(manifest, currentExec, statExecutableIdentity(currentExec), home, this.env) === recorded.executableKey;
+      return matchesResumeEvidence(recorded, resumeEvidenceKey(manifest, currentExec, statExecutableIdentity(currentExec), home, this.env));
     } catch {
       return false;
     }
@@ -674,7 +712,7 @@ export class AcpRunnerRegistry {
           throw new LaunchFailure("start-failed", "No valid saved session checkpoint to resume.");
         }
         const recorded = resumeCheckpoint.evidence;
-        if (!recorded?.supported || recorded.executableKey !== adapterKey) {
+        if (!recorded?.supported || !matchesResumeEvidence(recorded, adapterKey)) {
           throw new LaunchFailure(
             "start-failed",
             "Saved session checkpoint cannot be resumed with this runtime, executable or session store.",
@@ -698,6 +736,7 @@ export class AcpRunnerRegistry {
       throw error;
     }
 
+    activeSession.codexQuotaContext = acpQuotaContext(manifest, launchEnv, home);
     const adapter: AcpAdapter = {
       executable,
       args: manifest.args,
@@ -707,7 +746,7 @@ export class AcpRunnerRegistry {
       displayName: manifest.displayName,
       authHint: manifest.authHint,
       envDefaults: manifest.envDefaults,
-      readUsage: () => readAcpUsageReading(this.env, agent, this.now(), manifest),
+      readUsage: () => readAcpUsageReading(this.env, agent, this.now(), activeSession),
     };
 
     const sessionOptions = {
@@ -768,8 +807,8 @@ export class AcpRunnerRegistry {
     }
     if (session.negotiated && !session.supportsResume?.()) {
       const checkpoint = readStoredSession(home);
-      if (checkpoint?.evidence?.supported && checkpoint.evidence.executableKey === adapterKey) {
-        writeStoredCheckpoint(home, checkpoint.sessionId, { ...checkpoint.evidence, supported: false }, checkpoint);
+      if (adapterKey && checkpoint?.evidence?.supported && matchesResumeEvidence(checkpoint.evidence, adapterKey)) {
+        writeStoredCheckpoint(home, checkpoint.sessionId, { executableKey: adapterKey, supported: false }, checkpoint);
       }
     }
     if (terminal) {

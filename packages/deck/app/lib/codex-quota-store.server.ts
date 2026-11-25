@@ -53,6 +53,7 @@ const SnapshotSchema = z.object({
 
 const QuotaStateSchema = z.object({
   version: z.literal(1),
+  quotaContext: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   status: z.enum([
     "UNKNOWN",
     "BLOCKED_CONFIRMED",

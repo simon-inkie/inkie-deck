@@ -59,6 +59,7 @@ export interface AccountRateLimits {
 
 export interface QuotaState {
   version: 1;
+  quotaContext?: string;
   status: QuotaStatus;
   observedAt: number | null;
   source: "none" | "full_read" | "sparse_update" | "clock" | "probe";
@@ -269,29 +270,28 @@ export function reduceQuotaState(
       : withSnapshot;
   }
 
+  const available = !hasExhaustedWindow(snapshot) && hasAvailableEvidence(snapshot);
   if (
     previous.status === "BLOCKED_CONFIRMED" ||
-    previous.status === "RECOVERY_CANDIDATE" ||
     previous.status === "PROBING"
   ) {
-    if (!hasAvailableEvidence(snapshot)) {
-      return { ...previous, observedAt: event.observedAt, source, snapshot };
-    }
     return {
       ...previous,
-      status: "RECOVERY_CANDIDATE",
+      status: available ? "RECOVERY_CANDIDATE" : previous.status,
       observedAt: event.observedAt,
       source,
       snapshot,
     };
   }
 
+  if (previous.status === "RECOVERY_CANDIDATE" && !available) {
+    return { ...previous, observedAt: event.observedAt, source, snapshot };
+  }
+
   return {
     ...previous,
-    status:
-      hasExhaustedWindow(snapshot) || !hasAvailableEvidence(snapshot)
-        ? "UNKNOWN"
-        : "AVAILABLE_CONFIRMED",
+    // A second full read with positive evidence confirms recovery without a prompt.
+    status: available ? "AVAILABLE_CONFIRMED" : "UNKNOWN",
     observedAt: event.observedAt,
     source,
     blockedReason: null,

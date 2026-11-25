@@ -1,7 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import { userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
 import readline from "node:readline";
 import { z } from "zod";
 import {
+  initialQuotaState,
   reduceQuotaState,
   type AccountRateLimits,
   type QuotaState,
@@ -85,6 +90,10 @@ const SparseUpdateSchema = z
   .strip();
 const MAX_STDERR_BYTES = 4096;
 const STDERR_CLOSE_GRACE_MS = 100;
+const MAX_REFRESH_INTERVAL_MS = 5 * 60_000;
+const MIN_REFRESH_INTERVAL_MS = 1_000;
+const REQUEST_TIMEOUT_MS = 15_000;
+export const DEFAULT_CODEX_QUOTA_STALE_MS = 15 * 60_000;
 const SAFE_SPAWN_ERROR_CODES = [
   "ENOENT", "EACCES", "EPERM", "ENOEXEC", "EAGAIN", "EMFILE", "ENFILE", "ENOMEM", "ENOTDIR",
   "ERR_INVALID_ARG_VALUE",
@@ -112,16 +121,43 @@ export function codexQuotaTelemetryEnabled(env: Env): boolean {
   return value === "1" || value === "true";
 }
 
+export function codexQuotaStaleAfterMs(env: Env): number {
+  const parsed = Number(env.MC_CODEX_QUOTA_STALE_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CODEX_QUOTA_STALE_MS;
+}
+
+function observerEnv(env: Env): Env {
+  const codexHome = env.MC_CODEX_QUOTA_CODEX_HOME?.trim();
+  return codexHome ? { ...env, CODEX_HOME: codexHome } : { ...env };
+}
+
+/** Identify a local login store without persisting its path or credentials. */
+export function codexQuotaContext(env: Env, cwd: string): string | undefined {
+  if (env.CODEX_API_KEY || env.OPENAI_API_KEY) return undefined;
+  try {
+    const home = env.CODEX_HOME || join(env.HOME || userInfo().homedir, ".codex");
+    const directory = realpathSync(isAbsolute(home) ? home : cwd + "/" + home);
+    const info = statSync(directory, { bigint: true });
+    if (info.isDirectory()) {
+      return createHash("sha256").update(JSON.stringify([directory, String(info.dev), String(info.ino)])).digest("hex");
+    }
+  } catch {
+    // An unresolvable store cannot be matched to an ACP login.
+  }
+  return undefined;
+}
+
+export function observerQuotaContext(env: Env): string | undefined {
+  return codexQuotaContext(observerEnv(env), process.cwd());
+}
+
 class StdioAppServerConnection implements AppServerConnection {
   private lineHandler: (line: string) => void = () => {};
   private closeHandler: (error?: Error) => void = () => {};
   private closed = false;
   private readonly child: ChildProcess;
 
-  constructor(env: Env) {
-    const childEnv: NodeJS.ProcessEnv = { ...env };
-    const codexHome = env["MC_CODEX_QUOTA_CODEX_HOME"]?.trim();
-    if (codexHome) childEnv["CODEX_HOME"] = codexHome;
+  constructor(childEnv: Env) {
     try {
       this.child = spawn("codex", ["app-server", "--stdio"], {
         env: childEnv,
@@ -209,15 +245,18 @@ interface ObserverOptions {
 export class CodexQuotaObserver {
   private readonly env: Env;
   private readonly store: QuotaStore;
-  private readonly connectAppServer: ConnectAppServer;
+  private readonly connectAppServer: (env: Env) => AppServerConnection;
   private readonly now: () => number;
+  private readonly refreshIntervalMs: number;
   private readonly reconnectDelayMs: number;
   private readonly scheduleReconnect: (callback: () => void, delayMs: number) => unknown;
   private readonly cancelReconnect: (handle: unknown) => void;
   private readonly onError: (error: Error) => void;
   private state: QuotaState;
+  private quotaContext: string | undefined;
   private connection: AppServerConnection | null = null;
   private reconnectHandle: unknown;
+  private requestTimer: NodeJS.Timeout | undefined;
   private stopped = true;
   private nextId = 1;
   private initializeId: number | null = null;
@@ -227,8 +266,12 @@ export class CodexQuotaObserver {
     this.env = options.env ?? process.env;
     this.store = options.store ?? FileCodexQuotaStore.fromEnv(this.env);
     this.connectAppServer =
-      options.connect ?? (() => new StdioAppServerConnection(this.env));
+      options.connect ?? ((env) => new StdioAppServerConnection(env));
     this.now = options.now ?? Date.now;
+    this.refreshIntervalMs = Math.max(
+      MIN_REFRESH_INTERVAL_MS,
+      Math.min(MAX_REFRESH_INTERVAL_MS, codexQuotaStaleAfterMs(this.env) / 2),
+    );
     this.reconnectDelayMs = options.reconnectDelayMs ?? 5_000;
     this.scheduleReconnect =
       options.scheduleReconnect ?? ((callback, delay) => setTimeout(callback, delay));
@@ -252,18 +295,24 @@ export class CodexQuotaObserver {
       this.cancelReconnect(this.reconnectHandle);
       this.reconnectHandle = undefined;
     }
-    this.connection?.close();
+    clearTimeout(this.requestTimer);
+    const connection = this.connection;
     this.connection = null;
+    connection?.close();
   }
 
   private openConnection(): void {
     try {
-      const connection = this.connectAppServer();
+      const env = observerEnv(this.env);
+      this.quotaContext = codexQuotaContext(env, process.cwd());
+      if (this.state.quotaContext !== this.quotaContext) this.state = initialQuotaState();
+      const connection = this.connectAppServer(env);
       this.connection = connection;
       this.initializeId = this.nextId++;
       this.fullReadId = null;
       connection.onLine((line) => this.handleLine(connection, line));
       connection.onClose((error) => this.handleClose(connection, error));
+      this.awaitResponse(connection, "initialize");
       connection.send({
         id: this.initializeId,
         method: "initialize",
@@ -277,8 +326,33 @@ export class CodexQuotaObserver {
         },
       });
     } catch (error) {
-      this.report(error);
-      this.queueReconnect();
+      if (this.connection) this.resetConnection(this.connection, error);
+      else {
+        this.report(error);
+        this.queueReconnect();
+      }
+    }
+  }
+
+  private scheduleRequestTask(callback: () => void, delayMs: number): void {
+    clearTimeout(this.requestTimer);
+    this.requestTimer = setTimeout(callback, delayMs);
+    this.requestTimer.unref();
+  }
+
+  private awaitResponse(connection: AppServerConnection, method: string): void {
+    this.scheduleRequestTask(() => {
+      this.resetConnection(connection, new CodexQuotaLifecycleError(`Codex quota ${method} timed out.`));
+    }, Math.min(REQUEST_TIMEOUT_MS, this.refreshIntervalMs));
+  }
+
+  private readRateLimits(connection: AppServerConnection): void {
+    this.fullReadId = this.nextId++;
+    this.awaitResponse(connection, "account/rateLimits/read");
+    try {
+      connection.send({ id: this.fullReadId, method: "account/rateLimits/read" });
+    } catch (error) {
+      this.resetConnection(connection, error);
     }
   }
 
@@ -294,21 +368,30 @@ export class CodexQuotaObserver {
     if (typeof frame !== "object" || frame === null) return;
     const message = frame as { id?: unknown; method?: unknown; params?: unknown; result?: unknown };
 
-    if (message.id === this.initializeId && "result" in message) {
-      connection.send({ method: "initialized" });
-      this.fullReadId = this.nextId++;
-      connection.send({ id: this.fullReadId, method: "account/rateLimits/read" });
+    if (this.initializeId !== null && message.id === this.initializeId) {
+      this.initializeId = null;
+      if (!("result" in message)) {
+        this.resetConnection(connection, new CodexQuotaLifecycleError("Codex quota initialize failed."));
+        return;
+      }
+      try {
+        connection.send({ method: "initialized" });
+        this.readRateLimits(connection);
+      } catch (error) {
+        this.resetConnection(connection, error);
+      }
       return;
     }
 
-    if (message.id === this.fullReadId && "result" in message) {
-      const parsed = FullReadSchema.safeParse(message.result);
-      if (!parsed.success) {
-        this.report(new Error("Malformed account/rateLimits/read response"));
-        return;
-      }
-      this.applyFullRead(parsed.data);
+    if (this.fullReadId !== null && message.id === this.fullReadId) {
       this.fullReadId = null;
+      const parsed = FullReadSchema.safeParse(message.result);
+      if (parsed.success) this.applyFullRead(parsed.data);
+      else this.report(new CodexQuotaLifecycleError(
+        "error" in message ? "Codex quota account/rateLimits/read failed." : "Malformed account/rateLimits/read response",
+      ));
+      const delayMs = parsed.success ? this.refreshIntervalMs : Math.min(this.reconnectDelayMs, this.refreshIntervalMs);
+      this.scheduleRequestTask(() => this.readRateLimits(connection), delayMs);
       return;
     }
 
@@ -324,7 +407,7 @@ export class CodexQuotaObserver {
 
   private applyFullRead(payload: AccountRateLimits): void {
     try {
-      this.state = reduceQuotaState(this.state, {
+      this.state = reduceQuotaState({ ...this.state, quotaContext: this.quotaContext }, {
         type: "full_read",
         payload,
         observedAt: this.now(),
@@ -337,7 +420,7 @@ export class CodexQuotaObserver {
 
   private applySparseUpdate(payload: RateLimitSnapshot): void {
     try {
-      this.state = reduceQuotaState(this.state, {
+      this.state = reduceQuotaState({ ...this.state, quotaContext: this.quotaContext }, {
         type: "sparse_update",
         payload,
         observedAt: this.now(),
@@ -350,11 +433,18 @@ export class CodexQuotaObserver {
 
   private handleClose(connection: AppServerConnection, error?: Error): void {
     if (connection !== this.connection) return;
+    clearTimeout(this.requestTimer);
     this.connection = null;
     this.initializeId = null;
     this.fullReadId = null;
     if (error) this.report(error);
     this.queueReconnect();
+  }
+
+  private resetConnection(connection: AppServerConnection, error: unknown): void {
+    if (connection !== this.connection) return;
+    this.handleClose(connection, error instanceof Error ? error : new Error(String(error)));
+    connection.close();
   }
 
   private queueReconnect(): void {

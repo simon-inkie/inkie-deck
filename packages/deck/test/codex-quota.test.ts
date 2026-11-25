@@ -169,7 +169,7 @@ describe("Codex quota reducer", () => {
     expect(after.status).toBe("RECOVERY_CANDIDATE");
   });
 
-  it("requires a successful probe to confirm recovery after a block", () => {
+  it("confirms recovery after a successful probe", () => {
     const candidate = {
       ...initialQuotaState(),
       status: "RECOVERY_CANDIDATE" as const,

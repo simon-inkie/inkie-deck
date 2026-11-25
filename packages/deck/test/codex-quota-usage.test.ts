@@ -71,11 +71,12 @@ describe("Codex ACP usage mapping", () => {
     mkdirSync(home);
     writeFileSync(join(home, ".runner"), "acp\n");
     writeFileSync(join(home, ".runtime"), "codex\n");
-    const env = { AGENTS_HOME: root, DATA_ROOT: root, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
+    const env = { AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: home, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
     writeFileSync(join(root, "codex-quota.json"), "malformed");
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
-    const state = { ...initialQuotaState(), status: "AVAILABLE_CONFIRMED" as const, observedAt: now,
+    const state = { ...initialQuotaState(), quotaContext: observer.observerQuotaContext(env),
+      status: "AVAILABLE_CONFIRMED" as const, observedAt: now,
       snapshot: { primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: null } } };
     writeFileSync(join(root, "codex-quota.json"), JSON.stringify(state));
     expect(readAcpUsageReading(env, agent, now).state).toBe("ok");
@@ -88,6 +89,35 @@ describe("Codex ACP usage mapping", () => {
     expect(readAcpUsageReading({ ...env, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "0" }, agent, now)).toEqual({ ...unknown, source: "codex-azure" });
     writeFileSync(join(home, ".runtime"), "agy\n");
     expect(readAcpUsageReading(env, agent, now)).toEqual({ ...unknown, source: "antigravity" });
+  });
+
+  it("shows quota only from the Codex ACP login store", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
+    const home = join(root, agent);
+    const isolated = join(root, "isolated-login");
+    mkdirSync(home);
+    mkdirSync(isolated);
+    writeFileSync(join(home, ".runner"), "acp\n");
+    writeFileSync(join(home, ".runtime"), "codex\n");
+    const env = {
+      AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: home, MC_ACP_RUNNER: "1",
+      MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1", MC_CODEX_QUOTA_CODEX_HOME: isolated,
+    };
+    const state = {
+      ...initialQuotaState(), status: "AVAILABLE_CONFIRMED", observedAt: now,
+      snapshot: { primary: { usedPercent: 20 } },
+    };
+    const quotaFile = join(root, "codex-quota.json");
+    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: observer.observerQuotaContext(env) }));
+    expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
+    const matching = { ...env, CODEX_HOME: isolated };
+    expect(readAcpUsageReading(matching, agent, now).state).toBe("ok");
+
+    // The observer configuration can change before the next sample arrives.
+    expect(readAcpUsageReading({ ...env, MC_CODEX_QUOTA_CODEX_HOME: home }, agent, now)).toEqual(unknown);
+    writeFileSync(quotaFile, JSON.stringify(state));
+    expect(readAcpUsageReading(matching, agent, now)).toEqual(unknown);
   });
 
   it("maps stale snapshots built by the real display model conservatively", () => {

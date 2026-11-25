@@ -306,7 +306,7 @@ function agentsRoot(env: NodeJS.ProcessEnv): string {
   return resolveAgentsRoot({ AGENTS_ROOT: env.AGENTS_HOME?.trim() || env.AGENTS_ROOT });
 }
 
-function agentHome(env: NodeJS.ProcessEnv, agent: string): string | undefined {
+export function resolveAcpAgentHome(env: NodeJS.ProcessEnv, agent: string): string | undefined {
   if (!AGENT_NAME_RE.test(agent)) return undefined;
   try {
     const home = join(realpathSync(agentsRoot(env)), agent);
@@ -324,7 +324,7 @@ function readAgentFile(file: string): string | undefined {
 }
 
 export function resolveAcpManifestForAgent(env: NodeJS.ProcessEnv, agent: string): AcpAdapterManifest | undefined {
-  const home = agentHome(env, agent);
+  const home = resolveAcpAgentHome(env, agent);
   if (!home) return undefined;
   try {
     if (readAgentFile(join(home, ".runner")) !== "acp") return undefined;

@@ -24,11 +24,16 @@ Flows, releases, pushes and pull requests.
 - Sessions are uncapped across homes. Per-home busy, lock, orphan and recovery
   guards, global recovery failure and shutdown gates remain fail closed.
 - Resume binds capability evidence to the saved checkpoint, executable and
-  manifest identity.
+  manifest identity. Codex Resume requires a resolvable backend. Antigravity
+  accepts original checkpoints and writes checkpoints the original reader
+  can load.
 - Environment defaults cannot forward reserved application variables.
 - Azure quota is unknown from codex-azure. Missing, malformed, telemetry-off,
   stale and UNKNOWN quota is unknown from codex. Fresh confirmed blocked is
   exhausted, WARN is low, OK is ok. Fresh windows retain nullable reset times.
+- Codex ACP quota requires a matching observer login store and saved snapshot.
+  The observer refreshes idle connections and confirms recovery after two
+  available full reads.
 - Filesystem reads stay behind server helpers; routes receive UsageReading.
 
 ## Offline Test Matrix
@@ -242,21 +247,57 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - The worktree changes remain unstaged. Git could not create the index lock
   on the read-only metadata mount for the signed-off commit.
 
+### 2026-11-25: PR #249 triage follow-up
+
+- Devin 4701575237: Refresh quota after at most five minutes with the default
+  staleness setting. Shorter settings shorten the interval to half the
+  staleness window, with a one-second floor. Retry malformed or failed
+  responses and reconnect on timeouts.
+- Independent quota recovery: Two available full reads move a confirmed block
+  through candidacy to availability. Sparse updates alone leave recovery
+  unconfirmed.
+- Devin 4701575353: Match the active or configured ACP login store to the
+  observer configuration and the snapshot's hashed store identity. Older
+  snapshots without that identity yield unknown in ACP until a fresh sample.
+- Devin 4701575495: A Codex shim with an unresolved backend can Start, with
+  Resume gated on verifiable executable identity.
+- Devin 4701575741: Read original Antigravity sidecars and intermediate
+  embedded evidence. New checkpoints use a single-line session ID and a
+  bound sidecar with an Antigravity key compatible with rollback. Both files
+  are staged before publication. Interrupted publication fails closed.
+- Follow-up (Devin 4701575915): Run the operator-approved saved-session Codex
+  Resume check in Manual Live Verification. The recorded live run covered
+  version probe, Start, prompt and shutdown. Verify that Resume reopens the
+  saved session ID and record the adapter version and result.
+- Verification: Typecheck and 137 focused Vitest tests passed. The broader
+  run reported 11 tmux and ACP subprocess failures and one unhandled rejection.
+  The same cases reproduced on the unmodified PR head. The requested
+  temporary directory was on a read-only mount, so the gates used a disposable
+  directory under /tmp.
+- Supersedes the earlier fail-closed upgrade for original Antigravity
+  checkpoints and the embedded checkpoint write format.
+- Changes remain in the working tree.
+
 ## Exact changed files
 
 - `.specs/154-acp-slice-3/SPEC.md`
 - `packages/deck/app/components/AcpThreadView.tsx`
 - `packages/deck/app/lib/acp-session.server.ts`
 - `packages/deck/app/lib/acp-usage.server.ts`
+- `packages/deck/app/lib/codex-quota-display.server.ts`
 - `packages/deck/app/lib/codex-quota-observer.server.ts`
+- `packages/deck/app/lib/codex-quota-store.server.ts`
 - `packages/deck/app/lib/codex-quota-usage.ts`
+- `packages/deck/app/lib/codex-quota.ts`
 - `packages/deck/app/lib/runner/acp-manifest.server.ts`
 - `packages/deck/app/lib/runner/acp-manifest.ts`
 - `packages/deck/app/lib/runner/acp-registry.server.ts`
 - `packages/deck/app/routes/api.acp.tsx`
 - `packages/deck/app/routes/threads.$agent.tsx`
 - `packages/deck/test/acp-session.test.ts`
+- `packages/deck/test/codex-quota-observer.test.ts`
 - `packages/deck/test/codex-quota-usage.test.ts`
+- `packages/deck/test/codex-quota.test.ts`
 - `packages/deck/test/fixtures/acp-agent.mjs`
 - `packages/deck/test/runner/acp-manifest.test.ts`
 - `packages/deck/test/runner/acp-registry.test.ts`
