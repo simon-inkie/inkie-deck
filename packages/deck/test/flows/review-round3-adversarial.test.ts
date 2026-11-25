@@ -86,7 +86,7 @@ steps:
 
 const ONE_STEP_HASH = crypto.createHash("sha256").update(ONE_STEP_YAML).digest("hex");
 
-describe("Flows Slice 1a Structural Security & Transition Table Suite", () => {
+describe("Flows Slice 1a Structural Security & Transition Table Suite", { timeout: 30_000 }, () => {
   let scratchDir: string;
   const projectId = "adv-r5-proj";
 

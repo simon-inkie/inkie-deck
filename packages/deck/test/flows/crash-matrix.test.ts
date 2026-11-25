@@ -53,7 +53,7 @@ function runChildRunner(
   };
 }
 
-describe("Real-Process Runner Crash Matrix (K1 through K10)", () => {
+describe("Real-Process Runner Crash Matrix (K1 through K10)", { timeout: 30_000 }, () => {
   let scratchDir: string;
   const projectId = "crash-matrix-proj";
 

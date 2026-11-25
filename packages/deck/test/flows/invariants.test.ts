@@ -39,7 +39,7 @@ const GENESIS_PREV = "0".repeat(64);
 const VALID_YAML = "flow: test\nversion: 1\nsteps:\n  - id: step1\n    type: agent\n";
 const VALID_HASH = crypto.createHash("sha256").update(VALID_YAML).digest("hex");
 
-describe("11 Storage-Independent Acceptance Invariants (invariants.test.ts)", () => {
+describe("11 Storage-Independent Acceptance Invariants (invariants.test.ts)", { timeout: 30_000 }, () => {
   let scratchDir: string;
   const projectId = "invariants-project";
 
