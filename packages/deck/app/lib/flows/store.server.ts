@@ -1413,6 +1413,16 @@ class FlowsStoreImpl {
     return this.#getRunInternal(runId);
   }
 
+  public listRuns(): FlowRunRow[] {
+    this.#assertNotInTx();
+    if (this.#closed) {
+      throw new Error(`FlowsStore for project '${this.projectId}' is closed`);
+    }
+    return this.#db
+      .prepare(`SELECT * FROM flow_runs ORDER BY created_at DESC, run_id DESC`)
+      .all() as FlowRunRow[];
+  }
+
   #getPinnedFlowInternal(flowHash: string): Buffer | null {
     const row = this.#db.prepare(`SELECT bytes FROM pinned_flows WHERE hash = ?`).get(flowHash) as
       | { bytes: Buffer }
