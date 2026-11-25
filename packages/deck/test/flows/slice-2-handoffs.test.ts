@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
+import { buildDeterministicNotifyCardId } from "../../app/lib/flows/inbox-bridge.server.js";
 import { loadRunState } from "../../app/lib/flows/load-run.server.js";
 import { acquireOwnerLock } from "../../app/lib/flows/owner.server.js";
 import { readFlowCardStream } from "../../app/lib/flows/reader.server.js";
@@ -1256,5 +1257,153 @@ steps:
         actorId: "system",
       });
     }
+  }, 15_000);
+
+  it("D7: interrupting at K9_AFTER_JUDGEMENT after notify and resuming twice emits exactly one notice with judgement seq and hash", async () => {
+    const repo = new FileInboxRepository(inboxRoot);
+    const inbox = { inboxRoot, agentName, participantName, repo };
+    const runId = "run-d7-k9-notify-replay";
+    const twoStepFlow = `flow: d7_notify_replay
+version: 1
+title: D7 K9 notify replay flow
+limits:
+  max_attempts: 3
+  max_rewinds: 4
+  same_check_fail_limit: 3
+  step_timeout_min: 5
+  budget:
+    tokens: 5000
+    steps: 10
+steps:
+  - id: draft
+    type: agent
+    outputs: [draft_doc]
+  - id: publish
+    type: agent
+    outputs: [pub_doc]
+`;
+    planAndApproveRun({ projectId, runId, flowYaml: twoStepFlow, dataRoot });
+
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        inbox,
+        evaluateSignals: ({ step }) => (step.id === "draft" ? { flakyFlipCount: 1 } : {}),
+        onCrashPoint: (point) => {
+          if (point === "K9_AFTER_JUDGEMENT") {
+            throw new Error("SIMULATED_CRASH_K9_NOTIFY");
+          }
+        },
+      }),
+    ).rejects.toThrow("SIMULATED_CRASH_K9_NOTIFY");
+
+    const mid = loadRunState(projectId, runId, { dataRoot });
+    const notifyEv = mid.events.find(
+      (e) => e.type === "judgement" && e.stepId === "draft" && e.data.final === "notify",
+    );
+    expect(notifyEv).toBeDefined();
+    const store = openFlowsStore(projectId, { dataRoot, readonly: true });
+    const notifyRow = store.getEvents(runId).find((r) => r.seq === notifyEv!.seq);
+    store.close();
+    expect(notifyRow).toBeDefined();
+
+    const blocksBeforeResume = await repo.readBlocks(agentName, participantName);
+    expect(blocksBeforeResume.filter((b) => b.actionCard)).toHaveLength(0);
+
+    const resume1 = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(resume1.finalStatus).toBe("finished");
+    expect(resume1.terminalOutcome).toBe("done");
+
+    const resume2 = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(resume2.finalStatus).toBe("finished");
+    expect(resume2.terminalOutcome).toBe("done");
+
+    const blocksAfterResumes = await repo.readBlocks(agentName, participantName);
+    const noticeBlocks = blocksAfterResumes.filter((b) => b.actionCard);
+    expect(noticeBlocks).toHaveLength(1);
+    const expectedActionId = buildDeterministicNotifyCardId(runId, "draft", 1, "flaky_suspected");
+    expect(noticeBlocks[0]!.actionCard?.actionId).toBe(expectedActionId);
+    expect(noticeBlocks[0]!.rawMeta).toContain(`flow-head-seq: ${notifyRow!.seq}`);
+    expect(noticeBlocks[0]!.rawMeta).toContain(`flow-head-hash: ${notifyRow!.hash}`);
+  }, 15_000);
+
+  it("D7 (K4 recovery): crashing at K4 then K9_AFTER_JUDGEMENT during recovery replays exactly one notice across two resumes", async () => {
+    const repo = new FileInboxRepository(inboxRoot);
+    const inbox = { inboxRoot, agentName, participantName, repo };
+    const runId = "run-d7-k4-k9-notify-replay";
+    const twoStepFlow = `flow: d7_k4_notify_replay
+version: 1
+title: D7 K4+K9 notify replay flow
+limits:
+  max_attempts: 3
+  max_rewinds: 4
+  same_check_fail_limit: 3
+  step_timeout_min: 5
+  budget:
+    tokens: 5000
+    steps: 10
+steps:
+  - id: draft
+    type: agent
+    outputs: [draft_doc]
+  - id: publish
+    type: agent
+    outputs: [pub_doc]
+`;
+    planAndApproveRun({ projectId, runId, flowYaml: twoStepFlow, dataRoot });
+
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        inbox,
+        onCrashPoint: (point) => {
+          if (point === "K4_AFTER_OUTCOME") {
+            throw new Error("SIMULATED_CRASH_K4");
+          }
+        },
+      }),
+    ).rejects.toThrow("SIMULATED_CRASH_K4");
+
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        inbox,
+        evaluateSignals: ({ step }) => (step.id === "draft" ? { flakyFlipCount: 1 } : {}),
+        onCrashPoint: (point) => {
+          if (point === "K9_AFTER_JUDGEMENT") {
+            throw new Error("SIMULATED_CRASH_K9_IN_RECOVERY");
+          }
+        },
+      }),
+    ).rejects.toThrow("SIMULATED_CRASH_K9_IN_RECOVERY");
+
+    const mid = loadRunState(projectId, runId, { dataRoot });
+    const notifyEv = mid.events.find(
+      (e) => e.type === "judgement" && e.stepId === "draft" && e.data.final === "notify",
+    );
+    expect(notifyEv).toBeDefined();
+    const store = openFlowsStore(projectId, { dataRoot, readonly: true });
+    const notifyRow = store.getEvents(runId).find((r) => r.seq === notifyEv!.seq);
+    store.close();
+    expect(notifyRow).toBeDefined();
+
+    const blocksBeforeResume = await repo.readBlocks(agentName, participantName);
+    expect(blocksBeforeResume.filter((b) => b.actionCard)).toHaveLength(0);
+
+    const resume1 = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(resume1.finalStatus).toBe("finished");
+    expect(resume1.terminalOutcome).toBe("done");
+
+    const resume2 = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(resume2.finalStatus).toBe("finished");
+    expect(resume2.terminalOutcome).toBe("done");
+
+    const blocksAfterResumes = await repo.readBlocks(agentName, participantName);
+    const noticeBlocks = blocksAfterResumes.filter((b) => b.actionCard);
+    expect(noticeBlocks).toHaveLength(1);
+    const expectedActionId = buildDeterministicNotifyCardId(runId, "draft", 1, "flaky_suspected");
+    expect(noticeBlocks[0]!.actionCard?.actionId).toBe(expectedActionId);
+    expect(noticeBlocks[0]!.rawMeta).toContain(`flow-head-seq: ${notifyRow!.seq}`);
+    expect(noticeBlocks[0]!.rawMeta).toContain(`flow-head-hash: ${notifyRow!.hash}`);
   }, 15_000);
 });

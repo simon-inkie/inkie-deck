@@ -373,6 +373,55 @@ function getOccurrenceForAttempt(
   return 1;
 }
 
+async function replayCommittedNotifyCards(params: {
+  store: FlowsStore;
+  runId: string;
+  events: readonly FlowEvent[];
+  inbox: InboxBridgeTarget;
+  nowIso: string;
+}): Promise<void> {
+  const { store, runId, events, inbox, nowIso } = params;
+  const notifyJudgements = events.filter(
+    (ev): ev is Extract<FlowEvent, { type: "judgement" }> =>
+      ev.type === "judgement" && ev.data.final === "notify",
+  );
+  if (notifyJudgements.length === 0) return;
+
+  const hashBySeq = new Map<number, string>();
+  for (const row of store.getEvents(runId)) {
+    hashBySeq.set(row.seq, row.hash);
+  }
+
+  for (const ev of notifyJudgements) {
+    const headHash = hashBySeq.get(ev.seq);
+    if (!headHash) continue;
+    const occurrence = getOccurrenceForAttempt(events, ev.stepId, ev.attemptId);
+    const notifyReason =
+      ev.data.reasonCodes[0] ??
+      (ev.data.ruleHits.includes("stale_sha")
+        ? "stale_sha"
+        : ev.data.ruleHits.includes("on_fail_rewind")
+          ? "on_fail_rewind"
+          : "ok");
+    const actionId = buildDeterministicNotifyCardId(
+      runId,
+      ev.stepId,
+      occurrence,
+      notifyReason,
+    );
+    await emitNotifyCardToInbox({
+      target: inbox,
+      actionId,
+      runId,
+      headSeq: ev.seq,
+      headHash,
+      stepId: ev.stepId,
+      reasonCode: notifyReason,
+      nowIso,
+    });
+  }
+}
+
 function completeHandoffFollowUp(params: {
   store: FlowsStore;
   runId: string;
@@ -1009,6 +1058,17 @@ export async function runFlow(
       (flow.limits?.step_timeout_min ? Math.round(flow.limits.step_timeout_min * 60_000) : 5_000);
     let events = loaded.events;
     let state = loaded.state;
+
+    // 1b. Idempotently replay any committed judgement(notify) notices to inbox
+    if (options.inbox) {
+      await replayCommittedNotifyCards({
+        store,
+        runId,
+        events,
+        inbox: options.inbox,
+        nowIso: nowIso(),
+      });
+    }
 
     // 2. Halt cleanly on finished or stopped
     if (state.status === "finished" || state.status === "stopped") {
