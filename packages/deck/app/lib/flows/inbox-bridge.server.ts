@@ -429,3 +429,35 @@ export async function readDecisionCardResolution(
 
   return { status: "pending", cardPresent: true };
 }
+
+/**
+ * Idempotently supersede the latest open inbox decision card for `handoffId`.
+ * No-op if no card exists or if the card is already answered, dismissed, or superseded.
+ */
+export async function supersedeDecisionCardInInbox(
+  target: InboxBridgeTarget,
+  handoffId: string,
+  note: string,
+): Promise<{ superseded: boolean; decisionId: string | null }> {
+  const repo = getRepo(target);
+  const blocks = await repo.readBlocks(target.agentName, target.participantName);
+  const matching = findCardsForHandoff(blocks, handoffId);
+  if (matching.length === 0) {
+    return { superseded: false, decisionId: null };
+  }
+  const latestCard = matching[matching.length - 1]!.block.card!;
+  if (latestCard.superseded || latestCard.answered || latestCard.dismissed) {
+    return { superseded: false, decisionId: latestCard.decisionId };
+  }
+  const sanitizedNote = sanitizeInlineText(note);
+  const result = await repo.supersedeDecisionCard(
+    target.agentName,
+    target.participantName,
+    latestCard.decisionId,
+    sanitizedNote,
+  );
+  return {
+    superseded: "supersededBlock" in result,
+    decisionId: latestCard.decisionId,
+  };
+}

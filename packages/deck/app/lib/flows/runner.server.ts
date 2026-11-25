@@ -27,6 +27,7 @@ import {
   emitDecisionCardToInbox,
   emitNotifyCardToInbox,
   readDecisionCardResolution,
+  supersedeDecisionCardInInbox,
   type InboxBridgeTarget,
 } from "./inbox-bridge.server.js";
 import { loadRunState, verifyArtifactFileOnDisk } from "./load-run.server.js";
@@ -1090,19 +1091,44 @@ export async function runFlow(
       }
 
       if (state.activeHandoff) {
-        if (!options.inbox) {
-          store.checkpointPassive();
-          return {
-            runId,
-            finalStatus: state.status,
-            terminalOutcome: state.terminalOutcome,
-            terminalReason: state.terminalReason,
-            dispatchedSteps,
-            eventCount: events.length,
-          };
-        }
-
         const active = state.activeHandoff;
+        if (!options.inbox) {
+          if (active.expiresAt && nowDate().getTime() >= Date.parse(active.expiresAt)) {
+            const curHead = findHead(store, runId);
+            store.appendEvent({
+              v: 1,
+              runId,
+              seq: curHead.seq + 1,
+              eventId: nextEventId("ev_ret", curHead.seq + 1),
+              prev: curHead.hash,
+              at: nowIso(),
+              actor: "system",
+              type: "handoff_returned",
+              stepId: active.stepId,
+              attemptId: active.attemptId,
+              data: {
+                handoffId: active.handoffId,
+                choiceKey: "unanswered_expired",
+                resolution: "expired",
+                actorId: "system",
+              },
+            });
+            fireCrash("K_AFTER_HANDOFF_RETURNED");
+            const afterRet = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+            events = afterRet.events;
+            state = afterRet.state;
+          } else {
+            store.checkpointPassive();
+            return {
+              runId,
+              finalStatus: state.status,
+              terminalOutcome: state.terminalOutcome,
+              terminalReason: state.terminalReason,
+              dispatchedSteps,
+              eventCount: events.length,
+            };
+          }
+        } else {
         const stepDef = flow.steps.find((s) => s.id === active.stepId);
         const occ = getOccurrenceForAttempt(events, active.stepId, active.attemptId);
         const settledOutcome = events.some(
@@ -1264,12 +1290,17 @@ export async function runFlow(
             attemptId: active.attemptId,
             data: {
               handoffId: active.handoffId,
-              choiceKey: "expired",
+              choiceKey: "unanswered_expired",
               resolution: "expired",
               actorId: "system",
             },
           });
           fireCrash("K_AFTER_HANDOFF_RETURNED");
+          await supersedeDecisionCardInInbox(
+            options.inbox,
+            active.handoffId,
+            "Flow decision expired (on_unanswered)",
+          );
         } else {
           store.checkpointPassive();
           return {
@@ -1287,6 +1318,7 @@ export async function runFlow(
         events = afterRet.events;
         state = afterRet.state;
         void occ;
+        }
       }
     }
 
@@ -1328,6 +1360,13 @@ export async function runFlow(
             s.type === "handoff_sent" && s.data.handoffId === ev.data.handoffId,
         );
         if (sentEv) {
+          if (ev.data.resolution === "expired" && options.inbox) {
+            await supersedeDecisionCardInInbox(
+              options.inbox,
+              ev.data.handoffId,
+              "Flow decision expired (on_unanswered)",
+            );
+          }
           completeHandoffFollowUp({
             store,
             runId,
@@ -1436,12 +1475,262 @@ export async function runFlow(
       }
     }
 
-    // K4 recovery: record identical judgement without re-running step
+    // K4 recovery: re-evaluate step judgement cleanly without re-running step
     for (const att of passedResultAttempts) {
       const key = `${att.stepId}:${att.attemptId}`;
       if (!judgedAttempts.has(key)) {
+        const step = flow.steps.find((s) => s.id === att.stepId);
+        const occurrence = getOccurrenceForAttempt(events, att.stepId, att.attemptId);
+        const signals =
+          step && options.evaluateSignals
+            ? await options.evaluateSignals({
+                step,
+                attemptId: att.attemptId,
+                occurrence,
+                outcome: "passed",
+              })
+            : {};
+        const decision = step
+          ? evaluateStepJudgement({
+              flow,
+              step,
+              occurrence,
+              rewindsUsed: state.rewindsUsed,
+              outcome: "passed",
+              budgetUsed: state.budgetUsed,
+              signals,
+            })
+          : {
+              final: "continue" as const,
+              ruleHits: ["step_passed" as const],
+              reasonCodes: ["ok" as const],
+              engineTokens: 0,
+              shouldRewind: false,
+              shouldRerunCheck: false,
+            };
+
+        if (decision.final === "stop") {
+          const tsIso = nowIso();
+          const finReason = decision.reasonCodes.includes("budget_exceeded")
+            ? "ceiling_reached"
+            : "unrecoverable_failure";
+          store.appendChainedBatch(runId, [
+            (seq, prev) => ({
+              event: {
+                v: 1,
+                runId,
+                seq,
+                eventId: nextEventId("ev_judge", seq),
+                prev,
+                at: tsIso,
+                actor: "system",
+                type: "judgement",
+                stepId: att.stepId,
+                attemptId: att.attemptId,
+                data: {
+                  final: "stop",
+                  ruleHits: decision.ruleHits,
+                  reasonCodes: decision.reasonCodes,
+                  engineTokens: 0,
+                },
+              },
+            }),
+            (seq, prev) => ({
+              event: {
+                v: 1,
+                runId,
+                seq,
+                eventId: nextEventId("ev_fin", seq),
+                prev,
+                at: tsIso,
+                actor: "system",
+                type: "run_finished",
+                data: { outcome: "stopped", reasonCode: finReason },
+              },
+            }),
+          ]);
+          store.checkpointPassive();
+          const finalLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+          return {
+            runId,
+            finalStatus: finalLoaded.state.status,
+            terminalOutcome: finalLoaded.state.terminalOutcome,
+            terminalReason: finalLoaded.state.terminalReason,
+            dispatchedSteps,
+            eventCount: finalLoaded.events.length,
+          };
+        }
+
+        if (decision.final === "decide") {
+          const handoffId = buildDeterministicHandoffId(runId, att.stepId, occurrence);
+          const reason = decision.reasonCodes[0] ?? "decision_required";
+          const spec = step
+            ? getHandoffSpecForStep(flow, step, "passed", reason, nowDate())
+            : {
+                kind: "decision" as const,
+                target: "operator",
+                reasonCode: reason,
+                optionKeys: ["continue", "retry", "stop"],
+                expiresAt: undefined,
+                options: [
+                  { key: "continue", label: "Continue", detail: "Approve and continue flow" },
+                  { key: "retry", label: "Retry", detail: "Rewind and retry step" },
+                  { key: "stop", label: "Stop", detail: "Stop run" },
+                ],
+              };
+          const tsIso = nowIso();
+          const resBatch = store.appendChainedBatch(runId, [
+            (seq, prev) => ({
+              event: {
+                v: 1,
+                runId,
+                seq,
+                eventId: nextEventId("ev_judge", seq),
+                prev,
+                at: tsIso,
+                actor: "system",
+                type: "judgement",
+                stepId: att.stepId,
+                attemptId: att.attemptId,
+                data: {
+                  final: "decide",
+                  ruleHits: decision.ruleHits,
+                  reasonCodes: decision.reasonCodes,
+                  engineTokens: 0,
+                },
+              },
+            }),
+            (seq, prev) => ({
+              event: {
+                v: 1,
+                runId,
+                seq,
+                eventId: nextEventId("ev_hnd", seq),
+                prev,
+                at: tsIso,
+                actor: "runner",
+                type: "handoff_sent",
+                stepId: att.stepId,
+                attemptId: att.attemptId,
+                data: {
+                  handoffId,
+                  kind: spec.kind,
+                  target: spec.target,
+                  reasonCode: spec.reasonCode,
+                  optionKeys: spec.optionKeys,
+                  ...(spec.expiresAt ? { expiresAt: spec.expiresAt } : {}),
+                },
+              },
+            }),
+          ]);
+          fireCrash("K_AFTER_HANDOFF_SENT");
+          if (options.inbox) {
+            const tail = resBatch[resBatch.length - 1]!;
+            const emitRes = await emitDecisionCardToInbox({
+              target: options.inbox,
+              handoffId,
+              runId,
+              headSeq: tail.seq,
+              headHash: tail.hash,
+              stepId: att.stepId,
+              reasonCode: spec.reasonCode,
+              title: step?.title,
+              options: spec.options,
+              nowIso: nowIso(),
+            });
+            if (emitRes.emitted) {
+              fireCrash("K_AFTER_INBOX_CARD_WRITTEN");
+            }
+          }
+          store.checkpointPassive();
+          const waitLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+          return {
+            runId,
+            finalStatus: waitLoaded.state.status,
+            terminalOutcome: waitLoaded.state.terminalOutcome,
+            terminalReason: waitLoaded.state.terminalReason,
+            dispatchedSteps,
+            eventCount: waitLoaded.events.length,
+          };
+        }
+
+        if (decision.shouldRewind && decision.rewindTargetStepId) {
+          const toStepId = decision.rewindTargetStepId;
+          const tsIso = nowIso();
+          const judgeReasons: FlowReasonCode[] =
+            decision.final === "continue" ? ["ok"] : decision.reasonCodes;
+          const batchRes = store.appendChainedBatch(runId, [
+            (seq, prev) => ({
+              event: {
+                v: 1,
+                runId,
+                seq,
+                eventId: nextEventId("ev_judge", seq),
+                prev,
+                at: tsIso,
+                actor: "system",
+                type: "judgement",
+                stepId: att.stepId,
+                attemptId: att.attemptId,
+                data: {
+                  final: decision.final,
+                  ruleHits: decision.final === "continue" ? ["step_passed"] : decision.ruleHits,
+                  reasonCodes: judgeReasons,
+                  engineTokens: 0,
+                },
+              },
+            }),
+            (seq, prev) => ({
+              event: {
+                v: 1,
+                runId,
+                seq,
+                eventId: nextEventId("ev_rew", seq),
+                prev,
+                at: tsIso,
+                actor: "runner",
+                type: "step_rewound",
+                stepId: att.stepId,
+                attemptId: att.attemptId,
+                data: {
+                  fromStepId: att.stepId,
+                  toStepId,
+                  rewindNumber: state.rewindsUsed + 1,
+                  reasonCode: decision.reasonCodes[0] ?? "stale_sha",
+                },
+              },
+            }),
+          ]);
+          if (decision.final === "notify" && options.inbox) {
+            const judgeRow = batchRes[0]!;
+            const notifyReason = decision.reasonCodes[0] ?? "stale_sha";
+            const actionId = buildDeterministicNotifyCardId(
+              runId,
+              att.stepId,
+              occurrence,
+              notifyReason,
+            );
+            await emitNotifyCardToInbox({
+              target: options.inbox,
+              actionId,
+              runId,
+              headSeq: judgeRow.seq,
+              headHash: judgeRow.hash,
+              stepId: att.stepId,
+              reasonCode: notifyReason,
+              nowIso: nowIso(),
+            });
+          }
+          fireCrash("K_AFTER_REWIND");
+          judgedAttempts.add(key);
+          const reloaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+          events = reloaded.events;
+          state = reloaded.state;
+          continue;
+        }
+
         const head = findHead(store, runId);
-        store.appendEvent({
+        const judgeEv = store.appendEvent({
           v: 1,
           runId,
           seq: head.seq + 1,
@@ -1453,12 +1742,32 @@ export async function runFlow(
           stepId: att.stepId,
           attemptId: att.attemptId,
           data: {
-            final: "continue",
-            ruleHits: ["step_passed"],
-            reasonCodes: ["ok"],
+            final: decision.final,
+            ruleHits: decision.ruleHits,
+            reasonCodes: decision.reasonCodes,
             engineTokens: 0,
           },
         });
+        fireCrash("K9_AFTER_JUDGEMENT");
+        if (decision.final === "notify" && options.inbox) {
+          const notifyReason = decision.reasonCodes[0] ?? "ok";
+          const actionId = buildDeterministicNotifyCardId(
+            runId,
+            att.stepId,
+            occurrence,
+            notifyReason,
+          );
+          await emitNotifyCardToInbox({
+            target: options.inbox,
+            actionId,
+            runId,
+            headSeq: judgeEv.seq,
+            headHash: judgeEv.hash,
+            stepId: att.stepId,
+            reasonCode: notifyReason,
+            nowIso: nowIso(),
+          });
+        }
         judgedAttempts.add(key);
         const reloaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
         events = reloaded.events;

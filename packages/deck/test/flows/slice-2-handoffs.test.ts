@@ -541,6 +541,8 @@ describe("Deck Flows Slice 2 - Handoffs, Rewinds, Limits, Inbox Bridge & Crash R
       now: () => t0,
     });
     expect(paused.finalStatus).toBe("waiting_decision");
+    const expiredHandoffId = getActiveHandoffId(projectId, runId, dataRoot)!;
+    expect(expiredHandoffId).toBeTruthy();
 
     const tBeforeExpiry = new Date("2026-11-24T12:30:00.000Z");
     const stillPaused = await runFlow(projectId, runId, {
@@ -563,6 +565,13 @@ describe("Deck Flows Slice 2 - Handoffs, Rewinds, Limits, Inbox Bridge & Crash R
     const loaded = loadRunState(projectId, runId, { dataRoot });
     const returned = loaded.events.find((e) => e.type === "handoff_returned");
     expect(returned?.type === "handoff_returned" && returned.data.resolution).toBe("expired");
+
+    // D3: Expired inbox decision card is marked superseded and no longer answerable
+    const blocksAfterExpiry = await repo.readBlocks(agentName, participantName);
+    const expiredCard = blocksAfterExpiry.find((b) => b.card?.decisionId === expiredHandoffId)?.card;
+    expect(expiredCard?.superseded).toBeTruthy();
+    const lateAnswer = await repo.answerCard(agentName, participantName, expiredHandoffId, "ship");
+    expect(lateAnswer).toMatchObject({ alreadySuperseded: true });
   }, 15_000);
 
   it("handles handoff on_return goto rewind, invalidates downstream checks, and re-verifies on new artefact SHA", async () => {
@@ -1091,5 +1100,161 @@ steps:
     const loadedB = loadRunState(projectId, runB, { dataRoot });
     expect(loadedB.state.stepStates["step1"]?.occurrence).toBe(1);
     expect(loadedB.state.stepStates["step2"]?.occurrence).toBe(1);
+  }, 15_000);
+
+  it("D2: K4 crash recovery re-evaluates evaluateStepJudgement so budget_near: decide enters waiting_decision", async () => {
+    const k4BudgetDecideYaml = `
+flow: k4-budget-near-decide
+version: 1
+limits:
+  budget:
+    tokens: 120
+    steps: 10
+steps:
+  - id: draft
+    type: agent
+    role: builder
+    outputs: [draft]
+    rules:
+      - budget_near: decide
+  - id: publish
+    type: agent
+    role: builder
+    outputs: [published]
+`;
+    const repo = new FileInboxRepository(inboxRoot);
+    const inbox = { inboxRoot, agentName, participantName, repo };
+    const runId = "run-d2-k4-budget-decide";
+    planAndApproveRun({ projectId, runId, flowYaml: k4BudgetDecideYaml, dataRoot });
+
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        inbox,
+        onCrashPoint: (point) => {
+          if (point === "K4_AFTER_OUTCOME") {
+            throw new Error("SIMULATED_K4_BUDGET_DECIDE");
+          }
+        },
+      }),
+    ).rejects.toThrow("SIMULATED_K4_BUDGET_DECIDE");
+
+    const preRecovery = loadRunState(projectId, runId, { dataRoot });
+    expect(preRecovery.events.some((e) => e.type === "step_result" && e.stepId === "draft")).toBe(true);
+    expect(preRecovery.events.some((e) => e.type === "judgement" && e.stepId === "draft")).toBe(false);
+
+    const recovered = await runFlow(projectId, runId, { dataRoot, inbox });
+    expect(recovered.finalStatus).toBe("waiting_decision");
+    expect(recovered.dispatchedSteps).toEqual([]);
+
+    const mid = loadRunState(projectId, runId, { dataRoot });
+    const draftJudgement = mid.events.find((e) => e.type === "judgement" && e.stepId === "draft");
+    expect(draftJudgement?.type === "judgement" && draftJudgement.data.final).toBe("decide");
+    expect(draftJudgement?.type === "judgement" && draftJudgement.data.ruleHits).toContain("budget_near");
+    const sent = mid.events.find((e) => e.type === "handoff_sent" && e.stepId === "draft");
+    expect(sent?.type === "handoff_sent" && sent.data.reasonCode).toBe("budget_near");
+    expect(mid.events.some((e) => e.type === "step_started" && e.stepId === "publish")).toBe(false);
+    expect(mid.state.activeHandoff?.handoffId).toBeTruthy();
+
+    const blocks = await repo.readBlocks(agentName, participantName);
+    expect(blocks.some((b) => b.card?.decisionId === mid.state.activeHandoff!.handoffId)).toBe(true);
+  }, 15_000);
+
+  it("D3: expiry crash at K_AFTER_HANDOFF_RETURNED supersedes inbox card on 3b recovery without misclassifying as dismissed", async () => {
+    const repo = new FileInboxRepository(inboxRoot);
+    const inbox = { inboxRoot, agentName, participantName, repo };
+    const runId = "run-d3-expiry-crash-supersede";
+    planAndApproveRun({ projectId, runId, flowYaml: DECISION_FLOW_YAML, dataRoot });
+
+    const t0 = new Date("2026-11-24T12:00:00.000Z");
+    const paused = await runFlow(projectId, runId, {
+      dataRoot,
+      inbox,
+      now: () => t0,
+    });
+    expect(paused.finalStatus).toBe("waiting_decision");
+    const handoffId = getActiveHandoffId(projectId, runId, dataRoot)!;
+
+    const tAfterExpiry = new Date("2026-11-24T14:00:00.000Z");
+    await expect(
+      runFlow(projectId, runId, {
+        dataRoot,
+        inbox,
+        now: () => tAfterExpiry,
+        onCrashPoint: (point) => {
+          if (point === "K_AFTER_HANDOFF_RETURNED") {
+            throw new Error("SIMULATED_CRASH_AFTER_EXPIRED_RETURN");
+          }
+        },
+      }),
+    ).rejects.toThrow("SIMULATED_CRASH_AFTER_EXPIRED_RETURN");
+
+    // Before recovery, handoff_returned(expired) is durable while inbox card is still open
+    const mid = loadRunState(projectId, runId, { dataRoot });
+    const returnedMid = mid.events.find((e) => e.type === "handoff_returned");
+    expect(returnedMid?.type === "handoff_returned" && returnedMid.data.resolution).toBe("expired");
+    const blocksBeforeRecovery = await repo.readBlocks(agentName, participantName);
+    const openCard = blocksBeforeRecovery.find((b) => b.card?.decisionId === handoffId)?.card;
+    expect(openCard?.superseded).toBeUndefined();
+
+    // Recovery runs 3b follow-up, supersedes the card idempotently, and stops as unanswered_expired
+    const recovered = await runFlow(projectId, runId, {
+      dataRoot,
+      inbox,
+      now: () => tAfterExpiry,
+    });
+    expect(recovered.finalStatus).toBe("stopped");
+    expect(recovered.terminalOutcome).toBe("stopped");
+    expect(recovered.terminalReason).toBe("unanswered_expired");
+
+    const blocksAfterRecovery = await repo.readBlocks(agentName, participantName);
+    const closedCard = blocksAfterRecovery.find((b) => b.card?.decisionId === handoffId)?.card;
+    expect(closedCard?.superseded).toBeTruthy();
+
+    const lateAnswer = await repo.answerCard(agentName, participantName, handoffId, "ship");
+    expect(lateAnswer).toMatchObject({ alreadySuperseded: true });
+  }, 15_000);
+
+  it("D4: direct (no-inbox) handoff expires cleanly when options.now passes expiresAt", async () => {
+    const runId = "run-d4-direct-expiry";
+    planAndApproveRun({ projectId, runId, flowYaml: DECISION_FLOW_YAML, dataRoot });
+
+    const t0 = new Date("2026-11-24T12:00:00.000Z");
+    const paused = await runFlow(projectId, runId, {
+      dataRoot,
+      now: () => t0,
+    });
+    expect(paused.finalStatus).toBe("waiting_decision");
+    const handoffId = getActiveHandoffId(projectId, runId, dataRoot)!;
+    expect(handoffId).toBeTruthy();
+
+    const tBeforeExpiry = new Date("2026-11-24T12:45:00.000Z");
+    const stillPaused = await runFlow(projectId, runId, {
+      dataRoot,
+      now: () => tBeforeExpiry,
+    });
+    expect(stillPaused.finalStatus).toBe("waiting_decision");
+
+    const tAfterExpiry = new Date("2026-11-24T14:00:00.000Z");
+    const expired = await runFlow(projectId, runId, {
+      dataRoot,
+      now: () => tAfterExpiry,
+    });
+    expect(expired.finalStatus).toBe("stopped");
+    expect(expired.terminalOutcome).toBe("stopped");
+    expect(expired.terminalReason).toBe("unanswered_expired");
+
+    const loaded = loadRunState(projectId, runId, { dataRoot });
+    const returned = loaded.events.find((e) => e.type === "handoff_returned");
+    expect(returned?.type === "handoff_returned").toBe(true);
+    if (returned?.type === "handoff_returned") {
+      expect(returned.actor).toBe("system");
+      expect(returned.data).toEqual({
+        handoffId,
+        choiceKey: "unanswered_expired",
+        resolution: "expired",
+        actorId: "system",
+      });
+    }
   }, 15_000);
 });

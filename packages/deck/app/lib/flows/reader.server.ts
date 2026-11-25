@@ -27,6 +27,7 @@ import {
   assertNoSymlinkInChain,
   resolveFlowsRootDir,
   resolveProjectDataDir,
+  UnsafeFilesystemError,
 } from "./owner.server.js";
 import {
   HashChainCorruptionError,
@@ -77,6 +78,18 @@ function classifyReaderError(err: unknown): unknown {
   return err;
 }
 
+function isAbsentFlowsInGitWorktree(err: unknown): boolean {
+  if (!(err instanceof UnsafeFilesystemError) || err.mountType !== "git-worktree") {
+    return false;
+  }
+  const flowsCandidate = path.join(path.resolve(err.targetPath), "flows");
+  try {
+    return fs.lstatSync(flowsCandidate, { throwIfNoEntry: false }) === undefined;
+  } catch {
+    return false;
+  }
+}
+
 function checkExistingProjectDb(
   projectId: string,
   dataRoot?: string,
@@ -90,6 +103,9 @@ function checkExistingProjectDb(
   try {
     flowsRoot = resolveFlowsRootDir(dataRoot);
   } catch (err) {
+    if (isAbsentFlowsInGitWorktree(err)) {
+      return "missing";
+    }
     throw classifyReaderError(err);
   }
 
@@ -146,6 +162,9 @@ export function listFlowProjects(options?: { dataRoot?: string }): string[] {
   try {
     flowsRoot = resolveFlowsRootDir(options?.dataRoot);
   } catch (err) {
+    if (isAbsentFlowsInGitWorktree(err)) {
+      return [];
+    }
     throw classifyReaderError(err);
   }
 

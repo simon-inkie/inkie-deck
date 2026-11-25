@@ -22,7 +22,7 @@ import {
   projectFlowCardStream,
   type FlowCardStreamView,
 } from "../../app/lib/flows/card-stream.js";
-import { acquireOwnerLock } from "../../app/lib/flows/owner.server.js";
+import { acquireOwnerLock, UnsafeFilesystemError } from "../../app/lib/flows/owner.server.js";
 import {
   FlowIntegrityError,
   InvalidFlowQueryError,
@@ -1297,5 +1297,71 @@ describe("Deck Flows Slice 1b - Read-only card stream", () => {
     expect(mobileStripLink).not.toBeNull();
     expect(mobileStripLink?.getAttribute("href")).toBe("/flows");
     expect(mobileStripLink?.getAttribute("aria-label")).toBe("Flows");
+  });
+
+  it("D1: DATA_ROOT inside a git worktree without flows/ returns empty state, while creating flows/ inside that git worktree still refuses", async () => {
+    const gitWorktree = path.join(scratchDir, "sandbox-repo");
+    const devDataRoot = path.join(gitWorktree, ".runtime", "data");
+    fs.mkdirSync(path.join(gitWorktree, ".git"), { recursive: true });
+    fs.mkdirSync(devDataRoot, { recursive: true });
+    vi.stubEnv("DATA_ROOT", devDataRoot);
+
+    // Without <devDataRoot>/flows, read-only queries return the clean empty state
+    expect(listFlowProjects()).toEqual([]);
+    expect(listFlowRuns("proj-dev")).toEqual([]);
+    expect(readFlowCardStream("proj-dev", "run-dev")).toBeNull();
+
+    const apiEmptyRes = await callApiFlows("http://localhost/api/flows");
+    expect(apiEmptyRes.status).toBe(200);
+    expect(await apiEmptyRes.json()).toEqual({ ok: true, projects: [] });
+
+    const routeEmptyData = (await callFlowsRoute("http://localhost/flows")) as {
+      projects: string[];
+      selectedProject: string | null;
+      runs: unknown[];
+      selectedRunId: string | null;
+      stream: FlowCardStreamView | null;
+      error: string | null;
+    };
+    expect(routeEmptyData).toEqual({
+      projects: [],
+      selectedProject: null,
+      runs: [],
+      selectedRunId: null,
+      stream: null,
+      error: null,
+    });
+
+    const Stub = createRoutesStub([
+      {
+        path: "/flows",
+        Component: () => (
+          <FlowsRoute
+            loaderData={routeEmptyData as never}
+            params={{}}
+            matches={[] as never}
+          />
+        ),
+      },
+    ]);
+    act(() => {
+      root.render(<Stub initialEntries={["/flows"]} />);
+    });
+    expect(container.querySelector('[data-testid="flows-empty"]')).not.toBeNull();
+
+    // Once <devDataRoot>/flows exists inside the git worktree, fail closed and refuse
+    fs.mkdirSync(path.join(devDataRoot, "flows"), { recursive: true });
+    expect(() => listFlowProjects()).toThrow(UnsafeFilesystemError);
+    expect(() => listFlowRuns("proj-dev")).toThrow(UnsafeFilesystemError);
+    expect(() => readFlowCardStream("proj-dev", "run-dev")).toThrow(UnsafeFilesystemError);
+
+    const apiRefusedRes = await callApiFlows("http://localhost/api/flows");
+    expect(apiRefusedRes.status).toBe(500);
+
+    const routeRefusedRes = (await callFlowsRoute("http://localhost/flows")) as {
+      init: { status: number } | null;
+      data: { error: string | null };
+    };
+    expect(routeRefusedRes.init?.status).toBe(500);
   });
 });
