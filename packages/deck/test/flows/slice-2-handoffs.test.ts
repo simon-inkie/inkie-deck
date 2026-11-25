@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import YAML from "yaml";
@@ -137,8 +138,8 @@ describe("Deck Flows Slice 2 - Handoffs, Rewinds, Limits, Inbox Bridge & Crash R
 
   beforeEach(() => {
     prevInboxEnv = process.env["INBOX_ROOT"];
-    dataRoot = fs.mkdtempSync("/var/tmp/deck-flows-s2-data-");
-    inboxRoot = fs.mkdtempSync("/var/tmp/deck-flows-s2-inbox-");
+    dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "deck-flows-s2-data-"));
+    inboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "deck-flows-s2-inbox-"));
     fs.mkdirSync(path.join(inboxRoot, agentName, "inbox"), { recursive: true });
     process.env["INBOX_ROOT"] = inboxRoot;
     __resetInboxCaches();

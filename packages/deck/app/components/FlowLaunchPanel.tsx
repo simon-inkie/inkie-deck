@@ -116,6 +116,10 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
     [allFlows, baseTemplateRef],
   );
 
+  function comparisonTemplateRef(flowRef: string): string {
+    return allFlows.some((flow) => flow.flowRef === flowRef) ? flowRef : "";
+  }
+
   const liveDiff = useMemo(() => {
     if (!draftMode || !baseTemplate) return null;
     const labelName = draftName.trim() || "custom";
@@ -135,6 +139,7 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
       const found = allFlows.find((f) => f.flowRef === ref);
       if (found) {
         setBaseTemplateRef(found.flowRef);
+        setDraftName("");
         if (draftMode) {
           setDraftYaml(found.yaml);
         }
@@ -143,7 +148,7 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
       const name = nextKey.slice("draft:".length);
       const found = allDrafts.find((d) => d.draftName === name);
       if (found) {
-        setBaseTemplateRef(found.flowRef);
+        setBaseTemplateRef(comparisonTemplateRef(found.flowRef));
         setDraftName(found.draftName);
         if (draftMode) {
           setDraftYaml(found.yaml);
@@ -158,11 +163,12 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
     setError(null);
     if (next) {
       if (currentSelection?.kind === "draft") {
-        setBaseTemplateRef(currentSelection.item.flowRef);
+        setBaseTemplateRef(comparisonTemplateRef(currentSelection.item.flowRef));
         setDraftName(currentSelection.item.draftName);
         setDraftYaml(currentSelection.item.yaml);
       } else if (currentSelection?.kind === "flow") {
         setBaseTemplateRef(currentSelection.item.flowRef);
+        setDraftName("");
         setDraftYaml(currentSelection.item.yaml);
       } else if (allFlows[0]) {
         setBaseTemplateRef(allFlows[0].flowRef);
@@ -176,6 +182,7 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
     const found = allFlows.find((f) => f.flowRef === nextRef);
     if (found) {
       setDraftYaml(found.yaml);
+      setDraftName("");
     }
   }
 
@@ -208,8 +215,9 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
       }
     } else if (currentSelection?.kind === "draft") {
       payload["draftName"] = currentSelection.item.draftName;
-      if (currentSelection.item.flowRef) {
-        payload["baseTemplateRef"] = currentSelection.item.flowRef;
+      const templateRef = comparisonTemplateRef(currentSelection.item.flowRef);
+      if (templateRef) {
+        payload["baseTemplateRef"] = templateRef;
       }
     } else if (currentSelection?.kind === "flow") {
       payload["flowRef"] = currentSelection.item.flowRef;
@@ -234,6 +242,7 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
         details?: Array<{ path: string; message: string }>;
         runId?: string;
         diffFromTemplate?: string;
+        warning?: string;
       };
 
       if (!res.ok || !data.ok || !data.runId) {
@@ -252,6 +261,7 @@ export function FlowLaunchPanel({ catalog, selectedProject }: FlowLaunchPanelPro
           state: {
             diffFromTemplate: data.diffFromTemplate ?? null,
             plannedRunId: data.runId,
+            planWarning: data.warning,
           },
         },
       );
@@ -472,6 +482,7 @@ export function FlowRunApprovalBar({ stream, catalog }: FlowRunApprovalBarProps)
   const navState = (location.state ?? null) as {
     diffFromTemplate?: string | null;
     plannedRunId?: string;
+    planWarning?: string;
   } | null;
 
   const matchedDraftDiff = useMemo(() => {
@@ -610,6 +621,10 @@ export function FlowRunApprovalBar({ stream, catalog }: FlowRunApprovalBarProps)
               {renderDiffLines(matchedDraftDiff)}
             </pre>
           </div>
+        ) : null}
+
+        {navState?.plannedRunId === stream.runId && navState.planWarning ? (
+          <p role="status" className="font-mono text-xs">{navState.planWarning}</p>
         ) : null}
 
         {actionError ? (

@@ -1,5 +1,5 @@
 /**
- * FlowCardStream.tsx - Read-only card stream renderer for Deck Flows Slice 1b.
+ * FlowCardStream.tsx - Flow card stream and operator decisions.
  *
  * Pure UI component: zero .server or Node imports. Polls /api/flows every 1500ms
  * while the run is in an active status and stops cleanly when terminal or unmounted.
@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Clock, Lock, ShieldCheck } from "lucide-react";
 import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { cn } from "~/lib/utils";
 import type {
@@ -135,10 +136,13 @@ export interface FlowCardStreamProps {
 export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
   const [stream, setStream] = useState<FlowCardStreamView>(initialStream);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [submittingDecision, setSubmittingDecision] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
 
   useEffect(() => {
     setStream(initialStream);
     setPollError(null);
+    setDecisionError(null);
   }, [initialStream]);
 
   useEffect(() => {
@@ -175,7 +179,10 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
         if (cancelled) return;
 
         if (res.ok && payload.ok && payload.stream) {
-          setStream(payload.stream);
+          const updated = payload.stream;
+          setStream((current) =>
+            current.runId === updated.runId && current.headSeq > updated.headSeq ? current : updated,
+          );
           setPollError(null);
         } else if (res.status === 422 || res.status === 404 || res.status === 400) {
           setPollError(payload.error ?? "Flow stream stopped due to an error.");
@@ -202,6 +209,37 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
     };
   }, [stream.projectId, stream.runId, stream.runStatus]);
 
+  async function handleDecision(handoffId: string, choiceKey: string) {
+    if (submittingDecision) return;
+    const { projectId, runId } = stream;
+    setSubmittingDecision(true);
+    setDecisionError(null);
+    try {
+      const res = await fetch("/api/flows", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ intent: "decide", projectId, runId, handoffId, choiceKey }),
+      });
+      const payload = (await res.json()) as { ok?: boolean; error?: string; stream?: FlowCardStreamView };
+      if (!res.ok || !payload.ok || !payload.stream) {
+        setDecisionError(payload.error ?? "Could not submit the decision.");
+        return;
+      }
+      const updated = payload.stream;
+      setStream((current) =>
+        current.projectId === projectId && current.runId === runId && current.headSeq <= updated.headSeq
+          ? updated
+          : current,
+      );
+    } catch {
+      setDecisionError("Could not submit the decision.");
+    } finally {
+      setSubmittingDecision(false);
+    }
+  }
+
+  const handoffId = stream.activeDecision?.handoffId;
+
   return (
     <div className="space-y-4">
       <header className="rounded-lg border border-border bg-card p-4">
@@ -224,7 +262,7 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
           </div>
           <Badge variant="outline" className="gap-1">
             <Lock className="size-3" aria-hidden="true" />
-            Read-only SQLite stream
+            SQLite stream
           </Badge>
         </div>
 
@@ -314,16 +352,24 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
               </span>
             </div>
             <div className="flex flex-wrap gap-2">
-              {stream.activeDecision.options.map((opt) => (
-                <span
-                  key={opt.key}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 font-mono text-xs text-foreground"
-                >
-                  <span className="font-semibold">{opt.label}</span>
-                  <span className="text-muted-foreground">({opt.key})</span>
-                </span>
-              ))}
+              {stream.activeDecision.options.map((opt) =>
+                handoffId ? (
+                  <Button
+                    key={opt.key}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={submittingDecision}
+                    onClick={() => handleDecision(handoffId, opt.key)}
+                  >
+                    {opt.label}
+                  </Button>
+                ) : (
+                  <span key={opt.key} className="font-mono text-xs">{opt.label}</span>
+                ),
+              )}
             </div>
+            {decisionError ? <p role="alert" className="text-destructive">{decisionError}</p> : null}
           </CardContent>
         </Card>
       ) : null}

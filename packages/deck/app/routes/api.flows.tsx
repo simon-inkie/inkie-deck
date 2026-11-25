@@ -5,7 +5,7 @@
  * GET /api/flows?view=library     -> { ok: true, catalog }
  * GET /api/flows?project=P        -> { ok: true, project: P, runs }
  * GET /api/flows?project=P&run=R  -> { ok: true, stream } or 404
- * POST /api/flows                 -> same-origin guarded intent: "plan" | "approve" | "start"
+ * POST /api/flows                 -> same-origin guarded intent: "plan" | "approve" | "start" | "decide"
  * Non-GET/HEAD in loader or non-POST in action -> 405 Allow: GET, POST
  *
  * SEAM RULE: no fs imports, no env-root literals in the route.
@@ -35,6 +35,8 @@ import {
 } from "~/lib/flows/store.server";
 import {
   approveFlowFromUi,
+  decideFlowFromUi,
+  FlowDecisionConflictError,
   FlowDuplicateRunError,
   FlowNotApprovedError,
   FlowRunNotFoundError,
@@ -97,6 +99,9 @@ function mapErrorResponse(err: unknown, fallbackMessage: string): Response {
   }
   if (err instanceof FlowDuplicateRunError) {
     return json({ ok: false, error: "Flow run already exists." }, 409);
+  }
+  if (err instanceof FlowDecisionConflictError) {
+    return json({ ok: false, error: "The decision is no longer open or the choice is invalid." }, 409);
   }
   if (err instanceof RunnerLockBusyError) {
     return json(
@@ -247,9 +252,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const intent = optionalString(body["intent"]);
-  if (intent !== "plan" && intent !== "approve" && intent !== "start") {
+  if (intent !== "plan" && intent !== "approve" && intent !== "start" && intent !== "decide") {
     return json(
-      { ok: false, error: "Unsupported flow action intent. Expected plan, approve, or start." },
+      { ok: false, error: "Unsupported flow action intent. Expected plan, approve, start, or decide." },
       400,
     );
   }
@@ -283,6 +288,16 @@ export async function action({ request, context }: Route.ActionArgs) {
         ...(actorId ? { actorId } : {}),
       });
       return json({ ok: true, ...result });
+    }
+
+    if (intent === "decide") {
+      const handoffId = optionalString(body["handoffId"]);
+      const choiceKey = optionalString(body["choiceKey"]);
+      if (!handoffId || !choiceKey) {
+        return json({ ok: false, error: "handoffId and choiceKey are required." }, 400);
+      }
+      const result = await decideFlowFromUi({ projectId, runId, handoffId, choiceKey });
+      return json({ ok: true, ...result, stream: readFlowCardStream(projectId, runId) });
     }
 
     const result = await startFlowFromUi({ projectId, runId });

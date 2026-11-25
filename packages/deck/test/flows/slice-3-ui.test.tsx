@@ -23,6 +23,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FlowCardStream } from "../../app/components/FlowCardStream.js";
 import { FlowLaunchPanel, FlowRunApprovalBar } from "../../app/components/FlowLaunchPanel.js";
 import type { FlowCardStreamView, FlowLaunchCatalog } from "../../app/lib/flows/card-stream.js";
 import { loadRunState } from "../../app/lib/flows/load-run.server.js";
@@ -83,6 +84,14 @@ function sameOriginHeaders(extra?: Record<string, string>): Record<string, strin
   };
 }
 
+function postFlowAction(body: Record<string, string>) {
+  return callApiAction("http://localhost/api/flows", {
+    method: "POST",
+    headers: sameOriginHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+}
+
 describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions", () => {
   let scratchDir: string;
   let dataRoot: string;
@@ -130,6 +139,17 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
     expect(ticketFlow?.source).toBe("builtin");
     expect(ticketFlow?.yaml).toContain("flow: ticket-to-pr");
     expect(ticketFlow?.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("plans and reads runs with the dev Flows root and a checkout-local Deck data root", async () => {
+    vi.stubEnv("DATA_ROOT", path.join(process.cwd(), ".runtime", "data"));
+    vi.stubEnv("FLOWS_DATA_ROOT", dataRoot);
+    const projectId = "proj-dev";
+    const runId = "run-dev";
+    const plan = await postFlowAction({ intent: "plan", projectId, runId, flowRef: "ticket-to-pr" });
+    expect(plan.status).toBe(200);
+    const runs = await callApiLoader(`http://localhost/api/flows?project=${projectId}`);
+    await expect(runs.json()).resolves.toMatchObject({ runs: [{ runId, status: "planned" }] });
   });
 
   it("enforces requireSameOriginWrite (403) and method checks (405 Allow: GET, POST)", async () => {
@@ -357,6 +377,97 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
     expect(listedDraft).toBeDefined();
     expect(listedDraft?.source).toBe("draft");
     expect(listedDraft?.diffFromTemplate).toContain("+title: Custom UI Draft Flow");
+
+    const draftFile = path.join(projectRoot, ".deck", "flows", "drafts", "custom-ui-draft.yaml");
+    const originalBytes = fs.readFileSync(draftFile);
+    const replacement = draftYaml.replace("Custom UI Draft Flow", "Replacement Draft");
+    const duplicate = await postFlowAction({
+      intent: "plan", projectId, runId, draftName: "custom-ui-draft", draftYaml: replacement,
+    });
+    expect(duplicate.status).toBe(409);
+    expect(fs.readFileSync(draftFile)).toEqual(originalBytes);
+  });
+
+  it("answers the Ticket to PR intake from its card and resumes into build", async () => {
+    vi.unstubAllGlobals();
+    const projectId = "proj-intake";
+    const runId = "run-intake";
+    const planned = planFlowFromUi({ projectId, runId, flowRef: "ticket-to-pr" });
+    approveFlowFromUi({ projectId, runId, flowHash: planned.flowHash });
+    expect((await postFlowAction({ intent: "start", projectId, runId })).status).toBe(200);
+    const run = await callApiLoader(`http://localhost/api/flows?project=${projectId}&run=${runId}`);
+    const { stream } = await run.json() as { stream: FlowCardStreamView };
+    const handoffId = stream.activeDecision?.handoffId;
+    expect(handoffId).toBeDefined();
+    expect((await postFlowAction({
+      intent: "decide", projectId, runId, handoffId: handoffId!, choiceKey: "invalid",
+    })).status).toBe(409);
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) =>
+      postFlowAction(JSON.parse(String(init?.body))),
+    );
+    act(() => root.render(<FlowCardStream stream={stream} />));
+    const button = [...container.querySelectorAll("button")].find((item) => item.textContent === "Start work");
+    expect(button).toBeDefined();
+    await act(async () => {
+      button!.click();
+      await fetchMock.mock.results[0]?.value;
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="flow-card-decision"]')).toBeNull();
+    const { events } = loadRunState(projectId, runId);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "handoff_returned", actor: "human", stepId: "intake", data: expect.objectContaining({ choiceKey: "start" }),
+    }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "step_started", stepId: "build" }));
+    expect((await postFlowAction({
+      intent: "decide", projectId, runId, handoffId: handoffId!, choiceKey: "stop",
+    })).status).toBe(409);
+  }, 15_000);
+
+  it("plans a standalone draft and leaves it intact when switching the editor to a template", async () => {
+    vi.unstubAllGlobals();
+    const projectId = "proj-standalone";
+    const base = listFlowLaunchCatalog().flows.find((flow) => flow.flowRef === "ticket-to-pr")!;
+    const draftYaml = base.yaml.replace("flow: ticket-to-pr", "flow: new-flow");
+    // The draft's filename also matches the template's implicit draft name.
+    const draftName = base.flowRef;
+    expect((await postFlowAction({
+      intent: "plan", projectId, runId: "initial-draft", draftName, draftYaml,
+    })).status).toBe(200);
+    const catalog = listFlowLaunchCatalog();
+    const responses: Response[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const response = await postFlowAction(JSON.parse(String(init?.body)));
+      responses.push(response.clone());
+      return response;
+    });
+    const LaunchStub = createRoutesStub([{
+      path: "/flows",
+      Component: () => <FlowLaunchPanel catalog={catalog} selectedProject={projectId} />,
+    }]);
+    act(() => root.render(<LaunchStub initialEntries={["/flows"]} />));
+    const selection = container.querySelector<HTMLSelectElement>('[data-testid="launch-flow-select"]')!;
+    const changeSelection = (value: string) => act(() => {
+      selection.value = value;
+      selection.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const submit = () => act(async () => {
+      selection.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    changeSelection(`draft:${draftName}`);
+    await submit();
+    expect(responses[0]?.status).toBe(200);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty("baseTemplateRef");
+    await expect(responses[0]!.json()).resolves.toMatchObject({ flowRef: "new-flow" });
+
+    changeSelection(`flow:${base.flowRef}`);
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="launch-draft-toggle"]')!.click());
+    expect(container.querySelector<HTMLInputElement>('[data-testid="launch-draft-name"]')?.value).toBe("");
+    await submit();
+    expect(responses[1]?.status).toBe(200);
+    expect(fs.readFileSync(path.join(projectRoot, ".deck", "flows", "drafts", `${draftName}.yaml`), "utf8"))
+      .toBe(draftYaml);
   });
 
   it("renders Launch panel, Approve Flow button on planned runs, Start Run button on approved runs, and leaks zero private_details", async () => {
@@ -580,13 +691,19 @@ describe("Deck Flows Slice 3 Pass B - UI, Launch Catalog & Same-Origin Actions",
     const draftsDir = path.join(projFlowsDir, "drafts");
     fs.mkdirSync(draftsDir, { recursive: true });
     fs.writeFileSync(path.join(projFlowsDir, "broken-proj.yaml"), "flow: [broken\n", "utf8");
+    fs.writeFileSync(path.join(projFlowsDir, "ticket-to-pr.yaml"), "flow: [broken\n", "utf8");
     fs.writeFileSync(path.join(draftsDir, "broken-draft.yaml"), "flow: bad\nversion: 2\n", "utf8");
 
     const apiRes = await callApiLoader("http://localhost/api/flows?view=library");
     expect(apiRes.status).toBe(200);
     const apiJson = (await apiRes.json()) as { ok: boolean; catalog: FlowLaunchCatalog };
     expect(apiJson.ok).toBe(true);
-    expect(apiJson.catalog.flows.some((f) => f.flowRef === "ticket-to-pr")).toBe(true);
+    expect(apiJson.catalog.flows).toContainEqual(expect.objectContaining({
+      flowRef: "ticket-to-pr", source: "builtin",
+    }));
+    expect((await postFlowAction({
+      intent: "plan", projectId: "proj-fallback", runId: "run-fallback", flowRef: "ticket-to-pr",
+    })).status).toBe(200);
 
     const routeData = (await callFlowsRouteLoader("http://localhost/flows")) as {
       catalog: FlowLaunchCatalog;

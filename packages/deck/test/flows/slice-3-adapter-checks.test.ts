@@ -13,6 +13,7 @@ import {
 } from "../../app/lib/flows/adapter.server.js";
 import {
   extractGitDiffSignals,
+  GitDiffEvidenceError,
   runAllowlistedCheck,
   runReproCheck,
 } from "../../app/lib/flows/checks.server.js";
@@ -184,7 +185,11 @@ describe("Deck Flows Slice 3 - PTY/ACP Fixture Adapters, Differs-From, Repro & G
         builder: sharedAdapter,
         reviewer: sharedAdapter,
       }),
-    ).toThrow(FlowRoleConflictError);
+    ).toThrow("Role 'reviewer' requires runtime 'acp', got 'pty'");
+
+    expect(() =>
+      resolveRoleAdapters(ticketFlow.flow, { builder: aliasAdapter }),
+    ).toThrow("Role 'builder' requires runtime 'pty', got 'acp'");
 
     expect(() =>
       resolveRoleAdapters(ticketFlow.flow, {
@@ -205,6 +210,38 @@ describe("Deck Flows Slice 3 - PTY/ACP Fixture Adapters, Differs-From, Repro & G
         adapters: { builder: sharedAdapter, reviewer: aliasAdapter },
       }),
     ).rejects.toThrow(FlowRoleConflictError);
+  }, 15_000);
+
+  it("keeps review waiting when the ACP fixture returns no verdict", async () => {
+    const projectId = "proj-empty-review";
+    const runId = "run-empty-review";
+    const flowYaml = `flow: empty-review
+version: 1
+roles:
+  reviewer:
+    runtime: acp
+steps:
+  - id: review
+    type: handoff
+    to: reviewer
+    returns:
+      verdict:
+        - approve
+        - changes
+`;
+    const reviewer = createAcpFixtureFlowAdapter({
+      id: "empty-reviewer",
+      scriptPath: ACP_FIXTURE_PATH,
+      cwd: repoRoot,
+      script: { prompts: [[{ kind: "result", result: { stopReason: "end_turn" } }]] },
+    });
+    const planned = planRun({ projectId, runId, flowYaml, dataRoot });
+    approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+    const run = await runFlow(projectId, runId, { dataRoot, adaptersByRuntime: { acp: reviewer } });
+    expect(run.finalStatus).toBe("waiting_decision");
+    const { events } = loadRunState(projectId, runId, { dataRoot });
+    expect(events.some((event) => event.type === "handoff_returned")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "return_rejected", stepId: "review" }));
   }, 15_000);
 
   it("kills PTY child and SIGTERM-ignoring descendant PIDs cleanly on timeout (zero orphan PIDs)", async () => {
@@ -328,6 +365,23 @@ describe("Deck Flows Slice 3 - PTY/ACP Fixture Adapters, Differs-From, Repro & G
       .filter((l) => l.startsWith("worktree "));
     expect(wtList).toHaveLength(1);
   }, 20_000);
+
+  it("rejects a repro that could only load its helper on head", async () => {
+    const reproTestPath = "test/repro-import.test.mjs";
+    fs.writeFileSync(path.join(repoRoot, "test", "head-helper.mjs"), "export const value = 5;\n");
+    fs.writeFileSync(
+      path.join(repoRoot, reproTestPath),
+      "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from './head-helper.mjs';\ntest('check value', () => assert.equal(value, 5));\n",
+    );
+    git(repoRoot, ["add", "test"]);
+    git(repoRoot, ["commit", "-m", "add repro and helper"]);
+    const headSha = git(repoRoot, ["rev-parse", "HEAD"]);
+    await expect(runReproCheck({
+      repoRoot, worktreeBaseDir, baseSha, headSha, reproTestPath, timeoutMs: 10_000,
+    })).resolves.toEqual({
+      passed: false, failedOnBase: false, passedOnHead: true, reason: "repro_base_execution_failed",
+    });
+  }, 15_000);
 
   it("extracts real git-diff signals driving engine judgements: protected_path_touched, secret_found, test_weakened, stale_sha", async () => {
     const ticketFlow = loadFlowDefinition("ticket-to-pr", { dataRoot }).flow;
@@ -473,7 +527,7 @@ steps:
 
     const touchingBuilder: FlowStepAdapter = {
       id: "builder-touch-protected",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         const wt = ctx.worktreePath!;
         fs.mkdirSync(path.join(wt, ".github", "workflows"), { recursive: true });
@@ -494,7 +548,64 @@ steps:
     expect(runRes.finalStatus).toBe("waiting_decision");
     const loaded = loadRunState(projectId, runId, { dataRoot });
     expect(loaded.state.activeDecision?.reasonCode).toBe("protected_path_touched");
+
+    const crashRunId = "run-sig-k4";
+    const crashPlan = planRun({ projectId, runId: crashRunId, flowYaml: miniYaml, dataRoot });
+    approveRun({ projectId, runId: crashRunId, flowHash: crashPlan.flowHash, actorId: "operator-1", dataRoot });
+    const options = { dataRoot, workspaceRepoRoot: repoRoot, worktreeRoot: worktreeBaseDir };
+    await expect(runFlow(projectId, crashRunId, {
+      ...options,
+      adapters: { builder: touchingBuilder },
+      onCrashPoint(point) {
+        if (point === "K4_AFTER_OUTCOME") throw new Error("crash after result");
+      },
+    })).rejects.toThrow("crash after result");
+    const recovered = await runFlow(projectId, crashRunId, options);
+    expect(recovered.finalStatus).toBe("waiting_decision");
+    expect(recovered.dispatchedSteps).toEqual([]);
+    expect(loadRunState(projectId, crashRunId, { dataRoot }).state.activeDecision?.reasonCode)
+      .toBe("protected_path_touched");
   }, 20_000);
+
+  it("reads late safety evidence in a large diff and rejects a diff above the capture limit", async () => {
+    const flow = loadFlowDefinition("ticket-to-pr", { dataRoot }).flow;
+    const padding = path.join(repoRoot, "src", "padding.txt");
+    fs.writeFileSync(padding, "x".repeat(160_000) + "\n");
+    fs.writeFileSync(path.join(repoRoot, "test", "existing.test.mjs"), "export {};\n");
+    git(repoRoot, ["add", "src", "test"]);
+    git(repoRoot, ["commit", "-m", "large change and lost test assertions"]);
+    const headSha = git(repoRoot, ["rev-parse", "HEAD"]);
+    await expect(extractGitDiffSignals({ repoRoot, baseSha, headSha, flow })).resolves.toMatchObject({
+      testWeakened: true,
+    });
+
+    fs.writeFileSync(padding, "x".repeat(8 * 1024 * 1024) + "\n");
+    git(repoRoot, ["add", "src"]);
+    git(repoRoot, ["commit", "-m", "diff exceeds capture limit"]);
+    const oversizedHead = git(repoRoot, ["rev-parse", "HEAD"]);
+    await expect(extractGitDiffSignals({ repoRoot, baseSha, headSha: oversizedHead, flow }))
+      .rejects.toThrow(GitDiffEvidenceError);
+  }, 15_000);
+
+  it("requires approval when a rename moves a file out of a protected path", async () => {
+    const flow = loadFlowDefinition("ticket-to-pr", { dataRoot }).flow;
+    git(repoRoot, ["config", "diff.renames", "true"]);
+    fs.mkdirSync(path.join(repoRoot, ".github"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, ".github", "policy.yml"), "name: protected\n");
+    git(repoRoot, ["add", ".github"]);
+    git(repoRoot, ["commit", "-m", "add protected policy"]);
+    const protectedBase = git(repoRoot, ["rev-parse", "HEAD"]);
+    git(repoRoot, ["mv", ".github/policy.yml", "src/policy.yml"]);
+    git(repoRoot, ["commit", "-m", "move policy"]);
+    const headSha = git(repoRoot, ["rev-parse", "HEAD"]);
+    const signals = await extractGitDiffSignals({ repoRoot, baseSha: protectedBase, headSha, flow });
+    expect(signals.changedFiles).toEqual([".github/policy.yml", "src/policy.yml"]);
+    expect(signals.filesChangedCount).toBe(1);
+    expect(evaluateStepJudgement({
+      flow, step: flow.steps.find((step) => step.id === "build")!, occurrence: 1, rewindsUsed: 0,
+      outcome: "passed", budgetUsed: { steps: 1, tokens: 10 }, signals,
+    })).toMatchObject({ final: "decide", reasonCodes: ["protected_path_touched"] });
+  });
 
   it("R1-1: executes ReproTestCommand { buildCommand } unambiguously with reproTestPath string", async () => {
     fs.writeFileSync(
@@ -504,7 +615,7 @@ steps:
     );
     fs.writeFileSync(
       path.join(repoRoot, "test", "repro-script.mjs"),
-      "import { add } from '../src/math.mjs';\nif (typeof process.argv[1] !== 'string' || add(2, 3) !== 5) process.exit(1);\n",
+      "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { add } from '../src/math.mjs';\ntest('add sums inputs', () => assert.strictEqual(add(2, 3), 5));\n",
       "utf8",
     );
     git(repoRoot, ["add", "src/math.mjs", "test/repro-script.mjs"]);
@@ -521,7 +632,7 @@ steps:
       runTestCommand: {
         buildCommand: (reproTestPath) => {
           seenArgs.push(reproTestPath);
-          return { command: process.execPath, args: [reproTestPath] };
+          return { command: process.execPath, args: ["--test", "--test-reporter=tap", reproTestPath] };
         },
       },
       timeoutMs: 10_000,
@@ -649,7 +760,7 @@ steps:
   it("R1-3: supports both run: [repro] and repro:-only check steps without check_unsupported crash", async () => {
     const buildFixAdapter: FlowStepAdapter = {
       id: "builder-repro-fix",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         const wt = ctx.worktreePath!;
         fs.writeFileSync(
@@ -729,14 +840,16 @@ ${runBlock}    repro:
     const ticketFlow = loadFlowDefinition("ticket-to-pr", { dataRoot });
     const sharedAdapter: FlowStepAdapter = {
       id: "shared-fallback-agent",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch() {
         return { kind: "agent", outputs: { status: "ok" } };
       },
     };
 
+    const reviewer = { ...sharedAdapter, runtimeKind: "acp" as const };
+
     expect(() =>
-      resolveRoleAdapters(ticketFlow.flow, { reviewer: sharedAdapter }, sharedAdapter),
+      resolveRoleAdapters(ticketFlow.flow, { reviewer }, sharedAdapter),
     ).toThrow(FlowRoleConflictError);
 
     const projectId = "proj-differs-fallback";
@@ -747,7 +860,7 @@ ${runBlock}    repro:
     await expect(
       runFlow(projectId, runId, {
         dataRoot,
-        adapters: { reviewer: sharedAdapter },
+        adapters: { reviewer },
         adapter: sharedAdapter,
       }),
     ).rejects.toThrow(FlowRoleConflictError);

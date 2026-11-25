@@ -22,6 +22,7 @@ import {
 } from "./adapter.server.js";
 import {
   extractGitDiffSignals,
+  GitDiffEvidenceError,
   isFlowCommandCheckId,
   isSupportedSuiteCheckId,
   runAllowlistedCheckSuite,
@@ -131,7 +132,9 @@ export interface RunFlowOptions {
   worktreeRoot?: string;
   /** Optional role-keyed step adapters (subject to roles.<name>.differs_from checks). */
   adapters?: Record<string, FlowStepAdapter>;
-  /** Optional fallback adapter used when no role-specific adapter is bound. */
+  /** Available adapters keyed by the runtime declared in the pinned flow. */
+  adaptersByRuntime?: Record<string, FlowStepAdapter>;
+  /** Optional fallback adapter, subject to the declared runtime for named roles. */
   adapter?: FlowStepAdapter;
   /** Optional explicit allowlisted command map for Slice 3 check steps. */
   checkCommands?: CheckCommandMap;
@@ -171,8 +174,21 @@ class WorktreeOutcomeRejectedError extends Error {
 export async function runBoundedProcessGroup(
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
-): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }> {
+  options: {
+    cwd?: string;
+    timeoutMs: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    stdoutLimitBytes?: number;
+  },
+): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stdoutTruncated: boolean;
+  stderr: string;
+  timedOut: boolean;
+}> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -181,7 +197,10 @@ export async function runBoundedProcessGroup(
       stdio: ["ignore", "pipe", "pipe"],
     });
     const pid = child.pid;
-    let stdout = "";
+    const stdoutChunks: Buffer[] = [];
+    const stdoutLimit = options.stdoutLimitBytes ?? 65_536;
+    let stdoutBytes = 0;
+    let stdoutTruncated = false;
     let stderr = "";
     let timedOut = false;
     let killEscalation: NodeJS.Timeout | undefined;
@@ -210,7 +229,13 @@ export async function runBoundedProcessGroup(
     const timer = setTimeout(triggerTimeout, options.timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < 65536) stdout += chunk.toString("utf8");
+      const remaining = stdoutLimit - stdoutBytes;
+      if (chunk.length > remaining) stdoutTruncated = true;
+      if (remaining > 0) {
+        const captured = chunk.subarray(0, remaining);
+        stdoutChunks.push(captured);
+        stdoutBytes += captured.length;
+      }
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       if (stderr.length < 65536) stderr += chunk.toString("utf8");
@@ -227,7 +252,8 @@ export async function runBoundedProcessGroup(
       if (killEscalation) clearTimeout(killEscalation);
       options.signal?.removeEventListener("abort", onAbort);
       killGroup("SIGKILL");
-      resolve({ code, signal, stdout, stderr, timedOut });
+      const stdout = Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8");
+      resolve({ code, signal, stdout, stdoutTruncated, stderr, timedOut });
     });
   });
 }
@@ -1092,6 +1118,9 @@ export function submitHandoffReturn(params: {
     if (resolution === "answered" && !sentEv.data.optionKeys.includes(params.choiceKey)) {
       return recordRejection("invalid_option", sentEv.stepId, sentEv.attemptId);
     }
+    if (resolution !== "expired" && state.activeHandoff.expiresAt && nowIso >= state.activeHandoff.expiresAt) {
+      return recordRejection("late_return", sentEv.stepId, sentEv.attemptId);
+    }
 
     const head = findHead(store, params.runId);
     store.appendEvent(
@@ -1182,7 +1211,7 @@ export async function runFlow(
       );
     }
 
-    const roleAdapters = resolveRoleAdapters(flow, options.adapters ?? {}, options.adapter);
+    const roleAdapters = resolveRoleAdapters(flow, options.adapters ?? {}, options.adapter, options.adaptersByRuntime);
 
     // 2b. Handle waiting_decision (Slice 1a unknown/artefact_missing vs Slice 2 handoff/inbox bridge)
     if (state.status === "waiting_decision") {
@@ -1563,7 +1592,7 @@ export async function runFlow(
     const outcomeAttempts = new Set<string>();
     const judgedAttempts = new Set<string>();
     const handoffAttempts = new Set<string>();
-    const passedResultAttempts: Array<{ stepId: string; attemptId: string }> = [];
+    const passedResultAttempts: Array<Extract<FlowEvent, { type: "step_result" }>> = [];
     const failedResultAttempts: Array<{
       stepId: string;
       attemptId: string;
@@ -1576,7 +1605,7 @@ export async function runFlow(
       } else if (ev.type === "step_result") {
         const key = `${ev.stepId}:${ev.attemptId}`;
         outcomeAttempts.add(key);
-        passedResultAttempts.push({ stepId: ev.stepId, attemptId: ev.attemptId });
+        passedResultAttempts.push(ev);
       } else if (ev.type === "step_failed") {
         const key = `${ev.stepId}:${ev.attemptId}`;
         outcomeAttempts.add(key);
@@ -1655,7 +1684,27 @@ export async function runFlow(
       if (!judgedAttempts.has(key)) {
         const step = flow.steps.find((s) => s.id === att.stepId);
         const occurrence = getOccurrenceForAttempt(events, att.stepId, att.attemptId);
-        const signals =
+        let gitSignals: StepSignals = {};
+        if (step?.type === "agent" && flow.workspace?.kind === "git-worktree") {
+          const { base_sha: baseSha, head_sha: headSha } = att.data.outputs;
+          if (options.workspaceRepoRoot || baseSha || headSha) {
+            if (!options.workspaceRepoRoot || !baseSha || !headSha) {
+              throw new GitDiffEvidenceError("Recovered worktree result is missing its repository or commit pair");
+            }
+            gitSignals = await extractGitDiffSignals({
+              repoRoot: options.workspaceRepoRoot,
+              baseSha,
+              headSha,
+              expectedHeadSha: options.expectedHeadSha,
+              flow,
+              timeoutMs: Math.min(stepTimeoutMs, 15_000),
+            });
+            if (!gitSignals.changedFiles) {
+              throw new GitDiffEvidenceError("Recovered worktree commits could not be compared");
+            }
+          }
+        }
+        const hookSignals =
           step && options.evaluateSignals
             ? await options.evaluateSignals({
                 step,
@@ -1672,7 +1721,7 @@ export async function runFlow(
               rewindsUsed: state.rewindsUsed,
               outcome: "passed",
               budgetUsed: state.budgetUsed,
-              signals,
+              signals: { ...gitSignals, ...hookSignals },
             })
           : {
               final: "continue" as const,
@@ -1682,6 +1731,20 @@ export async function runFlow(
               shouldRewind: false,
               shouldRerunCheck: false,
             };
+
+        if (gitSignals.changedFiles && options.workspaceRepoRoot) {
+          const intent = startedAttempts.find((event) => event.attemptId === att.attemptId && event.stepId === att.stepId);
+          if (intent) {
+            await recoverEphemeralWorktree({
+              repoRoot: options.workspaceRepoRoot,
+              worktreeBaseDir,
+              runId,
+              attemptId: att.attemptId,
+              intentEventId: intent.eventId,
+              keepBranch: decision.final !== "stop" && !decision.shouldRewind && !decision.shouldRerunCheck,
+            });
+          }
+        }
 
         if (decision.final === "stop") {
           const tsIso = nowIso();
@@ -2429,8 +2492,14 @@ export async function runFlow(
           }
 
           if (step.type === "agent") {
+            const runtime = step.role && Object.hasOwn(flow.roles ?? {}, step.role)
+              ? flow.roles?.[step.role]?.runtime
+              : undefined;
             const boundAdapter =
-              (step.role ? roleAdapters.get(step.role) : undefined) ?? options.adapter;
+              (step.role ? roleAdapters.get(step.role) : undefined) ?? (runtime === undefined ? options.adapter : undefined);
+            if (runtime !== undefined && !boundAdapter) {
+              throw new WorktreeOutcomeRejectedError(`No adapter configured for runtime '${runtime}'`);
+            }
 
             let adapterOutputs: Record<string, string> | undefined;
             let adapterArtifactBytes: Buffer | undefined;
@@ -2445,7 +2514,7 @@ export async function runFlow(
                 attemptId: intent.attemptId,
                 occurrence: intent.occurrence,
                 roleName: step.role,
-                runtime: step.role ? flow.roles?.[step.role]?.runtime : undefined,
+                runtime,
                 worktreePath: activeWorktree?.worktreePath,
                 baseSha: activeWorktree?.baseSha,
                 previousOutputs: collectPreviousOutputs(),
@@ -2504,6 +2573,10 @@ export async function runFlow(
             }
 
             const filteredOutputs = filterStepOutputs(rawOutputs);
+            if (activeWorktree && rawOutputs["head_sha"]) {
+              filteredOutputs["base_sha"] = activeWorktree.baseSha;
+              filteredOutputs["head_sha"] = rawOutputs["head_sha"];
+            }
             const wantsHeadShaArtifact =
               Boolean(filteredOutputs["head_sha"]) &&
               Boolean(step.outputs?.includes("head_sha"));
@@ -3518,7 +3591,7 @@ export async function runFlow(
           }
         }
       } catch (err) {
-        if (err instanceof WorktreeOutcomeRejectedError) {
+        if (err instanceof WorktreeOutcomeRejectedError || err instanceof GitDiffEvidenceError) {
           keepWorktreeBranch = false;
           const tsIso = nowIso();
           store.appendChainedBatch(runId, [

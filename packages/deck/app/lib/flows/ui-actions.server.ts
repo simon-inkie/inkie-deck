@@ -25,7 +25,7 @@ import {
 } from "./library.server.js";
 import { loadRunState } from "./load-run.server.js";
 import { InvalidFlowQueryError, listFlowRuns } from "./reader.server.js";
-import { approveRun, planRun, runFlow, type RunFlowResult } from "./runner.server.js";
+import { approveRun, planRun, runFlow, submitHandoffReturn, type RunFlowResult } from "./runner.server.js";
 import { FlowIdRegex } from "./types.js";
 import { validateFlowYaml } from "./validator.js";
 
@@ -66,6 +66,8 @@ export class InvalidFlowUiActionError extends Error {
   }
 }
 
+export class FlowDecisionConflictError extends Error {}
+
 export interface FlowLaunchCatalogOptions {
   projectRoot?: string;
   dataRoot?: string;
@@ -92,6 +94,7 @@ export interface PlanFlowFromUiResult {
   expectedDecisions: string[];
   source: "project" | "library" | "builtin";
   diffFromTemplate?: string;
+  warning?: string;
 }
 
 export interface ApproveFlowFromUiParams {
@@ -222,6 +225,7 @@ export function planFlowFromUi(params: PlanFlowFromUiParams): PlanFlowFromUiResu
   let flowYaml: string;
   let source: "project" | "library" | "builtin";
   let diffFromTemplate: string | undefined;
+  let draftToSave: Parameters<typeof saveFlowDraft>[0] | undefined;
 
   if (params.draftYaml !== undefined && params.draftYaml.trim().length > 0) {
     const validation = validateFlowYaml(params.draftYaml);
@@ -234,16 +238,14 @@ export function planFlowFromUi(params: PlanFlowFromUiParams): PlanFlowFromUiResu
 
     const resolvedDraftName = params.draftName ?? validation.flow.flow;
     if (libOpts.projectRoot) {
-      const saved = saveFlowDraft({
+      draftToSave = {
         projectRoot: libOpts.projectRoot,
         draftName: resolvedDraftName,
         yaml: params.draftYaml,
-        ...(params.baseTemplateRef ? { baseTemplateRef: params.baseTemplateRef } : {}),
-        ...(libOpts.dataRoot !== undefined ? { dataRoot: libOpts.dataRoot } : {}),
-        ...(libOpts.builtinsDir !== undefined ? { builtinsDir: libOpts.builtinsDir } : {}),
-      });
-      diffFromTemplate = saved.diffFromTemplate ?? undefined;
-    } else if (params.baseTemplateRef) {
+        overwrite: params.draftName !== undefined,
+      };
+    }
+    if (params.baseTemplateRef) {
       const base = loadFlowDefinition(params.baseTemplateRef, libOpts);
       diffFromTemplate = computeUnifiedDiff(
         base.yaml,
@@ -305,6 +307,15 @@ export function planFlowFromUi(params: PlanFlowFromUiParams): PlanFlowFromUiResu
     throw err;
   }
 
+  let warning: string | undefined;
+  if (draftToSave) {
+    try {
+      saveFlowDraft(draftToSave);
+    } catch {
+      warning = "Run planned, but the draft could not be saved.";
+    }
+  }
+
   return {
     runId: planned.runId,
     flowRef: planned.flow.flow,
@@ -313,6 +324,7 @@ export function planFlowFromUi(params: PlanFlowFromUiParams): PlanFlowFromUiResu
     expectedDecisions: planned.expectedDecisions,
     source,
     ...(diffFromTemplate !== undefined ? { diffFromTemplate } : {}),
+    ...(warning ? { warning } : {}),
   };
 }
 
@@ -383,4 +395,25 @@ export async function startFlowFromUi(params: StartFlowFromUiParams): Promise<Ru
     ...(params.workspaceRepoRoot ? { workspaceRepoRoot: params.workspaceRepoRoot } : {}),
     ...(params.worktreeRoot ? { worktreeRoot: params.worktreeRoot } : {}),
   });
+}
+
+export async function decideFlowFromUi(
+  params: StartFlowFromUiParams & { handoffId: string; choiceKey: string },
+): Promise<RunFlowResult> {
+  const projectId = assertValidId(params.projectId, "flow project id");
+  const runId = assertValidId(params.runId, "flow run id");
+  const handoffId = assertValidId(params.handoffId, "handoffId");
+  const choiceKey = assertValidId(params.choiceKey, "choiceKey");
+  if (!listFlowRuns(projectId, { dataRoot: params.dataRoot }).some((r) => r.runId === runId)) {
+    throw new FlowRunNotFoundError(projectId, runId);
+  }
+
+  const result = submitHandoffReturn({
+    projectId, runId, handoffId, choiceKey, dataRoot: params.dataRoot,
+    actor: "human", actorId: "operator-1",
+  });
+  if (!result.accepted) {
+    throw new FlowDecisionConflictError();
+  }
+  return startFlowFromUi(params);
 }

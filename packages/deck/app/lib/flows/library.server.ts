@@ -160,6 +160,15 @@ function readConfinedYamlFile(
   return { yaml, flow: validation.flow, hash: validation.hash };
 }
 
+function readAvailableFlow(filePath: string, rootDir: string, flowRef: string) {
+  try {
+    return readConfinedYamlFile(filePath, rootDir, flowRef);
+  } catch (err) {
+    if (err instanceof FlowValidationError) return null;
+    throw err;
+  }
+}
+
 function ensureConfinedDirectory(targetDir: string, rootDir: string, mode = 0o755): void {
   const confined = assertConfinedPath(targetDir, rootDir);
   const resolvedRoot = path.resolve(rootDir);
@@ -186,6 +195,7 @@ function writeAtomicConfinedFile(
   targetPath: string,
   rootDir: string,
   content: string,
+  overwrite = true,
 ): void {
   const confined = assertConfinedPath(targetPath, rootDir);
   const parentDir = path.dirname(confined);
@@ -234,7 +244,12 @@ function writeAtomicConfinedFile(
   fs.closeSync(fd);
 
   try {
-    fs.renameSync(tmpPath, confined);
+    if (overwrite) {
+      fs.renameSync(tmpPath, confined);
+    } else {
+      fs.linkSync(tmpPath, confined);
+      fs.unlinkSync(tmpPath);
+    }
     fsyncDirectory(parentDir);
   } catch (err) {
     try {
@@ -268,24 +283,14 @@ function scanFlowDirectory(
     if (!FlowIdRegex.test(base)) continue;
 
     const fullPath = path.join(dirPath, entry.name);
-    try {
-      const loaded = readConfinedYamlFile(fullPath, rootDir, base);
-      if (loaded) {
-        results.push({
-          name: base,
-          filePath: fullPath,
-          flow: loaded.flow,
-          hash: loaded.hash,
-        });
-      }
-    } catch (err) {
-      if (
-        err instanceof FlowValidationError ||
-        (err instanceof Error && err.name === "YAMLParseError")
-      ) {
-        continue;
-      }
-      throw err;
+    const loaded = readAvailableFlow(fullPath, rootDir, base);
+    if (loaded) {
+      results.push({
+        name: base,
+        filePath: fullPath,
+        flow: loaded.flow,
+        hash: loaded.hash,
+      });
     }
   }
   return results;
@@ -329,9 +334,17 @@ export function loadFlowDefinition(
     root: builtinsDir,
   });
 
+  let invalidDefinition: FlowValidationError | undefined;
   for (const candidate of candidates) {
     const targetPath = path.join(candidate.dir, filename);
-    const loaded = readConfinedYamlFile(targetPath, candidate.root, flowRef);
+    let loaded: ReturnType<typeof readConfinedYamlFile>;
+    try {
+      loaded = readConfinedYamlFile(targetPath, candidate.root, flowRef);
+    } catch (err) {
+      if (!(err instanceof FlowValidationError)) throw err;
+      invalidDefinition ??= err;
+      continue;
+    }
     if (loaded) {
       return {
         flowRef,
@@ -344,7 +357,7 @@ export function loadFlowDefinition(
     }
   }
 
-  throw new FlowNotFoundError(flowRef);
+  throw invalidDefinition ?? new FlowNotFoundError(flowRef);
 }
 
 /**
@@ -440,6 +453,7 @@ export function saveFlowDraft(params: {
   projectRoot: string;
   draftName: string;
   yaml: string;
+  overwrite?: boolean;
   baseTemplateRef?: string;
   dataRoot?: string;
   builtinsDir?: string;
@@ -474,7 +488,7 @@ export function saveFlowDraft(params: {
   const resolvedProject = path.resolve(params.projectRoot);
   const draftsDir = resolveProjectDraftsDir(resolvedProject);
   const targetPath = path.join(draftsDir, `${params.draftName}.yaml`);
-  writeAtomicConfinedFile(targetPath, resolvedProject, params.yaml);
+  writeAtomicConfinedFile(targetPath, resolvedProject, params.yaml, params.overwrite);
 
   return {
     path: targetPath,

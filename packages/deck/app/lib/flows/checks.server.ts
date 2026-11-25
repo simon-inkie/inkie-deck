@@ -106,6 +106,8 @@ export interface ReproTestRunnerContext {
 export interface ReproTestRunnerResult {
   passed: boolean;
   code: number | null;
+  /** Custom runners can provide assertion evidence directly or emit Node TAP in stdout. */
+  failedAssertion?: boolean;
   stdout?: string;
   stderr?: string;
 }
@@ -234,10 +236,14 @@ export async function runAllowlistedCheckSuite(params: {
 async function executeReproTestCommand(
   runTestCommand: ReproTestCommand | undefined,
   ctx: ReproTestRunnerContext,
-): Promise<{ passed: boolean; code: number | null }> {
+): Promise<{ passed: boolean; failedAssertion: boolean }> {
   if (typeof runTestCommand === "function") {
-    const callbackRes = await runTestCommand(ctx);
-    return { passed: Boolean(callbackRes.passed), code: callbackRes.code };
+    const result = await runTestCommand(ctx);
+    return {
+      passed: result.passed && result.code === 0,
+      failedAssertion: !result.passed && result.code !== null && result.code !== 0 &&
+        (result.failedAssertion ?? hasTapAssertionFailure(result.stdout ?? "")),
+    };
   }
 
   const spec: AllowlistedCheckCommand =
@@ -245,7 +251,7 @@ async function executeReproTestCommand(
       ? runTestCommand.buildCommand(ctx.reproTestPath)
       : (runTestCommand ?? {
           command: process.execPath,
-          args: ["--test", ctx.reproTestPath],
+          args: ["--test", "--test-reporter=tap", ctx.reproTestPath],
         });
   assertNonShellCommand(spec);
   const res = await runBoundedProcessGroup(spec.command, spec.args, {
@@ -254,7 +260,17 @@ async function executeReproTestCommand(
     signal: ctx.signal,
     env: { ...process.env, ...(spec.env ?? {}) },
   });
-  return { passed: !res.timedOut && res.code === 0, code: res.code };
+  return {
+    passed: !res.timedOut && res.code === 0,
+    failedAssertion: !res.timedOut && !res.stdoutTruncated && res.code !== null && res.code !== 0 &&
+      hasTapAssertionFailure(res.stdout),
+  };
+}
+
+function hasTapAssertionFailure(stdout: string): boolean {
+  // Node's TAP reporter prefixes test stdout with "#". Only its diagnostics
+  // contain this unprefixed assertion code.
+  return stdout.startsWith("TAP version ") && /^[ \t]+code: ['"]ERR_ASSERTION['"]\r?$/m.test(stdout);
 }
 
 /**
@@ -262,7 +278,7 @@ async function executeReproTestCommand(
  * 1. Validates reproTestPath against FlowSafePathSchema.
  * 2. Checks out headSha in a temporary detached worktree and verifies reproTestPath is a confined regular file.
  * 3. Checks out baseSha in a temporary detached worktree, copies reproTestPath into it, runs test command,
- *    and asserts it FAILS on baseSha.
+ *    and verifies an assertion fails on baseSha.
  * 4. Runs the same test command on headSha and asserts it PASSES.
  * 5. Always cleans up both temporary detached worktrees in finally.
  */
@@ -321,6 +337,7 @@ export async function runReproCheck(params: {
 
     // Phase 1: baseSha must FAIL with the repro test applied
     let failedOnBase = false;
+    let basePassed = false;
     try {
       baseHandle = await createDetachedCommitWorktree({
         repoRoot: params.repoRoot,
@@ -342,7 +359,8 @@ export async function runReproCheck(params: {
         timeoutMs: params.timeoutMs,
         signal: params.signal,
       });
-      failedOnBase = !baseRes.passed;
+      failedOnBase = baseRes.failedAssertion;
+      basePassed = baseRes.passed;
     } finally {
       if (baseHandle) {
         await rollbackWorktree(baseHandle);
@@ -364,7 +382,7 @@ export async function runReproCheck(params: {
       failedOnBase,
       passedOnHead,
       ...(!failedOnBase
-        ? { reason: "repro_did_not_fail_on_base" }
+        ? { reason: basePassed ? "repro_did_not_fail_on_base" : "repro_base_execution_failed" }
         : !passedOnHead
           ? { reason: "repro_failed_on_head" }
           : {}),
@@ -501,6 +519,10 @@ function detectSignalsFromUnifiedDiff(
   return { dependencyChanged, secretFound, testWeakened };
 }
 
+export class GitDiffEvidenceError extends Error {}
+
+const GIT_DIFF_CAPTURE_LIMIT = 8 * 1024 * 1024;
+
 /**
  * Extract deterministic StepSignals from git diff between baseSha and headSha
  * and check execution results, feeding evaluateStepJudgement in engine.ts.
@@ -546,33 +568,42 @@ export async function extractGitDiffSignals(params: {
     };
   }
 
-  const nameOnlyRes = await runBoundedProcessGroup(
-    "git",
-    ["diff", "--name-only", `${params.baseSha}..${params.headSha}`],
-    { cwd: resolvedRepo, timeoutMs, signal: params.signal },
-  );
-  const changedFiles =
-    nameOnlyRes.code === 0
-      ? nameOnlyRes.stdout
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-      : [];
+  const gitOptions = {
+    cwd: resolvedRepo, timeoutMs, signal: params.signal, stdoutLimitBytes: GIT_DIFF_CAPTURE_LIMIT,
+  };
+  const range = `${params.baseSha}..${params.headSha}`;
+  const pathsRes = await runBoundedProcessGroup("git", ["diff", "--name-status", "-z", range], gitOptions);
+  if (pathsRes.code !== 0 || pathsRes.timedOut || pathsRes.stdoutTruncated) {
+    throw new GitDiffEvidenceError("Could not capture the complete list of changed Git paths");
+  }
+  const fields = pathsRes.stdout.split("\0");
+  const changedFiles = new Set<string>();
+  let filesChangedCount = 0;
+  for (let i = 0; i < fields.length - 1;) {
+    const status = fields[i++]!;
+    changedFiles.add(fields[i++]!);
+    if (status.startsWith("R") || status.startsWith("C")) {
+      changedFiles.add(fields[i++]!);
+    }
+    filesChangedCount++;
+  }
 
   const diffRes = await runBoundedProcessGroup(
     "git",
-    ["diff", "-U0", `${params.baseSha}..${params.headSha}`],
-    { cwd: resolvedRepo, timeoutMs, signal: params.signal },
+    ["diff", "--no-ext-diff", "--no-textconv", "-U0", range],
+    gitOptions,
   );
-  const diffText = diffRes.code === 0 ? diffRes.stdout : "";
-
-  const parsed = detectSignalsFromUnifiedDiff(changedFiles, diffText);
+  if (diffRes.code !== 0 || diffRes.timedOut || diffRes.stdoutTruncated) {
+    throw new GitDiffEvidenceError("Could not capture the complete Git diff");
+  }
+  const changedPaths = Array.from(changedFiles);
+  const parsed = detectSignalsFromUnifiedDiff(changedPaths, diffRes.stdout);
 
   void params.flow;
 
   return {
-    changedFiles,
-    filesChangedCount: changedFiles.length,
+    changedFiles: changedPaths,
+    filesChangedCount,
     ...(parsed.dependencyChanged ? { dependencyChanged: true } : {}),
     ...(staleSha ? { staleSha: true } : {}),
     ...(leakScanFailed || parsed.secretFound ? { secretFound: true } : {}),

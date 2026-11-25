@@ -77,6 +77,7 @@ export interface FlowCardStreamView {
   planningCard: FlowPlanningCard;
   stepCards: FlowStepCard[];
   activeDecision: {
+    handoffId?: string;
     stepId: string;
     reasonCode: string;
     options: Array<{ key: string; label: string }>;
@@ -295,6 +296,7 @@ export function projectFlowCardStream(params: {
 
   const activeDecision = state.activeDecision
     ? {
+        ...(state.activeHandoff ? { handoffId: state.activeHandoff.handoffId } : {}),
         stepId: state.activeDecision.stepId,
         reasonCode: state.activeDecision.reasonCode,
         options: state.activeDecision.options.map((opt) => ({

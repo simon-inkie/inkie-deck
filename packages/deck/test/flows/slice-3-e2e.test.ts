@@ -229,9 +229,9 @@ describe("Deck Flows Slice 3 - End-to-End Example A (ticket-to-pr) & Drafted Flo
       workspaceRepoRoot: repoRoot,
       worktreeRoot: worktreeBaseDir,
       stepTimeoutMs: 15_000,
-      adapters: {
-        builder: ptyBuilder,
-        reviewer: acpReviewer,
+      adaptersByRuntime: {
+        pty: ptyBuilder,
+        acp: acpReviewer,
       },
       checkCommands,
     };

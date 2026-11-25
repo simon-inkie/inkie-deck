@@ -79,3 +79,19 @@ Out of scope:
 ### 2026-11-25: Pass 3 triage fixes (R3-1 through R3-3)
 - What changed: route fixture PTY creation through the runner registry. Use the durable step intent ID in Git's worktree lock reason to identify and remove an interrupted coding worktree before recording a terminal stop. Run Example A with the 153 PTY and 154 ACP fixtures, TypeScript checking and emit, the smoke and repro tests, Git whitespace checks, and the leak gate.
 - Why: resolve the three Pass 3 triage findings on `4438f18`.
+
+### 2026-11-25: PR #248 Devin and independent triage fixes
+
+- Ticket to PR intake: submit the active decision from the card through the same-origin API and resume the run.
+- Default dev planning: give Flows an isolated temporary data root outside the checkout.
+- Rejected plan overwrites a draft: persist draft edits only after the run is planned.
+- Template switching overwrites a draft: clear the old draft name when replacing its YAML with a template.
+- Malformed override empties the catalogue: skip invalid definitions consistently when listing and loading templates.
+- Shared repo branch collisions: use the durable attempt intent to isolate worktrees and branches, and never delete a branch to make room for a new attempt.
+- K4 recovery skips protected-path approval: reconstruct Git signals from the recorded commits before judging the recovered result.
+- Repro import errors: require evidence of a failing assertion on base and a passing test on head.
+- Draft with a new flow ID: only send an optional comparison template when it exists in the catalogue.
+- Runtime declarations: resolve available fixture adapters by declared runtime and reject mismatched bindings.
+- Empty reviewer output: require an explicit verdict and reject missing or unrecognised answers.
+- Large diffs: capture up to 8 MiB per Git command and refuse to judge incomplete evidence.
+- Protected-path renames: include the source and destination in changed paths.

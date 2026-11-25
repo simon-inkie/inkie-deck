@@ -19,6 +19,8 @@
  * ASCII only - no em-dashes.
  */
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { withVoiceDisabledReason } from "./voice-env.mjs";
 import { devPaths, resetRuntime } from "./dev-paths.mjs";
@@ -48,6 +50,13 @@ const voiceProxyUrl = `ws://localhost:${voiceProxyPort}/voice`;
 // every export was silently overridden and the server always ran on demo
 // fixtures regardless of the launcher's intent.
 const externalInbox = Boolean(process.env.INBOX_ROOT);
+// The Flows ledger requires a data root outside a Git checkout.
+const runtimeFlowsData = process.env.FLOWS_DATA_ROOT || process.env.DATA_ROOT
+  ? undefined
+  : mkdtempSync(path.join(tmpdir(), "inkie-deck-dev-flows-"));
+if (runtimeFlowsData) {
+  process.on("exit", () => rmSync(runtimeFlowsData, { recursive: true, force: true }));
+}
 const env = {
   ...process.env,
   INBOX_ROOT: process.env.INBOX_ROOT || runtimeInbox,
@@ -55,6 +64,7 @@ const env = {
   REVIEW_ROOTS: reviewRoots,
   PROJECTS_ROOT: process.env.PROJECTS_ROOT || runtimeProjects,
   DATA_ROOT: process.env.DATA_ROOT || runtimeData,
+  ...(runtimeFlowsData ? { FLOWS_DATA_ROOT: runtimeFlowsData } : {}),
   // #66: workspace for Markdown drafts (<WORKSPACE_ROOT>/drafts/*.md).
   WORKSPACE_ROOT: process.env.WORKSPACE_ROOT || runtimeWorkspace,
   // Keep the queue-state file INSIDE the dev DATA_ROOT. Without this the

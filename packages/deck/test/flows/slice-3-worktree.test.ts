@@ -139,6 +139,35 @@ describe("Deck Flows Slice 3 - Ephemeral Git Worktree Isolation & Rollback", () 
     await expect(rollbackWorktree(handle)).resolves.toBeUndefined();
   }, 15_000);
 
+  it("retains both branches for projects that reuse a run ID in one repo", async () => {
+    const flowYaml = WORKTREE_FLOW_YAML.split("  - id: verify")[0]!;
+    const runId = "run-shared-repo";
+    const branches: string[] = [];
+    for (const projectId of ["proj-shared-a", "proj-shared-b"]) {
+      const planned = planRun({ projectId, runId, flowYaml, dataRoot });
+      approveRun({ projectId, runId, flowHash: planned.flowHash, actorId: "operator-1", dataRoot });
+      const builder: FlowStepAdapter = {
+        id: "repo-builder",
+        runtimeKind: "pty",
+        async dispatch({ worktreePath }) {
+          fs.writeFileSync(path.join(worktreePath!, "feature.txt"), projectId);
+          git(worktreePath!, ["add", "feature.txt"]);
+          git(worktreePath!, ["commit", "-m", "add project feature"]);
+          return { kind: "agent" };
+        },
+      };
+      const result = await runFlow(projectId, runId, {
+        dataRoot, workspaceRepoRoot: repoRoot, worktreeRoot: worktreeBaseDir, adapters: { builder },
+      });
+      expect(result.finalStatus).toBe("finished");
+      branches.push(loadRunState(projectId, runId, { dataRoot }).state.stepStates["build"]!.outputs["branch"]!);
+    }
+    expect(branches[0]).not.toBe(branches[1]);
+    expect(git(repoRoot, ["show", `${branches[0]}:feature.txt`])).toBe("proj-shared-a");
+    expect(git(repoRoot, ["show", `${branches[1]}:feature.txt`])).toBe("proj-shared-b");
+    expect(listWorktrees(repoRoot)).toHaveLength(1);
+  }, 15_000);
+
   it("removes only the interrupted attempt's worktree when recovering after SIGKILL", async () => {
     const projectId = "proj-crashed-worktree";
     const runId = "run-crashed-worktree";
@@ -181,7 +210,7 @@ describe("Deck Flows Slice 3 - Ephemeral Git Worktree Isolation & Rollback", () 
 
     const slowDirtyAdapter: FlowStepAdapter = {
       id: "slow-dirty-builder",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         fs.writeFileSync(path.join(ctx.worktreePath!, "dirty-uncommitted.txt"), "partial\n", "utf8");
         await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -213,7 +242,7 @@ describe("Deck Flows Slice 3 - Ephemeral Git Worktree Isolation & Rollback", () 
 
     const builderAdapter: FlowStepAdapter = {
       id: "rewind-builder",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         const wt = ctx.worktreePath!;
         const existingFiles = fs.readdirSync(wt).filter((f) => f !== ".git").sort();
@@ -277,7 +306,7 @@ steps:
 
     const leakyBuilder: FlowStepAdapter = {
       id: "leaky-builder",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         const wt = ctx.worktreePath!;
         const marker = ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ");
@@ -315,7 +344,7 @@ steps:
 
     const spoofAdapter: FlowStepAdapter = {
       id: "spoof-builder",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         const wt = ctx.worktreePath!;
         fs.writeFileSync(path.join(wt, "real.txt"), "real change\n", "utf8");
@@ -343,7 +372,7 @@ steps:
 
     const dirtyAdapter: FlowStepAdapter = {
       id: "dirty-builder",
-      runtimeKind: "stub",
+      runtimeKind: "pty",
       async dispatch(ctx) {
         fs.writeFileSync(path.join(ctx.worktreePath!, "uncommitted.txt"), "not committed\n", "utf8");
         return { kind: "agent", outputs: { status: "ok" } };

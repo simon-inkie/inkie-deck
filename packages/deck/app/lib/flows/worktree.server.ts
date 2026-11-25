@@ -93,14 +93,15 @@ function assertDisjointFromRepo(worktreeBaseDir: string, repoRoot: string): void
   }
 }
 
-export function buildEphemeralBranchName(runId: string, attemptId: string): string {
-  const candidate = `flow-${runId}-${attemptId}`.toLowerCase();
+function buildEphemeralBranchName(runId: string, attemptId: string, nonce?: string): string {
+  const parts = nonce === undefined ? [runId, attemptId] : [runId, attemptId, nonce];
+  const candidate = `flow-${parts.join("-")}`.toLowerCase();
   if (candidate.length <= 64 && FlowSafeValueRegex.test(candidate)) {
     return candidate;
   }
   const digest = crypto
     .createHash("sha256")
-    .update(`${runId}:${attemptId}`)
+    .update(parts.join(":"))
     .digest("hex")
     .slice(0, 24);
   return `flow-${digest}`;
@@ -115,18 +116,12 @@ async function execGit(
   args: string[],
   timeoutMs = DEFAULT_GIT_TIMEOUT_MS,
   signal?: AbortSignal,
-): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-  const res = await runBoundedProcessGroup("git", args, {
+) {
+  return runBoundedProcessGroup("git", args, {
     cwd,
     timeoutMs,
     signal,
   });
-  return {
-    code: res.code,
-    stdout: res.stdout,
-    stderr: res.stderr,
-    timedOut: res.timedOut,
-  };
 }
 
 /**
@@ -189,6 +184,9 @@ export async function createEphemeralWorktree(params: {
   if (!FlowIdRegex.test(params.attemptId)) {
     throw new WorktreeError(`Invalid attemptId '${params.attemptId}'`);
   }
+  if (params.intentEventId !== undefined && !FlowIdRegex.test(params.intentEventId)) {
+    throw new WorktreeError("Invalid worktree intent event ID");
+  }
 
   const resolvedRepo = path.resolve(params.repoRoot);
   const resolvedBaseDir = path.resolve(params.worktreeBaseDir);
@@ -202,17 +200,9 @@ export async function createEphemeralWorktree(params: {
   assertConfinedPath(runDir, resolvedBaseDir);
   fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
 
-  const worktreePath = path.join(runDir, params.attemptId);
+  const nonce = params.intentEventId ?? crypto.randomBytes(12).toString("hex");
+  const worktreePath = path.join(runDir, nonce);
   assertConfinedPath(worktreePath, resolvedBaseDir);
-
-  // Clean up any stale leftover path from a prior crashed process before adding
-  if (fs.existsSync(worktreePath)) {
-    await execGit(resolvedRepo, ["worktree", "remove", "--force", worktreePath], timeoutMs);
-    if (fs.existsSync(worktreePath)) {
-      fs.rmSync(worktreePath, { recursive: true, force: true });
-    }
-    await execGit(resolvedRepo, ["worktree", "prune"], timeoutMs);
-  }
 
   const detached = params.detached ?? false;
   let branch: string | undefined;
@@ -224,9 +214,7 @@ export async function createEphemeralWorktree(params: {
   if (detached) {
     addArgs.push("--detach");
   } else {
-    branch = buildEphemeralBranchName(params.runId, params.attemptId);
-    // Remove stale temp branch if left behind by a prior crash
-    await execGit(resolvedRepo, ["branch", "-D", branch], timeoutMs);
+    branch = buildEphemeralBranchName(params.runId, params.attemptId, nonce);
     addArgs.push("-b", branch);
   }
 
@@ -259,25 +247,33 @@ export async function recoverEphemeralWorktree(params: {
   runId: string;
   attemptId: string;
   intentEventId: string;
+  keepBranch?: boolean;
 }): Promise<void> {
-  const worktreePath = path.resolve(params.worktreeBaseDir, params.runId, params.attemptId);
+  const runDir = path.resolve(params.worktreeBaseDir, params.runId);
+  const currentPath = path.join(runDir, params.intentEventId);
+  const legacyPath = path.join(runDir, params.attemptId);
   const listed = await execGit(params.repoRoot, ["worktree", "list", "--porcelain", "-z"]);
-  if (listed.code !== 0 || !listed.stdout.endsWith("\0\0")) {
+  if (listed.code !== 0 || listed.stdoutTruncated || !listed.stdout.endsWith("\0\0")) {
     throw new WorktreeError("Could not list git worktrees during flow recovery");
   }
   const reason = `locked ${worktreeLockReason(params.intentEventId)}`;
-  const owned = listed.stdout.split("\0\0").some((record) => {
-    const [entry, ...fields] = record.split("\0");
-    return entry === `worktree ${worktreePath}` && fields.includes(reason);
-  });
-  if (!owned) return;
-
+  const worktreePath = [currentPath, legacyPath].find((candidate) =>
+    listed.stdout.split("\0\0").some((record) => {
+      const [entry, ...fields] = record.split("\0");
+      return entry === `worktree ${candidate}` && fields.includes(reason);
+    }),
+  );
+  if (!worktreePath) return;
   assertConfinedPath(worktreePath, params.worktreeBaseDir);
   const removed = await execGit(params.repoRoot, ["worktree", "remove", "--force", "--force", "--", worktreePath]);
   if (removed.code !== 0) {
     throw new WorktreeError(`Could not remove interrupted flow worktree: ${removed.stderr.trim()}`);
   }
-  await execGit(params.repoRoot, ["branch", "-D", buildEphemeralBranchName(params.runId, params.attemptId)]);
+  if (!params.keepBranch) {
+    const nonce = worktreePath === currentPath ? params.intentEventId : undefined;
+    const branch = buildEphemeralBranchName(params.runId, params.attemptId, nonce);
+    await execGit(params.repoRoot, ["branch", "-D", "--", branch]);
+  }
 }
 
 /**

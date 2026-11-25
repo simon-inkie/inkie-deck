@@ -90,6 +90,7 @@ export function resolveRoleAdapters(
   flow: FlowDefinition,
   adaptersByRole: Readonly<Record<string, FlowStepAdapter | undefined>>,
   fallbackAdapter?: FlowStepAdapter,
+  adaptersByRuntime: Readonly<Record<string, FlowStepAdapter | undefined>> = {},
 ): Map<string, FlowStepAdapter> {
   const resolved = new Map<string, FlowStepAdapter>();
   for (const [roleName, adapter] of Object.entries(adaptersByRole)) {
@@ -99,10 +100,22 @@ export function resolveRoleAdapters(
   }
 
   if (flow.roles) {
+    for (const [roleName, { runtime }] of Object.entries(flow.roles)) {
+      const adapter =
+        resolved.get(roleName) ??
+        (Object.hasOwn(adaptersByRuntime, runtime) ? adaptersByRuntime[runtime] : undefined) ??
+        (fallbackAdapter?.runtimeKind === runtime ? fallbackAdapter : undefined);
+      if (adapter) {
+        if (adapter.runtimeKind !== runtime) {
+          throw new Error(`Role '${roleName}' requires runtime '${runtime}', got '${adapter.runtimeKind}'`);
+        }
+        resolved.set(roleName, adapter);
+      }
+    }
     for (const [roleName, roleConfig] of Object.entries(flow.roles)) {
       if (!roleConfig.differs_from) continue;
-      const roleAdapter = resolved.get(roleName) ?? fallbackAdapter;
-      const otherAdapter = resolved.get(roleConfig.differs_from) ?? fallbackAdapter;
+      const roleAdapter = resolved.get(roleName);
+      const otherAdapter = resolved.get(roleConfig.differs_from);
       if (roleAdapter && otherAdapter) {
         const leftId = adapterIdentity(roleAdapter);
         const rightId = adapterIdentity(otherAdapter);
@@ -135,7 +148,7 @@ function parseDefaultStructuredOutput(
     if (line.startsWith("FLOW_RESULT:")) {
       const payload = JSON.parse(line.slice("FLOW_RESULT:".length)) as Record<string, unknown>;
       if (ctx.step.type === "handoff" || payload["kind"] === "handoff") {
-        const verdict = typeof payload["verdict"] === "string" ? payload["verdict"] : "approve";
+        const verdict = typeof payload["verdict"] === "string" ? payload["verdict"] : "";
         return {
           kind: "handoff",
           verdict,
@@ -168,10 +181,9 @@ function parseDefaultStructuredOutput(
   if (ctx.step.type === "handoff") {
     const allowedVerdicts = ctx.step.returns ? Object.values(ctx.step.returns).flat() : [];
     const lastWord = lines[lines.length - 1]?.trim().toLowerCase() ?? "";
-    const matched = allowedVerdicts.find((v) => lastWord === v || cleaned.toLowerCase().includes(v));
     return {
       kind: "handoff",
-      verdict: matched ?? "approve",
+      verdict: allowedVerdicts.includes(lastWord) ? lastWord : "",
     };
   }
 

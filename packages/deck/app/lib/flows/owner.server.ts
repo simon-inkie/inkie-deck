@@ -98,7 +98,10 @@ function isInsideGitWorktree(targetPath: string): boolean {
   for (const start of candidates) {
     let current = start;
     while (true) {
-      if (fs.existsSync(path.join(current, ".git"))) {
+      const marker = path.join(current, ".git");
+      // An empty directory is not Git metadata. A gitfile or a nonempty
+      // metadata directory (including a damaged one) still blocks storage.
+      if (fs.existsSync(marker) && (!fs.lstatSync(marker).isDirectory() || fs.readdirSync(marker).length > 0)) {
         return true;
       }
       const parent = path.dirname(current);
@@ -583,10 +586,13 @@ function findNearestExistingAncestor(targetPath: string): string {
   return current;
 }
 
+export function configuredFlowsDataRoot(customDataRoot?: string): string | undefined {
+  return customDataRoot ?? process.env["FLOWS_DATA_ROOT"] ?? process.env["DATA_ROOT"];
+}
+
 export function resolveFlowsRootDir(customDataRoot?: string): string {
   const rawRoot =
-    customDataRoot ??
-    process.env["DATA_ROOT"] ??
+    configuredFlowsDataRoot(customDataRoot) ??
     path.join(os.homedir(), ".local", "share", "inkie-deck");
   const resolvedRoot = path.resolve(rawRoot);
   // Reject symlink dataRoot itself, git-worktree targets, AND any non-Git symlinked ancestor on Linux
