@@ -1,5 +1,5 @@
 /**
- * flows.tsx - Read-only card stream view for Deck structured task flows (Slice 1b).
+ * flows.tsx - Card stream & launch/approval view for Deck structured task flows.
  *
  * SEAM RULE: no fs imports, no env-root literals in the route.
  * ASCII only - no em-dashes.
@@ -10,9 +10,14 @@ import { AlertTriangle, Workflow } from "lucide-react";
 import type { Route } from "./+types/flows";
 import { EmptyState } from "~/components/EmptyState";
 import { FlowCardStream } from "~/components/FlowCardStream";
+import { FlowLaunchPanel, FlowRunApprovalBar } from "~/components/FlowLaunchPanel";
 import { RouteErrorPanel } from "~/components/RouteErrorPanel";
 import { Badge } from "~/components/ui/badge";
-import type { FlowCardStreamView, FlowRunSummary } from "~/lib/flows/card-stream";
+import type {
+  FlowCardStreamView,
+  FlowLaunchCatalog,
+  FlowRunSummary,
+} from "~/lib/flows/card-stream";
 import {
   FlowIntegrityError,
   InvalidFlowQueryError,
@@ -21,12 +26,15 @@ import {
   readFlowCardStream,
 } from "~/lib/flows/reader.server";
 import { FlowIdRegex } from "~/lib/flows/types";
+import { listFlowLaunchCatalog } from "~/lib/flows/ui-actions.server";
 import { cn } from "~/lib/utils";
+
+const EMPTY_CATALOG: FlowLaunchCatalog = { flows: [], drafts: [] };
 
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Flows - Inkie Deck" },
-    { name: "description", content: "Read-only structured task flow card stream" },
+    { name: "description", content: "Structured task flow launcher and card stream" },
   ];
 }
 
@@ -36,7 +44,16 @@ interface FlowsLoaderData {
   runs: FlowRunSummary[];
   selectedRunId: string | null;
   stream: FlowCardStreamView | null;
+  catalog: FlowLaunchCatalog;
   error: string | null;
+}
+
+function loadCatalogSafely(): FlowLaunchCatalog {
+  try {
+    return listFlowLaunchCatalog();
+  } catch {
+    return EMPTY_CATALOG;
+  }
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -56,6 +73,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           runs: [],
           selectedRunId: null,
           stream: null,
+          catalog: EMPTY_CATALOG,
           error: "Flow ledger failed integrity verification.",
         },
         { status: 422 },
@@ -68,11 +86,14 @@ export async function loader({ request }: Route.LoaderArgs) {
         runs: [],
         selectedRunId: null,
         stream: null,
+        catalog: EMPTY_CATALOG,
         error: "Could not list flow projects.",
       },
       { status: 500 },
     );
   }
+
+  const catalog = loadCatalogSafely();
 
   if (requestedProject !== null && !FlowIdRegex.test(requestedProject)) {
     return data<FlowsLoaderData>(
@@ -82,6 +103,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         runs: [],
         selectedRunId: null,
         stream: null,
+        catalog,
         error: "Invalid flow project id.",
       },
       { status: 400 },
@@ -98,6 +120,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         runs: [],
         selectedRunId: null,
         stream: null,
+        catalog,
         error: "Invalid flow run id.",
       },
       { status: 400 },
@@ -111,6 +134,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       runs: [],
       selectedRunId: null,
       stream: null,
+      catalog,
       error: null,
     } satisfies FlowsLoaderData;
   }
@@ -127,6 +151,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           runs: [],
           selectedRunId: null,
           stream: null,
+          catalog,
           error: "Invalid flow project id.",
         },
         { status: 400 },
@@ -140,6 +165,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           runs: [],
           selectedRunId: null,
           stream: null,
+          catalog,
           error: "Flow ledger failed integrity verification.",
         },
         { status: 422 },
@@ -152,6 +178,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         runs: [],
         selectedRunId: null,
         stream: null,
+        catalog,
         error: "Could not read flow runs.",
       },
       { status: 500 },
@@ -166,6 +193,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       runs,
       selectedRunId: null,
       stream: null,
+      catalog,
       error: null,
     } satisfies FlowsLoaderData;
   }
@@ -181,6 +209,7 @@ export async function loader({ request }: Route.LoaderArgs) {
             runs,
             selectedRunId,
             stream: null,
+            catalog,
             error: "Flow run not found.",
           },
           { status: 404 },
@@ -192,6 +221,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         runs,
         selectedRunId: null,
         stream: null,
+        catalog,
         error: null,
       } satisfies FlowsLoaderData;
     }
@@ -202,6 +232,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       runs,
       selectedRunId,
       stream,
+      catalog,
       error: null,
     } satisfies FlowsLoaderData;
   } catch (err) {
@@ -213,6 +244,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           runs,
           selectedRunId,
           stream: null,
+          catalog,
           error: "Invalid flow project or run id.",
         },
         { status: 400 },
@@ -226,6 +258,7 @@ export async function loader({ request }: Route.LoaderArgs) {
           runs,
           selectedRunId,
           stream: null,
+          catalog,
           error: "Flow ledger failed integrity verification.",
         },
         { status: 422 },
@@ -238,6 +271,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         runs,
         selectedRunId,
         stream: null,
+        catalog,
         error: "Could not read flow stream.",
       },
       { status: 500 },
@@ -248,6 +282,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 export default function FlowsRoute({ loaderData }: Route.ComponentProps) {
   const { projects, selectedProject, runs, selectedRunId, stream, error } =
     loaderData;
+  const catalog = loaderData.catalog ?? EMPTY_CATALOG;
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
@@ -258,7 +293,7 @@ export default function FlowsRoute({ loaderData }: Route.ComponentProps) {
               Structured Flows
             </h2>
             <p className="text-xs text-muted-foreground">
-              Read-only card stream verified directly from project SQLite ledgers.
+              Choose, draft, approve, and inspect structured flows backed by project SQLite ledgers.
             </p>
           </div>
         </div>
@@ -338,6 +373,8 @@ export default function FlowsRoute({ loaderData }: Route.ComponentProps) {
         ) : null}
       </div>
 
+      <FlowLaunchPanel catalog={catalog} selectedProject={selectedProject} />
+
       {error ? (
         <div
           data-testid="flows-error"
@@ -351,13 +388,16 @@ export default function FlowsRoute({ loaderData }: Route.ComponentProps) {
           </div>
         </div>
       ) : stream ? (
-        <FlowCardStream stream={stream} />
+        <>
+          <FlowRunApprovalBar stream={stream} catalog={catalog} />
+          <FlowCardStream stream={stream} />
+        </>
       ) : (
         <div data-testid="flows-empty">
           <EmptyState
             icon={Workflow}
             title="No flow runs found"
-            body="Start a structured flow run in a project to inspect its verified card stream here."
+            body="Plan and approve a structured flow run above to inspect its verified card stream here."
           />
         </div>
       )}

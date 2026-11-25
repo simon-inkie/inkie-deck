@@ -83,6 +83,32 @@ export interface FlowCardStreamView {
   } | null;
 }
 
+export interface FlowLaunchCatalogEntry {
+  flowRef: string;
+  source: "project" | "library" | "builtin";
+  title?: string;
+  hash: string;
+  yaml: string;
+  stepCount: number;
+  hasWorkspace: boolean;
+}
+
+export interface FlowLaunchDraftEntry {
+  draftName: string;
+  flowRef: string;
+  source: "draft";
+  title?: string;
+  hash: string;
+  yaml: string;
+  stepCount: number;
+  diffFromTemplate?: string;
+}
+
+export interface FlowLaunchCatalog {
+  flows: FlowLaunchCatalogEntry[];
+  drafts: FlowLaunchDraftEntry[];
+}
+
 export function deriveWaitingOn(status: string): string | null {
   if (status === "waiting_decision" || status === "planned") {
     return "operator";

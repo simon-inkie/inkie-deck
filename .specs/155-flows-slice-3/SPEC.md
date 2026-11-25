@@ -56,4 +56,12 @@ Out of scope:
 - What changed: added this SPEC capturing the approved Slice 3 plan (file-based library/drafts, split plan/approve, ephemeral git worktrees, 153/154 fixture adapters, deterministic checks + git-diff signals, and minimal `/flows` choose/draft-diff/approve UI).
 - Why: establish the Slice 3 contract before implementation per `DEVELOPMENT.md`.
 - Supersedes: nothing, additive.
+- Commits: 401c1bc
+
+### 2026-11-25: Implement Slice 3 Pass A + Pass B on branch 155-flows-slice-3
+- What changed:
+  - Pass A (`b52d174`): added `flows/library/ticket-to-pr.yaml`, `library.server.ts`, `worktree.server.ts`, `adapter.server.ts`, `checks.server.ts`, split `planRun`/`approveRun` in `store.server.ts` and `runner.server.ts`, and Slice 3 unit/e2e suites.
+  - Pass B: extracted pure `diff.ts`, added `ui-actions.server.ts` seam (`listFlowLaunchCatalog`, `planFlowFromUi`, `approveFlowFromUi`, `startFlowFromUi`), added `GET /api/flows?view=library` and same-origin-guarded `POST /api/flows` intents (`plan`, `approve`, `start`), added `FlowLaunchPanel` + `FlowRunApprovalBar` on `/flows`, and added `slice-3-ui.test.tsx`.
+- Why: complete the end-to-end Slice 3 choose, draft-diff, approve (`flow_approved`), and start loop on `/flows`.
+- Supersedes: nothing, additive.
 - Commits: pending
