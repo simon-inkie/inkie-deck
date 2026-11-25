@@ -1,0 +1,11 @@
+flow: test-both-goto-end
+version: 1
+steps:
+  - id: step1
+    type: agent
+  - id: step2
+    type: decision
+    options:
+      - key: conflict
+        goto: step1
+        end: done

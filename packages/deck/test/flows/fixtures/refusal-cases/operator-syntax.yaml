@@ -1,0 +1,6 @@
+flow: test-operator-syntax
+version: 1
+steps:
+  - id: step1
+    type: agent
+    prompt: "Execute ${COMMAND} here"

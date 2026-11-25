@@ -1,0 +1,9 @@
+flow: test-forward-goto
+version: 1
+steps:
+  - id: step1
+    type: check
+    on_fail:
+      goto: step2
+  - id: step2
+    type: agent
