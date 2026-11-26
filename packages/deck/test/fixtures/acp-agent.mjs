@@ -21,12 +21,12 @@ function steps(actions = []) {
         toolCall: action.toolCall ?? { toolCallId: "fixture-tool", title: "Tool" }, options: action.options,
       } }); break;
       case "result": send({ id: action.id ?? promptId, result: action.result }); break;
-      case "error": send({ id: promptId, error: { code: -32603, message: "Fixture error" } }); break;
+      case "error": send({ id: promptId, error: { code: action.code ?? -32603, message: "Fixture error" } }); break;
       case "line": writeSync(1, `${action.line}\n`); break;
       case "exit": process.exit(0);
       case "partial": writeSync(1, '{"jsonrpc":'); closeSync(1); break;
       case "environment": update({ sessionUpdate: "agent_message_chunk", content: {
-        type: "text", text: JSON.stringify(action.keys.map((key) => Object.hasOwn(process.env, key))),
+        type: "text", text: JSON.stringify(action.keys.map((key) => action.values ? process.env[key] ?? null : Object.hasOwn(process.env, key))),
       } }); break;
       case "descendant": {
         const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -40,7 +40,12 @@ function steps(actions = []) {
 function handle(line) {
   const message = JSON.parse(line);
   switch (message.method) {
-    case "initialize": send({ id: message.id, result: {
+    case "initialize":
+      if (script.initializeErrorCode) {
+        send({ id: message.id, error: { code: script.initializeErrorCode, message: "Fixture auth error" } });
+        break;
+      }
+      send({ id: message.id, result: {
       protocolVersion: script.protocolVersion ?? 1, agentCapabilities: script.capabilities ?? {},
     } }); break;
     case "session/new": send({ id: message.id, result: { sessionId } }); break;

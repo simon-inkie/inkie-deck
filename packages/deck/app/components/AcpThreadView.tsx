@@ -94,11 +94,12 @@ export function AcpThreadView({
     }
   }, [agent]);
 
+  const isLive = status.state === "starting" || status.state === "running" || status.state === "stopping";
   useEffect(() => {
-    if (status.state !== "starting" && status.state !== "running" && status.state !== "stopping") return;
-    const timer = setInterval(() => void refresh(), 1500);
+    if (!canWrite) return;
+    const timer = setInterval(() => void refresh(), isLive ? 1500 : 15_000);
     return () => clearInterval(timer);
-  }, [status.state, refresh]);
+  }, [canWrite, isLive, refresh]);
 
   const postOp = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
     setErrorBanner(null);
@@ -167,6 +168,13 @@ export function AcpThreadView({
           )}
           <div data-testid="acp-quota-reading" className="text-xs text-muted-foreground">
             Quota ({usageReading.source}): {usageReading.state}
+            {usageReading.windows?.map((window, index) => (
+              <div key={`${window.label}-${index}`}>
+                {window.label}: {window.usedPercent}% used. Reset: {window.resetsAt
+                  ? <time dateTime={window.resetsAt}>{window.resetsAt}</time>
+                  : "unknown"}
+              </div>
+            ))}
           </div>
           {advertisedCapNames.length > 0 && (
             <div data-testid="acp-capabilities" className="text-xs text-muted-foreground">

@@ -53,6 +53,7 @@ const SnapshotSchema = z.object({
 
 const QuotaStateSchema = z.object({
   version: z.literal(1),
+  quotaContext: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   status: z.enum([
     "UNKNOWN",
     "BLOCKED_CONFIRMED",
@@ -77,6 +78,11 @@ const QuotaStateSchema = z.object({
 });
 
 export class FileCodexQuotaStore {
+  static fromEnv(env: NodeJS.ProcessEnv): FileCodexQuotaStore {
+    const dataRoot = resolveDataRoot(env);
+    return new FileCodexQuotaStore(path.join(dataRoot, "codex-quota.json"), dataRoot);
+  }
+
   constructor(
     private readonly statePath = path.join(resolveDataRoot(), "codex-quota.json"),
     private readonly dataRoot = resolveDataRoot()

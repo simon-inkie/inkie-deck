@@ -1,9 +1,14 @@
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   antigravity1Manifest,
+  codexAcp1Manifest,
+  resolveAcpManifest,
+  resolveAcpManifestForAgent,
+  probeAgyVersion,
   antigravityUsageReading,
   checkAgyVersion,
   compareSemver,
@@ -13,6 +18,11 @@ import {
   type UsageReading,
 } from "../../app/lib/runner/acp-manifest.js";
 import { LaunchFailure } from "../../app/lib/runner/runner.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const childProcess = await importOriginal<typeof import("node:child_process")>();
+  return { ...childProcess, spawnSync: vi.fn(childProcess.spawnSync) };
+});
 
 describe("ACP Manifest, Version and Opt-In Guards", () => {
   let tempDir: string;
@@ -62,6 +72,51 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
       expect(compareSemver("1.5.0-rc.1", "1.5.0")).toBe(-1);
       expect(compareSemver("1.5.1-rc.1", "1.5.0")).toBe(1);
     });
+  });
+
+  it("registers the documented Codex defaults without API keys", () => {
+    expect(resolveAcpManifest("agy")).toBe(antigravity1Manifest);
+    expect(resolveAcpManifest("codex")).toEqual({
+      name: "codex-acp-1", runtime: "codex", runner: "acp",
+      executableName: "codex-acp", args: [], semverFloor: "2.6.0",
+      envAllowlist: ["CODEX_HOME", "CODEX_PATH", "NO_BROWSER"],
+      envDefaults: { NO_BROWSER: "1" }, knownExtensions: [],
+      displayName: "Codex ACP", authHint: "Sign in with `codex login` in a terminal.",
+      usageKind: "codex",
+    });
+    for (const runtime of [undefined, "", "unknown", "constructor"]) {
+      expect(resolveAcpManifest(runtime)).toBeUndefined();
+    }
+  });
+
+  it.each(["2.6.0", "codex-acp 2.6.0", "\n  \ncodex-cli 2.6.0\nignored"])("parses first non-empty version line: %s", async (stdout) => {
+    const options = { displayName: "Codex ACP", exec: () => ({ status: 0, stdout, stderr: "" }) };
+    expect(checkAgyVersion("fixture", "2.6.0", options)).toEqual({ version: "2.6.0", ok: true });
+    expect(await probeAgyVersion("fixture", "2.6.0", options)).toEqual({ version: "2.6.0", ok: true });
+  });
+
+  it.each(["codex-acp 2.5.9", "codex-acp 2.6.0-rc.1", "garbage\n2.6.0", "too many 2.6.0", ""])("rejects invalid or below-floor Codex output: %s", (stdout) => {
+    expect(() => checkAgyVersion("fixture", "2.6.0", {
+      displayName: codexAcp1Manifest.displayName,
+      exec: () => ({ status: 0, stdout, stderr: "" }),
+    })).toThrow(/Codex ACP/);
+  });
+
+  it("distinguishes empty version stdout from malformed output", async () => {
+    const options = (stdout: string) => ({
+      displayName: "Codex ACP", exec: () => ({ status: 0, stdout, stderr: "" }),
+    });
+    expect(() => checkAgyVersion("fixture", "2.6.0", options(" \n "))).toThrow(/empty stdout/);
+    await expect(probeAgyVersion("fixture", "2.6.0", options("unparseable"))).rejects.toThrow(/Failed to parse/);
+  });
+
+  it("surfaces the spawnSync error code on version probe failure", () => {
+    const error = Object.assign(new Error("spawn denied"), { code: "EPERM" });
+    vi.mocked(spawnSync).mockReturnValueOnce({
+      pid: 0, output: [], stdout: "", stderr: "", status: null, signal: null, error,
+    });
+    expect(() => checkAgyVersion("fixture", "2.6.0", { displayName: "Codex ACP" }))
+      .toThrow(expect.objectContaining({ message: "Could not verify Codex ACP version (EPERM).", cause: error }));
   });
 
   describe("Version check (semver floor)", () => {
@@ -184,7 +239,7 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
       return agentDir;
     }
 
-    it("requires MC_ACP_RUNNER=1, .runner=acp and .runtime=agy", () => {
+    it("requires MC_ACP_RUNNER=1, .runner=acp and a registered runtime", () => {
       const agent = "agent-alpha";
       setupAgent(agent, "acp\n", "agy\n");
 
@@ -211,8 +266,13 @@ describe("ACP Manifest, Version and Opt-In Guards", () => {
       setupAgent(agentMissing, undefined, "agy\n");
       expect(isAcpOptedIn({ AGENTS_HOME: agentsHome, MC_ACP_RUNNER: "1" }, agentMissing)).toBe(false);
 
-      // Rejects non-agy runtimes
-      for (const runtime of ["claude", "codex", "other", ""]) {
+      setupAgent(agent, "acp\n", "codex\n");
+      const env = { AGENTS_HOME: agentsHome, MC_ACP_RUNNER: "1" };
+      expect(isAcpOptedIn(env, agent)).toBe(true);
+      expect(resolveAcpManifestForAgent(env, agent)).toBe(codexAcp1Manifest);
+
+      // Rejects unknown runtimes
+      for (const runtime of ["claude", "other", ""]) {
         setupAgent(agent, "acp\n", runtime + "\n");
         expect(isAcpOptedIn({ AGENTS_HOME: agentsHome, MC_ACP_RUNNER: "1" }, agent)).toBe(false);
       }

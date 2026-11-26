@@ -73,6 +73,45 @@ describe("Codex quota display view-model", () => {
     expect(view.available).toBe(false);
   });
 
+  it("shows unknown when a confirmed block's reset passes between reads", () => {
+    const read = {
+      kind: "ok",
+      state: state({
+        status: "BLOCKED_CONFIRMED",
+        blockedReason: "rate_limit_reached",
+        resetCandidateAt: NOW,
+        snapshot: { primary: { usedPercent: 100, resetsAt: NOW / 1_000 } },
+      }),
+    } satisfies QuotaSnapshotRead;
+
+    expect(buildCodexQuotaDisplay(read, NOW - 1, 15 * 60_000).blocked).toBe(true);
+    expect(buildCodexQuotaDisplay(read, NOW, 15 * 60_000)).toMatchObject({
+      status: "UNKNOWN",
+      blocked: false,
+      available: false,
+      warning: null,
+      observedAt: new Date(NOW - 60_000).toISOString(),
+    });
+  });
+
+  it("keeps a cached spend warning through an unrelated usage window's reset", () => {
+    const read = {
+      kind: "ok",
+      state: state({
+        status: "BLOCKED_CONFIRMED",
+        blockedReason: "spend_control_reached",
+        resetCandidateAt: NOW,
+        snapshot: { primary: { usedPercent: 40, resetsAt: NOW / 1_000 }, spendControlReached: true },
+      }),
+    } satisfies QuotaSnapshotRead;
+
+    expect(buildCodexQuotaDisplay(read, NOW, 15 * 60_000)).toMatchObject({
+      status: "BLOCKED_CONFIRMED",
+      blocked: true,
+      warning: "Spend control reached.",
+    });
+  });
+
   it("does not turn protocol UNKNOWN into an available claim even with percentages", () => {
     const unknown = state({ status: "UNKNOWN" });
     const view = buildCodexQuotaDisplay({ kind: "ok", state: unknown }, NOW, 15 * 60_000);

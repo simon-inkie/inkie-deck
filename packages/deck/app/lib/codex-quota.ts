@@ -8,6 +8,7 @@
 export type QuotaStatus =
   | "UNKNOWN"
   | "BLOCKED_CONFIRMED"
+  // Keep the legacy recovery statuses readable from saved snapshots.
   | "RECOVERY_CANDIDATE"
   | "PROBING"
   | "AVAILABLE_CONFIRMED";
@@ -59,6 +60,7 @@ export interface AccountRateLimits {
 
 export interface QuotaState {
   version: 1;
+  quotaContext?: string;
   status: QuotaStatus;
   observedAt: number | null;
   source: "none" | "full_read" | "sparse_update" | "clock" | "probe";
@@ -70,10 +72,7 @@ export interface QuotaState {
 export type QuotaEvent =
   | { type: "full_read"; payload: AccountRateLimits; observedAt: number }
   | { type: "sparse_update"; payload: RateLimitSnapshot; observedAt: number }
-  | { type: "clock"; observedAt: number }
-  | { type: "probe_started"; observedAt: number }
-  | { type: "probe_succeeded"; observedAt: number }
-  | { type: "probe_failed"; observedAt: number };
+  | { type: "clock"; observedAt: number };
 
 export function initialQuotaState(): QuotaState {
   return {
@@ -143,7 +142,19 @@ function hasExhaustedWindow(snapshot: RateLimitSnapshot): boolean {
   );
 }
 
-function hasAvailableEvidence(snapshot: RateLimitSnapshot): boolean {
+function isAvailable(
+  snapshot: RateLimitSnapshot,
+  blockedSnapshot: RateLimitSnapshot | null
+): boolean {
+  if (hasExhaustedWindow(snapshot)) return false;
+  // Availability in a different window cannot clear a known exhausted limit.
+  if (
+    ((blockedSnapshot?.primary?.usedPercent ?? 0) >= 100 && snapshot.primary?.usedPercent === undefined) ||
+    ((blockedSnapshot?.secondary?.usedPercent ?? 0) >= 100 && snapshot.secondary?.usedPercent === undefined) ||
+    ((blockedSnapshot?.individualLimit?.remainingPercent ?? 1) <= 0 && snapshot.individualLimit?.remainingPercent === undefined)
+  ) {
+    return false;
+  }
   return (
     snapshot.spendControlReached === false ||
     snapshot.rateLimitReachedType === null ||
@@ -158,7 +169,18 @@ function hasAvailableEvidence(snapshot: RateLimitSnapshot): boolean {
   );
 }
 
-function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
+function spendResetCandidateAt(snapshot: RateLimitSnapshot | null): number | null {
+  const limit = snapshot?.individualLimit;
+  return limit && limit.remainingPercent <= 0 ? limit.resetsAt * 1_000 : null;
+}
+
+function resetCandidateAt(
+  snapshot: RateLimitSnapshot,
+  reason: QuotaState["blockedReason"],
+): number | null {
+  const spendResetAt = spendResetCandidateAt(snapshot);
+  if (reason === "spend_control_reached") return spendResetAt;
+
   const exhausted = [snapshot.primary, snapshot.secondary]
     .filter((window): window is RateLimitWindow =>
       window !== null &&
@@ -168,13 +190,7 @@ function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
       window.resetsAt !== undefined
     )
     .map((window) => window.resetsAt! * 1_000);
-  if (
-    snapshot.individualLimit !== null &&
-    snapshot.individualLimit !== undefined &&
-    snapshot.individualLimit.remainingPercent <= 0
-  ) {
-    exhausted.push(snapshot.individualLimit.resetsAt * 1_000);
-  }
+  if (spendResetAt !== null) exhausted.push(spendResetAt);
   if (exhausted.length > 0) return Math.max(...exhausted);
 
   const known = [snapshot.primary?.resetsAt, snapshot.secondary?.resetsAt]
@@ -183,32 +199,16 @@ function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
   return known.length > 0 ? Math.max(...known) : null;
 }
 
-function blockedState(
-  previous: QuotaState,
-  snapshot: RateLimitSnapshot,
-  observedAt: number,
-  source: QuotaState["source"]
-): QuotaState {
-  return {
-    ...previous,
-    status: "BLOCKED_CONFIRMED",
-    observedAt,
-    source,
-    blockedReason: blockedReason(snapshot),
-    resetCandidateAt: resetCandidateAt(snapshot),
-    snapshot,
-  };
-}
-
-function advanceResetClock(state: QuotaState, observedAt: number): QuotaState {
-  if (
-    state.status === "BLOCKED_CONFIRMED" &&
-    state.resetCandidateAt !== null &&
-    observedAt >= state.resetCandidateAt
-  ) {
-    return { ...state, status: "RECOVERY_CANDIDATE", observedAt, source: "clock" };
+function advanceResetClock(state: QuotaState, now: number): QuotaState {
+  if (state.status !== "BLOCKED_CONFIRMED" || state.resetCandidateAt === null) return state;
+  // Older cached spend blocks may carry an unrelated usage window's reset.
+  const resetAt = state.blockedReason === "spend_control_reached"
+    ? spendResetCandidateAt(state.snapshot)
+    : state.resetCandidateAt;
+  if (resetAt !== null && now >= resetAt) {
+    return { ...state, status: "UNKNOWN", blockedReason: null, resetCandidateAt: null };
   }
-  return { ...state, observedAt, source: "clock" };
+  return state;
 }
 
 export function reduceQuotaState(
@@ -217,85 +217,46 @@ export function reduceQuotaState(
 ): QuotaState {
   if (event.type === "clock") return advanceResetClock(previous, event.observedAt);
 
-  if (event.type === "probe_started") {
-    if (previous.status !== "RECOVERY_CANDIDATE") return previous;
-    return { ...previous, status: "PROBING", observedAt: event.observedAt, source: "probe" };
+  const incoming = event.type === "full_read" ? selectCodexBucket(event.payload) : event.payload;
+  const reason = blockedReason(incoming);
+  const wasBlocked = previous.status === "BLOCKED_CONFIRMED";
+  if (event.type === "sparse_update" && wasBlocked && reason === null) {
+    return advanceResetClock(previous, event.observedAt);
   }
-  if (event.type === "probe_succeeded") {
-    if (previous.status !== "PROBING") return previous;
-    return {
-      ...previous,
-      status: "AVAILABLE_CONFIRMED",
-      observedAt: event.observedAt,
-      source: "probe",
-      blockedReason: null,
-      resetCandidateAt: null,
-    };
-  }
-  if (event.type === "probe_failed") {
-    if (previous.status !== "PROBING") return previous;
-    return {
-      ...previous,
-      status: "BLOCKED_CONFIRMED",
-      observedAt: event.observedAt,
-      source: "probe",
-    };
-  }
-
-  const source = event.type;
   const snapshot =
-    event.type === "full_read"
-      ? selectCodexBucket(event.payload)
-      : previous.snapshot === null
-        ? event.payload
-        : mergeSparseRateLimits(previous.snapshot, event.payload);
-  if (blockedReason(snapshot) !== null) {
-    return blockedState(previous, snapshot, event.observedAt, source);
+    event.type === "sparse_update" && previous.snapshot !== null
+      ? mergeSparseRateLimits(previous.snapshot, incoming)
+      : incoming;
+  const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source: event.type };
+  if (reason !== null) {
+    const resetAt = resetCandidateAt(snapshot, reason);
+    // A fresh sparse block may omit its reset while the merged snapshot still
+    // contains an expired reset from the previous block.
+    const mayHaveInheritedExpiredReset = event.type === "sparse_update" &&
+      resetAt !== null && resetAt <= event.observedAt;
+    return {
+      ...withSnapshot,
+      status: "BLOCKED_CONFIRMED",
+      blockedReason: reason,
+      resetCandidateAt: mayHaveInheritedExpiredReset ? resetCandidateAt(incoming, reason) : resetAt,
+    };
   }
 
   if (event.type === "sparse_update") {
-    const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source };
-    if (previous.status === "BLOCKED_CONFIRMED") {
-      return withSnapshot;
-    }
-    if (
-      previous.status === "RECOVERY_CANDIDATE" ||
-      previous.status === "PROBING"
-    ) {
-      return withSnapshot;
-    }
     return hasExhaustedWindow(snapshot)
       ? { ...withSnapshot, status: "UNKNOWN" }
       : withSnapshot;
   }
 
-  if (
-    previous.status === "BLOCKED_CONFIRMED" ||
-    previous.status === "RECOVERY_CANDIDATE" ||
-    previous.status === "PROBING"
-  ) {
-    if (!hasAvailableEvidence(snapshot)) {
-      return { ...previous, observedAt: event.observedAt, source, snapshot };
-    }
-    return {
-      ...previous,
-      status: "RECOVERY_CANDIDATE",
-      observedAt: event.observedAt,
-      source,
-      snapshot,
-    };
+  const available = isAvailable(snapshot, wasBlocked ? previous.snapshot : null);
+  if (wasBlocked && (snapshot.spendControlReached !== false || !available)) {
+    return advanceResetClock(previous, event.observedAt);
   }
 
   return {
-    ...previous,
-    status:
-      hasExhaustedWindow(snapshot) || !hasAvailableEvidence(snapshot)
-        ? "UNKNOWN"
-        : "AVAILABLE_CONFIRMED",
-    observedAt: event.observedAt,
-    source,
+    ...withSnapshot,
+    status: available ? "AVAILABLE_CONFIRMED" : "UNKNOWN",
     blockedReason: null,
     resetCandidateAt: null,
-    snapshot,
   };
 }

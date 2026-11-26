@@ -33,9 +33,11 @@ import { action as acpAction } from "../../app/routes/api.acp.js";
 
 function byteIoScript(handlerBody: string): string {
   return `
+import { createReadStream, createWriteStream } from "node:fs";
 let buf = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => {
+const input = createReadStream(null, { fd: 0, encoding: "utf8" });
+const output = createWriteStream(null, { fd: 1 });
+input.on("data", (chunk) => {
   buf += chunk;
   let idx;
   while ((idx = buf.indexOf("\\n")) !== -1) {
@@ -43,7 +45,7 @@ process.stdin.on("data", (chunk) => {
     buf = buf.slice(idx + 1);
     if (!line) continue;
     const msg = JSON.parse(line);
-    const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+    const send = (obj) => output.write(JSON.stringify(obj) + "\\n");
     ${handlerBody}
   }
 });
@@ -687,12 +689,14 @@ fi
 
     // Major 2 (Round 7): Refused Resume due to capability downgrade PRESERVES valid .acp-last-session
     // (only an explicit session-not-found for that exact ID clears the saved checkpoint).
-    writeFileSync(join(agentHome, ".acp-last-session"), "  spaced-id  \n");
     const noResScript = join(root, "r4-nores.mjs");
+    const downgradeMarker = join(root, "r4-downgrade");
     writeFileSync(
       noResScript,
-      byteIoScript(`
-        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } });
+      'import { existsSync } from "node:fs";\n' + byteIoScript(`
+        const loadSession = !existsSync(${JSON.stringify(downgradeMarker)});
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession } } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "  spaced-id  " } });
       `),
     );
     const regNoRes = new AcpRunnerRegistry(env, {
@@ -701,9 +705,14 @@ fi
       execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       listWindows: () => [],
     });
-    // Printable leading/trailing spaces preserved on read AND retained after capability-downgrade refusal
+    await regNoRes.start(agent);
+    await regNoRes.stop(agent);
+    expect(regNoRes.canResume(agent)).toBe(true);
+    writeFileSync(downgradeMarker, "");
+    // Printable leading/trailing spaces survive the capability downgrade.
     expect(regNoRes.lastSessionId(agent)).toBe("  spaced-id  ");
-    await expect(regNoRes.start(agent, { resume: true })).rejects.toThrow(/does not support/);
+    await expect(regNoRes.start(agent, { resume: true })).rejects.toMatchObject({ reason: "unavailable" });
+    expect(regNoRes.canResume(agent)).toBe(false);
     expect(regNoRes.lastSessionId(agent)).toBe("  spaced-id  ");
     rmSync(join(agentHome, ".acp-last-session"), { force: true });
 
@@ -789,12 +798,15 @@ fi
 
     // Major 3a: temporary protocol mismatch preserves valid .acp-last-session
     const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
-    writeFileSync(join(agentHome, ".acp-last-session"), "valid-saved-id\n");
     const protoMismatchScript = join(root, "r5-proto.mjs");
+    const protocolMarker = join(root, "r5-protocol-mismatch");
     writeFileSync(
       protoMismatchScript,
-      byteIoScript(`
-        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 99, agentCapabilities: { loadSession: true } } });
+      'import { existsSync } from "node:fs";\n' + byteIoScript(`
+        const protocolVersion = existsSync(${JSON.stringify(protocolMarker)}) ? 99 : 1;
+        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "valid-saved-id" } });
+        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found", data: { sessionId: "valid-saved-id" } } });
       `),
     );
     const regProto = new AcpRunnerRegistry(env, {
@@ -803,26 +815,16 @@ fi
       execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       listWindows: () => [],
     });
-    await expect(regProto.start(agent, { resume: true })).rejects.toThrow();
+    await regProto.start(agent);
+    await regProto.stop(agent);
+    writeFileSync(protocolMarker, "");
+    await expect(regProto.start(agent, { resume: true })).rejects.toMatchObject({ reason: "unavailable" });
     expect(regProto.lastSessionId(agent)).toBe("valid-saved-id");
 
     // Major 3b: explicit session-not-found (-32002 with matching data.sessionId) clears stale .acp-last-session
-    const missingSessScript = join(root, "r5-notfound.mjs");
-    writeFileSync(
-      missingSessScript,
-      byteIoScript(`
-        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found", data: { sessionId: "valid-saved-id" } } });
-      `),
-    );
-    const regNotFound = new AcpRunnerRegistry(env, {
-      dataRoot: root,
-      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [missingSessScript] },
-      execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
-      listWindows: () => [],
-    });
-    await expect(regNotFound.start(agent, { resume: true })).rejects.toThrow();
-    expect(regNotFound.lastSessionId(agent)).toBeUndefined();
+    rmSync(protocolMarker);
+    await expect(regProto.start(agent, { resume: true })).rejects.toThrow();
+    expect(regProto.lastSessionId(agent)).toBeUndefined();
 
     // Major 5: "Rate limit endpoint unavailable" (-32603) MUST NOT emit usage.exhausted
     const outageScript = join(root, "r5-outage.mjs");
@@ -844,7 +846,7 @@ fi
     await outSess.close();
   });
 
-  it("Round 6 (Majors 1-4 & Minors 3-4): cross-socket tmux check, -32002 uri vs sessionId & pre-lock swap, blocker survives 501 chunks + disconnect, structured quota code, -32022 & severity:fatal", async () => {
+  it("Round 6 (Majors 1-2): cross-socket tmux check, -32002 uri vs sessionId and pre-lock checkpoint swap", async () => {
     // Major 1: Deck runs inside private TMUX socket while Base runs on default socket (TMUX unset) -> refused as tmux-active
     const privSockEnv = {
       AGENTS_HOME: root,
@@ -864,12 +866,12 @@ fi
 
     // Major 2a: -32002 with data.uri (missing file, NOT missing session) preserves valid checkpoint
     const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
-    writeFileSync(join(agentHome, ".acp-last-session"), "keep-me-uri\n");
     const missingFileScript = join(root, "r6-uri.mjs");
     writeFileSync(
       missingFileScript,
       byteIoScript(`
         if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+        else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "keep-me-uri" } });
         else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Resource not found", data: { uri: "file:///missing" } } });
       `),
     );
@@ -879,32 +881,29 @@ fi
       execVersion: () => ({ status: 0, stdout: "1.5.14\n", stderr: "" }),
       listWindows: () => [],
     });
-    await expect(regUri.start(agent, { resume: true })).rejects.toThrow();
+    await regUri.start(agent);
+    await regUri.stop(agent);
+    await expect(regUri.start(agent, { resume: true })).rejects.toThrow(/negotiation ended/);
     expect(regUri.lastSessionId(agent)).toBe("keep-me-uri");
 
     // Major 2b: Checkpoint replaced during pre-lock probe is NEVER deleted if old ID is rejected
-    writeFileSync(join(agentHome, ".acp-last-session"), "old-pre-probe-id\n");
-    const swapScript = join(root, "r6-swap.mjs");
-    writeFileSync(
-      swapScript,
-      byteIoScript(`
-        if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
-        else if (msg.method === "session/load") send({ jsonrpc: "2.0", id: msg.id, error: { code: -32002, message: "Session not found", data: { sessionId: "old-pre-probe-id" } } });
-      `),
-    );
     const regSwap = new AcpRunnerRegistry(env, {
       dataRoot: root,
-      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [swapScript] },
+      manifest: { ...antigravity1Manifest, executableName: process.execPath, args: [missingFileScript] },
       execVersion: () => {
         writeFileSync(join(agentHome, ".acp-last-session"), "newer-valid-id\n");
         return { status: 0, stdout: "1.5.14\n", stderr: "" };
       },
       listWindows: () => [],
     });
-    await expect(regSwap.start(agent, { resume: true })).rejects.toThrow();
+    expect(regSwap.canResume(agent)).toBe(true);
+    await expect(regSwap.start(agent, { resume: true })).rejects.toThrow(/cannot be resumed/);
     expect(regSwap.lastSessionId(agent)).toBe("newer-valid-id");
+  });
 
+  it("Round 6 (Majors 3-4 & Minors 3-4): blocker retention, structured quota code, -32022 and severity:fatal", async () => {
     // Major 3: Blocker + 501 chunks + disconnect retains the blocking card in stopped thread view
+    const env = { AGENTS_HOME: root, MC_ACP_RUNNER: "1", HOME: root, PATH: process.env.PATH };
     const blockerDiscScript = join(root, "r6-blocker-disc.mjs");
     writeFileSync(
       blockerDiscScript,
@@ -914,7 +913,8 @@ fi
         else if (msg.method === "session/prompt") {
           for (let i = 1; i <= 17; i++) send({ jsonrpc: "2.0", id: i, method: "_ext/unsupported_req", params: {} });
           for (let i = 0; i < 501; i++) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s-bd", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "c" + i } } } });
-          setTimeout(() => process.exit(1), 30);
+          // Flush the flood and disconnect even if a blocking stdin read is pending.
+          output.end();
         }
       `),
     );
@@ -926,9 +926,12 @@ fi
     });
     const discSess = await regDisc.start(agent);
     expect(await discSess.prompt("flood and disconnect")).toBe("disconnected");
-    await delay(80);
-    expect(regDisc.status(agent)?.state).toBe("stopped");
-    expect(regDisc.events(agent).some((e) => e.type === "extension.blocking")).toBe(true);
+    await vi.waitFor(() => expect(regDisc.status(agent)?.state).toBe("stopped"));
+    const retainedEvents = regDisc.events(agent);
+    expect(retainedEvents.some((e) =>
+      e.type === "message.chunk" && e.view.kind === "text" && e.view.excerpt === "c500",
+    )).toBe(true);
+    expect(retainedEvents.some((e) => e.type === "extension.blocking")).toBe(true);
 
     // Major 4 & Minor 4: -32603 text-only rate-limit ambiguity emits NO exhaustion; { reason: provider_error, code: quota_exhausted } DOES; severity: fatal terminates turn
     const quotaScript = join(root, "r6-quota.mjs");
@@ -1390,7 +1393,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     });
 
     // Round 11 Major 4: Persistent lock-release failure (replaced lock inode) MUST NOT hang shutdown(),
-    // transitions to 'orphaned', closes lock fd, AND STILL blocks registry-wide Start for a second agent (beta)!
+    // transitions to 'orphaned', closes lock fd, and leaves other homes available.
     const betaHome = join(root, "beta");
     mkdirSync(betaHome, { recursive: true });
     writeFileSync(join(betaHome, ".runner"), "acp\n");
@@ -1404,7 +1407,9 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(Date.now() - shutdownStart).toBeLessThan(1500);
     expect(persistSess.state.kind).toBe("disconnected");
     expect(regRestart.status(agent)?.state).toBe("orphaned");
-    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    expect((await regRestart.start("beta")).state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
     // Round 12 Minor 1: Orphaned thread view hides Start/Resume, shows recovery reason, and offers Retry recovery
     const orphanedHtml = renderToStaticMarkup(
@@ -1424,7 +1429,7 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(orphanedHtml).toContain("Retry recovery");
 
     // Round 12 Major 3: Unverifiable orphanIdentity stays orphaned even when .runner.lock is absent,
-    // AND cold-start 'locked' on alpha blocks starting beta!
+    // and other homes remain available.
     const sharedRegState = (globalThis as unknown as Record<symbol, { sessions: Map<string, Record<string, unknown>> }>)[Symbol.for("inkie-deck.acp.registry")]!;
     rmSync(lockFile, { force: true });
     sharedRegState.sessions.set(agentHome, {
@@ -1434,7 +1439,9 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     });
     await regRestart.recover();
     expect(regRestart.status(agent)?.state).toBe("orphaned");
-    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    await expect(regRestart.start(agent)).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    expect((await regRestart.start("beta")).state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
     // Round 13 Minor 1: Orphaned home retains canControl() and recoverAgent() even after opting out of .runner=acp
     rmSync(join(agentHome, ".runner"), { force: true });
@@ -1443,9 +1450,10 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(regRestart.status(agent)?.state).toBe("orphaned");
     writeFileSync(join(agentHome, ".runner"), "acp\n");
 
-    // Cold-start 'locked' entry on alpha ALSO blocks starting beta
+    // Cold-start 'locked' entry on alpha is isolated from beta
     sharedRegState.sessions.set(agentHome, { state: "locked", reason: "Unrecovered lock on cold start." });
-    await expect(regRestart.start("beta")).rejects.toMatchObject({ name: "StartRefusal", reason: "locked" });
+    expect((await regRestart.start("beta")).state.kind).toBe("idle");
+    await regRestart.stop("beta");
 
     await regRestart.recover();
     const betaSess = await regRestart.start("beta");
@@ -1477,10 +1485,6 @@ sys.exit(0 if mod.agent_opts_into_pty(pathlib.Path(sys.argv[2])) else 1)`,
     expect(regCapGate.canResume("cap-agent")).toBe(false);
     await expect(regCapGate.start("cap-agent", { resume: true })).rejects.toThrow();
     expect(regCapGate.lastSessionId("cap-agent")).toBe("kept-valid-checkpoint");
-    expect(regCapGate.canResume("cap-agent")).toBe(false);
-    const regKey = Symbol.for("inkie-deck.acp.registry");
-    const regShared = (globalThis as unknown as Record<symbol, { resumeSupport?: Map<string, unknown> }>)[regKey];
-    regShared?.resumeSupport?.clear();
     expect(regCapGate.canResume("cap-agent")).toBe(false);
     const hiddenResumeHtml = renderToStaticMarkup(
       <AcpThreadView

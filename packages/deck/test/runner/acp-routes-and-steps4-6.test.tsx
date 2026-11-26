@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AcpThreadView, deriveAcpCards } from "../../app/components/AcpThreadView.js";
+import { readAcpUsageReading } from "../../app/lib/acp-usage.server.js";
+import * as quotaObserver from "../../app/lib/codex-quota-observer.server.js";
+import { initialQuotaState } from "../../app/lib/codex-quota.js";
 import { AcpSession } from "../../app/lib/acp-session.server.js";
 import type { DeckEvent } from "../../app/lib/deck-event.js";
 import { antigravity1Manifest, antigravityUsageReading } from "../../app/lib/runner/acp-manifest.js";
@@ -23,6 +26,10 @@ function makeReq(method: string, url: string, body?: object, origin = "http://12
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+}
+
+function sameOriginGet(url: string): Request {
+  return new Request(url, { headers: { host: new URL(url).host, "sec-fetch-site": "same-origin" } });
 }
 
 describe("ACP Slice 2 Steps 4 to 6: Negotiate, Prompt, Cards, Permissions, Cancel, Resume, Usage", () => {
@@ -181,7 +188,7 @@ rl.on("line", (line) => {
     expect(s1.activeSessionId).toBe("sess-persist-42");
     expect(existsSync(join(agentHome, ".acp-last-session"))).toBe(true);
     expect(existsSync(join(agentHome, ".session-id"))).toBe(false);
-    expect(readFileSync(join(agentHome, ".acp-last-session"), "utf8").trim()).toBe("sess-persist-42");
+    expect(reg.lastSessionId(agent)).toBe("sess-persist-42");
     await reg.stop(agent);
 
     // Resume uses the stored session id via session/resume
@@ -299,7 +306,7 @@ rl.on("line", (line) => {
 
     // Loader returns optedIn=true and usageReading=unknown
     const loadRes = await acpLoader({
-      request: new Request(`http://127.0.0.1:4295/api/acp?agent=${agent}`),
+      request: sameOriginGet(`http://127.0.0.1:4295/api/acp?agent=${agent}`),
       params: {},
       context: {},
     } as never);
@@ -308,6 +315,73 @@ rl.on("line", (line) => {
       optedIn: true,
       usageReading: { state: "unknown", source: "antigravity" },
     });
+  });
+
+  it("dispatches Codex quota through both loaders and renders its windows", async () => {
+    const now = Date.now();
+    vi.spyOn(quotaObserver, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    for (const [key, value] of Object.entries({ AGENTS_HOME: root, DATA_ROOT: root,
+      INBOX_ROOT: join(root, "inbox"), PROJECTS_ROOT: join(root, "projects"),
+      CODEX_HOME: agentHome, MC_CODEX_QUOTA_CODEX_HOME: "",
+      MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" })) vi.stubEnv(key, value);
+    writeFileSync(join(agentHome, ".runtime"), "codex\n");
+    writeFileSync(join(root, "codex-quota.json"), JSON.stringify({ ...initialQuotaState(),
+      quotaContext: quotaObserver.quotaContextForHome(quotaObserver.observerQuotaHome(process.env)),
+      status: "AVAILABLE_CONFIRMED", observedAt: now,
+      snapshot: { primary: { usedPercent: 92, windowDurationMins: 300, resetsAt: null },
+        secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: now / 1000 } } }));
+    const api = await acpLoader({ request: sameOriginGet(`http://localhost/api/acp?agent=${agent}`),
+      params: {}, context: {} } as Parameters<typeof acpLoader>[0]);
+    if (!("usageReading" in api)) throw new Error("Expected successful ACP loader response");
+    const thread = await threadLoader({ request: sameOriginGet(`http://localhost/threads/${agent}`),
+      params: { agent }, context: {} } as Parameters<typeof threadLoader>[0]);
+    for (const reading of [api.usageReading, thread.acp?.usageReading]) {
+      expect(reading).toMatchObject({ source: "codex", state: "low", windows: [
+        { label: "5-hour", usedPercent: 92, resetsAt: null },
+        { label: "7-day", usedPercent: 42, resetsAt: new Date(now).toISOString() },
+      ] });
+    }
+    const html = renderToStaticMarkup(<AcpThreadView agent={agent}
+      initialStatus={{ state: "stopped" }} initialEvents={[]} initialLastSessionId={null}
+      initialUsageReading={api.usageReading} canWrite={false} />);
+    expect(html).toContain('data-testid="acp-quota-reading"');
+    expect(html).toContain("Quota (codex): low");
+    expect(html).toContain("5-hour: 92% used. Reset: unknown");
+    expect(html).toContain(`dateTime="${new Date(now).toISOString()}"`);
+    expect(html).not.toContain("null");
+  });
+
+  it("keeps the running adapter's quota source after editing .runtime", async () => {
+    for (const [key, value] of Object.entries({ AGENTS_HOME: root, DATA_ROOT: root,
+      INBOX_ROOT: join(root, "inbox"), PROJECTS_ROOT: join(root, "projects"),
+      MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "0" })) vi.stubEnv(key, value);
+    const executable = join(root, "agy");
+    writeFileSync(executable, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    let resolveExit!: () => void;
+    const reg = new AcpRunnerRegistry(process.env, {
+      manifest: { ...antigravity1Manifest, executableName: executable },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession: async () => ({
+        state: { kind: "idle" },
+        capabilities: {},
+        supportsResume: () => false,
+        exited: new Promise<void>((resolve) => { resolveExit = resolve; }),
+        exitInfo: { code: 0, signal: null },
+        close: async () => resolveExit(),
+      }) as unknown as AcpSession,
+    });
+    await reg.start(agent);
+    writeFileSync(join(agentHome, ".runtime"), "codex\n");
+
+    const api = await acpLoader({ request: sameOriginGet(`http://localhost/api/acp?agent=${agent}`),
+      params: {}, context: {} } as Parameters<typeof acpLoader>[0]);
+    const thread = await threadLoader({ request: sameOriginGet(`http://localhost/threads/${agent}`),
+      params: { agent }, context: {} } as Parameters<typeof threadLoader>[0]);
+    expect(api).toMatchObject({ usageReading: { source: "antigravity" } });
+    expect(thread.acp?.usageReading.source).toBe("antigravity");
+    await reg.stop(agent);
+    expect(reg.usageReading(agent).source).toBe("codex");
   });
 
   it.each([
@@ -363,6 +437,118 @@ rl.on("line", (line) => {
         expect(serialized).not.toContain(lastSessionId);
         expect(serialized).not.toContain("Private transcript text");
       }
+    }
+  });
+
+  it.each([
+    { host: "localhost", site: "cross-site", provider: "plus" as const },
+    { host: "unlisted.example", site: "same-origin", provider: "azure" as const },
+  ])("R1-2: untrusted GETs under .runtime=codex do not leak Codex quota or trigger observer ($host, $site, $provider)", async ({ host, site, provider }) => {
+    const now = Date.now();
+    const ensure = vi.spyOn(quotaObserver, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    for (const [key, value] of Object.entries({
+      AGENTS_HOME: root,
+      DATA_ROOT: root,
+      INBOX_ROOT: join(root, "inbox"),
+      PROJECTS_ROOT: join(root, "projects"),
+      MC_ACP_RUNNER: "1",
+      MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1",
+    })) vi.stubEnv(key, value);
+    vi.stubEnv("MC_ALLOWED_HOSTS", undefined);
+    vi.stubEnv("HOST", undefined);
+
+    writeFileSync(join(agentHome, ".runtime"), "codex\n");
+    if (provider === "azure") {
+      mkdirSync(join(root, "provider-switch", "current"), { recursive: true });
+      writeFileSync(join(root, "provider-switch", "current", `${agent}.json`), JSON.stringify({ agent, provider: "azure" }));
+    }
+    writeFileSync(join(root, "codex-quota.json"), JSON.stringify({
+      ...initialQuotaState(),
+      status: "AVAILABLE_CONFIRMED",
+      observedAt: now,
+      snapshot: {
+        primary: { usedPercent: 92, windowDurationMins: 300, resetsAt: null },
+        secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: now / 1000 },
+      },
+    }));
+
+    const headers = { host, "sec-fetch-site": site };
+    const api = await acpLoader({
+      request: new Request(`http://${host}/api/acp?agent=${agent}`, { headers }),
+      params: {},
+      context: {},
+    } as Parameters<typeof acpLoader>[0]);
+    const thread = await threadLoader({
+      request: new Request(`http://${host}/threads/${agent}`, { headers }),
+      params: { agent },
+      context: {},
+    } as Parameters<typeof threadLoader>[0]);
+
+    expect(ensure).not.toHaveBeenCalled();
+    if (!("usageReading" in api)) throw new Error("Expected successful ACP loader response");
+    expect(api.usageReading).toMatchObject({ state: "unknown", source: "unknown" });
+    expect(api.usageReading.windows).toBeUndefined();
+    expect(thread.acp?.usageReading).toMatchObject({ state: "unknown", source: "unknown" });
+    expect(thread.acp?.usageReading.windows).toBeUndefined();
+    for (const payload of [api, thread]) {
+      const serialized = JSON.stringify(payload);
+      expect(serialized).not.toContain("codex-azure");
+      expect(serialized).not.toContain("5-hour");
+      expect(serialized).not.toContain('"codex"');
+    }
+  });
+
+  it("R1-2: MC_ACP_RUNNER=0 under .runtime=codex does not leak Codex quota or trigger observer", async () => {
+    const now = Date.now();
+    const ensure = vi.spyOn(quotaObserver, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    for (const [key, value] of Object.entries({
+      AGENTS_HOME: root,
+      DATA_ROOT: root,
+      INBOX_ROOT: join(root, "inbox"),
+      PROJECTS_ROOT: join(root, "projects"),
+      MC_ACP_RUNNER: "0",
+      MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1",
+    })) vi.stubEnv(key, value);
+
+    writeFileSync(join(agentHome, ".runtime"), "codex\n");
+    writeFileSync(join(root, "codex-quota.json"), JSON.stringify({
+      ...initialQuotaState(),
+      status: "AVAILABLE_CONFIRMED",
+      observedAt: now,
+      snapshot: {
+        primary: { usedPercent: 92, windowDurationMins: 300, resetsAt: null },
+      },
+    }));
+
+    for (const provider of ["plus", "azure"] as const) {
+      if (provider === "azure") {
+        mkdirSync(join(root, "provider-switch", "current"), { recursive: true });
+        writeFileSync(join(root, "provider-switch", "current", `${agent}.json`), JSON.stringify({ agent, provider: "azure" }));
+      }
+      const api = await acpLoader({
+        request: sameOriginGet(`http://localhost/api/acp?agent=${agent}`),
+        params: {},
+        context: {},
+      } as Parameters<typeof acpLoader>[0]);
+      const thread = await threadLoader({
+        request: sameOriginGet(`http://localhost/threads/${agent}`),
+        params: { agent },
+        context: {},
+      } as Parameters<typeof threadLoader>[0]);
+      const directReading = readAcpUsageReading(process.env, agent, now);
+
+      expect(ensure).not.toHaveBeenCalled();
+      if (!("usageReading" in api)) throw new Error("Expected successful ACP loader response");
+      expect(api.optedIn).toBe(false);
+      expect(api.usageReading).toMatchObject({ state: "unknown", source: "unknown" });
+      expect(api.usageReading.windows).toBeUndefined();
+      expect(thread.acp).toBeUndefined();
+      expect(directReading).toMatchObject({ state: "unknown", source: "unknown" });
+      expect(directReading.windows).toBeUndefined();
+      const serialized = JSON.stringify({ api, thread, directReading });
+      expect(serialized).not.toContain("codex-azure");
+      expect(serialized).not.toContain("5-hour");
+      expect(serialized).not.toContain('"codex"');
     }
   });
 });

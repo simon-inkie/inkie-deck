@@ -3,6 +3,8 @@ import path from "node:path";
 import { z } from "zod";
 import { FileCodexQuotaStore } from "./codex-quota-store.server";
 import {
+  CodexQuotaLifecycleError,
+  codexQuotaStaleAfterMs,
   ensureCodexQuotaObserver,
   codexQuotaTelemetryEnabled,
 } from "./codex-quota-observer.server";
@@ -11,11 +13,10 @@ import {
   type CodexProvider,
   type CodexQuotaDisplayData,
 } from "./codex-quota-display";
+import { resolveDataRoot } from "./queue.server";
 import { AGENT_NAME_RE, confineToRootReal } from "./safe-fs.server";
 
 type Env = Record<string, string | undefined>;
-
-export const DEFAULT_CODEX_QUOTA_STALE_MS = 15 * 60_000;
 
 const ProviderStateSchema = z.object({
   version: z.literal(1).optional(),
@@ -27,13 +28,6 @@ const ProviderStateSchema = z.object({
   operationId: z.string().min(1).optional(),
   transaction_id: z.string().min(1).optional(),
 });
-
-function staleAfterMs(env: Env): number {
-  const parsed = Number(env["MC_CODEX_QUOTA_STALE_MS"]);
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_CODEX_QUOTA_STALE_MS;
-}
 
 function readProvider(dataRoot: string, agent: string): CodexProvider {
   if (!AGENT_NAME_RE.test(agent)) return "unknown";
@@ -62,33 +56,36 @@ function readProvider(dataRoot: string, agent: string): CodexProvider {
   }
 }
 
-function resolveDisplayDataRoot(env: Env): string | null {
-  const configured = env["DATA_ROOT"]?.trim();
-  return configured !== undefined && configured !== "" && path.isAbsolute(configured)
-    ? configured
-    : null;
-}
-
 export function loadCodexQuotaDisplay(
   env: Env,
   now: number,
-  agents: string[]
+  agents: string[],
+  expected?: { context: string | undefined },
 ): CodexQuotaDisplayData {
-  if (codexQuotaTelemetryEnabled(env)) {
-    ensureCodexQuotaObserver({ env });
-  }
-  const dataRoot = resolveDisplayDataRoot(env);
-  if (dataRoot === null) {
+  let dataRoot: string;
+  try {
+    dataRoot = resolveDataRoot(env);
+  } catch {
     return {
       quota: buildCodexQuotaDisplay(
         { kind: "missing" },
         now,
-        staleAfterMs(env)
+        codexQuotaStaleAfterMs(env)
       ),
       providers: Object.fromEntries(
         agents.map((agent) => [agent, "unknown" as const])
       ),
     };
+  }
+  if (codexQuotaTelemetryEnabled(env)) {
+    ensureCodexQuotaObserver({
+      env,
+      onError(error) {
+        if (error instanceof CodexQuotaLifecycleError) {
+          console.warn(`[codex-quota] ${error.message}`);
+        }
+      },
+    });
   }
   const store = new FileCodexQuotaStore(
     path.join(dataRoot, "codex-quota.json"),
@@ -96,8 +93,12 @@ export function loadCodexQuotaDisplay(
   );
   const providers: Record<string, CodexProvider> = {};
   for (const agent of agents) providers[agent] = readProvider(dataRoot, agent);
+  const stored = store.loadResult();
+  const quota = expected && stored.kind === "ok" && (!expected.context || stored.state.quotaContext !== expected.context)
+    ? { kind: "missing" as const }
+    : stored;
   return {
-    quota: buildCodexQuotaDisplay(store.loadResult(), now, staleAfterMs(env)),
+    quota: buildCodexQuotaDisplay(quota, now, codexQuotaStaleAfterMs(env)),
     providers,
   };
 }
