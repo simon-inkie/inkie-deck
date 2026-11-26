@@ -321,6 +321,21 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   used disposable directories under `/tmp` and removed them after the runs.
 - Commits: Working tree only.
 
+### 2026-11-26: Scope shell quota to the configured observer home
+
+- What changed: Use the ACP display filter for shell quota reads with the
+  configured observer home hash. Add shell and ACP tests for the first read
+  after the observer home changes while the previous sample is still saved.
+- Why: R4-1 exposed quota from the previous home before the new observer
+  sampled. The ACP test also guards the launch home comparison when the
+  previous sample still matches the ACP home.
+- Supersedes: Shell display of saved quota without a matching home hash.
+- Verification: Typecheck and 88 focused Vitest tests passed. The shell
+  regression failed before the fix, and the ACP regression failed with the
+  launch home comparison removed. The requested TMPDIR was on a read-only
+  mount, so verification used disposable directories under `/tmp`.
+- Commits: Working tree only.
+
 ## Exact changed files
 
 - `.specs/154-acp-slice-3/SPEC.md`

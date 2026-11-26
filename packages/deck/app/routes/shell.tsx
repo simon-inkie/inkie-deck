@@ -27,6 +27,7 @@ import { readAgentKind } from "~/lib/agent-kind.server";
 import { readActivity, resolveEscalationThresholdMs } from "~/lib/activity.server";
 import { escalatedAgents, type ActivityStatus, type EscalatedAgent } from "~/lib/activity.shared";
 import { loadCodexQuotaDisplay } from "~/lib/codex-quota-display.server";
+import { observerQuotaHome, quotaContextForHome } from "~/lib/codex-quota-observer.server";
 import { AppShell } from "~/components/AppShell";
 import type { SidebarAgent } from "~/components/Sidebar";
 import type { NeedsItem } from "~/components/AppShell";
@@ -246,7 +247,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const codexQuota = loadCodexQuotaDisplay(
     process.env,
     now.getTime(),
-    agentNames
+    agentNames,
+    { context: quotaContextForHome(observerQuotaHome(process.env)) }
   );
 
   return { agents, needsItems, needsCount: needsItems.length, workCards, user, tmuxOn: tmuxEnabled(process.env), instanceLabel: instanceLabel(process.env), modelSelector, cronAdminOn: cronAdminEnabled(process.env), activityNavOn: activityEnabled(process.env), draftsNavOn: draftsEnabled(process.env), escalated, codexQuota };

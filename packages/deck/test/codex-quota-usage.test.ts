@@ -123,6 +123,18 @@ describe("Codex ACP usage mapping", () => {
     expect(readAcpUsageReading(env, agent, now, active).state).toBe("ok");
   });
 
+  it("hides saved launch-home quota when the observer switches homes before sampling", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    const { env, home, quotaFile } = configureCodexAgent();
+    const active = { manifest: codexAcp1Manifest, codexQuotaHome: acpQuotaHome(codexAcp1Manifest, env, home) };
+    saveAvailableQuota(quotaFile, env);
+    expect(readAcpUsageReading(env, agent, now, active).state).toBe("ok");
+
+    const switched = { ...env, MC_CODEX_QUOTA_CODEX_HOME: join(env.AGENTS_HOME, "new-observer-home") };
+
+    expect(readAcpUsageReading(switched, agent, now, active)).toEqual(unknown);
+  });
+
   it("keeps quota in a running ACP session across a routine credential refresh", () => {
     vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
     const { env, home, quotaFile } = configureCodexAgent();
