@@ -410,3 +410,13 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - `packages/deck/test/runner/acp-review-round2.test.tsx`
 - `packages/deck/test/runner/acp-routes-and-steps4-6.test.tsx`
 - `packages/deck/test/runner/import-graph.test.ts`
+
+### 2026-11-26: Known limit, renewed spend block without a new reset (PR #249)
+
+- Devin 4707273583 (judge: TICKET, S3, L3, approved behaviour). A renewed
+  spend-control block that arrives without a new reset time stays blocked
+  until its own reported reset passes (shown as unknown) or one clean
+  available full read with `spendControlReached: false` clears it. No code
+  change. A regression test for this renewal case is ticketed as a
+  follow-up. The independent judge found no remaining L1 or L2, S1 or S2
+  reducer defect at d9caf0f, so the review loop for this mechanism closes.
