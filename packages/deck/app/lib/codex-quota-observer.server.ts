@@ -357,7 +357,7 @@ export class CodexQuotaObserver {
   private awaitResponse(connection: AppServerConnection, method: string): void {
     this.scheduleRequestTask(() => {
       this.resetConnection(connection, new CodexQuotaLifecycleError(`Codex quota ${method} timed out.`));
-    }, Math.min(REQUEST_TIMEOUT_MS, this.refreshIntervalMs));
+    }, REQUEST_TIMEOUT_MS);
   }
 
   private readRateLimits(connection: AppServerConnection): void {

@@ -43,7 +43,7 @@ Flows, releases, pushes and pull requests.
   home is a rare, operator-controlled change that Deck cannot detect. Routine
   credential refreshes and keyring-backed logins work with the same path check.
   The observer refreshes idle connections and confirms recovery after two
-  available full reads.
+  consecutive available full reads.
 - Filesystem reads stay behind server helpers; routes receive UsageReading.
 
 ## Offline Test Matrix
@@ -334,6 +334,22 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   regression failed before the fix, and the ACP regression failed with the
   launch home comparison removed. The requested TMPDIR was on a read-only
   mount, so verification used disposable directories under `/tmp`.
+- Commits: Working tree only.
+
+### 2026-11-26: PR #249 quota recovery and checkpoint rollback
+
+- An exhausted or inconclusive full read restarts quota recovery. The
+  observer requires two consecutive available full reads to confirm it.
+- Give quota RPCs their own 15-second deadline. Freshness still determines
+  the refresh interval and whether saved samples are current.
+- Inject a failure when replacing the checkpoint ID and verify the previous
+  ID remains resumable with its restored sidecar.
+- Verification: Typecheck, 74 quota tests and 8 focused registry tests
+  passed. Removing sidecar restoration made the new rollback test fail at
+  the Resume assertion. The full registry run reproduced the same eight
+  tmux and subprocess failures and one unhandled rejection as the branch
+  head. The requested temporary directory was on a read-only mount, so
+  verification used a disposable directory under `/tmp`.
 - Commits: Working tree only.
 
 ## Exact changed files

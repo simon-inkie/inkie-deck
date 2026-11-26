@@ -169,6 +169,32 @@ describe("Codex quota reducer", () => {
     expect(after.status).toBe("RECOVERY_CANDIDATE");
   });
 
+  it("requires two available full reads after a clock reset or inconclusive read", () => {
+    let state = initialQuotaState();
+    const read = (snapshot: RateLimitSnapshot) => {
+      state = reduceQuotaState(state, {
+        type: "full_read",
+        payload: full(snapshot),
+        observedAt: 2_000_000,
+      });
+    };
+    read({ primary: { usedPercent: 100, resetsAt: 2_000 }, spendControlReached: true });
+    state = reduceQuotaState(state, { type: "clock", observedAt: 2_000_000 });
+    state = reduceQuotaState(state, {
+      type: "sparse_update",
+      payload: { primary: { usedPercent: 80 }, spendControlReached: false },
+      observedAt: 2_000_000,
+    });
+    read(available);
+    expect(state.status).toBe("RECOVERY_CANDIDATE");
+    read({});
+    expect(state.status).toBe("BLOCKED_CONFIRMED");
+    read(available);
+    expect(state.status).toBe("RECOVERY_CANDIDATE");
+    read(available);
+    expect(state.status).toBe("AVAILABLE_CONFIRMED");
+  });
+
   it("confirms recovery after a successful probe", () => {
     const candidate = {
       ...initialQuotaState(),

@@ -17,7 +17,7 @@ import { LaunchFailure } from "../../app/lib/runner/runner.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
-  return { ...fs, writeSync: vi.fn(fs.writeSync) };
+  return { ...fs, renameSync: vi.fn(fs.renameSync), writeSync: vi.fn(fs.writeSync) };
 });
 
 const agent = "fixture-acp-agent";
@@ -673,6 +673,41 @@ rl.on("line", (line) => {
       expect(reg.canResume(agent)).toBe(true);
     } finally {
       write.mockReset();
+    }
+  });
+
+  it("restores the previous sidecar if replacing the checkpoint ID fails", async () => {
+    const startSession = vi.fn(async () => resumableSession("new-session"));
+    startSession.mockResolvedValueOnce(resumableSession("previous-session"));
+    const reg = new AcpRunnerRegistry(env, {
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession,
+    });
+    await reg.start(agent);
+    await reg.stop(agent);
+    expect(reg.canResume(agent)).toBe(true);
+
+    const idFile = join(home, ".acp-last-session");
+    const rename = vi.mocked(renameSync);
+    const realRename = rename.getMockImplementation()!;
+    let failedRename = false;
+    rename.mockImplementation((from, to) => {
+      if (!failedRename && to === idFile) {
+        failedRename = true;
+        throw Object.assign(new Error("Checkpoint ID rename failed"), { code: "EIO" });
+      }
+      return realRename(from, to);
+    });
+    try {
+      expect((await reg.start(agent)).activeSessionId).toBe("new-session");
+      await reg.stop(agent);
+      expect(failedRename).toBe(true);
+      expect(reg.lastSessionId(agent)).toBe("previous-session");
+      expect(reg.canResume(agent)).toBe(true);
+    } finally {
+      rename.mockReset();
     }
   });
 

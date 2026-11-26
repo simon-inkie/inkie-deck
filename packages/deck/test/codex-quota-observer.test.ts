@@ -158,6 +158,34 @@ describe("CodexQuotaObserver", () => {
     }
   });
 
+  it("saves a 1.5-second reply with 2-second freshness without reconnecting", () => {
+    vi.useFakeTimers();
+    const connection = new FakeConnection();
+    const connect = vi.fn(() => connection);
+    const scheduleReconnect = vi.fn();
+    const store = new MemoryStore();
+    const observer = new CodexQuotaObserver({
+      env: { MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1", MC_CODEX_QUOTA_STALE_MS: "2000" },
+      connect,
+      scheduleReconnect,
+      store,
+    });
+    try {
+      observer.start();
+      initialise(connection);
+      const readId = methodId(connection, "account/rateLimits/read");
+      vi.advanceTimersByTime(1_500);
+      connection.line({ id: readId, result: { rateLimits: { primary: { usedPercent: 20 } } } });
+      expect(store.saves).toHaveLength(1);
+      expect(store.state.status).toBe("AVAILABLE_CONFIRMED");
+      expect(scheduleReconnect).not.toHaveBeenCalled();
+      expect(connect).toHaveBeenCalledOnce();
+    } finally {
+      observer.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("reconnects after an unanswered read and ignores a late reply", () => {
     vi.useFakeTimers();
     const first = new FakeConnection();
@@ -433,11 +461,14 @@ describe("CodexQuotaObserver", () => {
         result: { rateLimits: { primary: { usedPercent }, spendControlReached: false } },
       });
       update();
+      expect(usageState()).toBe("exhausted");
+      respond(80);
+      expect(usageState()).toBe("unknown");
+      vi.advanceTimersByTime(10_000);
       respond(100);
-      expect(store.state.status).toBe("BLOCKED_CONFIRMED");
       expect(usageState()).toBe("exhausted");
       vi.advanceTimersByTime(10_000);
-      respond(0);
+      respond(10);
       expect(store.state.status).toBe("RECOVERY_CANDIDATE");
       update();
       expect(store.state.status).toBe("RECOVERY_CANDIDATE");

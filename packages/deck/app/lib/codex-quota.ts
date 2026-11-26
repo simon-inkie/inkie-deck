@@ -144,7 +144,10 @@ function hasExhaustedWindow(snapshot: RateLimitSnapshot): boolean {
   );
 }
 
-function hasAvailableEvidence(snapshot: RateLimitSnapshot): boolean {
+function isAvailable(snapshot: RateLimitSnapshot | null): boolean {
+  if (snapshot === null || blockedReason(snapshot) !== null || hasExhaustedWindow(snapshot)) {
+    return false;
+  }
   return (
     snapshot.spendControlReached === false ||
     snapshot.rateLimitReachedType === null ||
@@ -254,8 +257,8 @@ export function reduceQuotaState(
     return blockedState(previous, snapshot, event.observedAt, source);
   }
 
+  const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source };
   if (event.type === "sparse_update") {
-    const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source };
     if (previous.status === "BLOCKED_CONFIRMED") {
       return withSnapshot;
     }
@@ -270,32 +273,28 @@ export function reduceQuotaState(
       : withSnapshot;
   }
 
-  const available = !hasExhaustedWindow(snapshot) && hasAvailableEvidence(snapshot);
+  const available = isAvailable(snapshot);
   if (
     previous.status === "BLOCKED_CONFIRMED" ||
+    previous.status === "RECOVERY_CANDIDATE" ||
     previous.status === "PROBING"
   ) {
-    return {
-      ...previous,
-      status: available ? "RECOVERY_CANDIDATE" : previous.status,
-      observedAt: event.observedAt,
-      source,
-      snapshot,
-    };
-  }
-
-  if (previous.status === "RECOVERY_CANDIDATE" && !available) {
-    return { ...previous, observedAt: event.observedAt, source, snapshot };
+    if (!available) {
+      return { ...withSnapshot, status: "BLOCKED_CONFIRMED", resetCandidateAt: resetCandidateAt(snapshot) };
+    }
+    // The first available full read retires the reset time. A clock-created
+    // candidate still has its reset time and needs both full reads.
+    if (previous.status !== "RECOVERY_CANDIDATE" ||
+        previous.resetCandidateAt !== null ||
+        !isAvailable(previous.snapshot)) {
+      return { ...withSnapshot, status: "RECOVERY_CANDIDATE", resetCandidateAt: null };
+    }
   }
 
   return {
-    ...previous,
-    // A second full read with positive evidence confirms recovery without a prompt.
+    ...withSnapshot,
     status: available ? "AVAILABLE_CONFIRMED" : "UNKNOWN",
-    observedAt: event.observedAt,
-    source,
     blockedReason: null,
     resetCandidateAt: null,
-    snapshot,
   };
 }
