@@ -370,6 +370,18 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   `pnpm -C packages/deck test test/codex-quota`.
 - Commits: Working tree only.
 
+### 2026-11-26: Correct spend-control reset and single-read recovery in PR #249
+
+- 4706177382: Use the exhausted spend limit's own reset for a spend-control
+  block, including when advancing the clock on a cached snapshot.
+- 4706177578: Require explicit `spendControlReached: false` alongside the
+  existing full-read recovery checks. The pinned Codex emits null when
+  spend data is unavailable, so the prior block still applies.
+- Verification passed with `pnpm typecheck` and all 78 tests from
+  `pnpm -C packages/deck test test/codex-quota`. The checks ran with
+  disposable directories under `/tmp`, removed after the runs.
+- Commits: Working tree only.
+
 ## Exact changed files
 
 - `.specs/154-acp-slice-3/SPEC.md`

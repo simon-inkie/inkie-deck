@@ -169,7 +169,18 @@ function isAvailable(
   );
 }
 
-function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
+function spendResetCandidateAt(snapshot: RateLimitSnapshot | null): number | null {
+  const limit = snapshot?.individualLimit;
+  return limit && limit.remainingPercent <= 0 ? limit.resetsAt * 1_000 : null;
+}
+
+function resetCandidateAt(
+  snapshot: RateLimitSnapshot,
+  reason: QuotaState["blockedReason"],
+): number | null {
+  const spendResetAt = spendResetCandidateAt(snapshot);
+  if (reason === "spend_control_reached") return spendResetAt;
+
   const exhausted = [snapshot.primary, snapshot.secondary]
     .filter((window): window is RateLimitWindow =>
       window !== null &&
@@ -179,13 +190,7 @@ function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
       window.resetsAt !== undefined
     )
     .map((window) => window.resetsAt! * 1_000);
-  if (
-    snapshot.individualLimit !== null &&
-    snapshot.individualLimit !== undefined &&
-    snapshot.individualLimit.remainingPercent <= 0
-  ) {
-    exhausted.push(snapshot.individualLimit.resetsAt * 1_000);
-  }
+  if (spendResetAt !== null) exhausted.push(spendResetAt);
   if (exhausted.length > 0) return Math.max(...exhausted);
 
   const known = [snapshot.primary?.resetsAt, snapshot.secondary?.resetsAt]
@@ -195,11 +200,12 @@ function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
 }
 
 function advanceResetClock(state: QuotaState, now: number): QuotaState {
-  if (
-    state.status === "BLOCKED_CONFIRMED" &&
-    state.resetCandidateAt !== null &&
-    now >= state.resetCandidateAt
-  ) {
+  if (state.status !== "BLOCKED_CONFIRMED" || state.resetCandidateAt === null) return state;
+  // Older cached spend blocks may carry an unrelated usage window's reset.
+  const resetAt = state.blockedReason === "spend_control_reached"
+    ? spendResetCandidateAt(state.snapshot)
+    : state.resetCandidateAt;
+  if (resetAt !== null && now >= resetAt) {
     return { ...state, status: "UNKNOWN", blockedReason: null, resetCandidateAt: null };
   }
   return state;
@@ -223,7 +229,7 @@ export function reduceQuotaState(
       : incoming;
   const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source: event.type };
   if (reason !== null) {
-    const resetAt = resetCandidateAt(snapshot);
+    const resetAt = resetCandidateAt(snapshot, reason);
     // A fresh sparse block may omit its reset while the merged snapshot still
     // contains an expired reset from the previous block.
     const mayHaveInheritedExpiredReset = event.type === "sparse_update" &&
@@ -232,7 +238,7 @@ export function reduceQuotaState(
       ...withSnapshot,
       status: "BLOCKED_CONFIRMED",
       blockedReason: reason,
-      resetCandidateAt: mayHaveInheritedExpiredReset ? resetCandidateAt(incoming) : resetAt,
+      resetCandidateAt: mayHaveInheritedExpiredReset ? resetCandidateAt(incoming, reason) : resetAt,
     };
   }
 
@@ -243,7 +249,9 @@ export function reduceQuotaState(
   }
 
   const available = isAvailable(snapshot, wasBlocked ? previous.snapshot : null);
-  if (wasBlocked && !available) return advanceResetClock(previous, event.observedAt);
+  if (wasBlocked && (snapshot.spendControlReached !== false || !available)) {
+    return advanceResetClock(previous, event.observedAt);
+  }
 
   return {
     ...withSnapshot,

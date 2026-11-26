@@ -414,7 +414,7 @@ describe("CodexQuotaObserver", () => {
     observer.stop();
   });
 
-  it("recovers on one available full read and shows unknown after a subsequent empty reply", () => {
+  it("requires explicit spend headroom on the single recovery read", () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000_000);
     const first = new FakeConnection();
@@ -457,7 +457,14 @@ describe("CodexQuotaObserver", () => {
         result: { rateLimits },
       });
       expect(usageState()).toBe("exhausted");
-      respond({ primary: { usedPercent: 80 } });
+      const blocked = store.state;
+      const headroom = { primary: { usedPercent: 40 } };
+      respond({ ...headroom, spendControlReached: null });
+      expect(store.state).toBe(blocked);
+      expect(usageState()).toBe("exhausted");
+
+      vi.advanceTimersByTime(10_000);
+      respond({ ...headroom, spendControlReached: false });
       expect(store.state).toMatchObject({
         status: "AVAILABLE_CONFIRMED", blockedReason: null, resetCandidateAt: null,
       });

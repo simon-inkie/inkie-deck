@@ -56,6 +56,24 @@ describe("Codex quota reducer", () => {
 
     expect(state.status).toBe("BLOCKED_CONFIRMED");
     expect(state.blockedReason).toBe("spend_control_reached");
+    expect(state.resetCandidateAt).toBeNull();
+    expect(reduceQuotaState(state, { type: "clock", observedAt: 8_000_000 })).toBe(state);
+  });
+
+  it("selects the exhausted spend limit's reset even when another exhausted window resets later", () => {
+    const blocked = reduceQuotaState(initialQuotaState(), {
+      type: "full_read",
+      payload: full({
+        ...available,
+        secondary: { usedPercent: 100, resetsAt: 8_000 },
+        individualLimit: { limit: "12", used: "12", remainingPercent: 0, resetsAt: 3_000 },
+        spendControlReached: true,
+      }),
+      observedAt: 1_000_000,
+    });
+
+    expect(blocked.resetCandidateAt).toBe(3_000_000);
+    expect(reduceQuotaState(blocked, { type: "clock", observedAt: 3_000_000 }).status).toBe("UNKNOWN");
   });
 
   it("does not treat 100 percent usage alone as confirmed blocked", () => {
@@ -228,9 +246,10 @@ describe("Codex quota reducer", () => {
       observedAt: 1_500_000,
     });
 
-    expect(read({ primary: { usedPercent: 80 } })).toBe(blocked);
+    expect(read({ primary: { usedPercent: 80 }, spendControlReached: false })).toBe(blocked);
     expect(read({})).toBe(blocked);
-    expect(read({ secondary: { usedPercent: 100, resetsAt: 3_000 } })).toBe(blocked);
+    expect(read({ secondary: { usedPercent: 40 }, rateLimitReachedType: null })).toBe(blocked);
+    expect(read({ secondary: { usedPercent: 100, resetsAt: 3_000 }, spendControlReached: false })).toBe(blocked);
     expect(read(available)).toMatchObject({
       status: "AVAILABLE_CONFIRMED",
       blockedReason: null,
