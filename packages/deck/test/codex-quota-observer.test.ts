@@ -13,7 +13,7 @@ import {
   quotaContextForHome,
   type AppServerConnection,
 } from "../app/lib/codex-quota-observer.server";
-import { initialQuotaState, type QuotaState } from "../app/lib/codex-quota";
+import { initialQuotaState, type QuotaState, type RateLimitSnapshot } from "../app/lib/codex-quota";
 import { codexUsageReading } from "../app/lib/codex-quota-usage";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -382,7 +382,7 @@ describe("CodexQuotaObserver", () => {
     }
   });
 
-  it("merges sparse updates without clearing a confirmed block", () => {
+  it("leaves the original block observation intact on a sparse update", () => {
     const connection = new FakeConnection();
     const store = new MemoryStore();
     const observer = new CodexQuotaObserver({
@@ -398,23 +398,23 @@ describe("CodexQuotaObserver", () => {
       result: {
         rateLimits: {
           limitName: "Codex",
-          primary: { usedPercent: 100, resetsAt: 900 },
+          primary: { usedPercent: 100, resetsAt: 1_500 },
           rateLimitReachedType: "rate_limit_reached",
         },
       },
     });
+    const blocked = store.state;
     connection.line({
       method: "account/rateLimits/updated",
       params: { rateLimits: { primary: { usedPercent: 0 } } },
     });
 
-    expect(store.state.status).toBe("BLOCKED_CONFIRMED");
-    expect(store.state.snapshot?.limitName).toBe("Codex");
-    expect(store.state.snapshot?.primary?.usedPercent).toBe(0);
+    expect(blocked.status).toBe("BLOCKED_CONFIRMED");
+    expect(store.state).toBe(blocked);
     observer.stop();
   });
 
-  it("recovers a confirmed block after two available full reads, without a prompt", () => {
+  it("recovers on one available full read and shows unknown after a subsequent empty reply", () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000_000);
     const first = new FakeConnection();
@@ -443,7 +443,7 @@ describe("CodexQuotaObserver", () => {
         id: methodId(first, "account/rateLimits/read"),
         result: {
           rateLimits: {
-            primary: { usedPercent: 100, resetsAt: 1_500 },
+            primary: { usedPercent: 100, resetsAt: 2_060 },
             rateLimitReachedType: "rate_limit_reached",
           },
         },
@@ -452,33 +452,19 @@ describe("CodexQuotaObserver", () => {
       reconnect?.();
       initialise(second);
 
-      const update = () => second.line({
-        method: "account/rateLimits/updated",
-        params: { rateLimits: { primary: { usedPercent: 0 } } },
-      });
-      const respond = (usedPercent: number) => second.line({
+      const respond = (rateLimits: RateLimitSnapshot) => second.line({
         id: methodId(second, "account/rateLimits/read"),
-        result: { rateLimits: { primary: { usedPercent }, spendControlReached: false } },
+        result: { rateLimits },
       });
-      update();
       expect(usageState()).toBe("exhausted");
-      respond(80);
-      expect(usageState()).toBe("unknown");
-      vi.advanceTimersByTime(10_000);
-      respond(100);
-      expect(usageState()).toBe("exhausted");
-      vi.advanceTimersByTime(10_000);
-      respond(10);
-      expect(store.state.status).toBe("RECOVERY_CANDIDATE");
-      update();
-      expect(store.state.status).toBe("RECOVERY_CANDIDATE");
-      expect(usageState()).toBe("unknown");
-      vi.advanceTimersByTime(10_000);
-      respond(0);
+      respond({ primary: { usedPercent: 80 } });
       expect(store.state).toMatchObject({
         status: "AVAILABLE_CONFIRMED", blockedReason: null, resetCandidateAt: null,
       });
       expect(usageState()).toBe("ok");
+      vi.advanceTimersByTime(10_000);
+      respond({});
+      expect(usageState()).toBe("unknown");
     } finally {
       observer.stop();
       vi.useRealTimers();

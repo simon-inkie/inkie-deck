@@ -42,8 +42,11 @@ Flows, releases, pushes and pull requests.
   Quota reflects the observer's account. Switching accounts inside a shared
   home is a rare, operator-controlled change that Deck cannot detect. Routine
   credential refreshes and keyring-backed logins work with the same path check.
-  The observer refreshes idle connections and confirms recovery after two
-  consecutive available full reads.
+  The observer refreshes idle connections. One available full read that
+  clears the blocking limits confirms recovery. Until then, the last
+  confirmed block and its observation time are retained. A passed reset
+  makes quota unknown. Inconclusive full reads and sparse updates without
+  explicit block evidence leave the last confirmed observation intact.
 - Filesystem reads stay behind server helpers; routes receive UsageReading.
 
 ## Offline Test Matrix
@@ -56,7 +59,8 @@ Flows, releases, pushes and pull requests.
 - Quota: telemetry off, missing/malformed/stale/UNKNOWN at 100%, OK/WARN/blocked,
   Azure, nullable/ISO resets, injected observer environment, matching and
   different Codex homes, routine credential refresh, first-run directory
-  creation and keyring login.
+  creation and keyring login, single-read recovery, inconclusive and sparse
+  updates, and reset expiry between polls.
 - Routes/UI: per-agent dispatch, windows and reset labels, seam/import guards.
 - Gates: targeted vitest; pnpm test; typecheck; boundaries; leaks; licence;
   lib-version; dashes; build. Commit before full tests requiring a clean tree.
@@ -352,6 +356,20 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   verification used a disposable directory under `/tmp`.
 - Commits: Working tree only.
 
+### 2026-11-26: Simplify quota recovery in PR #249
+
+- The maintainer approved the single-read recovery rule on 26 November at
+  09:00. Keep the last confirmed block and its observation time until a
+  clean available full read clears the blocking limits or the reported
+  reset passes, at which point quota is unknown pending a full read.
+- Devin 4703848893: An empty reply cannot renew a confirmed block.
+  Devin 4703848983: Sparse updates without explicit block evidence leave
+  the existing block intact, and the recovery streak has been removed.
+- Supersedes the two-read quota recovery rules recorded on 25 and 26 November.
+- Verification passed with `pnpm typecheck` and all 76 tests from
+  `pnpm -C packages/deck test test/codex-quota`.
+- Commits: Working tree only.
+
 ## Exact changed files
 
 - `.specs/154-acp-slice-3/SPEC.md`
@@ -359,6 +377,7 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - `packages/deck/app/lib/acp-session.server.ts`
 - `packages/deck/app/lib/acp-usage.server.ts`
 - `packages/deck/app/lib/codex-quota-display.server.ts`
+- `packages/deck/app/lib/codex-quota-display.ts`
 - `packages/deck/app/lib/codex-quota-observer.server.ts`
 - `packages/deck/app/lib/codex-quota-store.server.ts`
 - `packages/deck/app/lib/codex-quota-usage.ts`
@@ -369,6 +388,7 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - `packages/deck/app/routes/api.acp.tsx`
 - `packages/deck/app/routes/threads.$agent.tsx`
 - `packages/deck/test/acp-session.test.ts`
+- `packages/deck/test/codex-quota-display.test.ts`
 - `packages/deck/test/codex-quota-observer.test.ts`
 - `packages/deck/test/codex-quota-usage.test.ts`
 - `packages/deck/test/codex-quota.test.ts`

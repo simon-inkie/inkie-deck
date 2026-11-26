@@ -8,6 +8,7 @@
 export type QuotaStatus =
   | "UNKNOWN"
   | "BLOCKED_CONFIRMED"
+  // Keep the legacy recovery statuses readable from saved snapshots.
   | "RECOVERY_CANDIDATE"
   | "PROBING"
   | "AVAILABLE_CONFIRMED";
@@ -71,10 +72,7 @@ export interface QuotaState {
 export type QuotaEvent =
   | { type: "full_read"; payload: AccountRateLimits; observedAt: number }
   | { type: "sparse_update"; payload: RateLimitSnapshot; observedAt: number }
-  | { type: "clock"; observedAt: number }
-  | { type: "probe_started"; observedAt: number }
-  | { type: "probe_succeeded"; observedAt: number }
-  | { type: "probe_failed"; observedAt: number };
+  | { type: "clock"; observedAt: number };
 
 export function initialQuotaState(): QuotaState {
   return {
@@ -144,8 +142,17 @@ function hasExhaustedWindow(snapshot: RateLimitSnapshot): boolean {
   );
 }
 
-function isAvailable(snapshot: RateLimitSnapshot | null): boolean {
-  if (snapshot === null || blockedReason(snapshot) !== null || hasExhaustedWindow(snapshot)) {
+function isAvailable(
+  snapshot: RateLimitSnapshot,
+  blockedSnapshot: RateLimitSnapshot | null
+): boolean {
+  if (hasExhaustedWindow(snapshot)) return false;
+  // Availability in a different window cannot clear a known exhausted limit.
+  if (
+    ((blockedSnapshot?.primary?.usedPercent ?? 0) >= 100 && snapshot.primary?.usedPercent === undefined) ||
+    ((blockedSnapshot?.secondary?.usedPercent ?? 0) >= 100 && snapshot.secondary?.usedPercent === undefined) ||
+    ((blockedSnapshot?.individualLimit?.remainingPercent ?? 1) <= 0 && snapshot.individualLimit?.remainingPercent === undefined)
+  ) {
     return false;
   }
   return (
@@ -187,32 +194,15 @@ function resetCandidateAt(snapshot: RateLimitSnapshot): number | null {
   return known.length > 0 ? Math.max(...known) : null;
 }
 
-function blockedState(
-  previous: QuotaState,
-  snapshot: RateLimitSnapshot,
-  observedAt: number,
-  source: QuotaState["source"]
-): QuotaState {
-  return {
-    ...previous,
-    status: "BLOCKED_CONFIRMED",
-    observedAt,
-    source,
-    blockedReason: blockedReason(snapshot),
-    resetCandidateAt: resetCandidateAt(snapshot),
-    snapshot,
-  };
-}
-
-function advanceResetClock(state: QuotaState, observedAt: number): QuotaState {
+function advanceResetClock(state: QuotaState, now: number): QuotaState {
   if (
     state.status === "BLOCKED_CONFIRMED" &&
     state.resetCandidateAt !== null &&
-    observedAt >= state.resetCandidateAt
+    now >= state.resetCandidateAt
   ) {
-    return { ...state, status: "RECOVERY_CANDIDATE", observedAt, source: "clock" };
+    return { ...state, status: "UNKNOWN", blockedReason: null, resetCandidateAt: null };
   }
-  return { ...state, observedAt, source: "clock" };
+  return state;
 }
 
 export function reduceQuotaState(
@@ -221,75 +211,39 @@ export function reduceQuotaState(
 ): QuotaState {
   if (event.type === "clock") return advanceResetClock(previous, event.observedAt);
 
-  if (event.type === "probe_started") {
-    if (previous.status !== "RECOVERY_CANDIDATE") return previous;
-    return { ...previous, status: "PROBING", observedAt: event.observedAt, source: "probe" };
+  const incoming = event.type === "full_read" ? selectCodexBucket(event.payload) : event.payload;
+  const reason = blockedReason(incoming);
+  const wasBlocked = previous.status === "BLOCKED_CONFIRMED";
+  if (event.type === "sparse_update" && wasBlocked && reason === null) {
+    return advanceResetClock(previous, event.observedAt);
   }
-  if (event.type === "probe_succeeded") {
-    if (previous.status !== "PROBING") return previous;
-    return {
-      ...previous,
-      status: "AVAILABLE_CONFIRMED",
-      observedAt: event.observedAt,
-      source: "probe",
-      blockedReason: null,
-      resetCandidateAt: null,
-    };
-  }
-  if (event.type === "probe_failed") {
-    if (previous.status !== "PROBING") return previous;
-    return {
-      ...previous,
-      status: "BLOCKED_CONFIRMED",
-      observedAt: event.observedAt,
-      source: "probe",
-    };
-  }
-
-  const source = event.type;
   const snapshot =
-    event.type === "full_read"
-      ? selectCodexBucket(event.payload)
-      : previous.snapshot === null
-        ? event.payload
-        : mergeSparseRateLimits(previous.snapshot, event.payload);
-  if (blockedReason(snapshot) !== null) {
-    return blockedState(previous, snapshot, event.observedAt, source);
+    event.type === "sparse_update" && previous.snapshot !== null
+      ? mergeSparseRateLimits(previous.snapshot, incoming)
+      : incoming;
+  const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source: event.type };
+  if (reason !== null) {
+    const resetAt = resetCandidateAt(snapshot);
+    // A fresh sparse block may omit its reset while the merged snapshot still
+    // contains an expired reset from the previous block.
+    const mayHaveInheritedExpiredReset = event.type === "sparse_update" &&
+      resetAt !== null && resetAt <= event.observedAt;
+    return {
+      ...withSnapshot,
+      status: "BLOCKED_CONFIRMED",
+      blockedReason: reason,
+      resetCandidateAt: mayHaveInheritedExpiredReset ? resetCandidateAt(incoming) : resetAt,
+    };
   }
 
-  const withSnapshot = { ...previous, snapshot, observedAt: event.observedAt, source };
   if (event.type === "sparse_update") {
-    if (previous.status === "BLOCKED_CONFIRMED") {
-      return withSnapshot;
-    }
-    if (
-      previous.status === "RECOVERY_CANDIDATE" ||
-      previous.status === "PROBING"
-    ) {
-      return withSnapshot;
-    }
     return hasExhaustedWindow(snapshot)
       ? { ...withSnapshot, status: "UNKNOWN" }
       : withSnapshot;
   }
 
-  const available = isAvailable(snapshot);
-  if (
-    previous.status === "BLOCKED_CONFIRMED" ||
-    previous.status === "RECOVERY_CANDIDATE" ||
-    previous.status === "PROBING"
-  ) {
-    if (!available) {
-      return { ...withSnapshot, status: "BLOCKED_CONFIRMED", resetCandidateAt: resetCandidateAt(snapshot) };
-    }
-    // The first available full read retires the reset time. A clock-created
-    // candidate still has its reset time and needs both full reads.
-    if (previous.status !== "RECOVERY_CANDIDATE" ||
-        previous.resetCandidateAt !== null ||
-        !isAvailable(previous.snapshot)) {
-      return { ...withSnapshot, status: "RECOVERY_CANDIDATE", resetCandidateAt: null };
-    }
-  }
+  const available = isAvailable(snapshot, wasBlocked ? previous.snapshot : null);
+  if (wasBlocked && !available) return advanceResetClock(previous, event.observedAt);
 
   return {
     ...withSnapshot,

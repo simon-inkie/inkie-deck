@@ -111,7 +111,7 @@ describe("Codex quota reducer", () => {
     expect(state.status).toBe("UNKNOWN");
   });
 
-  it("never clears a confirmed block from a sparse update", () => {
+  it("preserves the confirmed block and its observation on an available sparse update", () => {
     const blocked = reduceQuotaState(initialQuotaState(), {
       type: "full_read",
       payload: full({ ...available, rateLimitReachedType: "rate_limit_reached" }),
@@ -123,11 +123,10 @@ describe("Codex quota reducer", () => {
       observedAt: 1_100_000,
     });
 
-    expect(afterSparse.status).toBe("BLOCKED_CONFIRMED");
-    expect(afterSparse.blockedReason).toBe("rate_limit_reached");
+    expect(afterSparse).toBe(blocked);
   });
 
-  it("does not leave a confirmed block on sparse reset evidence", () => {
+  it("ignores a sparse update at 100 percent without explicit block evidence", () => {
     const blocked = reduceQuotaState(initialQuotaState(), {
       type: "full_read",
       payload: full({ ...available, rateLimitReachedType: "rate_limit_reached" }),
@@ -136,16 +135,34 @@ describe("Codex quota reducer", () => {
     const afterSparse = reduceQuotaState(blocked, {
       type: "sparse_update",
       payload: {
-        primary: { usedPercent: 0, resetsAt: 900 },
-        rateLimitReachedType: null,
+        primary: { usedPercent: 100, resetsAt: 1_200 },
       },
       observedAt: 1_100_000,
     });
 
-    expect(afterSparse.status).toBe("BLOCKED_CONFIRMED");
+    expect(afterSparse).toBe(blocked);
   });
 
-  it("moves a blocked state to recovery candidacy only after its reset", () => {
+  it("records a fresh block when a sparse update explicitly reports one", () => {
+    const blocked = reduceQuotaState(initialQuotaState(), {
+      type: "full_read",
+      payload: full({ ...available, rateLimitReachedType: "rate_limit_reached" }),
+      observedAt: 1_000_000,
+    });
+
+    expect(reduceQuotaState(blocked, {
+      type: "sparse_update",
+      payload: { spendControlReached: true },
+      observedAt: 1_100_000,
+    })).toMatchObject({
+      status: "BLOCKED_CONFIRMED",
+      blockedReason: "spend_control_reached",
+      observedAt: 1_100_000,
+      source: "sparse_update",
+    });
+  });
+
+  it("moves a blocked state to unknown at its reset time", () => {
     const blocked = reduceQuotaState(initialQuotaState(), {
       type: "full_read",
       payload: full({
@@ -165,52 +182,60 @@ describe("Codex quota reducer", () => {
       observedAt: 2_000_000,
     });
 
-    expect(before.status).toBe("BLOCKED_CONFIRMED");
-    expect(after.status).toBe("RECOVERY_CANDIDATE");
-  });
-
-  it("requires two available full reads after a clock reset or inconclusive read", () => {
-    let state = initialQuotaState();
-    const read = (snapshot: RateLimitSnapshot) => {
-      state = reduceQuotaState(state, {
-        type: "full_read",
-        payload: full(snapshot),
-        observedAt: 2_000_000,
-      });
-    };
-    read({ primary: { usedPercent: 100, resetsAt: 2_000 }, spendControlReached: true });
-    state = reduceQuotaState(state, { type: "clock", observedAt: 2_000_000 });
-    state = reduceQuotaState(state, {
-      type: "sparse_update",
-      payload: { primary: { usedPercent: 80 }, spendControlReached: false },
+    expect(before).toBe(blocked);
+    expect(after).toMatchObject({ status: "UNKNOWN", observedAt: blocked.observedAt });
+    expect(reduceQuotaState(blocked, {
+      type: "full_read",
+      payload: full({}),
       observedAt: 2_000_000,
-    });
-    read(available);
-    expect(state.status).toBe("RECOVERY_CANDIDATE");
-    read({});
-    expect(state.status).toBe("BLOCKED_CONFIRMED");
-    read(available);
-    expect(state.status).toBe("RECOVERY_CANDIDATE");
-    read(available);
-    expect(state.status).toBe("AVAILABLE_CONFIRMED");
+    })).toEqual(after);
   });
 
-  it("confirms recovery after a successful probe", () => {
-    const candidate = {
-      ...initialQuotaState(),
-      status: "RECOVERY_CANDIDATE" as const,
-      snapshot: available,
-    };
-    const probing = reduceQuotaState(candidate, {
-      type: "probe_started",
-      observedAt: 2_100_000,
-    });
-    const recovered = reduceQuotaState(probing, {
-      type: "probe_succeeded",
-      observedAt: 2_200_000,
+  it("does not carry an expired reset into a fresh explicit sparse block", () => {
+    const blocked = reduceQuotaState(initialQuotaState(), {
+      type: "full_read",
+      payload: full({
+        primary: { usedPercent: 100, resetsAt: 2_000 },
+        rateLimitReachedType: "rate_limit_reached",
+      }),
+      observedAt: 1_000_000,
     });
 
-    expect(probing.status).toBe("PROBING");
-    expect(recovered.status).toBe("AVAILABLE_CONFIRMED");
+    expect(reduceQuotaState(blocked, {
+      type: "sparse_update",
+      payload: { spendControlReached: true },
+      observedAt: 2_100_000,
+    })).toMatchObject({
+      status: "BLOCKED_CONFIRMED",
+      blockedReason: "spend_control_reached",
+      resetCandidateAt: null,
+    });
+  });
+
+  it("preserves a block through inconclusive full reads and recovers on one clean full read", () => {
+    const blocked = reduceQuotaState(initialQuotaState(), {
+      type: "full_read",
+      payload: full({
+        ...available,
+        secondary: { usedPercent: 100, resetsAt: 2_000 },
+        rateLimitReachedType: "rate_limit_reached",
+      }),
+      observedAt: 1_000_000,
+    });
+    const read = (snapshot: RateLimitSnapshot) => reduceQuotaState(blocked, {
+      type: "full_read",
+      payload: full(snapshot),
+      observedAt: 1_500_000,
+    });
+
+    expect(read({ primary: { usedPercent: 80 } })).toBe(blocked);
+    expect(read({})).toBe(blocked);
+    expect(read({ secondary: { usedPercent: 100, resetsAt: 3_000 } })).toBe(blocked);
+    expect(read(available)).toMatchObject({
+      status: "AVAILABLE_CONFIRMED",
+      blockedReason: null,
+      resetCandidateAt: null,
+      observedAt: 1_500_000,
+    });
   });
 });

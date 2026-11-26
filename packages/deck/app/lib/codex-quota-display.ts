@@ -1,4 +1,4 @@
-import type { QuotaState, QuotaStatus, RateLimitWindow } from "./codex-quota";
+import { reduceQuotaState, type QuotaState, type QuotaStatus, type RateLimitWindow } from "./codex-quota";
 
 export type QuotaSnapshotRead =
   | { kind: "ok"; state: QuotaState }
@@ -104,7 +104,7 @@ export function buildCodexQuotaDisplay(
     };
   }
 
-  const { state } = read;
+  const state = reduceQuotaState(read.state, { type: "clock", observedAt: now });
   const observedAt = state.observedAt;
   const stale =
     observedAt === null ||
