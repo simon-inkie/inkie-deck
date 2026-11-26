@@ -60,7 +60,7 @@ export function loadCodexQuotaDisplay(
   env: Env,
   now: number,
   agents: string[],
-  account?: { context: string | undefined },
+  expected?: { context: string | undefined },
 ): CodexQuotaDisplayData {
   let dataRoot: string;
   try {
@@ -94,7 +94,7 @@ export function loadCodexQuotaDisplay(
   const providers: Record<string, CodexProvider> = {};
   for (const agent of agents) providers[agent] = readProvider(dataRoot, agent);
   const stored = store.loadResult();
-  const quota = account && stored.kind === "ok" && (!account.context || stored.state.quotaContext !== account.context)
+  const quota = expected && stored.kind === "ok" && (!expected.context || stored.state.quotaContext !== expected.context)
     ? { kind: "missing" as const }
     : stored;
   return {

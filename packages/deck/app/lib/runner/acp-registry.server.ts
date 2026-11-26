@@ -20,7 +20,7 @@ import { createRequire } from "node:module";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { acpQuotaContext, readAcpUsageReading } from "../acp-usage.server.js";
+import { acpQuotaHome, readAcpUsageReading } from "../acp-usage.server.js";
 import { AcpSession, buildAcpSessionEnv, type AcpAdapter } from "../acp-session.server.js";
 import { resolveAgentsRoot } from "../agent-model.server.js";
 import type { DeckEvent } from "../deck-event.js";
@@ -65,7 +65,7 @@ export type AcpActiveSession = {
   pid: number;
   home: string;
   manifest: AcpAdapterManifest;
-  codexQuotaContext?: string;
+  codexQuotaHome?: string;
   abortController: AbortController;
   settled: Promise<void>;
   stopPromise?: Promise<void>;
@@ -736,7 +736,7 @@ export class AcpRunnerRegistry {
       throw error;
     }
 
-    activeSession.codexQuotaContext = acpQuotaContext(manifest, launchEnv, home);
+    activeSession.codexQuotaHome = acpQuotaHome(manifest, launchEnv, home);
     const adapter: AcpAdapter = {
       executable,
       args: manifest.args,

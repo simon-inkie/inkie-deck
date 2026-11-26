@@ -1,6 +1,6 @@
 import { buildAcpSessionEnv } from "./acp-session.server";
 import { loadCodexQuotaDisplay } from "./codex-quota-display.server";
-import { codexQuotaContext, codexQuotaTelemetryEnabled, observerQuotaContext } from "./codex-quota-observer.server";
+import { codexQuotaTelemetryEnabled, observerQuotaHome, quotaContextForHome, resolveCodexQuotaHome } from "./codex-quota-observer.server";
 import { codexUsageReading } from "./codex-quota-usage";
 import { acpRunnerEnabled } from "./instance.server";
 import { antigravityUsageReading, resolveAcpManifestForAgent, type AcpAdapterManifest, type UsageReading } from "./runner/acp-manifest";
@@ -14,10 +14,10 @@ export function unknownUsageReading(now = Date.now()): UsageReading {
   };
 }
 
-export function acpQuotaContext(manifest: AcpAdapterManifest, env: NodeJS.ProcessEnv, home: string): string | undefined {
+export function acpQuotaHome(manifest: AcpAdapterManifest, env: NodeJS.ProcessEnv, home: string): string | undefined {
   if (manifest.usageKind !== "codex") return undefined;
   const adapter = { environment: manifest.envAllowlist, envDefaults: manifest.envDefaults };
-  return codexQuotaContext(buildAcpSessionEnv(adapter, env), home);
+  return resolveCodexQuotaHome(buildAcpSessionEnv(adapter, env), home);
 }
 
 /** Read usage at the server seam, without exposing filesystem roots to routes. */
@@ -25,7 +25,7 @@ export function readAcpUsageReading(
   env: NodeJS.ProcessEnv,
   agent: string,
   now = Date.now(),
-  active?: { manifest: AcpAdapterManifest; codexQuotaContext?: string },
+  active?: { manifest: AcpAdapterManifest; codexQuotaHome?: string },
 ): UsageReading {
   if (!acpRunnerEnabled(env)) {
     return unknownUsageReading(now);
@@ -38,13 +38,14 @@ export function readAcpUsageReading(
     return antigravityUsageReading(() => new Date(now).toISOString());
   }
   const enabled = codexQuotaTelemetryEnabled(env);
-  let context = active?.codexQuotaContext;
+  let quotaHome = active?.codexQuotaHome;
   if (enabled && !active) {
     const home = resolveAcpAgentHome(env, agent);
-    if (home) context = acpQuotaContext(manifest, env, home);
+    if (home) quotaHome = acpQuotaHome(manifest, env, home);
   }
+  // With a shared home, the quota belongs to the account the observer sees.
   const display = loadCodexQuotaDisplay(env, now, [agent], {
-    context: enabled && context && context === observerQuotaContext(env) ? context : undefined,
+    context: enabled && quotaHome && quotaHome === observerQuotaHome(env) ? quotaContextForHome(quotaHome) : undefined,
   });
   return codexUsageReading(display, agent, now);
 }

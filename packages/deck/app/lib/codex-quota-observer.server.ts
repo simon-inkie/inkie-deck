@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import readline from "node:readline";
 import { z } from "zod";
 import {
@@ -131,26 +131,28 @@ function observerEnv(env: Env): Env {
   return codexHome ? { ...env, CODEX_HOME: codexHome } : { ...env };
 }
 
-/** Fingerprint the local login store using filesystem metadata only. */
-export function codexQuotaContext(env: Env, cwd: string): string | undefined {
-  if (env.CODEX_API_KEY || env.OPENAI_API_KEY) return undefined;
+function canonicalHome(path: string): string {
   try {
-    const home = env.CODEX_HOME || join(env.HOME || userInfo().homedir, ".codex");
-    const directory = realpathSync(isAbsolute(home) ? home : cwd + "/" + home);
-    const info = statSync(directory, { bigint: true });
-    if (!info.isDirectory()) return undefined;
-    const auth = statSync(join(directory, "auth.json"), { bigint: true });
-    if (!auth.isFile()) return undefined;
-    const identity = [info.dev, info.ino, auth.dev, auth.ino, auth.size, auth.mtimeNs, auth.ctimeNs];
-    return createHash("sha256").update(JSON.stringify([directory, ...identity.map(String)])).digest("hex");
-  } catch {
-    // An unresolvable store cannot be matched to an ACP login.
+    return realpathSync(path);
+  } catch (error) {
+    const parent = dirname(path);
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || parent === path) return path;
+    // Resolve existing ancestors so creating the home keeps its identity.
+    return join(canonicalHome(parent), basename(path));
   }
-  return undefined;
 }
 
-export function observerQuotaContext(env: Env): string | undefined {
-  return codexQuotaContext(observerEnv(env), process.cwd());
+export function resolveCodexQuotaHome(env: Env, cwd: string): string {
+  return canonicalHome(resolve(cwd, env.CODEX_HOME || join(env.HOME || userInfo().homedir, ".codex")));
+}
+
+export function observerQuotaHome(env: Env): string {
+  return resolveCodexQuotaHome(observerEnv(env), process.cwd());
+}
+
+/** Scope saved quota to its home without storing the filesystem path. */
+export function quotaContextForHome(home: string): string {
+  return createHash("sha256").update(home).digest("hex");
 }
 
 class StdioAppServerConnection implements AppServerConnection {
@@ -255,7 +257,7 @@ export class CodexQuotaObserver {
   private readonly cancelReconnect: (handle: unknown) => void;
   private readonly onError: (error: Error) => void;
   private state: QuotaState;
-  private quotaContext: string | undefined;
+  private quotaHome: string | undefined;
   private connection: AppServerConnection | null = null;
   private reconnectHandle: unknown;
   private requestTimer: NodeJS.Timeout | undefined;
@@ -306,8 +308,11 @@ export class CodexQuotaObserver {
   private openConnection(): void {
     try {
       const env = observerEnv(this.env);
-      this.quotaContext = codexQuotaContext(env, process.cwd());
-      this.invalidateSnapshot(this.quotaContext);
+      this.quotaHome = resolveCodexQuotaHome(env, process.cwd());
+      const quotaContext = quotaContextForHome(this.quotaHome);
+      if (this.state.quotaContext !== quotaContext) {
+        this.state = { ...initialQuotaState(), quotaContext };
+      }
       const connection = this.connectAppServer(env);
       this.connection = connection;
       this.initializeId = this.nextId++;
@@ -336,25 +341,9 @@ export class CodexQuotaObserver {
     }
   }
 
-  private invalidateSnapshot(context: string | undefined): void {
-    if (this.state.quotaContext === context) return;
-    const hadSnapshot = this.state.observedAt !== null;
-    this.state = { ...initialQuotaState(), quotaContext: context };
-    if (hadSnapshot) {
-      try {
-        this.store.save(this.state);
-      } catch (error) {
-        this.report(error);
-      }
-    }
-  }
-
-  private hasCurrentContext(connection: AppServerConnection): boolean {
+  private hasCurrentHome(connection: AppServerConnection): boolean {
     if (connection !== this.connection) return false;
-    const context = observerQuotaContext(this.env);
-    if (context === this.quotaContext) return true;
-    // Reconnect before accepting quota for a different login identity.
-    this.invalidateSnapshot(context);
+    if (observerQuotaHome(this.env) === this.quotaHome) return true;
     this.resetConnection(connection);
     return false;
   }
@@ -372,7 +361,7 @@ export class CodexQuotaObserver {
   }
 
   private readRateLimits(connection: AppServerConnection): void {
-    if (!this.hasCurrentContext(connection)) return;
+    if (!this.hasCurrentHome(connection)) return;
     this.fullReadId = this.nextId++;
     this.awaitResponse(connection, "account/rateLimits/read");
     try {
@@ -383,7 +372,7 @@ export class CodexQuotaObserver {
   }
 
   private handleLine(connection: AppServerConnection, line: string): void {
-    if (!this.hasCurrentContext(connection)) return;
+    if (!this.hasCurrentHome(connection)) return;
     let frame: unknown;
     try {
       frame = JSON.parse(line);
@@ -433,7 +422,7 @@ export class CodexQuotaObserver {
 
   private applyFullRead(payload: AccountRateLimits): void {
     try {
-      this.state = reduceQuotaState({ ...this.state, quotaContext: this.quotaContext }, {
+      this.state = reduceQuotaState(this.state, {
         type: "full_read",
         payload,
         observedAt: this.now(),
@@ -446,7 +435,7 @@ export class CodexQuotaObserver {
 
   private applySparseUpdate(payload: RateLimitSnapshot): void {
     try {
-      this.state = reduceQuotaState({ ...this.state, quotaContext: this.quotaContext }, {
+      this.state = reduceQuotaState(this.state, {
         type: "sparse_update",
         payload,
         observedAt: this.now(),

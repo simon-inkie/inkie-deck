@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acpQuotaContext, readAcpUsageReading } from "../app/lib/acp-usage.server";
+import { acpQuotaHome, readAcpUsageReading } from "../app/lib/acp-usage.server";
 import { buildCodexQuotaDisplay, type CodexQuotaDisplayData } from "../app/lib/codex-quota-display";
 import { initialQuotaState } from "../app/lib/codex-quota";
 import * as observer from "../app/lib/codex-quota-observer.server";
@@ -29,6 +29,25 @@ afterEach(() => {
   if (root) rmSync(root, { recursive: true, force: true });
   root = undefined;
 });
+
+function configureCodexAgent() {
+  root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
+  const home = join(root, agent);
+  mkdirSync(home);
+  writeFileSync(join(home, ".runner"), "acp\n");
+  writeFileSync(join(home, ".runtime"), "codex\n");
+  const env = {
+    AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: home, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1",
+  };
+  return { home, env, quotaFile: join(root, "codex-quota.json") };
+}
+
+function saveAvailableQuota(quotaFile: string, env: NodeJS.ProcessEnv, usedPercent = 20) {
+  writeFileSync(quotaFile, JSON.stringify({
+    ...initialQuotaState(), quotaContext: observer.quotaContextForHome(observer.observerQuotaHome(env)),
+    status: "AVAILABLE_CONFIRMED", observedAt: now, snapshot: { primary: { usedPercent } },
+  }));
+}
 
 describe("Codex ACP usage mapping", () => {
   it.each(["missing", "malformed", "stale"] as const)("keeps %s evidence unknown, including old blocked evidence", (freshness) => {
@@ -67,92 +86,95 @@ describe("Codex ACP usage mapping", () => {
   it("reads only the selected runtime through the server seam and honours telemetry-off", () => {
     // Never launch an observer or a real runtime from this deterministic fixture.
     const ensure = vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
-    root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
-    const home = join(root, agent);
-    mkdirSync(home);
-    writeFileSync(join(home, "auth.json"), "");
-    writeFileSync(join(home, ".runner"), "acp\n");
-    writeFileSync(join(home, ".runtime"), "codex\n");
-    const env = { AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: home, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
+    const { env, home, quotaFile } = configureCodexAgent();
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
-    writeFileSync(join(root, "codex-quota.json"), "malformed");
+    writeFileSync(quotaFile, "malformed");
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
-    const state = { ...initialQuotaState(), quotaContext: observer.observerQuotaContext(env),
-      status: "AVAILABLE_CONFIRMED" as const, observedAt: now,
-      snapshot: { primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: null } } };
-    writeFileSync(join(root, "codex-quota.json"), JSON.stringify(state));
+    saveAvailableQuota(quotaFile, env);
     expect(readAcpUsageReading(env, agent, now).state).toBe("ok");
     ensure.mockClear();
     expect(readAcpUsageReading({ ...env, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "0" }, agent, now)).toEqual(unknown);
     expect(ensure).not.toHaveBeenCalled();
-    mkdirSync(join(root, "provider-switch", "current"), { recursive: true });
-    writeFileSync(join(root, "provider-switch", "current", `${agent}.json`), JSON.stringify({ agent, provider: "azure" }));
+    mkdirSync(join(env.DATA_ROOT, "provider-switch", "current"), { recursive: true });
+    writeFileSync(join(env.DATA_ROOT, "provider-switch", "current", `${agent}.json`), JSON.stringify({ agent, provider: "azure" }));
     expect(readAcpUsageReading(env, agent, now)).toEqual({ ...unknown, source: "codex-azure" });
     expect(readAcpUsageReading({ ...env, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "0" }, agent, now)).toEqual({ ...unknown, source: "codex-azure" });
     writeFileSync(join(home, ".runtime"), "agy\n");
     expect(readAcpUsageReading(env, agent, now)).toEqual({ ...unknown, source: "antigravity" });
   });
 
-  it("shows quota only from the Codex ACP login store", () => {
+  it("shows same-home quota and hides quota from a different observer home", () => {
     vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
-    root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
-    const home = join(root, agent);
-    const isolated = join(root, "isolated-login");
-    mkdirSync(home);
+    const { env, home, quotaFile } = configureCodexAgent();
+    const isolated = join(env.AGENTS_HOME, "isolated-login");
     mkdirSync(isolated);
-    writeFileSync(join(home, "auth.json"), "");
-    writeFileSync(join(isolated, "auth.json"), "");
-    writeFileSync(join(home, ".runner"), "acp\n");
-    writeFileSync(join(home, ".runtime"), "codex\n");
-    const env = {
-      AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: home, MC_ACP_RUNNER: "1",
-      MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1", MC_CODEX_QUOTA_CODEX_HOME: isolated,
-    };
+    const observerIsolated = { ...env, MC_CODEX_QUOTA_CODEX_HOME: isolated };
+    saveAvailableQuota(quotaFile, observerIsolated);
+    expect(readAcpUsageReading(observerIsolated, agent, now)).toEqual(unknown);
+    const matching = { ...observerIsolated, CODEX_HOME: "../isolated-login" };
+    expect(readAcpUsageReading(matching, agent, now).state).toBe("ok");
+
+    const active = { manifest: codexAcp1Manifest, codexQuotaHome: acpQuotaHome(codexAcp1Manifest, env, home) };
+    expect(readAcpUsageReading(matching, agent, now, active)).toEqual(unknown);
+
+    // The observer configuration can change before the next sample arrives.
+    expect(readAcpUsageReading(env, agent, now, active)).toEqual(unknown);
+    saveAvailableQuota(quotaFile, env);
+    expect(readAcpUsageReading(env, agent, now, active).state).toBe("ok");
+  });
+
+  it("keeps quota in a running ACP session across a routine credential refresh", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    const { env, home, quotaFile } = configureCodexAgent();
+    const authFile = join(home, "auth.json");
+    writeFileSync(authFile, "");
+    const active = { manifest: codexAcp1Manifest, codexQuotaHome: acpQuotaHome(codexAcp1Manifest, env, home) };
+    saveAvailableQuota(quotaFile, env);
+    expect(readAcpUsageReading(env, agent, now, active).state).toBe("ok");
+
+    const replacement = join(home, "replacement.json");
+    writeFileSync(replacement, "");
+    renameSync(replacement, authFile);
+    expect(readAcpUsageReading(env, agent, now, active).state).toBe("ok");
+    saveAvailableQuota(quotaFile, env, 30);
+    expect(readAcpUsageReading(env, agent, now, active)).toMatchObject({ state: "ok", windows: [{ usedPercent: 30 }] });
+  });
+
+  it("keeps the ACP launch home match when a first-run Codex directory is created", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    const { env, home, quotaFile } = configureCodexAgent();
+    const codexHome = join(home, "first-run");
+    const firstRun = { ...env, CODEX_HOME: codexHome };
+    const active = { manifest: codexAcp1Manifest, codexQuotaHome: acpQuotaHome(codexAcp1Manifest, firstRun, home) };
+    expect(active.codexQuotaHome).toBe(observer.observerQuotaHome(firstRun));
+    expect(readAcpUsageReading(firstRun, agent, now, active)).toEqual(unknown);
+
+    mkdirSync(codexHome);
+    saveAvailableQuota(quotaFile, firstRun);
+    expect(readAcpUsageReading(firstRun, agent, now, active).state).toBe("ok");
+  });
+
+  it("shows quota for a keyring login with no credential file", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    const { env, home, quotaFile } = configureCodexAgent();
+    const active = { manifest: codexAcp1Manifest, codexQuotaHome: acpQuotaHome(codexAcp1Manifest, env, home) };
+    saveAvailableQuota(quotaFile, env);
+    expect(readAcpUsageReading(env, agent, now, active).state).toBe("ok");
+  });
+
+  it("hides legacy snapshots until the observer saves quota for its home", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    const { env, quotaFile } = configureCodexAgent();
     const state = {
       ...initialQuotaState(), status: "AVAILABLE_CONFIRMED", observedAt: now,
       snapshot: { primary: { usedPercent: 20 } },
     };
-    const quotaFile = join(root, "codex-quota.json");
-    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: observer.observerQuotaContext(env) }));
+    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: "a".repeat(64) }));
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
-    const matching = { ...env, CODEX_HOME: isolated };
-    expect(readAcpUsageReading(matching, agent, now).state).toBe("ok");
-
-    // The observer configuration can change before the next sample arrives.
-    expect(readAcpUsageReading({ ...env, MC_CODEX_QUOTA_CODEX_HOME: home }, agent, now)).toEqual(unknown);
     writeFileSync(quotaFile, JSON.stringify(state));
-    expect(readAcpUsageReading(matching, agent, now)).toEqual(unknown);
-  });
-
-  it("hides a previous login's quota after an in-place credential rewrite", () => {
-    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
-    root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
-    const auth = join(root, "auth.json");
-    const home = join(root, agent);
-    mkdirSync(home);
-    writeFileSync(join(home, ".runner"), "acp\n");
-    writeFileSync(join(home, ".runtime"), "codex\n");
-    writeFileSync(auth, "");
-    const env = { AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: root, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
-    const active = { manifest: codexAcp1Manifest, codexQuotaContext: acpQuotaContext(codexAcp1Manifest, env, home) };
-    const state = { ...initialQuotaState(), observedAt: now };
-    const quotaFile = join(root, "codex-quota.json");
-    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: observer.observerQuotaContext(env),
-      status: "BLOCKED_CONFIRMED", snapshot: { primary: { usedPercent: 100 } } }));
-    expect(readAcpUsageReading(env, agent, now, active).state).toBe("exhausted");
-    expect(readAcpUsageReading(env, agent, now).state).toBe("exhausted");
-
-    writeFileSync(auth, "\n");
-    expect(readAcpUsageReading(env, agent, now, active)).toEqual(unknown);
     expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
-
-    const current = observer.observerQuotaContext(env);
-    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: current,
-      status: "AVAILABLE_CONFIRMED", snapshot: { primary: { usedPercent: 20 } } }));
-    expect(readAcpUsageReading(env, agent, now, active)).toEqual(unknown);
+    saveAvailableQuota(quotaFile, env);
     expect(readAcpUsageReading(env, agent, now).state).toBe("ok");
-    const restarted = { ...active, codexQuotaContext: acpQuotaContext(codexAcp1Manifest, env, home) };
-    expect(readAcpUsageReading(env, agent, now, restarted).state).toBe("ok");
   });
 
   it("maps stale snapshots built by the real display model conservatively", () => {

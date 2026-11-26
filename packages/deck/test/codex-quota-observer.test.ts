@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -9,8 +9,8 @@ import { buildCodexQuotaDisplay } from "../app/lib/codex-quota-display";
 import { loadCodexQuotaDisplay } from "../app/lib/codex-quota-display.server";
 import {
   CodexQuotaObserver,
-  codexQuotaContext,
   codexQuotaTelemetryEnabled,
+  quotaContextForHome,
   type AppServerConnection,
 } from "../app/lib/codex-quota-observer.server";
 import { initialQuotaState, type QuotaState } from "../app/lib/codex-quota";
@@ -189,85 +189,38 @@ describe("CodexQuotaObserver", () => {
     }
   });
 
-  it("invalidates blocked quota and discards in-flight reads after a credential replacement", () => {
-    const home = mkdtempSync(join(tmpdir(), "deck-quota-login-"));
-    const auth = join(home, "auth.json");
-    const replacement = join(home, "replacement.json");
-    writeFileSync(auth, "");
-    writeFileSync(replacement, "");
-    const env = { CODEX_HOME: home, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1", MC_CODEX_QUOTA_STALE_MS: "20000" };
-    const first = new FakeConnection();
-    const second = new FakeConnection();
-    const connect = vi.fn(() => second).mockReturnValueOnce(first);
-    const close = vi.spyOn(first, "close");
+  it("samples quota after first-run creation of an absent Codex home", () => {
+    const root = mkdtempSync(join(tmpdir(), "deck-quota-first-login-"));
+    const home = join(root, "home");
+    const alias = join(root, "home-alias");
+    mkdirSync(home);
+    symlinkSync(home, alias, "dir");
+    const env = { HOME: alias, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1", MC_CODEX_QUOTA_STALE_MS: "20000" };
+    const connection = new FakeConnection();
+    const connect = vi.fn(() => connection);
     const store = new MemoryStore();
     const observer = new CodexQuotaObserver({ env, connect, store });
-    const blocked = { rateLimits: { primary: { usedPercent: 100 }, rateLimitReachedType: "rate_limit_reached" } };
+    const codexHome = join(home, ".codex");
     vi.useFakeTimers();
     try {
       observer.start();
-      initialise(first);
-      first.line({ id: methodId(first, "account/rateLimits/read"), result: blocked });
-      expect(store.state.status).toBe("BLOCKED_CONFIRMED");
-      const priorContext = store.state.quotaContext;
-      expect(priorContext).toBeDefined();
-
-      vi.advanceTimersByTime(10_000);
-      renameSync(replacement, auth);
-      first.line({ id: methodId(first, "account/rateLimits/read"), result: blocked });
-      first.line({ method: "account/rateLimits/updated", params: blocked });
-      expect(close).toHaveBeenCalledOnce();
-      expect(store.state).toMatchObject({ status: "UNKNOWN", snapshot: null, observedAt: null });
-
-      vi.advanceTimersByTime(5_000);
-      initialise(second);
-      second.line({ id: methodId(second, "account/rateLimits/read"),
-        result: { rateLimits: { primary: { usedPercent: 20 } } } });
-      expect(store.state.status).toBe("AVAILABLE_CONFIRMED");
-      expect(store.state.quotaContext).toBe(codexQuotaContext(env, home));
-      expect(store.state.quotaContext).not.toBe(priorContext);
-    } finally {
-      observer.stop();
-      vi.useRealTimers();
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("reconnects at the next refresh when the first-run login store appears", () => {
-    const home = mkdtempSync(join(tmpdir(), "deck-quota-first-login-"));
-    const env = { HOME: home, MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1", MC_CODEX_QUOTA_STALE_MS: "20000" };
-    const first = new FakeConnection();
-    const second = new FakeConnection();
-    const connect = vi.fn(() => second).mockReturnValueOnce(first);
-    const close = vi.spyOn(first, "close");
-    const store = new MemoryStore();
-    const observer = new CodexQuotaObserver({ env, connect, store });
-    const result = { rateLimits: { primary: { usedPercent: 20 } } };
-    vi.useFakeTimers();
-    try {
-      observer.start();
-      initialise(first);
-      first.line({ id: methodId(first, "account/rateLimits/read"), result });
-      expect(store.state.quotaContext).toBeUndefined();
-      const priorRead = methodId(first, "account/rateLimits/read");
-
-      mkdirSync(join(home, ".codex"));
-      writeFileSync(join(home, ".codex", "auth.json"), "");
-      vi.advanceTimersByTime(10_000);
-      expect(methodId(first, "account/rateLimits/read")).toBe(priorRead);
-      expect(close).toHaveBeenCalledOnce();
+      initialise(connection);
+      const readId = methodId(connection, "account/rateLimits/read");
+      connection.line({ id: readId, error: { code: -32000 } });
       expect(store.state.status).toBe("UNKNOWN");
 
+      mkdirSync(codexHome);
       vi.advanceTimersByTime(5_000);
-      initialise(second);
-      second.line({ id: methodId(second, "account/rateLimits/read"), result });
+      const retryId = methodId(connection, "account/rateLimits/read");
+      expect(retryId).not.toBe(readId);
+      connection.line({ id: retryId, result: { rateLimits: { primary: { usedPercent: 20 } } } });
       expect(store.state.status).toBe("AVAILABLE_CONFIRMED");
-      expect(store.state.quotaContext).toBeDefined();
-      expect(store.state.quotaContext).toBe(codexQuotaContext(env, home));
+      expect(store.state.quotaContext).toBe(quotaContextForHome(realpathSync(codexHome)));
+      expect(connect).toHaveBeenCalledOnce();
     } finally {
       observer.stop();
       vi.useRealTimers();
-      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -278,7 +231,6 @@ describe("CodexQuotaObserver", () => {
     const dataRoot = `${sibling} `;
     mkdirSync(ambient);
     mkdirSync(sibling);
-    writeFileSync(join(sibling, "auth.json"), "");
     mkdirSync(dataRoot);
     vi.stubEnv("DATA_ROOT", ambient);
     const connection = new FakeConnection();
@@ -306,7 +258,7 @@ describe("CodexQuotaObserver", () => {
       expect(JSON.parse(persisted)).toMatchObject({
         observedAt: 1_000_000,
         status: "AVAILABLE_CONFIRMED",
-        quotaContext: codexQuotaContext({ CODEX_HOME: sibling }, root),
+        quotaContext: quotaContextForHome(realpathSync(sibling)),
       });
       expect(persisted).not.toContain(sibling);
       expect(loadCodexQuotaDisplay({ DATA_ROOT: dataRoot }, 1_000_000, []).quota)

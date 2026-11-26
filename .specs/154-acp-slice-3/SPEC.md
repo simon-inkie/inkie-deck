@@ -8,6 +8,9 @@
 Add Codex ACP alongside Antigravity, permit concurrent ACP homes, and display
 Codex quota through UsageReading. Live adapter behaviour remains subject to the
 manual verification below; offline checks use synthetic processes only.
+Quota follows the resolved `CODEX_HOME`. With a shared home, Deck shows the
+observer's account quota, even after an operator switches accounts inside that
+home. Keyring logins work with the same home check.
 A failure at the final checkpoint sidecar rename can discard the prior sidecar
 and leave Resume unavailable. A follow-up ticket tracks this case.
 
@@ -33,10 +36,14 @@ Flows, releases, pushes and pull requests.
 - Azure quota is unknown from codex-azure. Missing, malformed, telemetry-off,
   stale and UNKNOWN quota is unknown from codex. Fresh confirmed blocked is
   exhausted, WARN is low, OK is ok. Fresh windows retain nullable reset times.
-- Codex ACP quota requires a matching login-store fingerprint for the ACP
-  login, observer and saved snapshot. The observer refreshes idle connections,
-  reconnects on login-store changes and confirms recovery after two available
-  full reads.
+- Codex ACP quota requires the observer and ACP launch to resolve the same
+  `CODEX_HOME`, and the saved snapshot must come from that home. A different
+  home yields unknown. The path is available before the directory is created.
+  Quota reflects the observer's account. Switching accounts inside a shared
+  home is a rare, operator-controlled change that Deck cannot detect. Routine
+  credential refreshes and keyring-backed logins work with the same path check.
+  The observer refreshes idle connections and confirms recovery after two
+  available full reads.
 - Filesystem reads stay behind server helpers; routes receive UsageReading.
 
 ## Offline Test Matrix
@@ -47,7 +54,9 @@ Flows, releases, pushes and pull requests.
 - Registry: simultaneous adapters, independent prompt/cancel/stop, shutdown,
   same-home busy/locked/orphaned guards and changed-runtime resume rejection.
 - Quota: telemetry off, missing/malformed/stale/UNKNOWN at 100%, OK/WARN/blocked,
-  Azure, nullable/ISO resets, injected observer environment.
+  Azure, nullable/ISO resets, injected observer environment, matching and
+  different Codex homes, routine credential refresh, first-run directory
+  creation and keyring login.
 - Routes/UI: per-agent dispatch, windows and reset labels, seam/import guards.
 - Gates: targeted vitest; pnpm test; typecheck; boundaries; leaks; licence;
   lib-version; dashes; build. Commit before full tests requiring a clean tree.
@@ -296,6 +305,21 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - Verification: `pnpm typecheck`, 68 quota tests and the focused ACP loader
   test passed. The requested temporary directory was on a read-only mount,
   so the gates used a disposable directory under `/tmp`.
+
+### 2026-11-26: Reset quota matching to the Codex home path
+
+- What changed: Compare the canonical home paths from the observer and ACP
+  launch environments. Saved samples carry a hash of the path alone. For ACP,
+  older samples require a fresh read before quota appears.
+- Why: Credential refreshes could hide quota for a running session (R3-1),
+  and keyring logins could lack quota (R3-2). A path comparison still keeps
+  quota from an isolated observer home off a different ACP home.
+- Supersedes: Credential metadata matching and first-run credential detection
+  from the preceding entry (R2-2 and R2-6).
+- Verification: Typecheck, 87 quota and import/seam tests, and the focused
+  ACP loader test passed. The requested TMPDIR was read-only, so the gates
+  used disposable directories under `/tmp` and removed them after the runs.
+- Commits: Working tree only.
 
 ## Exact changed files
 

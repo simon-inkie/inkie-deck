@@ -322,12 +322,11 @@ rl.on("line", (line) => {
     vi.spyOn(quotaObserver, "ensureCodexQuotaObserver").mockReturnValue(undefined);
     for (const [key, value] of Object.entries({ AGENTS_HOME: root, DATA_ROOT: root,
       INBOX_ROOT: join(root, "inbox"), PROJECTS_ROOT: join(root, "projects"),
-      CODEX_HOME: agentHome, MC_CODEX_QUOTA_CODEX_HOME: "", OPENAI_API_KEY: "", CODEX_API_KEY: "",
+      CODEX_HOME: agentHome, MC_CODEX_QUOTA_CODEX_HOME: "",
       MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" })) vi.stubEnv(key, value);
     writeFileSync(join(agentHome, ".runtime"), "codex\n");
-    writeFileSync(join(agentHome, "auth.json"), "");
     writeFileSync(join(root, "codex-quota.json"), JSON.stringify({ ...initialQuotaState(),
-      quotaContext: quotaObserver.observerQuotaContext(process.env),
+      quotaContext: quotaObserver.quotaContextForHome(quotaObserver.observerQuotaHome(process.env)),
       status: "AVAILABLE_CONFIRMED", observedAt: now,
       snapshot: { primary: { usedPercent: 92, windowDurationMins: 300, resetsAt: null },
         secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: now / 1000 } } }));
