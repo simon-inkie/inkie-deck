@@ -325,6 +325,7 @@ rl.on("line", (line) => {
       CODEX_HOME: agentHome, MC_CODEX_QUOTA_CODEX_HOME: "", OPENAI_API_KEY: "", CODEX_API_KEY: "",
       MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" })) vi.stubEnv(key, value);
     writeFileSync(join(agentHome, ".runtime"), "codex\n");
+    writeFileSync(join(agentHome, "auth.json"), "");
     writeFileSync(join(root, "codex-quota.json"), JSON.stringify({ ...initialQuotaState(),
       quotaContext: quotaObserver.observerQuotaContext(process.env),
       status: "AVAILABLE_CONFIRMED", observedAt: now,

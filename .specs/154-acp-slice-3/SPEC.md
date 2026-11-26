@@ -8,6 +8,8 @@
 Add Codex ACP alongside Antigravity, permit concurrent ACP homes, and display
 Codex quota through UsageReading. Live adapter behaviour remains subject to the
 manual verification below; offline checks use synthetic processes only.
+A failure at the final checkpoint sidecar rename can discard the prior sidecar
+and leave Resume unavailable. A follow-up ticket tracks this case.
 
 ## Scope
 In: runtime manifests, generic version probing, adapter auth/environment/usage,
@@ -31,9 +33,10 @@ Flows, releases, pushes and pull requests.
 - Azure quota is unknown from codex-azure. Missing, malformed, telemetry-off,
   stale and UNKNOWN quota is unknown from codex. Fresh confirmed blocked is
   exhausted, WARN is low, OK is ok. Fresh windows retain nullable reset times.
-- Codex ACP quota requires a matching observer login store and saved snapshot.
-  The observer refreshes idle connections and confirms recovery after two
-  available full reads.
+- Codex ACP quota requires a matching login-store fingerprint for the ACP
+  login, observer and saved snapshot. The observer refreshes idle connections,
+  reconnects on login-store changes and confirms recovery after two available
+  full reads.
 - Filesystem reads stay behind server helpers; routes receive UsageReading.
 
 ## Offline Test Matrix
@@ -277,6 +280,22 @@ and Git metadata directories is still required. Live adapter checks are unrun.
 - Supersedes the earlier fail-closed upgrade for original Antigravity
   checkpoints and the embedded checkpoint write format.
 - Changes remain in the working tree.
+
+### 2026-11-26: PR #249 quota verification fixes
+
+- R2-2: Fingerprint the credential file using filesystem metadata only. A
+  replacement or rewrite hides the previous snapshot immediately in ACP.
+  The observer clears the old quota and ignores responses from its prior
+  connection. A running ACP session with an outdated launch fingerprint
+  needs a new launch to match the new snapshot.
+- R2-6: Recheck the login store before periodic reads and when processing
+  observer messages. Reconnect and resample when the store becomes resolvable
+  after first-run sign-in.
+- Ticketed follow-up: A failure at the final checkpoint sidecar rename can
+  discard the prior sidecar and leave Resume unavailable.
+- Verification: `pnpm typecheck`, 68 quota tests and the focused ACP loader
+  test passed. The requested temporary directory was on a read-only mount,
+  so the gates used a disposable directory under `/tmp`.
 
 ## Exact changed files
 

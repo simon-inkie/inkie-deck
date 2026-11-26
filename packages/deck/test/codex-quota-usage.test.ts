@@ -2,11 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readAcpUsageReading } from "../app/lib/acp-usage.server";
+import { acpQuotaContext, readAcpUsageReading } from "../app/lib/acp-usage.server";
 import { buildCodexQuotaDisplay, type CodexQuotaDisplayData } from "../app/lib/codex-quota-display";
 import { initialQuotaState } from "../app/lib/codex-quota";
 import * as observer from "../app/lib/codex-quota-observer.server";
 import { codexUsageReading } from "../app/lib/codex-quota-usage";
+import { codexAcp1Manifest } from "../app/lib/runner/acp-manifest";
 
 const now = Date.parse("2026-11-25T12:00:00.000Z");
 const readAt = new Date(now).toISOString();
@@ -69,6 +70,7 @@ describe("Codex ACP usage mapping", () => {
     root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
     const home = join(root, agent);
     mkdirSync(home);
+    writeFileSync(join(home, "auth.json"), "");
     writeFileSync(join(home, ".runner"), "acp\n");
     writeFileSync(join(home, ".runtime"), "codex\n");
     const env = { AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: home, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
@@ -98,6 +100,8 @@ describe("Codex ACP usage mapping", () => {
     const isolated = join(root, "isolated-login");
     mkdirSync(home);
     mkdirSync(isolated);
+    writeFileSync(join(home, "auth.json"), "");
+    writeFileSync(join(isolated, "auth.json"), "");
     writeFileSync(join(home, ".runner"), "acp\n");
     writeFileSync(join(home, ".runtime"), "codex\n");
     const env = {
@@ -118,6 +122,37 @@ describe("Codex ACP usage mapping", () => {
     expect(readAcpUsageReading({ ...env, MC_CODEX_QUOTA_CODEX_HOME: home }, agent, now)).toEqual(unknown);
     writeFileSync(quotaFile, JSON.stringify(state));
     expect(readAcpUsageReading(matching, agent, now)).toEqual(unknown);
+  });
+
+  it("hides a previous login's quota after an in-place credential rewrite", () => {
+    vi.spyOn(observer, "ensureCodexQuotaObserver").mockReturnValue(undefined);
+    root = mkdtempSync(join(tmpdir(), "deck-acp-usage-"));
+    const auth = join(root, "auth.json");
+    const home = join(root, agent);
+    mkdirSync(home);
+    writeFileSync(join(home, ".runner"), "acp\n");
+    writeFileSync(join(home, ".runtime"), "codex\n");
+    writeFileSync(auth, "");
+    const env = { AGENTS_HOME: root, DATA_ROOT: root, CODEX_HOME: root, MC_ACP_RUNNER: "1", MC_CODEX_QUOTA_TELEMETRY_ENABLED: "1" };
+    const active = { manifest: codexAcp1Manifest, codexQuotaContext: acpQuotaContext(codexAcp1Manifest, env, home) };
+    const state = { ...initialQuotaState(), observedAt: now };
+    const quotaFile = join(root, "codex-quota.json");
+    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: observer.observerQuotaContext(env),
+      status: "BLOCKED_CONFIRMED", snapshot: { primary: { usedPercent: 100 } } }));
+    expect(readAcpUsageReading(env, agent, now, active).state).toBe("exhausted");
+    expect(readAcpUsageReading(env, agent, now).state).toBe("exhausted");
+
+    writeFileSync(auth, "\n");
+    expect(readAcpUsageReading(env, agent, now, active)).toEqual(unknown);
+    expect(readAcpUsageReading(env, agent, now)).toEqual(unknown);
+
+    const current = observer.observerQuotaContext(env);
+    writeFileSync(quotaFile, JSON.stringify({ ...state, quotaContext: current,
+      status: "AVAILABLE_CONFIRMED", snapshot: { primary: { usedPercent: 20 } } }));
+    expect(readAcpUsageReading(env, agent, now, active)).toEqual(unknown);
+    expect(readAcpUsageReading(env, agent, now).state).toBe("ok");
+    const restarted = { ...active, codexQuotaContext: acpQuotaContext(codexAcp1Manifest, env, home) };
+    expect(readAcpUsageReading(env, agent, now, restarted).state).toBe("ok");
   });
 
   it("maps stale snapshots built by the real display model conservatively", () => {
