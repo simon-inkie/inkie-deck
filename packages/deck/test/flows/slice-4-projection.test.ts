@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { importFlowProgress } from "../../app/lib/flows/importer.server.js";
+import { loadFlowDefinition } from "../../app/lib/flows/library.server.js";
 import { loadRunState } from "../../app/lib/flows/load-run.server.js";
 import { projectFlowProgress, type FlowProjectionTarget } from "../../app/lib/flows/projection.server.js";
 import { readFlowCardStream } from "../../app/lib/flows/reader.server.js";
@@ -112,6 +113,50 @@ describe("Flow progress projection and import", () => {
     fs.writeFileSync(ledger, prefix);
     expect(importFlowProgress(destination)).toEqual({ insertedLines: 0, rejectedLines: 0 });
     expect(fs.readFileSync(ledger, "utf8")).toBe(prefix);
+  });
+
+  it("imports passing checks on an unnamed artefact and its default filename", async () => {
+    const unnamedFlow = `flow: test-unnamed-artefact
+version: 1
+steps:
+  - id: generate
+    type: agent
+  - id: verify-latest
+    type: check
+    run: [check_exists]
+  - id: verify-filename
+    type: check
+    against: generate.generate.txt
+    run: [check_nonempty]
+`;
+    fs.writeFileSync(path.join(source.projectRoot, ".deck", "flows", "test-unnamed-artefact.yaml"), unnamedFlow);
+    const { flowHash } = planRun({ ...source, flowYaml: unnamedFlow });
+    approveRun({ ...source, flowHash, actorId: "operator-1" });
+    const live = await runFlow(source.projectId, source.runId, { dataRoot: source.dataRoot });
+    expect(live.terminalOutcome).toBe("done");
+
+    expect(projectFlowProgress(source)).toEqual({ appendedLines: live.eventCount });
+    expect(importFlowProgress(destination)).toEqual({ insertedLines: live.eventCount, rejectedLines: 0 });
+    expect(readFlowCardStream(destination.projectId, destination.runId, { dataRoot: destination.dataRoot })).toMatchObject({
+      readOnly: true, eventCount: live.eventCount, terminalOutcome: "done",
+    });
+  });
+
+  it("imports the pinned built-in definition when launch prefers a checkout override", () => {
+    const pinned = loadFlowDefinition("ticket-to-pr", { dataRoot: source.dataRoot });
+    expect(pinned.source).toBe("builtin");
+    const { flowHash } = planRun({ ...source, flowYaml: pinned.yaml });
+    expect(projectFlowProgress(source)).toEqual({ appendedLines: 1 });
+
+    const override = pinned.yaml.replace("title: Ticket to PR", "title: Checkout override");
+    fs.writeFileSync(path.join(destination.projectRoot, ".deck", "flows", "ticket-to-pr.yaml"), override);
+    const launch = loadFlowDefinition("ticket-to-pr", destination);
+    expect(launch.source).toBe("project");
+    expect(launch.hash).not.toBe(flowHash);
+
+    expect(importFlowProgress(destination)).toEqual({ insertedLines: 1, rejectedLines: 0 });
+    expect(loadRunState(destination.projectId, destination.runId, { dataRoot: destination.dataRoot }).pinnedFlowYaml)
+      .toBe(pinned.yaml);
   });
 
   it("refuses to project a missing project or run without creating directories", async () => {

@@ -50,7 +50,13 @@ import {
 import { loadRunState, verifyArtifactFileOnDisk } from "./load-run.server.js";
 import { acquireOwnerLock } from "./owner.server.js";
 import { resolvePinnedBudget, resolvePinnedCheckTarget } from "./replay.js";
-import { buildCollisionFreeArtifactId, openFlowsStore, StepDeadlineExceededError, type FlowsStore } from "./store.server.js";
+import {
+  buildCollisionFreeArtifactId,
+  defaultArtifactFilename,
+  openFlowsStore,
+  StepDeadlineExceededError,
+  type FlowsStore,
+} from "./store.server.js";
 export { buildCollisionFreeArtifactId } from "./store.server.js";
 import {
   FlowGitShaRegex,
@@ -2680,7 +2686,7 @@ export async function runFlow(
               runId,
               stepId: step.id,
               attemptId: intent.attemptId,
-              name: declaredOutputName ?? `${step.id.slice(0, 32)}.txt`,
+              name: declaredOutputName ?? defaultArtifactFilename(step.id),
               mediaType: wantsHeadShaArtifact ? "application/json" : "text/plain",
               bytes: agentBytes,
               deadlineMs,

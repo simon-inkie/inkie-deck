@@ -43,7 +43,10 @@ export function importFlowProgress(target: FlowProjectionTarget): { insertedLine
       const pin = readProjectionFile(dirFd, "flow.yaml", maxDefinitionBytes);
       if (pin) return pin;
       try {
-        return Buffer.from(loadFlowDefinition(plan.data.flowRef, { projectRoot, dataRoot, maxDefinitionBytes }).yaml);
+        const definition = loadFlowDefinition(plan.data.flowRef, {
+          projectRoot, dataRoot, maxDefinitionBytes, expectedHash: plan.data.flowHash,
+        });
+        return Buffer.from(definition.yaml);
       } catch {
         throw new FlowProjectionError("The pinned flow definition could not be found.", 1);
       }

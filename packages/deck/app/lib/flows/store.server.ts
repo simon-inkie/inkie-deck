@@ -628,6 +628,10 @@ export function buildCollisionFreeArtifactId(
   return `art_${digest}`;
 }
 
+export function defaultArtifactFilename(stepId: string): string {
+  return `${stepId.slice(0, 32)}.txt`;
+}
+
 /**
  * Major 4: Derive a deterministic hash-based effectKey bound strictly to (runId, stepId, occurrence)
  * so callers cannot smuggle private text into public step_started.data.effectKey.
@@ -2422,8 +2426,11 @@ class FlowsStoreImpl {
           const started = ctx.events.find((candidate) => candidate.type === "step_started" &&
             candidate.stepId === ev.stepId && candidate.attemptId === ev.attemptId);
           if (!receiptNameById.has(ev.data.artefactId) && step?.type === "agent" && started?.type === "step_started") {
-            const name = [...(step.outputs ?? []), ...checkOutputNames].find((output) =>
-              buildCollisionFreeArtifactId(ev.stepId, output, started.data.occurrence) === ev.data.artefactId);
+            const { occurrence } = started.data;
+            const name = buildCollisionFreeArtifactId(ev.stepId, undefined, occurrence) === ev.data.artefactId
+              ? defaultArtifactFilename(ev.stepId)
+              : [...(step.outputs ?? []), ...checkOutputNames].find((output) =>
+                buildCollisionFreeArtifactId(ev.stepId, output, occurrence) === ev.data.artefactId);
             if (name) receiptNameById.set(ev.data.artefactId, name);
           }
         }

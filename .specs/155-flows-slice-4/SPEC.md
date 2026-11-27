@@ -103,3 +103,14 @@ marker and can start an imported run if its recorded history permits it.
   because the sandbox mounted their temporary directory read-only.
 - Supersedes: nothing, additive.
 - Commits: working tree.
+
+### 2026-11-27: PR 253 artefact and definition import fixes
+
+- What changed: replay binds unnamed artefact receipts to the runner's default
+  filename. Import finds the library definition matching the ledger hash.
+- Why: preserve passing checks against default filenames and recover exact
+  definitions shadowed by checkout overrides.
+- Verification: the focused projection suite could not start because
+  `/var/tmp` was mounted read-only.
+- Supersedes: nothing, additive.
+- Commits: working tree.
