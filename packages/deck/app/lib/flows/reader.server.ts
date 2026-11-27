@@ -290,7 +290,7 @@ export function readFlowCardStream(
       dataRoot: options?.dataRoot,
     });
 
-    return projectFlowCardStream({
+    const stream = projectFlowCardStream({
       projectId,
       runId,
       flowHash: loaded.run.flow_hash,
@@ -298,6 +298,7 @@ export function readFlowCardStream(
       events: loaded.events,
       state: loaded.state,
     });
+    return loaded.readOnly ? { ...stream, readOnly: true } : stream;
   } catch (err) {
     throw classifyReaderError(err);
   }

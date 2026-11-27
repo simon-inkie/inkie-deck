@@ -418,7 +418,11 @@ export default function FlowsRoute({ loaderData }: Route.ComponentProps) {
         </div>
       ) : stream ? (
         <>
-          <FlowRunApprovalBar stream={stream} catalog={catalog} />
+          {stream.readOnly ? (
+            <p className="text-sm text-muted-foreground">Imported history (read-only).</p>
+          ) : (
+            <FlowRunApprovalBar stream={stream} catalog={catalog} />
+          )}
           <FlowCardStream stream={stream} />
         </>
       ) : (

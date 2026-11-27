@@ -11,8 +11,8 @@ manual verification below; offline checks use synthetic processes only.
 Quota follows the resolved `CODEX_HOME`. With a shared home, Deck shows the
 observer's account quota, even after an operator switches accounts inside that
 home. Keyring logins work with the same home check.
-A failure at the final checkpoint sidecar rename can discard the prior sidecar
-and leave Resume unavailable. A follow-up ticket tracks this case.
+Checkpoint publication and renewal coverage have follow-ups in #250, #251,
+and #252.
 
 ## Scope
 In: runtime manifests, generic version probing, adapter auth/environment/usage,
@@ -420,3 +420,9 @@ and Git metadata directories is still required. Live adapter checks are unrun.
   change. A regression test for this renewal case is ticketed as a
   follow-up. The independent judge found no remaining L1 or L2, S1 or S2
   reducer defect at d9caf0f, so the review loop for this mechanism closes.
+
+### 2026-11-26: ACP follow-ups
+
+- #250 adds a local opt-in Codex adapter resume check.
+- #251 restores the checkpoint pair and reports a failed final sidecar rename.
+- #252 covers a renewed spend-control block after a clean full read.

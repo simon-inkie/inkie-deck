@@ -373,6 +373,7 @@ function writeStoredCheckpoint(
     const suffix = randomUUID();
     const tmp = `${file}.tmp.${suffix}`;
     const tmpSidecar = `${sidecar}.tmp.${suffix}`;
+    const previousId = `${file}.previous.${suffix}`;
     const previousSidecar = `${sidecar}.previous.${suffix}`;
     try {
       const checkpointKey = stageCheckpointFile(tmp, Buffer.from(sessionId + "\n", "utf8"));
@@ -388,22 +389,44 @@ function writeStoredCheckpoint(
       // Retire stale evidence before replacing the ID because older readers
       // do not check the binding. An interrupted publication fails closed.
       if (sidecarStat) renameSync(sidecar, previousSidecar);
+      let savedId = false;
+      let installedId = false;
       try {
+        if (idStat) {
+          renameSync(file, previousId);
+          savedId = true;
+        }
         renameSync(tmp, file);
+        installedId = true;
+        renameSync(tmpSidecar, sidecar);
       } catch (error) {
-        if (sidecarStat) renameSync(previousSidecar, sidecar);
+        try {
+          if (savedId) renameSync(previousId, file);
+          else if (installedId) unlinkSync(file);
+          if (sidecarStat) renameSync(previousSidecar, sidecar);
+        } catch (rollbackError) {
+          throw new CheckpointPublicationError("Could not restore the previous ACP session checkpoint.", { cause: rollbackError });
+        }
+        if (installedId) {
+          throw new CheckpointPublicationError("Could not publish the ACP session checkpoint capabilities.", { cause: error });
+        }
         throw error;
       }
-      renameSync(tmpSidecar, sidecar);
+      for (const previous of [previousId, previousSidecar]) {
+        try { unlinkSync(previous); } catch { /* ignore cleanup error */ }
+      }
     } finally {
-      for (const staged of [tmp, tmpSidecar, previousSidecar]) {
+      for (const staged of [tmp, tmpSidecar]) {
         try { unlinkSync(staged); } catch { /* ignore cleanup error */ }
       }
     }
-  } catch {
-    // Staging failures leave the previous checkpoint and evidence in place.
+  } catch (error) {
+    if (error instanceof CheckpointPublicationError) throw error;
+    // Staging and ID publication failures leave the previous checkpoint in place.
   }
 }
+
+class CheckpointPublicationError extends Error {}
 
 export interface AcpRegistryOptions {
   manifest?: AcpAdapterManifest;
@@ -805,36 +828,37 @@ export class AcpRunnerRegistry {
     if (terminal && session.resumeRejected && resumeCheckpoint) {
       clearStoredSessionId(home, resumeCheckpoint);
     }
-    if (session.negotiated && !session.supportsResume?.()) {
-      const checkpoint = readStoredSession(home);
-      if (adapterKey && checkpoint?.evidence?.supported && matchesResumeEvidence(checkpoint.evidence, adapterKey)) {
-        writeStoredCheckpoint(home, checkpoint.sessionId, { executableKey: adapterKey, supported: false }, checkpoint);
+    try {
+      if (session.negotiated && !session.supportsResume?.()) {
+        const checkpoint = readStoredSession(home);
+        if (adapterKey && checkpoint?.evidence?.supported && matchesResumeEvidence(checkpoint.evidence, adapterKey)) {
+          writeStoredCheckpoint(home, checkpoint.sessionId, { executableKey: adapterKey, supported: false }, checkpoint);
+        }
       }
-    }
-    if (terminal) {
+      if (terminal) {
+        if (terminalKind === "unsupported") {
+          throw new LaunchFailure("unavailable", session.unsupportedReason ?? "Agent does not support the required ACP protocol version or capability.");
+        }
+        throw new LaunchFailure("start-failed", `ACP session negotiation ended in state '${terminalKind}'.`);
+      }
+      if (abortController.signal.aborted || isShuttingDown()) {
+        throw new StartRefusal("shutting-down");
+      }
+      // Persist only when the adapter advertised resume/load capability.
+      if (session.activeSessionId && adapterKey && session.supportsResume?.()) {
+        writeStoredCheckpoint(home, session.activeSessionId, { supported: true, executableKey: adapterKey });
+      }
+    } catch (error) {
       await session.close().catch(() => {});
       await this.cleanupFailedStart(home, activeSession, lock);
       resolveSettled();
-      if (terminalKind === "unsupported") {
-        throw new LaunchFailure("unavailable", session.unsupportedReason ?? "Agent does not support the required ACP protocol version or capability.");
+      if (error instanceof CheckpointPublicationError) {
+        throw new LaunchFailure("start-failed", error.message);
       }
-      throw new LaunchFailure("start-failed", `ACP session negotiation ended in state '${terminalKind}'.`);
-    }
-
-    if (abortController.signal.aborted || isShuttingDown()) {
-      await session.close().catch(() => {});
-      await this.cleanupFailedStart(home, activeSession, lock);
-      resolveSettled();
-      throw new StartRefusal("shutting-down");
+      throw error;
     }
 
     activeSession.state = "running";
-    // Major 2: Persist .acp-last-session ONLY when agent advertised resume/load capability.
-    // Never delete a previously saved valid checkpoint on a fresh Start with a downgraded binary;
-    // checkpoints are cleared ONLY on explicit session-not-found for that exact ID.
-    if (session.activeSessionId && adapterKey && session.supportsResume?.()) {
-      writeStoredCheckpoint(home, session.activeSessionId, { supported: true, executableKey: adapterKey });
-    }
 
     activeSession.abandonOnUnkillable = () => {
       const retainedEvents = this.snapshotEvents(activeSession);

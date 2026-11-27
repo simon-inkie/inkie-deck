@@ -711,6 +711,39 @@ rl.on("line", (line) => {
     }
   });
 
+  it("reports a final sidecar rename failure and keeps the previous checkpoint", async () => {
+    const startSession = vi.fn(async () => resumableSession("new-session"));
+    startSession.mockResolvedValueOnce(resumableSession("previous-session"));
+    const reg = new AcpRunnerRegistry(env, {
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession,
+    });
+    await reg.start(agent);
+    await reg.stop(agent);
+    const sidecar = join(home, ".acp-capabilities");
+    const previousEvidence = readFileSync(sidecar, "utf8");
+
+    const rename = vi.mocked(renameSync);
+    const realRename = rename.getMockImplementation()!;
+    rename.mockImplementation((from, to) => {
+      if (to === sidecar && String(from).startsWith(sidecar + ".tmp.")) {
+        throw Object.assign(new Error("Sidecar rename failed"), { code: "EIO" });
+      }
+      return realRename(from, to);
+    });
+    try {
+      await expect(reg.start(agent)).rejects.toThrow("Could not publish the ACP session checkpoint capabilities.");
+      expect(readFileSync(sidecar, "utf8")).toBe(previousEvidence);
+      expect(reg.lastSessionId(agent)).toBe("previous-session");
+      expect(reg.canResume(agent)).toBe(true);
+      expect(existsSync(lockFile)).toBe(false);
+    } finally {
+      rename.mockReset();
+    }
+  });
+
   it.each(["legacy sidecar", "embedded evidence"])(
     "upgrades Antigravity checkpoints from %s and writes a rollback-compatible pair",
     async (format) => {

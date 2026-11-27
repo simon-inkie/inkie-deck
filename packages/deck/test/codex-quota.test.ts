@@ -257,4 +257,43 @@ describe("Codex quota reducer", () => {
       observedAt: 1_500_000,
     });
   });
+
+  it("records a renewed spend block after a clean full read cleared the previous block", () => {
+    const blocked = reduceQuotaState(initialQuotaState(), {
+      type: "full_read",
+      payload: full({
+        ...available,
+        spendControlReached: true,
+        individualLimit: { limit: "12", used: "12", remainingPercent: 0, resetsAt: 3_000 },
+      }),
+      observedAt: 1_000_000,
+    });
+    expect(blocked).toMatchObject({
+      status: "BLOCKED_CONFIRMED",
+      resetCandidateAt: 3_000_000,
+    });
+
+    const cleared = reduceQuotaState(blocked, {
+      type: "full_read",
+      payload: full({
+        ...available,
+        individualLimit: { limit: "12", used: "6", remainingPercent: 50, resetsAt: 3_000 },
+      }),
+      observedAt: 1_100_000,
+    });
+    expect(cleared).toMatchObject({ status: "AVAILABLE_CONFIRMED", blockedReason: null });
+
+    const renewed = reduceQuotaState(cleared, {
+      type: "sparse_update",
+      payload: { spendControlReached: true },
+      observedAt: 1_200_000,
+    });
+    expect(renewed).toMatchObject({
+      status: "BLOCKED_CONFIRMED",
+      blockedReason: "spend_control_reached",
+      resetCandidateAt: null,
+      observedAt: 1_200_000,
+    });
+    expect(reduceQuotaState(renewed, { type: "clock", observedAt: 3_000_000 })).toBe(renewed);
+  });
 });

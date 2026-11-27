@@ -71,6 +71,7 @@ export interface FlowCardStreamView {
   waitingOn: string | null;
   headSeq: number;
   eventCount: number;
+  readOnly?: boolean;
   terminalOutcome: string | null;
   terminalReason: string | null;
   budget: FlowBudgetSummary;

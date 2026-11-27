@@ -5,7 +5,7 @@
  * GET /api/flows?view=library     -> { ok: true, catalog }
  * GET /api/flows?project=P        -> { ok: true, project: P, runs }
  * GET /api/flows?project=P&run=R  -> { ok: true, stream } or 404
- * POST /api/flows                 -> same-origin guarded intent: "plan" | "approve" | "start" | "decide"
+ * POST /api/flows                 -> same-origin guarded plan, approve, start, decide, project or import
  * Non-GET/HEAD in loader or non-POST in action -> 405 Allow: GET, POST
  *
  * SEAM RULE: no fs imports, no env-root literals in the route.
@@ -29,8 +29,10 @@ import {
 } from "~/lib/flows/reader.server";
 import {
   ArtifactVerificationError,
+  FlowProjectionError,
   HashChainCorruptionError,
   IllegalFlowTransitionError,
+  ImportedFlowReadOnlyError,
   StorePragmaError,
 } from "~/lib/flows/store.server";
 import {
@@ -44,6 +46,7 @@ import {
   listFlowLaunchCatalog,
   planFlowFromUi,
   startFlowFromUi,
+  transferFlowProgress,
 } from "~/lib/flows/ui-actions.server";
 import { requireSameOriginWrite } from "~/lib/request-origin.server";
 
@@ -71,6 +74,12 @@ function methodNotAllowed(): Response {
 }
 
 function mapErrorResponse(err: unknown, fallbackMessage: string): Response {
+  if (err instanceof FlowProjectionError) {
+    return json({ ok: false, error: err.message, rejectedLines: err.rejectedLines }, 422);
+  }
+  if (err instanceof ImportedFlowReadOnlyError) {
+    return json({ ok: false, error: err.message }, 409);
+  }
   if (err instanceof InvalidFlowQueryError) {
     return json({ ok: false, error: "Invalid flow project or run id." }, 400);
   }
@@ -252,9 +261,10 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const intent = optionalString(body["intent"]);
-  if (intent !== "plan" && intent !== "approve" && intent !== "start" && intent !== "decide") {
+  if (intent !== "plan" && intent !== "approve" && intent !== "start" && intent !== "decide" &&
+      intent !== "project" && intent !== "import") {
     return json(
-      { ok: false, error: "Unsupported flow action intent. Expected plan, approve, start, or decide." },
+      { ok: false, error: "Unsupported flow action intent." },
       400,
     );
   }
@@ -266,6 +276,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   try {
+    if (intent === "project" || intent === "import") {
+      return json({ ok: true, ...transferFlowProgress(intent, projectId, runId) });
+    }
     if (intent === "plan") {
       const result = planFlowFromUi({
         projectId,

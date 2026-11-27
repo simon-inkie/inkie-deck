@@ -140,6 +140,18 @@ export class IllegalFlowTransitionError extends Error {
   }
 }
 
+export class ImportedFlowReadOnlyError extends Error {
+  constructor() {
+    super("Imported flow runs are read-only.");
+  }
+}
+
+export class FlowProjectionError extends Error {
+  constructor(message: string, public readonly rejectedLines = 0) {
+    super(message);
+  }
+}
+
 export class ArtifactVerificationError extends Error {
   constructor(public readonly artifactId: string, message: string) {
     super(`Artifact verification failed for '${artifactId}': ${message}`);
@@ -587,6 +599,18 @@ export function buildBoundedAttemptId(stepId: string, occurrence: number): strin
   return `att_${shortHash}_${occurrence}`;
 }
 
+export function buildCollisionFreeArtifactId(
+  stepId: string,
+  declaredOutputName?: string,
+  occurrence = 1,
+): string {
+  const digest = crypto.createHash("sha256")
+    .update(JSON.stringify([stepId, declaredOutputName ?? "", occurrence]))
+    .digest("hex")
+    .slice(0, 24);
+  return `art_${digest}`;
+}
+
 /**
  * Major 4: Derive a deterministic hash-based effectKey bound strictly to (runId, stepId, occurrence)
  * so callers cannot smuggle private text into public step_started.data.effectKey.
@@ -665,6 +689,7 @@ interface TransitionContext {
     sizeBytes: number,
   ) => void;
   verifyPublicArtefactShaOnDisk: (sha256: string, requireNonEmpty?: boolean) => void;
+  historical?: boolean;
 }
 
 const COMMAND_CHECK_IDS = new Set(["typecheck", "test", "lint", "leak_scan", "build", "repro"]);
@@ -917,7 +942,7 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
           throw new IllegalFlowTransitionError(ctx.runId, "check_unsupported cannot record passed: true");
         }
         ctx.verifyPublicArtefactShaOnDisk(ev.data.targetSha, requiresNonEmpty);
-      } else if (isArtefactOnly) {
+      } else if (isArtefactOnly && !ctx.historical) {
         // Critical 1: Reject forged passed: false when the pinned target actually exists and passes on disk
         let targetPassesOnDisk = false;
         try {
@@ -1472,6 +1497,7 @@ class FlowsStoreImpl {
     }
     this.#assertNotInTx(runId);
     assertActiveOwnerLock(this.#ownerLock, this.projectId, this.projectDir);
+    if (runId !== undefined) this.assertExecutableRun(runId);
   }
 
   #runInTx<T>(fn: () => T, mode: "immediate" | "deferred" = "immediate"): T {
@@ -1608,6 +1634,10 @@ class FlowsStoreImpl {
         hash TEXT PRIMARY KEY,
         bytes BLOB NOT NULL,
         created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS imported_flow_runs (
+        run_id TEXT PRIMARY KEY REFERENCES flow_runs(run_id) ON DELETE CASCADE
       );
     `);
   }
@@ -1963,6 +1993,18 @@ class FlowsStoreImpl {
     return this.#getRunInternal(runId);
   }
 
+  public isImportedRun(runId: string): boolean {
+    this.#assertNotInTx(runId);
+    const table = this.#db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'imported_flow_runs'"
+    ).get();
+    return Boolean(table && this.#db.prepare("SELECT 1 FROM imported_flow_runs WHERE run_id = ?").get(runId));
+  }
+
+  public assertExecutableRun(runId: string): void {
+    if (this.isImportedRun(runId)) throw new ImportedFlowReadOnlyError();
+  }
+
   public listRuns(): FlowRunRow[] {
     this.#assertNotInTx();
     if (this.#closed) {
@@ -2189,6 +2231,7 @@ class FlowsStoreImpl {
     runId: string,
     items: readonly PreparedAppendItem[],
     deadlineMs?: number,
+    historical = false,
   ): AppendResult[] {
     if (deadlineMs !== undefined && Date.now() > deadlineMs) {
       throw new StepDeadlineExceededError(runId, deadlineMs);
@@ -2234,6 +2277,16 @@ class FlowsStoreImpl {
     const receiptNameById = new Map<string, string>(
       this.#listArtifactsInternal(runId).map((r) => [r.artifact_id, r.name])
     );
+    const historicalReceipts = new Map<string, number>();
+    const historicalIds = new Set<string>();
+    const checkOutputNames = new Set<string>();
+    if (historical) {
+      for (const step of pinnedFlow.steps) {
+        if (step.type === "check" && step.against && !FlowSha256Regex.test(step.against)) {
+          checkOutputNames.add(step.against.slice(step.against.indexOf(".") + 1));
+        }
+      }
+    }
 
     const ctx: TransitionContext = {
       runId,
@@ -2269,6 +2322,7 @@ class FlowsStoreImpl {
       passedCheckProvenanceByStep: new Map(),
       passedCheckProvenanceByAttempt: new Map(),
       publicRecordedArtefactShas: new Set<string>(),
+      historical,
       events: [],
       budgetStepsRemaining: null,
       budgetTokensRemaining: null,
@@ -2287,6 +2341,13 @@ class FlowsStoreImpl {
       resolveExpectedCheckTarget: (step: CheckStep) =>
         resolvePinnedCheckTarget(step, ctx.events, receiptNameById, ctx.pinnedFlow),
       verifyArtefactReceiptAndDisk: (artifactId, stepId, attemptId, sha256, sizeBytes) => {
+        if (historical) {
+          const previousSize = historicalReceipts.get(sha256);
+          if (historicalIds.has(artifactId) || (previousSize !== undefined && previousSize !== sizeBytes)) {
+            throw new IllegalFlowTransitionError(runId, "Conflicting artefact receipt");
+          }
+          return;
+        }
         const receipt = this.#db
           .prepare(
             `SELECT 1 FROM flow_artifacts
@@ -2310,6 +2371,13 @@ class FlowsStoreImpl {
         }
       },
       verifyPublicArtefactShaOnDisk: (sha256, requireNonEmpty = false) => {
+        if (historical) {
+          const size = historicalReceipts.get(sha256);
+          if (size === undefined || (requireNonEmpty && size === 0)) {
+            throw new ArtifactVerificationError(sha256, "Missing or empty historical artefact receipt");
+          }
+          return;
+        }
         const verified = this.#readArtefactViaProjectDirFd(runId, sha256);
         if (!verified || !verified.bytes) {
           throw new ArtifactVerificationError(sha256, "Referenced public artefact file missing on disk");
@@ -2364,6 +2432,18 @@ class FlowsStoreImpl {
         }
       } else if (ev.type === "artefact_recorded") {
         ctx.publicRecordedArtefactShas.add(ev.data.sha256);
+        if (historical) {
+          historicalIds.add(ev.data.artefactId);
+          historicalReceipts.set(ev.data.sha256, ev.data.sizeBytes);
+          const step = stepById.get(ev.stepId);
+          const started = ctx.events.find((candidate) => candidate.type === "step_started" &&
+            candidate.stepId === ev.stepId && candidate.attemptId === ev.attemptId);
+          if (!receiptNameById.has(ev.data.artefactId) && step?.type === "agent" && started?.type === "step_started") {
+            const name = [...(step.outputs ?? []), ...checkOutputNames].find((output) =>
+              buildCollisionFreeArtifactId(ev.stepId, output, started.data.occurrence) === ev.data.artefactId);
+            if (name) receiptNameById.set(ev.data.artefactId, name);
+          }
+        }
       } else if (ev.type === "check_result") {
         const k = `${ev.stepId}:${ev.attemptId}`;
         ctx.checkedAttempts.add(k);
@@ -2560,32 +2640,38 @@ class FlowsStoreImpl {
       }
 
       // Global monotonic guards + declarative TRANSITION_TABLE dispatch
-      if (nextSeq === 1 && validatedEvent.type !== "run_planned") {
-        throw new IllegalFlowTransitionError(
-          runId,
-          `First event (seq 1) must be 'run_planned', got '${validatedEvent.type}'`
-        );
+      try {
+        if (nextSeq === 1 && validatedEvent.type !== "run_planned") {
+          throw new IllegalFlowTransitionError(
+            runId,
+            `First event (seq 1) must be 'run_planned', got '${validatedEvent.type}'`
+          );
+        }
+        if (ctx.hasRunFinished) {
+          throw new IllegalFlowTransitionError(runId, `Cannot append '${validatedEvent.type}' after run_finished`);
+        }
+        if (
+          ctx.hasStopJudgement &&
+          validatedEvent.type !== "run_finished" &&
+          validatedEvent.type !== "run_released"
+        ) {
+          throw new IllegalFlowTransitionError(runId, `Cannot append '${validatedEvent.type}' after judgement(stop)`);
+        }
+        const rule = TRANSITION_TABLE[validatedEvent.type] as TransitionRule;
+        rule(ctx, validatedEvent);
+      } catch (error) {
+        if (historical && (error instanceof IllegalFlowTransitionError || error instanceof ArtifactVerificationError)) {
+          throw new FlowProjectionError(`Invalid flow transition at ledger line ${nextSeq}.`, 1);
+        }
+        throw error;
       }
-      if (ctx.hasRunFinished) {
-        throw new IllegalFlowTransitionError(runId, `Cannot append '${validatedEvent.type}' after run_finished`);
-      }
-      if (
-        ctx.hasStopJudgement &&
-        validatedEvent.type !== "run_finished" &&
-        validatedEvent.type !== "run_released"
-      ) {
-        throw new IllegalFlowTransitionError(runId, `Cannot append '${validatedEvent.type}' after judgement(stop)`);
-      }
-
-      const rule = TRANSITION_TABLE[validatedEvent.type] as TransitionRule;
-      rule(ctx, validatedEvent);
 
       // Major 2: Re-check wall-clock deadline AFTER synchronous disk rereads inside rule() and BEFORE INSERT!
       if (deadlineMs !== undefined && Date.now() > deadlineMs) {
         throw new StepDeadlineExceededError(runId, deadlineMs);
       }
 
-      const now = Date.now();
+      const now = historical ? Date.parse(validatedEvent.at) : Date.now();
       if (item.privateDetail !== undefined && item.privateRef) {
         this.#db
           .prepare(`INSERT INTO private_details (run_id, ref, content, created_at) VALUES (?, ?, ?, ?)`)
@@ -2685,6 +2771,69 @@ class FlowsStoreImpl {
     this.#assertNotInTx(runId);
     assertValidRunId(runId);
     return this.#runInTx(() => this.#verifyHashChainInternal(runId).lines, "deferred");
+  }
+
+  public importProjection(
+    runId: string,
+    lines: readonly string[],
+    resolvePin: (plan: Extract<FlowEvent, { type: "run_planned" }>) => Buffer,
+  ): { insertedLines: number; rejectedLines: number } {
+    // Import uses the writer lock but can only extend verified historical rows.
+    this.#assertWritableAndOwned();
+    assertValidRunId(runId);
+
+    let previous = "0".repeat(64);
+    let rejectedLines = 0;
+    const items: PreparedAppendItem[] = [];
+    for (const [index, line] of lines.entries()) {
+      let raw: unknown;
+      try { raw = JSON.parse(line); } catch { /* count as an invalid line */ }
+      const parsed = FlowEventSchema.safeParse(raw);
+      if (!parsed.success || canonicalJsonStringify(parsed.data) !== line ||
+        parsed.data.runId !== runId || parsed.data.seq !== index + 1 ||
+        parsed.data.prev !== previous || !Number.isFinite(Date.parse(parsed.data.at)) ||
+        (index === 0 && parsed.data.type !== "run_planned")) {
+        rejectedLines += 1;
+      } else {
+        items.push({ event: parsed.data });
+      }
+      previous = crypto.createHash("sha256").update(line).digest("hex");
+    }
+    const plan = items[0]?.event;
+    if (rejectedLines || plan?.type !== "run_planned") {
+      throw new FlowProjectionError("The flow ledger has invalid lines.", rejectedLines);
+    }
+
+    return this.#runInTx(() => {
+      const run = this.#getRunInternal(runId);
+      const local = this.#verifyHashChainInternal(runId).lines;
+      const commonLength = Math.min(local.length, lines.length);
+      for (let index = 0; index < commonLength; index++) {
+        if (local[index] !== lines[index]) {
+          throw new FlowProjectionError(`Flow history diverges at ledger line ${index + 1}.`, 1);
+        }
+      }
+      if (local.length >= lines.length) return { insertedLines: 0, rejectedLines: 0 };
+
+      const flowHash = plan.data.flowHash;
+      const pinnedBytes = this.#getPinnedFlowInternal(flowHash) ?? resolvePin(plan);
+      if (crypto.createHash("sha256").update(pinnedBytes).digest("hex") !== flowHash ||
+        !validateFlowYaml(pinnedBytes.toString("utf8")).valid || (run && run.flow_hash !== flowHash)) {
+        throw new FlowProjectionError("The flow definition does not match the ledger pin.", 1);
+      }
+      if (!run) {
+        const createdAt = Date.parse(plan.at);
+        this.#db.prepare("INSERT OR IGNORE INTO pinned_flows (hash, bytes, created_at) VALUES (?, ?, ?)")
+          .run(flowHash, pinnedBytes, createdAt);
+        this.#db.prepare(
+          "INSERT INTO flow_runs (run_id, flow_hash, status, created_at, updated_at) VALUES (?, ?, 'planned', ?, ?)"
+        ).run(runId, flowHash, createdAt, createdAt);
+      }
+
+      const inserted = this.#appendItemsInOpenTx(runId, items.slice(local.length), undefined, true);
+      this.#db.prepare("INSERT OR IGNORE INTO imported_flow_runs (run_id) VALUES (?)").run(runId);
+      return { insertedLines: inserted.length, rejectedLines: 0 };
+    });
   }
 
   public recordArtifact(params: {
@@ -3037,7 +3186,7 @@ class FlowsStoreImpl {
   }
 
   public purgeRun(runId: string): void {
-    this.#assertWritableAndOwned(runId);
+    this.#assertWritableAndOwned();
     assertValidRunId(runId);
     const verifiedDir = this.#verifyProjectDirHandle();
     const artifactsDir = path.join(verifiedDir, "artifacts", runId);

@@ -14,6 +14,7 @@ import type {
   FlowLaunchDraftEntry,
 } from "./card-stream.js";
 import { computeUnifiedDiff } from "./diff.js";
+import { importFlowProgress } from "./importer.server.js";
 import {
   FlowNotFoundError,
   FlowValidationError,
@@ -24,6 +25,7 @@ import {
   type FlowLibraryOptions,
 } from "./library.server.js";
 import { loadRunState } from "./load-run.server.js";
+import { projectFlowProgress } from "./projection.server.js";
 import { InvalidFlowQueryError, listFlowRuns } from "./reader.server.js";
 import { approveRun, planRun, runFlow, submitHandoffReturn, type RunFlowResult } from "./runner.server.js";
 import { FlowIdRegex } from "./types.js";
@@ -138,6 +140,17 @@ function assertValidId(value: string | undefined, label: string): string {
     throw new InvalidFlowQueryError(`Invalid ${label}.`);
   }
   return value;
+}
+
+export function transferFlowProgress(intent: "project" | "import", project: string, run: string) {
+  const projectId = assertValidId(project, "flow project id");
+  const runId = assertValidId(run, "flow run id");
+  const { projectRoot } = resolveLibraryOpts();
+  if (!projectRoot) {
+    throw new InvalidFlowUiActionError("Set FLOWS_PROJECT_ROOT to the project checkout.");
+  }
+  const target = { projectRoot, projectId, runId };
+  return intent === "project" ? projectFlowProgress(target) : importFlowProgress(target);
 }
 
 /**

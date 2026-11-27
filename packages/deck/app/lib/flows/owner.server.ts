@@ -416,10 +416,26 @@ export function precreateSafeFile0600InDirFd(dirFd: number, filename: string): v
   }
 }
 
+function readRegularFileBytes(fd: number, size: number, filename: string, maxBytes?: number): Buffer {
+  if (maxBytes === undefined) return fs.readFileSync(fd);
+  if (size > maxBytes) throw new Error(`File exceeds size limit: ${filename}`);
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const read = fs.readSync(fd, bytes, offset, size - offset, offset);
+    if (read === 0) throw new Error(`File changed while reading: ${filename}`);
+    offset += read;
+  }
+  if (fs.readSync(fd, Buffer.alloc(1), 0, 1, offset) !== 0) {
+    throw new Error(`File changed while reading: ${filename}`);
+  }
+  return bytes;
+}
+
 export function assertSafeRegularFileInDirFd(
   dirFd: number,
   filename: string,
-  options?: { chmod0600?: boolean; readBytes?: boolean },
+  options?: { chmod0600?: boolean; readBytes?: boolean; maxBytes?: number },
 ): { size: number; bytes?: Buffer } | null {
   assertSingleSegment(filename);
   const pre = assertSafeRegularLstatInDirFd(dirFd, filename);
@@ -456,7 +472,7 @@ export function assertSafeRegularFileInDirFd(
         // Ignore on filesystems without chmod support.
       }
     }
-    const bytes = options?.readBytes ? fs.readFileSync(fd) : undefined;
+    const bytes = options?.readBytes ? readRegularFileBytes(fd, st.size, filename, options.maxBytes) : undefined;
     return { size: st.size, bytes };
   } finally {
     fs.closeSync(fd);
@@ -529,7 +545,7 @@ export function precreateSafeFile0600IfMissing(filePath: string, rootDir: string
 export function assertSafeRegularFile(
   filePath: string,
   rootDir: string,
-  options?: { chmod0600?: boolean; readBytes?: boolean },
+  options?: { chmod0600?: boolean; readBytes?: boolean; maxBytes?: number },
 ): { size: number; bytes?: Buffer } | null {
   const confined = assertNoSymlinkInChain(filePath, rootDir, { mustBeStrictDescendant: true });
   // Fast non-blocking lstat check before open so FIFOs/symlinks/hard-links fail immediately
@@ -566,7 +582,7 @@ export function assertSafeRegularFile(
         // Ignore on filesystems without chmod support.
       }
     }
-    const bytes = options?.readBytes ? fs.readFileSync(fd) : undefined;
+    const bytes = options?.readBytes ? readRegularFileBytes(fd, st.size, confined, options.maxBytes) : undefined;
     return { size: st.size, bytes };
   } finally {
     fs.closeSync(fd);
