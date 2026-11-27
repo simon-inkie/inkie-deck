@@ -1,13 +1,16 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { importFlowProgress } from "../../app/lib/flows/importer.server.js";
+import { loadRunState } from "../../app/lib/flows/load-run.server.js";
 import { projectFlowProgress, type FlowProjectionTarget } from "../../app/lib/flows/projection.server.js";
 import { readFlowCardStream } from "../../app/lib/flows/reader.server.js";
-import { approveRun, planRun, runFlow } from "../../app/lib/flows/runner.server.js";
-import { canonicalJsonStringify, openFlowsStore } from "../../app/lib/flows/store.server.js";
+import { approveRun, planRun, runFlow, submitHandoffReturn } from "../../app/lib/flows/runner.server.js";
+import { canonicalJsonStringify, ImportedFlowReadOnlyError, openFlowsStore } from "../../app/lib/flows/store.server.js";
+import type { FlowArtefactRecordedEvent } from "../../app/lib/flows/types.js";
 import { action } from "../../app/routes/api.flows.js";
 
 const flowYaml = fs.readFileSync(new URL("./fixtures/two-step-stub.yaml", import.meta.url), "utf8");
@@ -28,13 +31,13 @@ describe("Flow progress projection and import", () => {
     approveRun({ ...source, flowHash, actorId: "operator-1" });
   }
 
-  async function post(intent: string, origin = "http://localhost") {
+  async function post(intent: string, origin = "http://localhost", fields: Record<string, string> = {}) {
     const url = new URL("http://localhost/api/flows");
     return action({
       request: new Request(url, {
         method: "POST",
         headers: { host: "localhost", origin, "content-type": "application/json" },
-        body: JSON.stringify({ intent, projectId: source.projectId, runId: source.runId }),
+        body: JSON.stringify({ intent, projectId: source.projectId, runId: source.runId, ...fields }),
       }),
       url,
       params: {},
@@ -111,7 +114,21 @@ describe("Flow progress projection and import", () => {
     expect(fs.readFileSync(ledger, "utf8")).toBe(prefix);
   });
 
-  it("counts and rejects malformed, foreign and illegal lines with no partial import", async () => {
+  it("refuses to project a missing project or run without creating directories", async () => {
+    const missing = await post("project");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ ok: false, error: "Flow run not found." });
+    expect(fs.existsSync(source.dataRoot!)).toBe(false);
+
+    planAndApprove();
+    const flowsRoot = path.join(source.dataRoot!, "flows");
+    expect((await post("project", "http://localhost", { projectId: "project-typo" })).status).toBe(404);
+    expect((await post("project", "http://localhost", { runId: "run-typo" })).status).toBe(404);
+    expect(fs.readdirSync(flowsRoot)).toEqual([source.projectId]);
+    expect(fs.existsSync(path.dirname(ledger))).toBe(false);
+  });
+
+  it("counts and rejects malformed, foreign and illegal lines without creating a project", async () => {
     planAndApprove();
     projectFlowProgress(source);
     const [genesis, approval] = fs.readFileSync(ledger, "utf8").split("\n");
@@ -128,13 +145,100 @@ describe("Flow progress projection and import", () => {
       const rejected = await post("import");
       expect(rejected.status).toBe(422);
       expect(await rejected.json()).toMatchObject({ ok: false, rejectedLines });
-      const store = openFlowsStore(destination.projectId, { dataRoot: destination.dataRoot, readonly: true });
-      try {
-        expect(store.getRun(destination.runId)).toBeNull();
-        expect(store.getPinnedFlow(event.data.flowHash)).toBeNull();
-      } finally {
-        store.close();
-      }
+      expect(fs.existsSync(destination.dataRoot!)).toBe(false);
+    }
+
+    fs.writeFileSync(ledger, genesis + "\n" + approval + "\n");
+    fs.writeFileSync(path.join(path.dirname(ledger), "flow.yaml"), flowYaml + "\n");
+    const wrongPin = await post("import");
+    expect(wrongPin.status).toBe(422);
+    expect(await wrongPin.json()).toMatchObject({ error: "The flow definition does not match the ledger pin." });
+    expect(fs.existsSync(destination.dataRoot!)).toBe(false);
+  });
+
+  it("refuses approval of an imported planned run", async () => {
+    const { flowHash } = planRun({ ...source, flowYaml });
+    projectFlowProgress(source);
+    importFlowProgress(destination);
+    vi.stubEnv("FLOWS_DATA_ROOT", destination.dataRoot);
+
+    const approval = await post("approve", "http://localhost", { flowHash });
+    expect(approval.status).toBe(409);
+    expect(await approval.json()).toEqual({ ok: false, error: "Imported flow runs are read-only." });
+    expect(readFlowCardStream(destination.projectId, destination.runId, { dataRoot: destination.dataRoot })?.eventCount).toBe(1);
+  });
+
+  it("refuses to answer an open decision on an imported run", async () => {
+    const decisionYaml = `flow: test-decision
+version: 1
+steps:
+  - id: review
+    type: decision
+    always: decide
+    title: Approve the result?
+    options:
+      - key: ship
+        label: Ship
+        end: done
+      - key: stop
+        label: Stop
+        end: stopped
+`;
+    const { flowHash } = planRun({ ...source, flowYaml: decisionYaml });
+    projectFlowProgress(source);
+    fs.writeFileSync(path.join(path.dirname(ledger), "flow.yaml"), decisionYaml);
+    importFlowProgress(destination);
+    // A planned run has no attempt on which to record an unknown handoff.
+    // This reaches the runner's read-only guard without attempting a write.
+    expect(() => submitHandoffReturn({
+      ...destination, handoffId: "unknown-handoff", choiceKey: "ship", actor: "human", actorId: "operator-1",
+    })).toThrow(ImportedFlowReadOnlyError);
+
+    approveRun({ ...source, flowHash, actorId: "operator-1" });
+    const paused = await runFlow(source.projectId, source.runId, { dataRoot: source.dataRoot });
+    expect(paused.finalStatus).toBe("waiting_decision");
+    const { state } = loadRunState(source.projectId, source.runId, { dataRoot: source.dataRoot });
+    const handoffId = state.activeHandoff!.handoffId;
+    projectFlowProgress(source);
+    importFlowProgress(destination);
+    vi.stubEnv("FLOWS_DATA_ROOT", destination.dataRoot);
+
+    const decision = await post("decide", "http://localhost", { handoffId, choiceKey: "ship" });
+    expect(decision.status).toBe(409);
+    expect(await decision.json()).toEqual({ ok: false, error: "Imported flow runs are read-only." });
+    expect(readFlowCardStream(destination.projectId, destination.runId, { dataRoot: destination.dataRoot })?.eventCount)
+      .toBe(paused.eventCount);
+  });
+
+  it("imports an identical repeated artefact receipt and rejects conflicting repeats", async () => {
+    planAndApprove();
+    await runFlow(source.projectId, source.runId, {
+      dataRoot: source.dataRoot, getStubAgentBytes: () => Buffer.from("fixture payload"),
+    });
+    projectFlowProgress(source);
+    const lines = fs.readFileSync(ledger, "utf8").trimEnd().split("\n");
+    const receiptIndex = lines.findIndex((line) => JSON.parse(line).type === "artefact_recorded");
+    expect(receiptIndex).toBeGreaterThanOrEqual(0);
+    const receiptLine = lines[receiptIndex]!;
+    const receipt: FlowArtefactRecordedEvent = JSON.parse(receiptLine);
+    const prefix = lines.slice(0, receiptIndex + 1).join("\n") + "\n";
+    const repeated = {
+      ...receipt, eventId: "repeat-receipt", seq: receipt.seq + 1,
+      prev: createHash("sha256").update(receiptLine).digest("hex"),
+    };
+
+    fs.writeFileSync(ledger, prefix + canonicalJsonStringify(repeated) + "\n");
+    expect(importFlowProgress(destination)).toEqual({ insertedLines: repeated.seq, rejectedLines: 0 });
+
+    for (const conflict of [
+      { ...repeated, stepId: "verify" },
+      { ...repeated, attemptId: "other-attempt" },
+      { ...repeated, data: { ...receipt.data, sha256: "b".repeat(64) } },
+      { ...repeated, data: { ...receipt.data, sizeBytes: receipt.data.sizeBytes + 1 } },
+    ]) {
+      fs.writeFileSync(ledger, prefix + canonicalJsonStringify(conflict) + "\n");
+      expect(() => importFlowProgress({ ...destination, projectId: "other-project" }))
+        .toThrow(/Invalid flow transition/);
     }
   });
 

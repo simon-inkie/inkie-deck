@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { hasFlowSecretMarker } from "./checks.server.js";
 import { acquireOwnerLock, assertSafeRegularFileInDirFd, openConfinedDirFd } from "./owner.server.js";
+import { FlowRunNotFoundError, listFlowRuns } from "./reader.server.js";
 import { FlowProjectionError, openFlowsStore } from "./store.server.js";
 import { FlowIdRegex } from "./types.js";
 
@@ -80,6 +81,9 @@ export function projectFlowProgress(target: FlowProjectionTarget): { appendedLin
   const { projectId, runId, dataRoot } = target;
   const projectRoot = path.resolve(target.projectRoot);
   const relative = `${ledgerDirectory(runId)}/${ledgerName}`;
+  if (!listFlowRuns(projectId, { dataRoot }).some((run) => run.runId === runId)) {
+    throw new FlowRunNotFoundError(projectId, runId);
+  }
   const lock = acquireOwnerLock(projectId, dataRoot);
   try {
     const store = openFlowsStore(projectId, { dataRoot, readonly: true });

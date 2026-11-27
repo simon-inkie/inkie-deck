@@ -26,7 +26,7 @@ import {
 } from "./library.server.js";
 import { loadRunState } from "./load-run.server.js";
 import { projectFlowProgress } from "./projection.server.js";
-import { InvalidFlowQueryError, listFlowRuns } from "./reader.server.js";
+import { FlowRunNotFoundError, InvalidFlowQueryError, listFlowRuns } from "./reader.server.js";
 import { approveRun, planRun, runFlow, submitHandoffReturn, type RunFlowResult } from "./runner.server.js";
 import { FlowIdRegex } from "./types.js";
 import { validateFlowYaml } from "./validator.js";
@@ -38,16 +38,6 @@ export class FlowNotApprovedError extends Error {
   ) {
     super(`Flow run '${runId}' is not approved for execution.`);
     this.name = "FlowNotApprovedError";
-  }
-}
-
-export class FlowRunNotFoundError extends Error {
-  constructor(
-    public readonly projectId: string,
-    public readonly runId: string,
-  ) {
-    super(`Flow run '${runId}' not found for project '${projectId}'.`);
-    this.name = "FlowRunNotFoundError";
   }
 }
 

@@ -59,6 +59,11 @@ same body with `"intent":"import"` there. Import needs the identical
 definition bytes from the flow library or a supplied `flow.yaml` alongside
 the ledger. Open the run under `/flows` to inspect the imported history.
 
+## Known limits
+
+An older Deck version using the same data root ignores the imported-run
+marker and can start an imported run if its recorded history permits it.
+
 ## Log
 
 ### 2026-11-26: Define the projection and import contract
@@ -83,5 +88,18 @@ the ledger. Open the run under `/flows` to inspect the imported history.
 - Verification: four new projection tests, eleven Flows UI tests and eight
   store tests passed. Flows fixtures used a temporary directory outside the
   sandbox's Git-marked default temporary root.
+- Supersedes: nothing, additive.
+- Commits: working tree.
+
+### 2026-11-27: Scoped projection, import and ACP follow-ups
+
+- What changed: check for a run before projection takes ownership, validate
+  imports before creating a store for a new project, accept identical
+  artefact receipts, and preserve the previous ACP ID until atomic replacement.
+- Why: avoid writes on rejected requests and preserve the ACP checkpoint
+  across an interrupted publication. Cover imported-run write refusals and
+  record the downgrade limitation.
+- Verification: the focused ACP and projection suites could not start
+  because the sandbox mounted their temporary directory read-only.
 - Supersedes: nothing, additive.
 - Commits: working tree.

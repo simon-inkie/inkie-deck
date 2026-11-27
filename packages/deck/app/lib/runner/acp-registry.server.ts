@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
+  copyFileSync,
   fstatSync,
   lstatSync,
   openSync,
@@ -354,6 +355,21 @@ function stageCheckpointFile(tmp: string, bytes: Buffer): string {
   }
 }
 
+function stageReboundSidecar(sidecar: string, output: string, original: Stats, copy: Stats): boolean {
+  const stored = readCheckpointFile(sidecar);
+  if (!stored) return false;
+  let parsed: { checkpointKey?: string } | null;
+  try {
+    parsed = JSON.parse(stored.text);
+  } catch {
+    return false;
+  }
+  const binding = checkpointBinding(original);
+  if (parsed?.checkpointKey !== binding && parsed?.checkpointKey !== `${binding}:${original.ctimeMs}`) return false;
+  stageCheckpointFile(output, Buffer.from(JSON.stringify({ ...parsed, checkpointKey: checkpointBinding(copy) }) + "\n"));
+  return true;
+}
+
 /** Publish a checkpoint the original Antigravity reader can still load. */
 function writeStoredCheckpoint(
   home: string,
@@ -375,6 +391,8 @@ function writeStoredCheckpoint(
     const tmpSidecar = `${sidecar}.tmp.${suffix}`;
     const previousId = `${file}.previous.${suffix}`;
     const previousSidecar = `${sidecar}.previous.${suffix}`;
+    const reboundSidecar = `${sidecar}.rollback.${suffix}`;
+    let rollbackFailed = false;
     try {
       const checkpointKey = stageCheckpointFile(tmp, Buffer.from(sessionId + "\n", "utf8"));
       const bytes = Buffer.from(JSON.stringify({
@@ -386,25 +404,33 @@ function writeStoredCheckpoint(
       stageCheckpointFile(tmpSidecar, bytes);
       if (expected && readStoredSession(home)?.fileKey !== expected.fileKey) return;
 
+      // Keep the canonical ID in place until the atomic rename. Restore
+      // bound evidence against the copy's inode if the new ID is installed.
+      let hasReboundSidecar = false;
+      if (idStat) {
+        copyFileSync(file, previousId, fsConstants.COPYFILE_EXCL);
+        if (sidecarStat) {
+          hasReboundSidecar = stageReboundSidecar(sidecar, reboundSidecar, idStat, lstatSync(previousId));
+        }
+      }
+
       // Retire stale evidence before replacing the ID because older readers
       // do not check the binding. An interrupted publication fails closed.
       if (sidecarStat) renameSync(sidecar, previousSidecar);
-      let savedId = false;
       let installedId = false;
       try {
-        if (idStat) {
-          renameSync(file, previousId);
-          savedId = true;
-        }
         renameSync(tmp, file);
         installedId = true;
         renameSync(tmpSidecar, sidecar);
       } catch (error) {
         try {
-          if (savedId) renameSync(previousId, file);
-          else if (installedId) unlinkSync(file);
-          if (sidecarStat) renameSync(previousSidecar, sidecar);
+          if (installedId) {
+            if (idStat) renameSync(previousId, file);
+            else unlinkSync(file);
+          }
+          if (sidecarStat) renameSync(installedId && hasReboundSidecar ? reboundSidecar : previousSidecar, sidecar);
         } catch (rollbackError) {
+          rollbackFailed = true;
           throw new CheckpointPublicationError("Could not restore the previous ACP session checkpoint.", { cause: rollbackError });
         }
         if (installedId) {
@@ -412,11 +438,10 @@ function writeStoredCheckpoint(
         }
         throw error;
       }
-      for (const previous of [previousId, previousSidecar]) {
-        try { unlinkSync(previous); } catch { /* ignore cleanup error */ }
-      }
     } finally {
-      for (const staged of [tmp, tmpSidecar]) {
+      const stagedFiles = [tmp, tmpSidecar];
+      if (!rollbackFailed) stagedFiles.push(previousId, previousSidecar, reboundSidecar);
+      for (const staged of stagedFiles) {
         try { unlinkSync(staged); } catch { /* ignore cleanup error */ }
       }
     }

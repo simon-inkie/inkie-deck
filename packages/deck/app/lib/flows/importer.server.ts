@@ -3,7 +3,7 @@ import { hasFlowSecretMarker } from "./checks.server.js";
 import { loadFlowDefinition } from "./library.server.js";
 import { acquireOwnerLock } from "./owner.server.js";
 import { ledgerName, maxLedgerLines, openProjectionDirectory, readProjectionFile, type FlowProjectionTarget } from "./projection.server.js";
-import { FlowProjectionError, openFlowsStore } from "./store.server.js";
+import { FlowProjectionError, openFlowsStore, prepareFlowProjection } from "./store.server.js";
 
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const maxDefinitionBytes = 1024 * 1024;
@@ -39,20 +39,20 @@ export function importFlowProgress(target: FlowProjectionTarget): { insertedLine
   try {
     const ledger = readProjectionFile(dirFd, ledgerName);
     if (!ledger) throw new FlowProjectionError("The flow ledger file is missing.");
-    const lines = decodeLedger(ledger);
+    const projection = prepareFlowProjection(projectId, runId, decodeLedger(ledger), (plan) => {
+      const pin = readProjectionFile(dirFd, "flow.yaml", maxDefinitionBytes);
+      if (pin) return pin;
+      try {
+        return Buffer.from(loadFlowDefinition(plan.data.flowRef, { projectRoot, dataRoot, maxDefinitionBytes }).yaml);
+      } catch {
+        throw new FlowProjectionError("The pinned flow definition could not be found.", 1);
+      }
+    }, dataRoot);
     const lock = acquireOwnerLock(projectId, dataRoot);
     try {
       const store = openFlowsStore(projectId, { dataRoot, ownerLock: lock });
       try {
-        return store.importProjection(runId, lines, (plan) => {
-          const pin = readProjectionFile(dirFd, "flow.yaml", maxDefinitionBytes);
-          if (pin) return pin;
-          try {
-            return Buffer.from(loadFlowDefinition(plan.data.flowRef, { projectRoot, dataRoot, maxDefinitionBytes }).yaml);
-          } catch {
-            throw new FlowProjectionError("The pinned flow definition could not be found.", 1);
-          }
-        });
+        return store.importProjection(projection);
       } finally {
         store.close();
       }

@@ -44,6 +44,16 @@ export class InvalidFlowQueryError extends Error {
   }
 }
 
+export class FlowRunNotFoundError extends Error {
+  constructor(
+    public readonly projectId: string,
+    public readonly runId: string,
+  ) {
+    super(`Flow run '${runId}' not found for project '${projectId}'.`);
+    this.name = "FlowRunNotFoundError";
+  }
+}
+
 export class FlowIntegrityError extends Error {
   constructor(message = "Flow ledger failed integrity verification.", options?: ErrorOptions) {
     super(message, options);
