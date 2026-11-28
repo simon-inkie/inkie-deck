@@ -58,6 +58,13 @@ the recorded result in the stream.
   catalogue, approval, origin, latest-choice, eligibility, stream and
   sequence checks individually, then restore each edit.
 
+## Follow-ups
+
+- R1-1: A crash between `handoff_sent` and the marked return shows live buttons. Append the marked return in the same chained batch or narrow the F3 resume sentence.
+- R1-3: Saving a pre-answer is last-write-wins on retry. Send the expected saved sequence and refuse if the latest differs.
+- R1-4: Require `step_started` occurrence to equal `max + 1` in the transition rule.
+- R1-5: Add isolated refusal tests for saves after Start, non-human actors, return choice and resolution mismatches, and token and rewind ceilings.
+
 ## Progress log
 
 ### 2026-11-28: Define planning and application

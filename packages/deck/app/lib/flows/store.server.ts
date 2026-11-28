@@ -669,6 +669,7 @@ interface TransitionContext {
     optionKeys: string[];
     alwaysDecide: boolean;
     target: string;
+    expiresAt?: string;
   } | null;
   closedHandoffIds: Set<string>;
   returnedHandoffByAttempt: Map<
@@ -1200,6 +1201,7 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
       const saved = step && selectPreanswer({
         step,
         handoff: ctx.openHandoff,
+        now: ev.at,
         events: ctx.events,
         budgetRemaining: {
           steps: ctx.budgetStepsRemaining ?? 0,
@@ -2592,6 +2594,7 @@ class FlowsStoreImpl {
           optionKeys: [...ev.data.optionKeys],
           alwaysDecide: ev.data.alwaysDecide ?? false,
           target: ev.data.target,
+          expiresAt: ev.data.expiresAt,
         };
         ctx.hasPendingDecide = true;
         ctx.pendingDecideAttemptKey = k;

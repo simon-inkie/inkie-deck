@@ -114,14 +114,20 @@ export function collectPlanningDecisions(flow: FlowDefinition) {
   return flow.steps.flatMap((step) => getPlanningDecision(step) ?? []);
 }
 
+function normaliseTimestamp(timestamp: string): string {
+  return timestamp.replace(/(?:\.(\d{1,6}))?Z$/, (_, fraction: string = "") => `.${fraction.padEnd(6, "0")}Z`);
+}
+
 export function selectPreanswer(params: {
   step: FlowStep;
-  handoff: Pick<ActiveHandoffState, "stepId" | "attemptId" | "kind" | "alwaysDecide" | "optionKeys">;
+  handoff: Pick<ActiveHandoffState, "stepId" | "attemptId" | "kind" | "alwaysDecide" | "optionKeys" | "expiresAt">;
+  now: string;
   events: readonly FlowEvent[];
   budgetRemaining: { steps: number; tokens: number };
   rewindsRemaining: number;
 }): FlowPreanswerGivenEvent | undefined {
-  const { step, handoff, events, budgetRemaining } = params;
+  const { step, handoff, now, events, budgetRemaining } = params;
+  if (handoff.expiresAt && normaliseTimestamp(now) >= normaliseTimestamp(handoff.expiresAt)) return undefined;
   if (handoff.kind !== "decision" || step.id !== handoff.stepId) return undefined;
   if (handoff.alwaysDecide || (step.type === "decision" && step.always === "decide")) return undefined;
   if (budgetRemaining.steps <= 0 || budgetRemaining.tokens <= 0) return undefined;

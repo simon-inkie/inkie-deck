@@ -42,6 +42,20 @@ steps:
         goto: build
 `;
 
+const expiringDecisionYaml = `flow: expiring-decision
+version: 1
+on_unanswered:
+  after_hours: 1
+  outcome: stop
+steps:
+  - id: review
+    type: decision
+    options:
+      - key: ship
+        end: done
+`;
+const openTime = () => new Date("2026-11-28T10:00:00.000Z");
+
 const projectId = "preanswer-project";
 const runId = "preanswer-run";
 const actorId = "operator-1";
@@ -137,6 +151,28 @@ describe("planning pre-answers", () => {
     expect(markedReturns(read().events)).toHaveLength(1);
   });
 
+  it("uses on_unanswered when an open decision with a saved answer reaches expiry", async () => {
+    prepare(expiringDecisionYaml);
+    save("review", "ship");
+
+    await expect(runFlow(projectId, runId, {
+      dataRoot, now: openTime, onCrashPoint: crashAt("K_AFTER_HANDOFF_SENT"),
+    })).rejects.toThrow("K_AFTER_HANDOFF_SENT");
+    const handoff = read().state.activeHandoff!;
+    expect(handoff.expiresAt).toBe("2026-11-28T11:00:00.000Z");
+
+    await expect(runFlow(projectId, runId, {
+      dataRoot, now: () => new Date(handoff.expiresAt!),
+    })).resolves.toMatchObject({
+      finalStatus: "stopped", terminalOutcome: "stopped", terminalReason: "unanswered_expired",
+    });
+    const { events } = read();
+    expect(events.filter((event) => event.type === "handoff_returned")).toMatchObject([
+      { data: { handoffId: handoff.handoffId, resolution: "expired" } },
+    ]);
+    expect(markedReturns(events)).toHaveLength(0);
+  });
+
   it("asks live at the hard step ceiling even with a matching pre-answer", async () => {
     prepare(flowYaml.replace("steps: 20", "steps: 3"));
     save("review", "ship");
@@ -168,6 +204,7 @@ describe("planning pre-answers", () => {
     expect(selectPreanswer({
       step: flow.steps.find((step) => step.id === "review")!,
       handoff: state.activeHandoff!,
+      now: events.at(-1)!.at,
       events: candidates,
       budgetRemaining: state.budgetRemaining,
       rewindsRemaining: 6,
@@ -197,6 +234,7 @@ describe("planning pre-answers", () => {
         stepId: "build", attemptId: intent!.attemptId, kind: "decision",
         optionKeys: ["continue", "retry", "stop"], alwaysDecide: false,
       },
+      now: events.at(-1)!.at,
       events,
       budgetRemaining: state.budgetRemaining,
       rewindsRemaining: 6,
@@ -247,6 +285,30 @@ describe("planning pre-answers", () => {
       expect(markedReturns(events)).toHaveLength(0);
       expect(state.activeHandoff).toMatchObject({ stepId: "verify", optionKeys: ["retry", "stop"] });
     }
+  });
+
+  it("rejects an imported marked return dated after the handoff expires", async () => {
+    prepare(expiringDecisionYaml);
+    save("review", "ship");
+    await expect(runFlow(projectId, runId, { dataRoot, now: openTime })).resolves.toMatchObject({
+      finalStatus: "finished", terminalOutcome: "done",
+    });
+
+    const { events } = read();
+    const [returned] = markedReturns(events);
+    const lateReturn = { ...returned!, at: "2026-11-28T11:00:00.000001Z" };
+    // End the ledger at the edited return so all previous hashes stay valid.
+    const lines = [...events.slice(0, lateReturn.seq - 1), lateReturn].map(canonicalJsonStringify);
+    const projectRoot = path.join(scratch, "checkout");
+    const ledgerDir = path.join(projectRoot, ".deck", "runs", runId);
+    fs.mkdirSync(ledgerDir, { recursive: true });
+    fs.writeFileSync(path.join(ledgerDir, "flow.yaml"), expiringDecisionYaml);
+    fs.writeFileSync(path.join(ledgerDir, "events.jsonl"), lines.join("\n") + "\n");
+
+    const importedRoot = path.join(scratch, "imported");
+    expect(() => importFlowProgress({ projectRoot, projectId, runId, dataRoot: importedRoot }))
+      .toThrow(`Invalid flow transition at ledger line ${lateReturn.seq}.`);
+    expect(fs.existsSync(importedRoot)).toBe(false);
   });
 
   it("imports the canonical marked return as read-only and rejects a forged sequence", async () => {

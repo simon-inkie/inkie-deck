@@ -1179,8 +1179,9 @@ export async function runFlow(
       if (!handoff || !state.preanswers?.[handoff.stepId]) return;
       const step = flow.steps.find((candidate) => candidate.id === handoff.stepId);
       if (!step) return;
+      const at = nowIso();
       const saved = selectPreanswer({
-        step, handoff, events, budgetRemaining: state.budgetRemaining,
+        step, handoff, now: at, events, budgetRemaining: state.budgetRemaining,
         rewindsRemaining: resolveFlowLimits(flow).maxRewinds - state.rewindsUsed,
       });
       if (!saved) return;
@@ -1197,7 +1198,7 @@ export async function runFlow(
         seq: head.seq + 1,
         eventId: nextEventId("ev_ret", head.seq + 1),
         prev: head.hash,
-        at: nowIso(),
+        at,
         actor: "runner",
         type: "handoff_returned",
         stepId: handoff.stepId,
