@@ -47,6 +47,7 @@ import {
   type OwnerLock,
 } from "./owner.server.js";
 import { resolveFlowLimits } from "./engine.js";
+import { getPlanningDecision, selectPreanswer } from "./decisions.js";
 import { resolvePinnedBudget, resolvePinnedCheckTarget, type ResolvedCheckTarget } from "./replay.js";
 
 // Track open SQLite connections per canonical flows.db path so we never open/close a raw fd
@@ -762,6 +763,20 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
     }
   },
 
+  preanswer_given(ctx, ev) {
+    if (!ctx.hasApproved || ctx.hasStarted) {
+      throw new IllegalFlowTransitionError(ctx.runId, "A pre-answer requires an approved run that has not started");
+    }
+    if (ev.actor !== "human") {
+      throw new IllegalFlowTransitionError(ctx.runId, "Only a human can save a pre-answer");
+    }
+    const step = ctx.stepById.get(ev.data.stepId);
+    const question = step && getPlanningDecision(step);
+    if (!question || question.liveOnly || !question.options.some((option) => option.key === ev.data.choiceKey)) {
+      throw new IllegalFlowTransitionError(ctx.runId, "Choice is not offered for pre-answering on the pinned step");
+    }
+  },
+
   run_started(ctx, ev) {
     if (!ctx.hasApproved) {
       throw new IllegalFlowTransitionError(ctx.runId, "run_started requires flow_approved first");
@@ -1179,6 +1194,24 @@ const TRANSITION_TABLE: { [K in FlowEvent["type"]]: TransitionRule<K> } = {
         ctx.runId,
         `handoff_returned step/attempt '${ev.stepId}:${ev.attemptId}' mismatches open handoff '${ctx.openHandoff.stepId}:${ctx.openHandoff.attemptId}'`
       );
+    }
+    if (ev.data.preanswerSeq !== undefined) {
+      const step = ctx.stepById.get(ev.stepId);
+      const saved = step && selectPreanswer({
+        step,
+        handoff: ctx.openHandoff,
+        events: ctx.events,
+        budgetRemaining: {
+          steps: ctx.budgetStepsRemaining ?? 0,
+          tokens: ctx.budgetTokensRemaining ?? 0,
+        },
+        rewindsRemaining: resolveFlowLimits(ctx.pinnedFlow).maxRewinds - ctx.rewindsUsed,
+      });
+      if (!saved || saved.seq !== ev.data.preanswerSeq ||
+          ev.data.resolution !== "answered" || ev.actor !== "runner" ||
+          ev.data.choiceKey !== saved.data.choiceKey || ev.data.actorId !== saved.data.actorId) {
+        throw new IllegalFlowTransitionError(ctx.runId, "Return does not match an eligible saved pre-answer");
+      }
     }
     if (ctx.openHandoff.alwaysDecide) {
       if (
@@ -1833,6 +1866,37 @@ class FlowsStoreImpl {
       assertActiveOwnerLock(this.#ownerLock, this.projectId, this.projectDir);
       return res;
     });
+  }
+
+  public recordPreanswer(params: {
+    runId: string;
+    flowHash: string;
+    stepId: string;
+    choiceKey: string;
+    actorId: string;
+  }): AppendResult {
+    const { runId, flowHash, stepId, choiceKey, actorId } = params;
+    this.#assertWritableAndOwned(runId);
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`Flow run '${runId}' not found`);
+    if (run.flow_hash !== flowHash) {
+      throw new IllegalFlowTransitionError(runId, "Pre-answer flowHash does not match pinned flow_hash");
+    }
+    return this.appendChainedBatch(runId, [
+      (seq, prev) => ({
+        event: {
+          v: 1,
+          runId,
+          seq,
+          eventId: `ev_preanswer_${seq}`,
+          prev,
+          at: new Date().toISOString(),
+          actor: "human",
+          type: "preanswer_given",
+          data: { stepId, choiceKey, actorId },
+        },
+      }),
+    ])[0]!;
   }
 
   public createAndApproveRun(params: {

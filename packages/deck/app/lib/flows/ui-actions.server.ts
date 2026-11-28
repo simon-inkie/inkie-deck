@@ -25,10 +25,12 @@ import {
   type FlowLibraryOptions,
 } from "./library.server.js";
 import { loadRunState } from "./load-run.server.js";
+import { acquireOwnerLock } from "./owner.server.js";
 import { projectFlowProgress } from "./projection.server.js";
 import { FlowRunNotFoundError, InvalidFlowQueryError, listFlowRuns } from "./reader.server.js";
 import { approveRun, planRun, runFlow, submitHandoffReturn, type RunFlowResult } from "./runner.server.js";
-import { FlowIdRegex } from "./types.js";
+import { openFlowsStore } from "./store.server.js";
+import { FlowIdRegex, FlowSha256Regex } from "./types.js";
 import { validateFlowYaml } from "./validator.js";
 
 export class FlowNotApprovedError extends Error {
@@ -369,6 +371,41 @@ export function approveFlowFromUi(params: ApproveFlowFromUiParams): ApproveFlowF
       throw new FlowRunNotFoundError(projectId, runId);
     }
     throw err;
+  }
+}
+
+export function saveFlowPreanswerFromUi(params: {
+  projectId: string;
+  runId: string;
+  flowHash: string;
+  stepId: string;
+  choiceKey: string;
+  dataRoot?: string;
+}) {
+  const projectId = assertValidId(params.projectId, "flow project id");
+  const runId = assertValidId(params.runId, "flow run id");
+  const stepId = assertValidId(params.stepId, "stepId");
+  const choiceKey = assertValidId(params.choiceKey, "choiceKey");
+  if (!FlowSha256Regex.test(params.flowHash)) {
+    throw new InvalidFlowUiActionError("A valid pinned flow hash is required.");
+  }
+  if (!listFlowRuns(projectId, { dataRoot: params.dataRoot }).some((run) => run.runId === runId)) {
+    throw new FlowRunNotFoundError(projectId, runId);
+  }
+
+  const lock = acquireOwnerLock(projectId, params.dataRoot);
+  try {
+    const store = openFlowsStore(projectId, { dataRoot: params.dataRoot, ownerLock: lock });
+    try {
+      const { seq } = store.recordPreanswer({
+        runId, flowHash: params.flowHash, stepId, choiceKey, actorId: "operator-1",
+      });
+      return { runId, stepId, choiceKey, seq };
+    } finally {
+      store.close();
+    }
+  } finally {
+    lock.release();
   }
 }
 

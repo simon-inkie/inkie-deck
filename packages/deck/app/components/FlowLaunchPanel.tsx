@@ -6,12 +6,13 @@
  * ASCII only - no em-dashes.
  */
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useLocation, useNavigate, useRevalidator } from "react-router";
 import { AlertTriangle, FileDiff, Play, Plus, ShieldCheck } from "lucide-react";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Select } from "./ui/select";
 import type {
   FlowCardStreamView,
   FlowLaunchCatalog,
@@ -476,7 +477,8 @@ export interface FlowRunApprovalBarProps {
 export function FlowRunApprovalBar({ stream, catalog }: FlowRunApprovalBarProps) {
   const location = useLocation();
   const revalidator = useRevalidator();
-  const [busyAction, setBusyAction] = useState<"approve" | "start" | null>(null);
+  const [busyAction, setBusyAction] = useState<"approve" | "preanswer" | "start" | null>(null);
+  const actionInFlight = useRef(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const navState = (location.state ?? null) as {
@@ -495,14 +497,24 @@ export function FlowRunApprovalBar({ stream, catalog }: FlowRunApprovalBarProps)
     return matchedDraft?.diffFromTemplate ?? null;
   }, [navState, stream.runId, stream.planningCard.flowHash, catalog]);
 
-  if (stream.runStatus !== "planned" && stream.runStatus !== "approved") {
+  if (stream.readOnly || (stream.runStatus !== "planned" && stream.runStatus !== "approved")) {
     return null;
   }
+  const canStart = stream.runStatus === "approved" && stream.planningCard.approved;
+  const preanswerableQuestions = stream.planningDecisions?.filter((question) => !question.liveOnly) ?? [];
 
-  async function handleApprove() {
-    if (busyAction) return;
+  async function submitAction(
+    action: { intent: "approve" | "start" } | { intent: "preanswer"; stepId: string; choiceKey: string },
+  ) {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     setActionError(null);
-    setBusyAction("approve");
+    setBusyAction(action.intent);
+    const failureMessage = {
+      approve: "Could not approve flow run.",
+      preanswer: "Could not save pre-answer.",
+      start: "Could not start flow run.",
+    }[action.intent];
     try {
       const res = await fetch("/api/flows", {
         method: "POST",
@@ -511,57 +523,22 @@ export function FlowRunApprovalBar({ stream, catalog }: FlowRunApprovalBarProps)
           Accept: "application/json",
         },
         body: JSON.stringify({
-          intent: "approve",
+          ...action,
           projectId: stream.projectId,
           runId: stream.runId,
-          flowHash: stream.planningCard.flowHash,
+          ...(action.intent === "start" ? {} : { flowHash: stream.planningCard.flowHash }),
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-      };
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) {
-        setActionError(data.error ?? "Could not approve flow run.");
+        setActionError(data.error ?? failureMessage);
         return;
       }
-      revalidator.revalidate();
+      await revalidator.revalidate();
     } catch {
-      setActionError("Network error while approving flow run.");
+      setActionError(failureMessage);
     } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function handleStart() {
-    if (busyAction) return;
-    setActionError(null);
-    setBusyAction("start");
-    try {
-      const res = await fetch("/api/flows", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          intent: "start",
-          projectId: stream.projectId,
-          runId: stream.runId,
-        }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-      };
-      if (!res.ok || !data.ok) {
-        setActionError(data.error ?? "Could not start flow run.");
-        return;
-      }
-      revalidator.revalidate();
-    } catch {
-      setActionError("Network error while starting flow run.");
-    } finally {
+      actionInFlight.current = false;
       setBusyAction(null);
     }
   }
@@ -591,23 +568,57 @@ export function FlowRunApprovalBar({ stream, catalog }: FlowRunApprovalBarProps)
               size="sm"
               data-testid="flow-approve-button"
               disabled={busyAction !== null}
-              onClick={handleApprove}
+              onClick={() => submitAction({ intent: "approve" })}
             >
               {busyAction === "approve" ? "Approving..." : "Approve Flow"}
             </Button>
-          ) : (
+          ) : null}
+        </div>
+
+        {canStart && preanswerableQuestions.length > 0 ? (
+          <fieldset className="space-y-2" disabled={busyAction !== null}>
+            <legend className="mb-1 text-xs text-muted-foreground">Optional pre-answers</legend>
+            {preanswerableQuestions.map((question) => (
+              <form
+                key={`${stream.projectId}:${stream.runId}:${question.stepId}:${question.saved?.seq ?? 0}`}
+                className="flex flex-wrap items-end gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const select = event.currentTarget.elements.namedItem("choiceKey");
+                  if (select instanceof HTMLSelectElement && select.value) {
+                    void submitAction({ intent: "preanswer", stepId: question.stepId, choiceKey: select.value });
+                  }
+                }}
+              >
+                <label className="flex min-w-44 flex-col gap-1 text-xs">
+                  <span>{question.title}</span>
+                  <Select name="choiceKey" required defaultValue={question.saved?.choiceKey ?? ""}>
+                    <option value="" disabled>Choose an answer</option>
+                    {question.options.map((option) => (
+                      <option key={option.key} value={option.key}>{option.label}</option>
+                    ))}
+                  </Select>
+                </label>
+                <Button type="submit" size="sm" variant="outline">Save pre-answer</Button>
+              </form>
+            ))}
+          </fieldset>
+        ) : null}
+
+        {canStart ? (
+          <div className="flex justify-end">
             <Button
               type="button"
               size="sm"
               data-testid="flow-start-button"
               disabled={busyAction !== null}
-              onClick={handleStart}
+              onClick={() => submitAction({ intent: "start" })}
             >
               <Play className="size-3.5" aria-hidden="true" />
               <span>{busyAction === "start" ? "Starting..." : "Start Run"}</span>
             </Button>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         {matchedDraftDiff ? (
           <div>

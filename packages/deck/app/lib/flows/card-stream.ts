@@ -8,6 +8,7 @@
  * ASCII only - no em-dashes.
  */
 
+import { collectPlanningDecisions } from "./decisions.js";
 import { resolvePinnedBudget } from "./replay.js";
 import type {
   FlowDefinition,
@@ -17,6 +18,13 @@ import type {
 } from "./types.js";
 
 export type FlowStepCardState = "done" | "current" | "pending" | "failed";
+
+type PlanningDecision = ReturnType<typeof collectPlanningDecisions>[number];
+
+export interface FlowPlanningDecision extends PlanningDecision {
+  saved?: { choiceKey: string; seq: number };
+  applied?: { choiceKey: string; preanswerSeq: number };
+}
 
 export interface FlowPlanningCard {
   flowRef: string;
@@ -76,6 +84,7 @@ export interface FlowCardStreamView {
   terminalReason: string | null;
   budget: FlowBudgetSummary;
   planningCard: FlowPlanningCard;
+  planningDecisions?: FlowPlanningDecision[];
   stepCards: FlowStepCard[];
   activeDecision: {
     handoffId?: string;
@@ -294,6 +303,14 @@ export function projectFlowCardStream(params: {
     approved,
     expectedDecisions: state.runPlanned ? [...state.runPlanned.expectedDecisions] : [],
   };
+  const planningDecisions = collectPlanningDecisions(flow).map((question) => {
+    const answer = state.preanswers?.[question.stepId];
+    return {
+      ...question,
+      ...(answer ? { saved: answer.saved } : {}),
+      ...(answer?.applied ? { applied: answer.applied } : {}),
+    };
+  });
 
   const activeDecision = state.activeDecision
     ? {
@@ -325,6 +342,7 @@ export function projectFlowCardStream(params: {
       stepsTotal: pinnedBudget.steps,
     },
     planningCard,
+    planningDecisions,
     stepCards,
     activeDecision,
   };
