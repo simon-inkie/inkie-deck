@@ -67,6 +67,14 @@ export const FlowApprovedDataSchema = z
   })
   .strict();
 
+export const FlowPreanswerGivenDataSchema = z
+  .object({
+    stepId: FlowIdSchema,
+    choiceKey: FlowIdSchema,
+    actorId: FlowIdSchema,
+  })
+  .strict();
+
 // Major 4 (Round 12): Strict semver-only runnerVersion so callers cannot smuggle private text via version strings.
 export const FlowRunnerVersionSchema = z
   .string()
@@ -307,6 +315,7 @@ export const FlowHandoffReturnedDataSchema = z
     choiceKey: FlowIdSchema,
     resolution: z.enum(["answered", "dismissed", "expired"]),
     actorId: FlowIdSchema,
+    preanswerSeq: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -385,6 +394,11 @@ export const FlowRunPlannedEventSchema = RunLevelEnvelopeSchema.extend({
 export const FlowApprovedEventSchema = RunLevelEnvelopeSchema.extend({
   type: z.literal("flow_approved"),
   data: FlowApprovedDataSchema,
+}).strict();
+
+export const FlowPreanswerGivenEventSchema = RunLevelEnvelopeSchema.extend({
+  type: z.literal("preanswer_given"),
+  data: FlowPreanswerGivenDataSchema,
 }).strict();
 
 export const FlowRunStartedEventSchema = RunLevelEnvelopeSchema.extend({
@@ -485,6 +499,7 @@ export const FlowRunFinishedEventSchema = RunLevelEnvelopeSchema.extend({
 export const FlowEventSchema = z.discriminatedUnion("type", [
   FlowRunPlannedEventSchema,
   FlowApprovedEventSchema,
+  FlowPreanswerGivenEventSchema,
   FlowRunStartedEventSchema,
   FlowStepStartedEventSchema,
   FlowArtefactRecordedEventSchema,
@@ -511,6 +526,7 @@ export type FlowEventType = FlowEvent["type"];
 
 export type FlowRunPlannedEvent = z.infer<typeof FlowRunPlannedEventSchema>;
 export type FlowApprovedEvent = z.infer<typeof FlowApprovedEventSchema>;
+export type FlowPreanswerGivenEvent = z.infer<typeof FlowPreanswerGivenEventSchema>;
 export type FlowRunStartedEvent = z.infer<typeof FlowRunStartedEventSchema>;
 export type FlowStepStartedEvent = z.infer<typeof FlowStepStartedEventSchema>;
 export type FlowArtefactRecordedEvent = z.infer<typeof FlowArtefactRecordedEventSchema>;
@@ -671,6 +687,10 @@ export interface FlowRunState {
     options: FlowOption[];
   } | null;
   activeHandoff: ActiveHandoffState | null;
+  preanswers?: Record<string, {
+    saved: { choiceKey: string; seq: number };
+    applied?: { choiceKey: string; preanswerSeq: number };
+  }>;
   closedHandoffIds: string[];
   rewindsUsed: number;
   lastRewind: LastRewindState | null;

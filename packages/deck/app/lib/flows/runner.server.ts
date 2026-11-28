@@ -31,9 +31,9 @@ import {
   type FlowCommandCheckId,
   type ReproTestCommand,
 } from "./checks.server.js";
+import { collectPlanningDecisions, getHandoffSpecForStep, selectPreanswer } from "./decisions.js";
 import {
   evaluateStepJudgement,
-  getHandoffOptionKeys,
   resolveFlowLimits,
   type StepSignals,
 } from "./engine.js";
@@ -313,20 +313,6 @@ async function runWithTimeout<T>(
   }
 }
 
-function collectExpectedDecisions(flow: FlowDefinition): string[] {
-  const result: string[] = [];
-  for (const step of flow.steps) {
-    const isDecisionStep = step.type === "decision";
-    const hasDecideRule = Boolean(
-      step.rules?.some((ruleMap) => Object.values(ruleMap).includes("decide")),
-    );
-    if ((isDecisionStep || hasDecideRule) && !result.includes(step.id)) {
-      result.push(step.id);
-    }
-  }
-  return result;
-}
-
 /**
  * Plan a flow run without approving it (appends ONLY run_planned at seq 1).
  * The run cannot start until approveRun records a matching flow_approved event.
@@ -345,7 +331,7 @@ export function planRun(params: {
   expectedDecisions: string[];
 } {
   const { flow, hash } = parseFlowYamlOrThrow(params.flowYaml);
-  const expectedDecisions = collectExpectedDecisions(flow);
+  const expectedDecisions = collectPlanningDecisions(flow).map((decision) => decision.stepId);
 
   const lock = acquireOwnerLock(params.projectId, params.dataRoot);
   let store: FlowsStore | undefined;
@@ -423,7 +409,7 @@ export function planAndApproveRun(params: {
   dataRoot?: string;
 }): { flowHash: string; flow: FlowDefinition } {
   const { flow, hash } = parseFlowYamlOrThrow(params.flowYaml);
-  const expectedDecisions = flow.steps.filter((s) => s.type === "decision").map((s) => s.id);
+  const expectedDecisions = collectPlanningDecisions(flow).map((decision) => decision.stepId);
   const actorId = params.actorId ?? "operator-1";
   if (!FlowIdRegex.test(actorId)) {
     throw new Error(`Invalid actorId '${actorId}': must match ${FlowIdRegex.source}`);
@@ -458,83 +444,6 @@ function findHead(store: FlowsStore, runId: string): { seq: number; hash: string
   if (rows.length === 0) return { seq: 0, hash: "0".repeat(64) };
   const last = rows[rows.length - 1]!;
   return { seq: last.seq, hash: last.hash };
-}
-
-function getHandoffSpecForStep(
-  flow: FlowDefinition,
-  step: FlowStep,
-  outcome: "passed" | "failed" | "unknown",
-  reasonCode: FlowReasonCode,
-  nowDate: Date = new Date(),
-): {
-  kind: "decision" | "handoff";
-  target: string;
-  reasonCode: FlowReasonCode;
-  optionKeys: string[];
-  alwaysDecide?: boolean;
-  expiresAt?: string;
-  options: Array<{ key: string; label?: string; detail?: string }>;
-} {
-  const expiresAt = flow.on_unanswered?.after_hours
-    ? new Date(nowDate.getTime() + flow.on_unanswered.after_hours * 3600_000).toISOString()
-    : undefined;
-
-  if (step.type === "decision") {
-    return {
-      kind: "decision",
-      target: "operator",
-      reasonCode: "decision_required",
-      optionKeys: step.options.map((o) => o.key),
-      alwaysDecide: step.always === "decide" ? true : undefined,
-      expiresAt,
-      options: step.options.map((o) => ({
-        key: o.key,
-        label: o.label ?? o.key,
-        detail: o.end
-          ? `Ends run (${o.end})`
-          : o.goto
-            ? `Rewind to ${o.goto}`
-            : o.label ?? o.key,
-      })),
-    };
-  }
-
-  if (step.type === "handoff") {
-    const optionKeys = getHandoffOptionKeys(step);
-    return {
-      kind: "handoff",
-      target: step.to && FlowIdRegex.test(step.to) ? step.to : "reviewer",
-      reasonCode: "handoff_required",
-      optionKeys,
-      expiresAt,
-      options: optionKeys.map((k) => ({
-        key: k,
-        label: k.charAt(0).toUpperCase() + k.slice(1).replace(/[-_]/g, " "),
-        detail: step.on_return?.[k]?.goto ? `Rewind to ${step.on_return[k]!.goto}` : `Return ${k}`,
-      })),
-    };
-  }
-
-  const escalatedOptions =
-    outcome === "failed"
-      ? [
-          { key: "retry", label: "Retry", detail: "Rewind and retry step" },
-          { key: "stop", label: "Stop", detail: "Stop run" },
-        ]
-      : [
-          { key: "continue", label: "Continue", detail: "Approve and continue flow" },
-          { key: "retry", label: "Retry", detail: "Rewind and retry step" },
-          { key: "stop", label: "Stop", detail: "Stop run" },
-        ];
-
-  return {
-    kind: "decision",
-    target: "operator",
-    reasonCode,
-    optionKeys: escalatedOptions.map((o) => o.key),
-    expiresAt,
-    options: escalatedOptions,
-  };
 }
 
 function getOccurrenceForAttempt(
@@ -1258,6 +1167,68 @@ export async function runFlow(
     let events = loaded.events;
     let state = loaded.state;
 
+    const runStore = store;
+    const reloadRun = () => {
+      const reloaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+      events = reloaded.events;
+      state = reloaded.state;
+    };
+
+    const applyPendingPreanswer = () => {
+      const handoff = state.activeHandoff;
+      if (!handoff || !state.preanswers?.[handoff.stepId]) return;
+      const step = flow.steps.find((candidate) => candidate.id === handoff.stepId);
+      if (!step) return;
+      const at = nowIso();
+      const saved = selectPreanswer({
+        step, handoff, now: at, events, budgetRemaining: state.budgetRemaining,
+        rewindsRemaining: resolveFlowLimits(flow).maxRewinds - state.rewindsUsed,
+      });
+      if (!saved) return;
+      const sentEv = events.find(
+        (event): event is FlowHandoffSentEvent =>
+          event.type === "handoff_sent" && event.data.handoffId === handoff.handoffId,
+      );
+      if (!sentEv) return;
+
+      const head = findHead(runStore, runId);
+      const returnedEv: FlowHandoffReturnedEvent = {
+        v: 1,
+        runId,
+        seq: head.seq + 1,
+        eventId: nextEventId("ev_ret", head.seq + 1),
+        prev: head.hash,
+        at,
+        actor: "runner",
+        type: "handoff_returned",
+        stepId: handoff.stepId,
+        attemptId: handoff.attemptId,
+        data: {
+          handoffId: handoff.handoffId,
+          resolution: "answered",
+          choiceKey: saved.data.choiceKey,
+          actorId: saved.data.actorId,
+          preanswerSeq: saved.seq,
+        },
+      };
+      runStore.appendEvent(returnedEv);
+      fireCrash("K_AFTER_HANDOFF_RETURNED");
+      reloadRun();
+      return { sentEv, returnedEv };
+    };
+
+    const settleNewPreanswer = (stepId: string): boolean => {
+      if (!state.preanswers?.[stepId]) return false;
+      reloadRun();
+      const applied = applyPendingPreanswer();
+      if (!applied) return false;
+      completeHandoffFollowUp({
+        store: runStore, runId, flow, state, events, ...applied, nowIso: nowIso(), fireCrash,
+      });
+      reloadRun();
+      return true;
+    };
+
     // 1b. Idempotently replay any committed judgement(notify) notices to inbox
     const isTerminal = state.status === "finished" || state.status === "stopped";
     let notifyReplayErrors: NotifyReplayFailure[] = [];
@@ -1364,7 +1335,7 @@ export async function runFlow(
         }
       }
 
-      if (state.activeHandoff) {
+      if (state.activeHandoff && !applyPendingPreanswer()) {
         const active = state.activeHandoff;
         if (!options.inbox) {
           if (active.expiresAt && nowDate().getTime() >= Date.parse(active.expiresAt)) {
@@ -1945,7 +1916,9 @@ export async function runFlow(
             }),
           ]);
           fireCrash("K_AFTER_HANDOFF_SENT");
-          if (options.inbox) {
+          const applied = settleNewPreanswer(att.stepId);
+          if (applied && state.status === "running") continue;
+          if (!applied && options.inbox) {
             const tail = resBatch[resBatch.length - 1]!;
             const emitRes = await emitDecisionCardToInbox({
               target: options.inbox,
@@ -2487,7 +2460,13 @@ export async function runFlow(
           continue;
         }
 
-        if (options.inbox) {
+        const applied = settleNewPreanswer(step.id);
+        if (applied && state.status === "running") {
+          if (!state.nextStepId) cursor += 1;
+          continue;
+        }
+
+        if (!applied && options.inbox) {
           const emitRes = await emitDecisionCardToInbox({
             target: options.inbox,
             handoffId,
@@ -3022,7 +3001,7 @@ export async function runFlow(
                 { deadlineMs },
               );
               fireCrash("K_AFTER_HANDOFF_SENT");
-              if (options.inbox) {
+              if (!settleNewPreanswer(step.id) && options.inbox) {
                 const tail = resBatch[resBatch.length - 1]!;
                 const emitRes = await emitDecisionCardToInbox({
                   target: options.inbox,
@@ -3240,7 +3219,7 @@ export async function runFlow(
                 { deadlineMs },
               );
               fireCrash("K_AFTER_HANDOFF_SENT");
-              if (options.inbox) {
+              if (!settleNewPreanswer(step.id) && options.inbox) {
                 const tail = resBatch[resBatch.length - 1]!;
                 const emitRes = await emitDecisionCardToInbox({
                   target: options.inbox,
@@ -3514,7 +3493,7 @@ export async function runFlow(
               });
             } else if (decision.final === "decide") {
               fireCrash("K_AFTER_HANDOFF_SENT");
-              if (options.inbox) {
+              if (!settleNewPreanswer(step.id) && options.inbox) {
                 const tail = batchRes[batchRes.length - 1]!;
                 const handoffId = buildDeterministicHandoffId(runId, step.id, intent.occurrence);
                 const reason = decision.reasonCodes[0] ?? "decision_required";
@@ -3630,7 +3609,7 @@ export async function runFlow(
               }));
               const batchRes = store.appendChainedBatch(runId, checkBuilders, { deadlineMs });
               fireCrash("K_AFTER_HANDOFF_SENT");
-              if (options.inbox) {
+              if (!settleNewPreanswer(step.id) && options.inbox) {
                 const tail = batchRes[batchRes.length - 1]!;
                 const emitRes = await emitDecisionCardToInbox({
                   target: options.inbox,
@@ -3737,6 +3716,7 @@ export async function runFlow(
             },
           });
           const tsIso = nowIso();
+          let applied = false;
           if (timeoutDecision.final === "decide") {
             const handoffId = buildDeterministicHandoffId(runId, step.id, intent.occurrence);
             const spec = getHandoffSpecForStep(flow, step, "failed", "timeout", nowDate());
@@ -3771,7 +3751,8 @@ export async function runFlow(
               }),
             ]);
             fireCrash("K_AFTER_HANDOFF_SENT");
-            if (options.inbox) {
+            applied = settleNewPreanswer(step.id);
+            if (!applied && options.inbox) {
               const tail = resBatch[resBatch.length - 1]!;
               const emitRes = await emitDecisionCardToInbox({
                 target: options.inbox,
@@ -3812,18 +3793,21 @@ export async function runFlow(
               }),
             ]);
           }
-          store.checkpointPassive();
-          const finalLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
-          return {
-            runId,
-            finalStatus: finalLoaded.state.status,
-            terminalOutcome: finalLoaded.state.terminalOutcome,
-            terminalReason: finalLoaded.state.terminalReason,
-            dispatchedSteps,
-            eventCount: finalLoaded.events.length,
-          };
+          if (!applied || state.status !== "running") {
+            store.checkpointPassive();
+            const finalLoaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
+            return {
+              runId,
+              finalStatus: finalLoaded.state.status,
+              terminalOutcome: finalLoaded.state.terminalOutcome,
+              terminalReason: finalLoaded.state.terminalReason,
+              dispatchedSteps,
+              eventCount: finalLoaded.events.length,
+            };
+          }
+        } else {
+          throw err;
         }
-        throw err;
       } finally {
         if (activeWorktree) {
           try {

@@ -333,13 +333,37 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
               {stream.planningCard.flowHash.slice(0, 12)}
             </span>
           </div>
-          <div>
-            <span className="text-muted-foreground">Expected decisions: </span>
-            <span className="font-semibold text-foreground">
-              {stream.planningCard.expectedDecisions.length > 0
-                ? stream.planningCard.expectedDecisions.join(", ")
-                : "none"}
-            </span>
+          <div className="sm:col-span-2">
+            <span className="text-muted-foreground">Expected decisions</span>
+            {stream.planningDecisions?.length ? (
+              <ul className="mt-1 space-y-2">
+                {stream.planningDecisions.map((question) => {
+                  const answer = question.applied ?? question.saved;
+                  const choice = question.options.find((option) => option.key === answer?.choiceKey);
+                  return (
+                    <li key={question.stepId}>
+                      <span className="font-semibold">{question.title}</span>
+                      {question.liveOnly ? (
+                        <span className="text-muted-foreground"> (live decision)</span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {" | "}{question.options.map((option) => option.label).join(", ")}
+                          {question.conditional ? " (choices depend on outcome)" : ""}
+                        </span>
+                      )}
+                      {answer ? (
+                        <span className="block">
+                          {question.applied ? "Applied pre-answer" : "Saved pre-answer"}:{" "}
+                          {choice?.label ?? answer.choiceKey}
+                        </span>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <span className="font-semibold"> {stream.planningCard.expectedDecisions.join(", ") || "none"}</span>
+            )}
           </div>
         </CardContent>
       </Card>

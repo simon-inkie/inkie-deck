@@ -208,6 +208,12 @@ export function reduceFlowRun(
         break;
       }
 
+      case "preanswer_given": {
+        const preanswers = state.preanswers ??= Object.create(null) as NonNullable<FlowRunState["preanswers"]>;
+        preanswers[event.data.stepId] = { saved: { choiceKey: event.data.choiceKey, seq: event.seq } };
+        break;
+      }
+
       case "run_started": {
         // Major 3: budget comes ONLY from the pinned approved flow definition, never run_started.data.budget
         if (runStartedSeen) break;
@@ -449,6 +455,10 @@ export function reduceFlowRun(
       }
 
       case "handoff_returned": {
+        const preanswer = state.preanswers?.[event.stepId];
+        if (preanswer && event.data.preanswerSeq !== undefined) {
+          preanswer.applied = { choiceKey: event.data.choiceKey, preanswerSeq: event.data.preanswerSeq };
+        }
         if (state.activeHandoff && state.activeHandoff.handoffId === event.data.handoffId) {
           state.activeHandoff = null;
         }

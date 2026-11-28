@@ -5,7 +5,7 @@
  * GET /api/flows?view=library     -> { ok: true, catalog }
  * GET /api/flows?project=P        -> { ok: true, project: P, runs }
  * GET /api/flows?project=P&run=R  -> { ok: true, stream } or 404
- * POST /api/flows                 -> same-origin guarded plan, approve, start, decide, project or import
+ * POST /api/flows                 -> same-origin guarded plan, approve, preanswer, start, decide, project or import
  * Non-GET/HEAD in loader or non-POST in action -> 405 Allow: GET, POST
  *
  * SEAM RULE: no fs imports, no env-root literals in the route.
@@ -45,6 +45,7 @@ import {
   InvalidFlowUiActionError,
   listFlowLaunchCatalog,
   planFlowFromUi,
+  saveFlowPreanswerFromUi,
   startFlowFromUi,
   transferFlowProgress,
 } from "~/lib/flows/ui-actions.server";
@@ -261,7 +262,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 
   const intent = optionalString(body["intent"]);
-  if (intent !== "plan" && intent !== "approve" && intent !== "start" && intent !== "decide" &&
+  if (intent !== "plan" && intent !== "approve" && intent !== "preanswer" && intent !== "start" && intent !== "decide" &&
       intent !== "project" && intent !== "import") {
     return json(
       { ok: false, error: "Unsupported flow action intent." },
@@ -311,6 +312,17 @@ export async function action({ request, context }: Route.ActionArgs) {
       }
       const result = await decideFlowFromUi({ projectId, runId, handoffId, choiceKey });
       return json({ ok: true, ...result, stream: readFlowCardStream(projectId, runId) });
+    }
+
+    if (intent === "preanswer") {
+      const flowHash = optionalString(body["flowHash"]);
+      const stepId = optionalString(body["stepId"]);
+      const choiceKey = optionalString(body["choiceKey"]);
+      if (!flowHash || !stepId || !choiceKey) {
+        return json({ ok: false, error: "flowHash, stepId and choiceKey are required." }, 400);
+      }
+      const result = saveFlowPreanswerFromUi({ projectId, runId, flowHash, stepId, choiceKey });
+      return json({ ok: true, ...result });
     }
 
     const result = await startFlowFromUi({ projectId, runId });
