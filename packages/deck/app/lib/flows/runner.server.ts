@@ -50,7 +50,14 @@ import {
 import { loadRunState, verifyArtifactFileOnDisk } from "./load-run.server.js";
 import { acquireOwnerLock } from "./owner.server.js";
 import { resolvePinnedBudget, resolvePinnedCheckTarget } from "./replay.js";
-import { openFlowsStore, StepDeadlineExceededError, type FlowsStore } from "./store.server.js";
+import {
+  buildCollisionFreeArtifactId,
+  defaultArtifactFilename,
+  openFlowsStore,
+  StepDeadlineExceededError,
+  type FlowsStore,
+} from "./store.server.js";
+export { buildCollisionFreeArtifactId } from "./store.server.js";
 import {
   FlowGitShaRegex,
   FlowIdRegex,
@@ -304,23 +311,6 @@ async function runWithTimeout<T>(
     if (timer) clearTimeout(timer);
     if (timedOut) workPromise.catch(() => {});
   }
-}
-
-/**
- * Unambiguous, fixed-length (28-char) hash-based artifactId scoped
- * to (stepId, declaredOutputName, occurrence).
- */
-export function buildCollisionFreeArtifactId(
-  stepId: string,
-  declaredOutputName?: string,
-  occurrence = 1,
-): string {
-  const digest = crypto
-    .createHash("sha256")
-    .update(JSON.stringify([stepId, declaredOutputName ?? "", occurrence]))
-    .digest("hex")
-    .slice(0, 24);
-  return `art_${digest}`;
 }
 
 function collectExpectedDecisions(flow: FlowDefinition): string[] {
@@ -1114,6 +1104,7 @@ export function submitHandoffReturn(params: {
   let store: FlowsStore | undefined;
   try {
     store = openFlowsStore(params.projectId, { dataRoot: params.dataRoot, ownerLock: lock });
+    store.assertExecutableRun(params.runId);
     const loaded = loadRunState(params.projectId, params.runId, { dataRoot: params.dataRoot });
     const { events, state } = loaded;
     const resolution = params.resolution ?? "answered";
@@ -1255,6 +1246,7 @@ export async function runFlow(
   let store: FlowsStore | undefined;
   try {
     store = openFlowsStore(projectId, { dataRoot: options.dataRoot, ownerLock: lock });
+    store.assertExecutableRun(runId);
 
     // 1. Load, verify pin hash, verify hash chain, verify artefacts on disk, replay state
     const loaded = loadRunState(projectId, runId, { dataRoot: options.dataRoot });
@@ -2694,7 +2686,7 @@ export async function runFlow(
               runId,
               stepId: step.id,
               attemptId: intent.attemptId,
-              name: declaredOutputName ?? `${step.id.slice(0, 32)}.txt`,
+              name: declaredOutputName ?? defaultArtifactFilename(step.id),
               mediaType: wantsHeadShaArtifact ? "application/json" : "text/plain",
               bytes: agentBytes,
               deadlineMs,

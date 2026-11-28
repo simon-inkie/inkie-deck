@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -706,6 +706,84 @@ rl.on("line", (line) => {
       expect(failedRename).toBe(true);
       expect(reg.lastSessionId(agent)).toBe("previous-session");
       expect(reg.canResume(agent)).toBe(true);
+    } finally {
+      rename.mockReset();
+    }
+  });
+
+  it("reports a final sidecar rename failure and keeps the previous checkpoint", async () => {
+    const startSession = vi.fn(async () => resumableSession("new-session"));
+    startSession.mockResolvedValueOnce(resumableSession("previous-session"));
+    const reg = new AcpRunnerRegistry(env, {
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession,
+    });
+    await reg.start(agent);
+    await reg.stop(agent);
+    const sidecar = join(home, ".acp-capabilities");
+    const previousEvidence = JSON.parse(readFileSync(sidecar, "utf8"));
+
+    const rename = vi.mocked(renameSync);
+    const realRename = rename.getMockImplementation()!;
+    rename.mockImplementation((from, to) => {
+      if (to === sidecar && String(from).startsWith(sidecar + ".tmp.")) {
+        throw Object.assign(new Error("Sidecar rename failed"), { code: "EIO" });
+      }
+      return realRename(from, to);
+    });
+    try {
+      const start = reg.start(agent);
+      await expect(start).rejects.toBeInstanceOf(LaunchFailure);
+      await expect(start).rejects.toThrow("Could not publish the ACP session checkpoint capabilities.");
+      expect(JSON.parse(readFileSync(sidecar, "utf8"))).toEqual({
+        ...previousEvidence,
+        checkpointKey: expect.any(String),
+      });
+      expect(reg.lastSessionId(agent)).toBe("previous-session");
+      expect(reg.canResume(agent)).toBe(true);
+      expect(existsSync(lockFile)).toBe(false);
+    } finally {
+      rename.mockReset();
+    }
+  });
+
+  it("keeps the original canonical checkpoint in place when the final ID rename fails", async () => {
+    const startSession = vi.fn(async () => resumableSession("new-session"));
+    startSession.mockResolvedValueOnce(resumableSession("previous-session"));
+    const reg = new AcpRunnerRegistry(env, {
+      manifest: { ...antigravity1Manifest, executableName: fakeAgyScript },
+      listWindows: () => [],
+      execVersion: () => ({ status: 0, stdout: "1.5.14", stderr: "" }),
+      startSession,
+    });
+    await reg.start(agent);
+    await reg.stop(agent);
+    const idFile = join(home, ".acp-last-session");
+    const previousInode = statSync(idFile).ino;
+    const sidecar = join(home, ".acp-capabilities");
+    const previousEvidence = readFileSync(sidecar, "utf8");
+
+    const rename = vi.mocked(renameSync);
+    const realRename = rename.getMockImplementation()!;
+    let inodeAtRename: number | undefined;
+    rename.mockImplementation((from, to) => {
+      if (to === idFile && String(from).startsWith(idFile + ".tmp.")) {
+        inodeAtRename = statSync(idFile, { throwIfNoEntry: false })?.ino;
+        throw Object.assign(new Error("Checkpoint ID rename failed"), { code: "EIO" });
+      }
+      return realRename(from, to);
+    });
+    try {
+      expect((await reg.start(agent)).activeSessionId).toBe("new-session");
+      await reg.stop(agent);
+      expect(inodeAtRename).toBe(previousInode);
+      expect(statSync(idFile).ino).toBe(previousInode);
+      expect(readFileSync(sidecar, "utf8")).toBe(previousEvidence);
+      expect(reg.lastSessionId(agent)).toBe("previous-session");
+      expect(reg.canResume(agent)).toBe(true);
+      expect(existsSync(lockFile)).toBe(false);
     } finally {
       rename.mockReset();
     }

@@ -238,7 +238,7 @@ export function FlowCardStream({ stream: initialStream }: FlowCardStreamProps) {
     }
   }
 
-  const handoffId = stream.activeDecision?.handoffId;
+  const handoffId = stream.readOnly ? undefined : stream.activeDecision?.handoffId;
 
   return (
     <div className="space-y-4">

@@ -126,6 +126,7 @@ export function loadRunState(
   state: FlowRunState;
   pinnedFlowYaml: string;
   verifiedArtefacts: Map<string, number>;
+  readOnly: boolean;
 } {
   if (!FlowIdRegex.test(projectId)) {
     throw new PathConfinementError(projectId, "flows");
@@ -165,9 +166,10 @@ export function loadRunState(
 
     // Read and parse all events
     const events = store.getParsedEvents(runId);
+    const readOnly = store.isImportedRun(runId);
 
     // Verify recorded artefacts against actual files on disk using pinned dirfds (never trust SQL metadata alone)
-    const artifactRows = store.listArtifacts(runId);
+    const artifactRows = readOnly ? [] : store.listArtifacts(runId);
     const verifiedArtefacts = new Map<string, number>();
 
     if (artifactRows.length > 0) {
@@ -197,8 +199,18 @@ export function loadRunState(
       }
     }
 
-    // Deterministic replay
-    const state = reduceFlowRun(flow, events, verifiedArtefacts);
+    // Imported receipts describe historical evidence. Only live runs use verified
+    // local artefacts as inputs.
+    const historicalReceipts = new Map<string, number>();
+    if (readOnly) {
+      for (const event of events) {
+        if (event.type === "artefact_recorded") {
+          const { artefactId, sha256, sizeBytes } = event.data;
+          historicalReceipts.set(`${artefactId}:${sha256}`, sizeBytes);
+        }
+      }
+    }
+    const state = reduceFlowRun(flow, events, readOnly ? historicalReceipts : verifiedArtefacts);
 
     return {
       run,
@@ -207,6 +219,7 @@ export function loadRunState(
       state,
       pinnedFlowYaml,
       verifiedArtefacts,
+      readOnly,
     };
   } finally {
     store.close();

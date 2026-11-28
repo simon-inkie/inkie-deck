@@ -31,6 +31,8 @@ export interface FlowLibraryOptions {
   projectRoot?: string;
   dataRoot?: string;
   builtinsDir?: string;
+  maxDefinitionBytes?: number;
+  expectedHash?: string;
 }
 
 export interface LoadedFlowDefinition {
@@ -147,10 +149,15 @@ function readConfinedYamlFile(
   filePath: string,
   rootDir: string,
   flowRef: string,
+  maxBytes?: number,
+  expectedHash?: string,
 ): { yaml: string; flow: FlowDefinition; hash: string } | null {
   assertConfinedPath(filePath, rootDir);
-  const checked = assertSafeRegularFile(filePath, rootDir, { readBytes: true });
+  const checked = assertSafeRegularFile(filePath, rootDir, { readBytes: true, maxBytes });
   if (!checked || !checked.bytes) return null;
+  if (expectedHash !== undefined && crypto.createHash("sha256").update(checked.bytes).digest("hex") !== expectedHash) {
+    return null;
+  }
 
   const yaml = checked.bytes.toString("utf8");
   const validation = validateFlowYaml(yaml);
@@ -297,8 +304,8 @@ function scanFlowDirectory(
 }
 
 /**
- * Load a single flow definition following strict precedence:
- * project (.deck/flows) -> library (<dataRoot>/flows/library) -> builtin (flows/library).
+ * Load the first valid definition in project, library, then builtin order.
+ * When an expected hash is supplied, skip files whose bytes do not match it.
  */
 export function loadFlowDefinition(
   flowRef: string,
@@ -339,7 +346,7 @@ export function loadFlowDefinition(
     const targetPath = path.join(candidate.dir, filename);
     let loaded: ReturnType<typeof readConfinedYamlFile>;
     try {
-      loaded = readConfinedYamlFile(targetPath, candidate.root, flowRef);
+      loaded = readConfinedYamlFile(targetPath, candidate.root, flowRef, opts.maxDefinitionBytes, opts.expectedHash);
     } catch (err) {
       if (!(err instanceof FlowValidationError)) throw err;
       invalidDefinition ??= err;

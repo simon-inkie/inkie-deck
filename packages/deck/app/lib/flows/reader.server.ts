@@ -44,6 +44,16 @@ export class InvalidFlowQueryError extends Error {
   }
 }
 
+export class FlowRunNotFoundError extends Error {
+  constructor(
+    public readonly projectId: string,
+    public readonly runId: string,
+  ) {
+    super(`Flow run '${runId}' not found for project '${projectId}'.`);
+    this.name = "FlowRunNotFoundError";
+  }
+}
+
 export class FlowIntegrityError extends Error {
   constructor(message = "Flow ledger failed integrity verification.", options?: ErrorOptions) {
     super(message, options);
@@ -290,7 +300,7 @@ export function readFlowCardStream(
       dataRoot: options?.dataRoot,
     });
 
-    return projectFlowCardStream({
+    const stream = projectFlowCardStream({
       projectId,
       runId,
       flowHash: loaded.run.flow_hash,
@@ -298,6 +308,7 @@ export function readFlowCardStream(
       events: loaded.events,
       state: loaded.state,
     });
+    return loaded.readOnly ? { ...stream, readOnly: true } : stream;
   } catch (err) {
     throw classifyReaderError(err);
   }

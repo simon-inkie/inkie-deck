@@ -407,6 +407,10 @@ const LEAK_MARKER_PATTERNS: readonly RegExp[] = [
   ),
 ];
 
+export function hasFlowSecretMarker(content: string): boolean {
+  return LEAK_MARKER_PATTERNS.some((pattern) => pattern.test(content));
+}
+
 function isTestFilePath(filePath: string): boolean {
   const norm = filePath.replace(/\\/g, "/").toLowerCase();
   return (
@@ -461,12 +465,7 @@ function detectSignalsFromUnifiedDiff(
 
       if (line.startsWith("+") && !line.startsWith("+++ ")) {
         const content = line.slice(1);
-        for (const pattern of LEAK_MARKER_PATTERNS) {
-          if (pattern.test(content)) {
-            secretFound = true;
-            break;
-          }
-        }
+        if (hasFlowSecretMarker(content)) secretFound = true;
         if (isTestFile) {
           if (introducesTestSkip(content)) {
             testWeakened = true;
